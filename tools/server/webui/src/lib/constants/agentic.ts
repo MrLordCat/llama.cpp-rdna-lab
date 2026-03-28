@@ -1,3 +1,20 @@
+import type { AgenticConfig } from '$lib/types/agentic';
+
+export const ATTACHMENT_SAVED_REGEX = /\[Attachment saved: ([^\]]+)\]/;
+
+export const NEWLINE_SEPARATOR = '\n';
+
+export const TURN_LIMIT_MESSAGE = '\n\n```\nTurn limit reached\n```\n';
+
+export const LLM_ERROR_BLOCK_START = '\n\n```\nUpstream LLM error:\n';
+export const LLM_ERROR_BLOCK_END = '\n```\n';
+
+export const DEFAULT_AGENTIC_CONFIG: AgenticConfig = {
+	enabled: true,
+	maxTurns: 100,
+	maxToolPreviewLines: 25
+} as const;
+
 // Agentic tool call tag markers
 export const AGENTIC_TAGS = {
 	TOOL_CALL_START: '<<<AGENTIC_TOOL_CALL_START>>>',
@@ -12,6 +29,9 @@ export const REASONING_TAGS = {
 	START: '<<<reasoning_content_start>>>',
 	END: '<<<reasoning_content_end>>>'
 } as const;
+
+// Regex for trimming leading/trailing newlines
+export const TRIM_NEWLINES_REGEX = /^\n+|\n+$/g;
 
 // Regex patterns for parsing agentic content
 export const AGENTIC_REGEX = {
@@ -30,8 +50,14 @@ export const AGENTIC_REGEX = {
 	PARTIAL_MARKER: /<<<[A-Za-z_]*$/,
 	// Matches reasoning content blocks (including tags)
 	REASONING_BLOCK: /<<<reasoning_content_start>>>[\s\S]*?<<<reasoning_content_end>>>/g,
+	// Captures the reasoning text between start/end tags
+	REASONING_EXTRACT: /<<<reasoning_content_start>>>([\s\S]*?)<<<reasoning_content_end>>>/,
 	// Matches an opening reasoning tag and any remaining content (unterminated)
 	REASONING_OPEN: /<<<reasoning_content_start>>>[\s\S]*$/,
+	// Matches a complete agentic tool call display block (start to end marker)
+	AGENTIC_TOOL_CALL_BLOCK: /\n*<<<AGENTIC_TOOL_CALL_START>>>[\s\S]*?<<<AGENTIC_TOOL_CALL_END>>>/g,
+	// Matches a pending/partial agentic tool call (start marker with no matching end)
+	AGENTIC_TOOL_CALL_OPEN: /\n*<<<AGENTIC_TOOL_CALL_START>>>[\s\S]*$/,
 	// Matches tool name inside content
 	TOOL_NAME_EXTRACT: /<<<TOOL_NAME:([^>]+)>>>/
 } as const;
