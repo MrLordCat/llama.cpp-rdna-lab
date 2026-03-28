@@ -722,6 +722,7 @@ void ggml_compute_forward_add(
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_TBQ3_0:
         case GGML_TYPE_TBQ4_0:
+        case GGML_TYPE_TQ3_0:
         case GGML_TYPE_IQ2_XXS:
         case GGML_TYPE_IQ2_XS:
         case GGML_TYPE_IQ3_XXS:
@@ -1174,6 +1175,7 @@ void ggml_compute_forward_add1(
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_TBQ3_0:
         case GGML_TYPE_TBQ4_0:
+        case GGML_TYPE_TQ3_0:
         case GGML_TYPE_IQ2_XXS:
         case GGML_TYPE_IQ2_XS:
         case GGML_TYPE_IQ3_XXS:
@@ -1305,6 +1307,7 @@ void ggml_compute_forward_acc(
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_TBQ3_0:
         case GGML_TYPE_TBQ4_0:
+        case GGML_TYPE_TQ3_0:
         case GGML_TYPE_IQ2_XXS:
         case GGML_TYPE_IQ2_XS:
         case GGML_TYPE_IQ3_XXS:
@@ -4395,6 +4398,7 @@ void ggml_compute_forward_out_prod(
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_TBQ3_0:
         case GGML_TYPE_TBQ4_0:
+        case GGML_TYPE_TQ3_0:
         case GGML_TYPE_IQ2_XXS:
         case GGML_TYPE_IQ2_XS:
         case GGML_TYPE_IQ3_XXS:
@@ -4673,6 +4677,7 @@ void ggml_compute_forward_set(
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_TBQ3_0:
         case GGML_TYPE_TBQ4_0:
+        case GGML_TYPE_TQ3_0:
         case GGML_TYPE_IQ2_XXS:
         case GGML_TYPE_IQ2_XS:
         case GGML_TYPE_IQ3_XXS:
@@ -4898,6 +4903,7 @@ void ggml_compute_forward_get_rows(
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_TBQ3_0:
         case GGML_TYPE_TBQ4_0:
+        case GGML_TYPE_TQ3_0:
         case GGML_TYPE_IQ2_XXS:
         case GGML_TYPE_IQ2_XS:
         case GGML_TYPE_IQ3_XXS:
@@ -5625,6 +5631,7 @@ void ggml_compute_forward_clamp(
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_TBQ3_0:
         case GGML_TYPE_TBQ4_0:
+        case GGML_TYPE_TQ3_0:
         case GGML_TYPE_IQ2_XXS:
         case GGML_TYPE_IQ2_XS:
         case GGML_TYPE_IQ3_XXS:
@@ -6801,7 +6808,7 @@ static void ggml_compute_forward_conv_2d_impl(const ggml_compute_params * params
 
         GGML_ASSERT(gemm_output + patch_n * c_out <= (float*)tmp + params->wsize);
 
-        // GEMM: patches[patch_n, knl_n] × kernel[knl_n, c_out] = output[patch_n, c_out]
+        // GEMM: patches[patch_n, knl_n] Г— kernel[knl_n, c_out] = output[patch_n, c_out]
         ggml_call_mul_mat(kernel_type, params, patch_n, c_out, knl_n, tmp, knl_data, gemm_output);
 
         ggml_barrier(params->threadpool);
@@ -8555,12 +8562,12 @@ static void ggml_compute_forward_flash_attn_ext_tiled(
         }
 
         // Per-thread scratch layout:
-        // Q_q:    Q_TILE_SZ * DK (converted Q tile — F32 for GEMM, KV type for scalar)
+        // Q_q:    Q_TILE_SZ * DK (converted Q tile вЂ” F32 for GEMM, KV type for scalar)
         // KQ:     Q_TILE_SZ * KV_TILE_SZ (attention scores in float)
         // mask:   Q_TILE_SZ * KV_TILE_SZ (mask in float)
         // VKQ32:  Q_TILE_SZ * DV (FP32 output accumulator)
         // V32:    KV_TILE_SZ * DV (F32 buffer for V tile)
-        // K_f32:  KV_TILE_SZ * DK (F32 buffer for K tile — GEMM path)
+        // K_f32:  KV_TILE_SZ * DK (F32 buffer for K tile вЂ” GEMM path)
         float * base  = (float *) params->wdata + ith*(Q_TILE_SZ*DK + 2*Q_TILE_SZ*KV_TILE_SZ + Q_TILE_SZ*DV + KV_TILE_SZ*DV + KV_TILE_SZ*DK + CACHE_LINE_SIZE_F32);
 
         void  * Q_q    = base;
@@ -10434,7 +10441,7 @@ static void ggml_compute_forward_solve_tri_f32(const struct ggml_compute_params 
     const int nth = params->nth;
 
     const int64_t k = ne10;   // number of RHS columns
-    const int64_t n = ne11;   // A is n×n
+    const int64_t n = ne11;   // A is nГ—n
     const int64_t nr = ne02 * ne03 * k; // we're parallelizing on columns here, so seq x token x column will be the unit
 
     // chunks per thread
