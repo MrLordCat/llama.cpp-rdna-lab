@@ -1705,9 +1705,12 @@ class LlamaCppGUI(QMainWindow):
         if kv_idx > 0:  # not default f16
             kv_type = kv_cache_types[kv_idx]
             command.extend(["--cache-type-k", kv_type, "--cache-type-v", kv_type])
-            # TurboQuant requires flash attention
+            # TurboQuant requires flash attention and CPU-only execution (no GPU kernels yet)
             if kv_type.startswith("tbq"):
-                command.append("--flash-attn")
+                command.extend(["--flash-attn", "on"])
+                # TurboQuant has CPU-only implementation — force all layers to CPU
+                # so the KV cache is not placed on a GPU that lacks tbq SET_ROWS kernel
+                command.extend(["-ngl", "0", "-fit", "off"])
 
         # Extra user-defined arguments
         extra_args_text = self.server_extra_args_edit.text().strip()
