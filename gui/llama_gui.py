@@ -363,6 +363,44 @@ class LlamaCppGUI(QMainWindow):
         # Return the backend-specific path even if it doesn't exist yet
         return backend_dir
     
+    def _get_build_version_info(self, build_path: Path) -> dict:
+        """Get version (git commit) and build date for a build directory"""
+        info = {"version": "unknown", "date": "unknown"}
+        cmake_cache = build_path / "CMakeCache.txt"
+        if cmake_cache.exists():
+            try:
+                import datetime
+                mtime = cmake_cache.stat().st_mtime
+                info["date"] = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                pass
+        # Try to get git commit from build-info
+        for candidate in [
+            build_path / "llama-version.cmake",
+            build_path / "build-info.h",
+        ]:
+            if candidate.exists():
+                try:
+                    content = candidate.read_text(errors='ignore')
+                    import re
+                    m = re.search(r'LLAMA_BUILD_COMMIT["\s:=]+([a-f0-9]{7,40})', content)
+                    if m:
+                        info["version"] = m.group(1)[:8]
+                        break
+                except Exception:
+                    pass
+        if info["version"] == "unknown":
+            try:
+                result = subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    capture_output=True, text=True, cwd=self.project_root, timeout=5
+                )
+                if result.returncode == 0:
+                    info["version"] = result.stdout.strip()
+            except Exception:
+                pass
+        return info
+
     def get_available_builds(self) -> dict:
         """Get all available builds with their backends"""
         builds = {}
@@ -371,10 +409,13 @@ class LlamaCppGUI(QMainWindow):
         generic_build = self.project_root / "build"
         if generic_build.exists() and (generic_build / "CMakeCache.txt").exists():
             backend = self._detect_build_backend(generic_build)
+            ver_info = self._get_build_version_info(generic_build)
             builds["build"] = {
                 "path": generic_build,
                 "backend": backend,
-                "display_name": f"build ({backend})"
+                "display_name": f"build ({backend})",
+                "version": ver_info["version"],
+                "date": ver_info["date"],
             }
         
         # Check backend-specific directories from BUILD_DIRS
@@ -382,10 +423,13 @@ class LlamaCppGUI(QMainWindow):
             dir_path = self.project_root / dir_name
             if dir_path.exists() and (dir_path / "CMakeCache.txt").exists():
                 detected_backend = self._detect_build_backend(dir_path)
+                ver_info = self._get_build_version_info(dir_path)
                 builds[dir_name] = {
                     "path": dir_path,
                     "backend": detected_backend or backend_name,
-                    "display_name": f"{dir_name} ({detected_backend or backend_name})"
+                    "display_name": f"{dir_name} ({detected_backend or backend_name})",
+                    "version": ver_info["version"],
+                    "date": ver_info["date"],
                 }
         
         # Also scan for any other build-* directories
@@ -394,10 +438,13 @@ class LlamaCppGUI(QMainWindow):
                 if item.is_dir() and item.name.startswith("build") and item.name not in builds:
                     if (item / "CMakeCache.txt").exists():
                         detected_backend = self._detect_build_backend(item)
+                        ver_info = self._get_build_version_info(item)
                         builds[item.name] = {
                             "path": item,
                             "backend": detected_backend,
-                            "display_name": f"{item.name} ({detected_backend})"
+                            "display_name": f"{item.name} ({detected_backend})",
+                            "version": ver_info["version"],
+                            "date": ver_info["date"],
                         }
         except Exception:
             pass
@@ -657,6 +704,27 @@ class LlamaCppGUI(QMainWindow):
         self.server_no_warmup_checkbox = QCheckBox("Skip warmup (--no-warmup) — recommended on Linux/ROCm")
         self.server_no_warmup_checkbox.setChecked(os.name != 'nt')  # ON by default on Linux/Mac
         server_params_layout.addWidget(self.server_no_warmup_checkbox)
+
+        # KV Cache Type (TurboQuant support)
+        kv_cache_layout = QHBoxLayout()
+        kv_cache_layout.addWidget(QLabel("KV Cache Type:"))
+        self.server_kv_cache_combo = QComboBox()
+        self.server_kv_cache_combo.addItems([
+            "f16 (default)",
+            "q8_0 (8-bit)",
+            "q4_0 (4-bit)",
+            "tbq4_0 (TurboQuant 4-bit — Google)",
+            "tbq3_0 (TurboQuant 3-bit — Google)",
+        ])
+        self.server_kv_cache_combo.setToolTip(
+            "TurboQuant (tbq) — Google's extreme KV cache compression.\n"
+            "tbq4_0: best balance of quality/compression (3.94x savings)\n"
+            "tbq3_0: maximum compression (5.22x savings, slight quality loss)\n"
+            "Requires flash_attn=on. CPU-only for now."
+        )
+        kv_cache_layout.addWidget(self.server_kv_cache_combo)
+        kv_cache_layout.addStretch()
+        server_params_layout.addLayout(kv_cache_layout)
 
         # Extra arguments
         extra_args_layout = QHBoxLayout()
@@ -1144,26 +1212,35 @@ class LlamaCppGUI(QMainWindow):
         
         # Builds table
         self.builds_table = QTableWidget()
-        self.builds_table.setColumnCount(4)
-        self.builds_table.setHorizontalHeaderLabels(["Folder", "Backend", "Status", "llama-server"])
+        self.builds_table.setColumnCount(6)
+        self.builds_table.setHorizontalHeaderLabels(["Folder", "Backend", "Version", "Build Date", "Status", "llama-server"])
         self.builds_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.builds_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.builds_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.builds_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.builds_table.setMaximumHeight(150)
+        self.builds_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.builds_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.builds_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.builds_table.setMaximumHeight(180)
         self.builds_table.setAlternatingRowColors(True)
+        self.builds_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.builds_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         builds_layout.addWidget(self.builds_table)
         
         # Rename build button
         rename_layout = QHBoxLayout()
         rename_layout.addWidget(QLabel("Rename current 'build/' to:"))
         self.rename_build_combo = QComboBox()
-        self.rename_build_combo.addItems(["build-cpu", "build-cuda", "build-rocm", "build-vulkan", "build-metal", "build-sycl"])
+        self.rename_build_combo.addItems(["build-cpu", "build-cuda", "build-rocm", "build-vulkan", "build-metal", "build-sycl", "build-turboquant", "build-experimental"])
         self.rename_build_combo.setEditable(True)
         rename_layout.addWidget(self.rename_build_combo)
         rename_btn = QPushButton("📁 Rename Build")
         rename_btn.clicked.connect(self.rename_build_folder)
         rename_layout.addWidget(rename_btn)
+        
+        delete_btn = QPushButton("🗑 Delete Selected Build")
+        delete_btn.setStyleSheet("color: #cc0000;")
+        delete_btn.clicked.connect(self.delete_selected_build)
+        rename_layout.addWidget(delete_btn)
         rename_layout.addStretch()
         builds_layout.addLayout(rename_layout)
         
@@ -1291,6 +1368,41 @@ class LlamaCppGUI(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to rename folder:\n{e}")
     
+    def delete_selected_build(self):
+        """Delete the build selected in the builds table"""
+        selected = self.builds_table.selectedItems()
+        if not selected:
+            QMessageBox.warning(self, "No Selection", "Select a build in the table first.")
+            return
+
+        row = selected[0].row()
+        folder_name = self.builds_table.item(row, 0).text()
+        backend = self.builds_table.item(row, 1).text()
+        build_path = self.project_root / folder_name
+
+        if not build_path.exists():
+            QMessageBox.warning(self, "Not Found", f"Folder '{folder_name}' no longer exists.")
+            self.refresh_builds_info()
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Delete Build",
+            f"Are you sure you want to delete '{folder_name}' ({backend})?\n\n"
+            "This will permanently remove the entire build folder.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        import shutil
+        try:
+            shutil.rmtree(build_path)
+            QMessageBox.information(self, "Deleted", f"Build '{folder_name}' has been deleted.")
+            self.refresh_builds_info()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to delete '{folder_name}':\n{e}")
+
     def refresh_builds_info(self):
         """Refresh information about installed builds"""
         # First, update builds table
@@ -1313,15 +1425,23 @@ class LlamaCppGUI(QMainWindow):
                 backend_item.setForeground(Qt.GlobalColor.darkBlue)
             self.builds_table.setItem(row, 1, backend_item)
             
+            # Version
+            version_item = QTableWidgetItem(build_data.get("version", "unknown"))
+            self.builds_table.setItem(row, 2, version_item)
+            
+            # Build Date
+            date_item = QTableWidgetItem(build_data.get("date", "unknown"))
+            self.builds_table.setItem(row, 3, date_item)
+            
             # Status - check if llama-server exists
             server_exists = self._check_server_in_build(build_data["path"])
             status_item = QTableWidgetItem("✅ Ready" if server_exists else "⚠️ No server")
-            self.builds_table.setItem(row, 2, status_item)
+            self.builds_table.setItem(row, 4, status_item)
             
             # Server path
             server_path = self._find_server_in_build(build_data["path"])
             path_item = QTableWidgetItem(str(server_path) if server_path else "Not found")
-            self.builds_table.setItem(row, 3, path_item)
+            self.builds_table.setItem(row, 5, path_item)
             
             row += 1
         
@@ -1332,7 +1452,9 @@ class LlamaCppGUI(QMainWindow):
         if available_builds:
             summary.append(f"✅ {len(available_builds)} build(s) available")
             for name, data in available_builds.items():
-                summary.append(f"   • {name}: {data['backend']}")
+                ver = data.get("version", "?")
+                dt = data.get("date", "?")
+                summary.append(f"   • {name}: {data['backend']} (v{ver}, {dt})")
         else:
             summary.append("❌ No builds found")
             summary.append("   Go to 'Build & Setup' tab to build llama.cpp")
@@ -1576,6 +1698,16 @@ class LlamaCppGUI(QMainWindow):
         # Skip warmup if checkbox is set (avoids OOM crash during warmup on ROCm/Linux)
         if self.server_no_warmup_checkbox.isChecked():
             command.append("--no-warmup")
+
+        # KV cache type (TurboQuant support)
+        kv_cache_types = ["f16", "q8_0", "q4_0", "tbq4_0", "tbq3_0"]
+        kv_idx = self.server_kv_cache_combo.currentIndex()
+        if kv_idx > 0:  # not default f16
+            kv_type = kv_cache_types[kv_idx]
+            command.extend(["--cache-type-k", kv_type, "--cache-type-v", kv_type])
+            # TurboQuant requires flash attention
+            if kv_type.startswith("tbq"):
+                command.append("--flash-attn")
 
         # Extra user-defined arguments
         extra_args_text = self.server_extra_args_edit.text().strip()
