@@ -35,7 +35,7 @@ class ServerThread(QThread):
     """Thread for running llama-server in background"""
     output_ready = pyqtSignal(str)
     server_ready = pyqtSignal(str)  # Server URL
-    finished_signal = pyqtSignal()
+    finished_signal = pyqtSignal(int)  # exit code
     error_signal = pyqtSignal(str)
     
     def __init__(self, command: list, working_dir: str, port: int = 8080, env: dict = None):
@@ -45,6 +45,8 @@ class ServerThread(QThread):
         self.process = None
         self.port = port
         self.env = env
+        self.user_stopped = False
+        self._output_line_count = 0
         
     def run(self):
         try:
@@ -70,6 +72,7 @@ class ServerThread(QThread):
             
             server_started = False
             for line in self.process.stdout:
+                self._output_line_count += 1
                 self.output_ready.emit(line)
                 
                 # Detect when server is ready
@@ -78,12 +81,13 @@ class ServerThread(QThread):
                     server_started = True
                 
             self.process.wait()
-            self.finished_signal.emit()
+            self.finished_signal.emit(self.process.returncode)
             
         except Exception as e:
             self.error_signal.emit(str(e))
             
     def stop(self):
+        self.user_stopped = True
         if self.process:
             self.process.terminate()
             self.process.wait()
@@ -1578,7 +1582,8 @@ class LlamaCppGUI(QMainWindow):
         if extra_args_text:
             import shlex
             try:
-                command.extend(shlex.split(extra_args_text))
+                # posix=False on Windows so backslashes in paths (C:\...) are not mangled
+                command.extend(shlex.split(extra_args_text, posix=(os.name != 'nt')))
             except ValueError:
                 command.extend(extra_args_text.split())
 
@@ -1638,7 +1643,6 @@ class LlamaCppGUI(QMainWindow):
         """Stop server"""
         if self.server_thread:
             self.server_thread.stop()
-            self.server_output_text.append("\n\n⏹️ Stopped by user\n")
             
     def on_server_ready(self, url: str):
         """Handle server ready"""
@@ -1665,16 +1669,43 @@ class LlamaCppGUI(QMainWindow):
         self.server_output_text.insertPlainText(text)
         self.server_output_text.moveCursor(QTextCursor.MoveOperation.End)
         
-    def server_finished(self):
+    def server_finished(self, exit_code: int):
         """Server finished"""
         self.server_start_btn.setEnabled(True)
         self.server_stop_btn.setEnabled(False)
         self.server_open_web_btn.setEnabled(False)
-        self.server_status_label.setText("⚪ Server stopped")
-        self.server_status_label.setStyleSheet("font-size: 12px; font-weight: bold; padding: 5px;")
-        self.statusBar().showMessage("Server stopped")
-        self.server_output_text.append("\n\n✅ Server stopped\n")
         self.server_url = None
+
+        thread = self.server_thread
+        user_stopped = thread.user_stopped if thread else False
+        output_lines = thread._output_line_count if thread else 0
+
+        if user_stopped:
+            self.server_status_label.setText("⚪ Server stopped")
+            self.server_status_label.setStyleSheet("font-size: 12px; font-weight: bold; padding: 5px;")
+            self.statusBar().showMessage("Server stopped")
+            self.server_output_text.append("\n\n⏹️ Stopped by user\n")
+        elif exit_code == 0:
+            self.server_status_label.setText("⚪ Server stopped")
+            self.server_status_label.setStyleSheet("font-size: 12px; font-weight: bold; padding: 5px;")
+            self.statusBar().showMessage("Server stopped")
+            self.server_output_text.append("\n\n✅ Server stopped (exit code 0)\n")
+        else:
+            self.server_status_label.setText(f"🔴 Server crashed (exit code {exit_code})")
+            self.server_status_label.setStyleSheet("font-size: 12px; font-weight: bold; padding: 5px; color: red;")
+            self.statusBar().showMessage(f"Server crashed (exit code {exit_code})")
+            self.server_output_text.append(f"\n\n❌ Server crashed with exit code {exit_code}\n")
+
+            if output_lines == 0 and self.os_type == "Windows":
+                self.server_output_text.append(
+                    "\n💡 No output captured — likely a missing DLL on startup.\n"
+                    "   Possible fixes:\n"
+                    "   1. Make sure HIP SDK is installed and matches the build version\n"
+                    "   2. Add ROCm bin dir to system PATH:\n"
+                    "      C:\\Program Files\\AMD\\ROCm\\<version>\\bin\n"
+                    "   3. Try running from a terminal with ROCm in PATH to see the real error:\n"
+                    f"      {self.server_thread.command[0] if self.server_thread else 'llama-server.exe'}\n"
+                )
         
     def server_error(self, error: str):
         """Handle server error"""
@@ -2233,36 +2264,62 @@ class LlamaCppGUI(QMainWindow):
         if backend and backend.upper() == "ROCM" and generator != "Ninja":
             self.build_log.append("⚠️ WARNING: ROCm requires Ninja generator!\n")
         
-        # Check if we need to clean CMakeCache due to generator mismatch
+        # Check if we need to clean CMakeCache due to generator or compiler mismatch
         cmake_cache = self.build_dir / "CMakeCache.txt"
         if cmake_cache.exists():
             try:
-                with open(cmake_cache, 'r') as f:
-                    cache_content = f.read()
-                    # Check for generator mismatch
-                    if generator and f"CMAKE_GENERATOR:INTERNAL={generator}" not in cache_content:
-                        # Generator changed - need to clean
-                        self.build_log.append("⚠️ Detected generator mismatch with existing build\n")
-                        reply = QMessageBox.question(
-                            self,
-                            "Generator Mismatch",
-                            "The build directory was configured with a different CMake generator.\n\n"
-                            "To use a different generator, the build directory must be cleaned.\n\n"
-                            "Clean build directory and continue?",
-                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                        )
-                        if reply == QMessageBox.StandardButton.Yes:
-                            import shutil
-                            self.build_log.append("🧹 Cleaning build directory...\n")
-                            # Remove CMakeCache.txt and CMakeFiles
-                            cmake_cache.unlink()
-                            cmake_files = self.build_dir / "CMakeFiles"
-                            if cmake_files.exists():
-                                shutil.rmtree(cmake_files)
-                            self.build_log.append("✅ Build directory cleaned\n")
-                        else:
-                            self.build_log.append("⏹️ Configuration cancelled\n")
-                            return
+                import re as _re
+                import shutil
+                cache_content = cmake_cache.read_text(errors='ignore')
+                needs_clean = False
+                clean_reason = ""
+
+                # 1. Generator mismatch
+                if generator and f"CMAKE_GENERATOR:INTERNAL={generator}" not in cache_content:
+                    needs_clean = True
+                    clean_reason = "CMake generator changed"
+
+                # 2. ROCm/HIP version mismatch — compare only version numbers extracted from paths
+                # (avoid slash-style differences: CMakeCache uses '/', HIP_PATH may use '\')
+                if not needs_clean and backend and backend.upper() == "ROCM":
+                    cached_compiler_match = _re.search(
+                        r'CMAKE_C_COMPILER[^=]*=([^\r\n]+)', cache_content
+                    )
+                    if cached_compiler_match:
+                        cached_compiler = cached_compiler_match.group(1).strip()
+                        current_hip = self.build_manager.get_rocm_env()
+                        current_hip_path = current_hip.get("HIP_PATH", "") if current_hip else ""
+                        # Extract version strings (e.g. "7.1" or "6.2") from both paths
+                        ver_match = _re.search(r'ROCm[\\/](\d+\.\d+)', cached_compiler, _re.IGNORECASE)
+                        cur_ver_match = _re.search(r'ROCm[\\/](\d+\.\d+)', current_hip_path, _re.IGNORECASE)
+                        if ver_match and cur_ver_match:
+                            cached_ver = ver_match.group(1)
+                            cur_ver = cur_ver_match.group(1)
+                            if cached_ver != cur_ver:
+                                needs_clean = True
+                                clean_reason = f"ROCm version changed: build used {cached_ver}, current is {cur_ver}"
+
+                if needs_clean:
+                    self.build_log.append(f"⚠️ {clean_reason} — build directory must be cleaned\n")
+                    reply = QMessageBox.question(
+                        self,
+                        "Build Cache Mismatch",
+                        f"{clean_reason}.\n\n"
+                        "The existing build cache is incompatible and must be cleaned "
+                        "before reconfiguring.\n\n"
+                        "Clean build directory and continue?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    )
+                    if reply == QMessageBox.StandardButton.Yes:
+                        self.build_log.append("🧹 Cleaning build directory...\n")
+                        cmake_cache.unlink()
+                        cmake_files = self.build_dir / "CMakeFiles"
+                        if cmake_files.exists():
+                            shutil.rmtree(cmake_files)
+                        self.build_log.append("✅ Build directory cleaned\n")
+                    else:
+                        self.build_log.append("⏹️ Configuration cancelled\n")
+                        return
             except Exception as e:
                 self.build_log.append(f"⚠️ Could not check CMakeCache: {e}\n")
         
@@ -2699,7 +2756,7 @@ class LlamaCppGUI(QMainWindow):
         
         text += "\n💡 For AMD 9070XT: ROCm is HIGHLY RECOMMENDED\n"
         text += "   If ROCm is not available, Vulkan can be used as fallback.\n"
-        text += "\n📦 Latest HIP SDK: 6.4.2 (download button above)\n"
+        text += "\n📦 Latest HIP SDK: 7.1.1 (download button above)\n"
         
         self.hardware_info_text.setText(text)
     
@@ -2707,7 +2764,7 @@ class LlamaCppGUI(QMainWindow):
         """Download and install/update HIP SDK"""
         # Get current version
         current_version = self.build_manager.detect_rocm_version()
-        latest_version = "6.4.2"
+        latest_version = "7.1.1"
         
         # Build message
         if current_version:

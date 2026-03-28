@@ -171,7 +171,7 @@ class BuildManager:
         """Detect installed ROCm/HIP SDK version
         
         Returns:
-            Version string like '6.2' or '6.4.2' or None if not found
+            Version string like '6.2' or '7.1.1' or None if not found
         """
         if self.os_type != "Windows":
             # On Linux, check /opt/rocm/.info/version
@@ -188,7 +188,7 @@ class BuildManager:
         if rocm_base.exists():
             versions = sorted(rocm_base.iterdir(), reverse=True)
             if versions:
-                # Folder name is the version (e.g., "6.2", "6.4.2")
+                # Folder name is the version (e.g., "6.2", "7.1.1")
                 return versions[0].name
         return None
     
@@ -596,12 +596,16 @@ class BuildManager:
                 else:
                     command.append(f"-D{key}={value}")
         
-        # On Linux with single-config generators, always set CMAKE_BUILD_TYPE
-        # (ROCm already sets it above; for other backends, set it here)
-        if self.os_type == "Linux" and not (backend and backend.upper() == "ROCM"):
-            # Check if CMAKE_BUILD_TYPE was not already set by user options
+        # Single-config generators (Ninja, Unix Makefiles) need CMAKE_BUILD_TYPE at configure time.
+        # Multi-config generators (Visual Studio) use --config at build time instead.
+        # On Linux we always use single-config generators.
+        # On Windows, if VS generator was NOT selected (e.g. no VS installed and Ninja is used
+        # as fallback), we also need CMAKE_BUILD_TYPE set.
+        if not (backend and backend.upper() == "ROCM"):  # ROCm already set it above
             if not any("CMAKE_BUILD_TYPE" in arg for arg in command):
-                command.append("-DCMAKE_BUILD_TYPE=Release")
+                is_vs_generator = generator and generator.startswith("Visual Studio")
+                if self.os_type == "Linux" or (self.os_type == "Windows" and not is_vs_generator):
+                    command.append("-DCMAKE_BUILD_TYPE=Release")
                     
         return command
         
@@ -665,19 +669,15 @@ class BuildManager:
             
         return commands
         
-    def install_vulkan_sdk_windows(self) -> List[str]:
-        """Инструкции по установке Vulkan SDK на Windows"""
-        # Vulkan SDK нужно устанавливать вручную
-        # Возвращаем команду для открытия браузера
-        return [
-            ["start", "https://vulkan.lunarg.com/sdk/home#windows"]
-        ]
-        
-    def install_cuda_windows(self) -> List[str]:
-        """Инструкции по установке CUDA на Windows"""
-        return [
-            ["start", "https://developer.nvidia.com/cuda-downloads"]
-        ]
+    def install_vulkan_sdk_windows(self) -> None:
+        """Open Vulkan SDK download page in browser (Windows)"""
+        import webbrowser
+        webbrowser.open("https://vulkan.lunarg.com/sdk/home#windows")
+
+    def install_cuda_windows(self) -> None:
+        """Open CUDA Toolkit download page in browser (Windows)"""
+        import webbrowser
+        webbrowser.open("https://developer.nvidia.com/cuda-downloads")
         
     def check_build_prerequisites(self, backend: Optional[str] = None) -> Dict[str, bool]:
         """
