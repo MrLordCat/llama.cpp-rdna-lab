@@ -713,14 +713,16 @@ class LlamaCppGUI(QMainWindow):
             "f16 (default)",
             "q8_0 (8-bit)",
             "q4_0 (4-bit)",
-            "tbq4_0 (TurboQuant 4-bit — Google)",
-            "tbq3_0 (TurboQuant 3-bit — Google)",
+            "tbq4_0 (TurboQuant 4-bit — CPU only)",
+            "tbq3_0 (TurboQuant 3-bit — CPU only)",
+            "tq3_0 (TurboQuant 3-bit — GPU)",
         ])
         self.server_kv_cache_combo.setToolTip(
-            "TurboQuant (tbq) — Google's extreme KV cache compression.\n"
-            "tbq4_0: best balance of quality/compression (3.94x savings)\n"
-            "tbq3_0: maximum compression (5.22x savings, slight quality loss)\n"
-            "Requires flash_attn=on. CPU-only for now."
+            "KV cache quantization types:\n"
+            "tbq4_0: CPU-only, 3.94x savings (forces -ngl 0)\n"
+            "tbq3_0: CPU-only, 5.22x savings (forces -ngl 0)\n"
+            "tq3_0: GPU-accelerated 3-bit (CUDA/ROCm), 3.5 bpw\n"
+            "All TurboQuant types require flash_attn=on."
         )
         kv_cache_layout.addWidget(self.server_kv_cache_combo)
         kv_cache_layout.addStretch()
@@ -1700,16 +1702,16 @@ class LlamaCppGUI(QMainWindow):
             command.append("--no-warmup")
 
         # KV cache type (TurboQuant support)
-        kv_cache_types = ["f16", "q8_0", "q4_0", "tbq4_0", "tbq3_0"]
+        kv_cache_types = ["f16", "q8_0", "q4_0", "tbq4_0", "tbq3_0", "tq3_0"]
         kv_idx = self.server_kv_cache_combo.currentIndex()
         if kv_idx > 0:  # not default f16
             kv_type = kv_cache_types[kv_idx]
             command.extend(["--cache-type-k", kv_type, "--cache-type-v", kv_type])
-            # TurboQuant requires flash attention and CPU-only execution (no GPU kernels yet)
-            if kv_type.startswith("tbq"):
+            # All TurboQuant variants require flash attention
+            if kv_type.startswith("tbq") or kv_type.startswith("tq"):
                 command.extend(["--flash-attn", "on"])
-                # TurboQuant has CPU-only implementation — force all layers to CPU
-                # so the KV cache is not placed on a GPU that lacks tbq SET_ROWS kernel
+            # CPU-only TBQ types: force all layers to CPU
+            if kv_type.startswith("tbq"):
                 command.extend(["-ngl", "0", "-fit", "off"])
 
         # Extra user-defined arguments
