@@ -428,10 +428,11 @@ extern "C" {
         // GGML_TYPE_IQ4_NL_8_8 = 38,
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
-        GGML_TYPE_TBQ3_0  = 41, // TurboQuant 3-bit (CPU, 256-block)
-        GGML_TYPE_TBQ4_0  = 42, // TurboQuant 4-bit (CPU, 256-block)
-        GGML_TYPE_TQ3_0   = 43, // TurboQuant 3-bit GPU (32-block, polar+WHT)
-        GGML_TYPE_COUNT   = 44,
+        GGML_TYPE_Q1_0    = 41,
+        GGML_TYPE_TBQ3_0  = 42, // TurboQuant 3-bit (CPU, 256-block)
+        GGML_TYPE_TBQ4_0  = 43, // TurboQuant 4-bit (CPU, 256-block)
+        GGML_TYPE_TQ3_0   = 44, // TurboQuant 3-bit GPU (32-block, polar+WHT)
+        GGML_TYPE_COUNT   = 45,
     };
 
     // precision
@@ -468,8 +469,9 @@ extern "C" {
         GGML_FTYPE_MOSTLY_BF16    = 24, // except 1d tensors
         GGML_FTYPE_MOSTLY_MXFP4   = 25, // except 1d tensors
         GGML_FTYPE_MOSTLY_NVFP4   = 26, // except 1d tensors
-        GGML_FTYPE_MOSTLY_TBQ3_0  = 27, // except 1d tensors
-        GGML_FTYPE_MOSTLY_TBQ4_0  = 28, // except 1d tensors
+        GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
+        GGML_FTYPE_MOSTLY_TBQ3_0  = 28, // except 1d tensors
+        GGML_FTYPE_MOSTLY_TBQ4_0  = 29, // except 1d tensors
     };
 
     // available tensor operations:
@@ -905,15 +907,17 @@ extern "C" {
             struct ggml_tensor  * b,
             struct ggml_tensor  * ids);
 
-    GGML_API struct ggml_tensor * ggml_add1(
+    GGML_DEPRECATED(GGML_API struct ggml_tensor * ggml_add1(
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
-            struct ggml_tensor  * b);
+            struct ggml_tensor  * b),
+        "use ggml_add instead");
 
-    GGML_API struct ggml_tensor * ggml_add1_inplace(
+    GGML_DEPRECATED(GGML_API struct ggml_tensor * ggml_add1_inplace(
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
-            struct ggml_tensor  * b);
+            struct ggml_tensor  * b),
+        "use ggml_add_inplace instead");
 
     // dst = a
     // view(dst, nb1, nb2, nb3, offset) += b
