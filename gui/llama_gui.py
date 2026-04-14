@@ -132,6 +132,111 @@ class InferenceThread(QThread):
             self.process.wait()
 
 
+class UpdateForkThread(QThread):
+    """Thread for updating the fork from upstream in background"""
+    output = pyqtSignal(str)
+    finished_signal = pyqtSignal(bool, str)  # success, summary message
+
+    def __init__(self, repo_path: Path):
+        super().__init__()
+        self.repo_path = repo_path
+
+    def _run_git(self, args: list) -> tuple:
+        """Run a git command and return (returncode, stdout, stderr)"""
+        result = subprocess.run(
+            ["git"] + args,
+            cwd=self.repo_path,
+            capture_output=True, text=True, timeout=120
+        )
+        return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+    def run(self):
+        try:
+            # Check upstream remote
+            self.output.emit("🔍 Checking upstream remote...\n")
+            rc, out, err = self._run_git(["remote", "-v"])
+            if "upstream" not in out:
+                self.output.emit("⚙️ Adding upstream remote (ggml-org/llama.cpp)...\n")
+                rc, out, err = self._run_git(["remote", "add", "upstream", "https://github.com/ggml-org/llama.cpp.git"])
+                if rc != 0:
+                    self.finished_signal.emit(False, f"Failed to add upstream: {err}")
+                    return
+
+            # Fetch upstream
+            self.output.emit("📡 Fetching upstream/master...\n")
+            rc, out, err = self._run_git(["fetch", "upstream", "master"])
+            if rc != 0:
+                self.finished_signal.emit(False, f"Fetch failed: {err}")
+                return
+
+            # Check how far behind
+            rc, out, err = self._run_git(["rev-list", "--count", "HEAD..upstream/master"])
+            commits_behind = int(out) if out.isdigit() else 0
+            if commits_behind == 0:
+                self.output.emit("✅ Already up to date!\n")
+                self.finished_signal.emit(True, "Already up to date — no new commits.")
+                return
+
+            self.output.emit(f"📦 {commits_behind} new commits to merge...\n")
+
+            # Merge
+            self.output.emit("🔀 Merging upstream/master...\n")
+            rc, out, err = self._run_git(["merge", "upstream/master", "--no-edit"])
+            merge_output = out + "\n" + err
+            self.output.emit(merge_output + "\n")
+
+            if rc != 0:
+                # Check for conflicts
+                rc2, conflicts, _ = self._run_git(["diff", "--name-only", "--diff-filter=U"])
+                if conflicts:
+                    self.output.emit(f"\n⚠️ Merge conflicts in:\n{conflicts}\n")
+                    self.output.emit("\n🔧 Resolving: removing .github/workflows conflicts...\n")
+                    # Auto-resolve workflow file conflicts (we don't use them in our fork)
+                    conflict_files = conflicts.split("\n")
+                    workflow_conflicts = [f for f in conflict_files if f.startswith(".github/")]
+                    other_conflicts = [f for f in conflict_files if not f.startswith(".github/")]
+
+                    for wf in workflow_conflicts:
+                        self._run_git(["rm", wf])
+                        self.output.emit(f"  🗑️ Removed {wf}\n")
+
+                    if other_conflicts:
+                        self.output.emit(f"\n❌ {len(other_conflicts)} conflict(s) need manual resolution:\n")
+                        for f in other_conflicts:
+                            self.output.emit(f"  ⚠️ {f}\n")
+                        self.output.emit("\nResolve them manually, then run 'git add' and 'git commit'.\n")
+                        self.finished_signal.emit(False,
+                            f"Merged {commits_behind} commits but {len(other_conflicts)} conflict(s) need manual fix.")
+                        return
+
+                    # All conflicts were workflows — commit
+                    self._run_git(["commit", "--no-edit"])
+                    self.output.emit("✅ Auto-resolved workflow conflicts.\n")
+                else:
+                    self.finished_signal.emit(False, f"Merge failed: {err}")
+                    return
+
+            # Push
+            self.output.emit("📤 Pushing to origin...\n")
+            rc, out, err = self._run_git(["push", "origin", "master"])
+            if rc != 0:
+                self.output.emit(f"⚠️ Push failed: {err}\n")
+                self.output.emit("You can push manually later with: git push origin master\n")
+                self.finished_signal.emit(True,
+                    f"Merged {commits_behind} commits but push failed. Push manually.")
+                return
+
+            self.output.emit("✅ Successfully pushed to origin!\n")
+            self.finished_signal.emit(True, f"Updated: {commits_behind} commits merged and pushed.")
+
+        except subprocess.TimeoutExpired:
+            self.finished_signal.emit(False, "Git command timed out. Check your network.")
+        except FileNotFoundError:
+            self.finished_signal.emit(False, "Git not found. Install Git and add it to PATH.")
+        except Exception as e:
+            self.finished_signal.emit(False, f"Error: {str(e)}")
+
+
 class LlamaCppGUI(QMainWindow):
     """Main window for llama.cpp GUI"""
     
@@ -1089,6 +1194,37 @@ class LlamaCppGUI(QMainWindow):
         info_label = QLabel("🔧 Build llama.cpp with Selected Hardware Support")
         info_label.setStyleSheet("font-size: 14px; font-weight: bold;")
         layout.addWidget(info_label)
+        
+        # Update Fork Section
+        update_group = QGroupBox("🔄 Update from Upstream")
+        update_layout = QVBoxLayout()
+
+        update_top = QHBoxLayout()
+        self.update_status_label = QLabel("Click 'Check' to see if updates are available.")
+        self.update_status_label.setWordWrap(True)
+        update_top.addWidget(self.update_status_label, 1)
+
+        self.check_updates_btn = QPushButton("🔍 Check")
+        self.check_updates_btn.setMaximumWidth(100)
+        self.check_updates_btn.clicked.connect(self.check_for_updates)
+        update_top.addWidget(self.check_updates_btn)
+
+        self.update_fork_btn = QPushButton("⬆️ Update && Push")
+        self.update_fork_btn.setMaximumWidth(140)
+        self.update_fork_btn.clicked.connect(self.update_fork)
+        update_top.addWidget(self.update_fork_btn)
+
+        update_layout.addLayout(update_top)
+
+        self.update_log = QTextEdit()
+        self.update_log.setReadOnly(True)
+        self.update_log.setFont(QFont("Consolas", 9))
+        self.update_log.setMaximumHeight(150)
+        self.update_log.setVisible(False)
+        update_layout.addWidget(self.update_log)
+
+        update_group.setLayout(update_layout)
+        layout.addWidget(update_group)
         
         # Repository Path Section
         repo_group = QGroupBox("Repository Location")
@@ -3002,6 +3138,79 @@ class LlamaCppGUI(QMainWindow):
         if last_model and hasattr(self, 'model_path_edit'):
             self.model_path_edit.setText(last_model)
     
+    def check_for_updates(self):
+        """Check how many upstream commits are available"""
+        self.update_log.setVisible(True)
+        self.update_log.clear()
+        self.check_updates_btn.setEnabled(False)
+        self.update_status_label.setText("⏳ Checking...")
+
+        def _check():
+            try:
+                run = lambda args: subprocess.run(
+                    ["git"] + args, cwd=self.project_root,
+                    capture_output=True, text=True, timeout=60
+                )
+                # Ensure upstream exists
+                r = run(["remote", "-v"])
+                if "upstream" not in r.stdout:
+                    run(["remote", "add", "upstream", "https://github.com/ggml-org/llama.cpp.git"])
+                run(["fetch", "upstream", "master"])
+                r = run(["rev-list", "--count", "HEAD..upstream/master"])
+                return int(r.stdout.strip()) if r.stdout.strip().isdigit() else 0
+            except Exception as e:
+                return str(e)
+
+        from PyQt6.QtCore import QTimer
+        import threading
+        def _on_done(result):
+            self.check_updates_btn.setEnabled(True)
+            if isinstance(result, str):
+                self.update_status_label.setText(f"❌ Error: {result}")
+            elif result == 0:
+                self.update_status_label.setText("✅ Already up to date!")
+                self.update_log.append("No new commits from upstream.\n")
+            else:
+                self.update_status_label.setText(f"📦 {result} new commits available")
+                self.update_log.append(f"Found {result} new commits from ggml-org/llama.cpp.\n"
+                                       f"Click 'Update & Push' to merge and push.\n")
+
+        result_holder = [None]
+        def _worker():
+            result_holder[0] = _check()
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+        def _poll():
+            if t.is_alive():
+                QTimer.singleShot(200, _poll)
+            else:
+                _on_done(result_holder[0])
+        QTimer.singleShot(200, _poll)
+
+    def update_fork(self):
+        """Update fork from upstream in background thread"""
+        self.update_log.setVisible(True)
+        self.update_log.clear()
+        self.update_fork_btn.setEnabled(False)
+        self.check_updates_btn.setEnabled(False)
+        self.update_status_label.setText("⏳ Updating...")
+
+        self.update_thread = UpdateForkThread(self.project_root)
+        self.update_thread.output.connect(self.update_log.append)
+        self.update_thread.finished_signal.connect(self._on_update_finished)
+        self.update_thread.start()
+
+    def _on_update_finished(self, success: bool, message: str):
+        """Handle fork update completion"""
+        self.update_fork_btn.setEnabled(True)
+        self.check_updates_btn.setEnabled(True)
+        if success:
+            self.update_status_label.setText(f"✅ {message}")
+        else:
+            self.update_status_label.setText(f"⚠️ {message}")
+
     def change_repository_path(self):
         """Allow user to change the llama.cpp repository path"""
         folder = QFileDialog.getExistingDirectory(
