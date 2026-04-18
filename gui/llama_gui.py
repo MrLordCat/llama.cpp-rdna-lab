@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QTextEdit, QLineEdit, QSpinBox, QDoubleSpinBox,
     QComboBox, QFileDialog, QProgressBar, QTabWidget, QGroupBox,
     QCheckBox, QMessageBox, QListWidget, QSplitter, QTableWidget,
@@ -815,29 +815,150 @@ class LlamaCppGUI(QMainWindow):
         kv_cache_layout.addWidget(QLabel("KV Cache Type:"))
         self.server_kv_cache_combo = QComboBox()
         self.server_kv_cache_combo.addItems([
-            "f16 (default)",
-            "q8_0 (8-bit)",
-            "q4_0 (4-bit)",
-            "tbq4_0 (TurboQuant 4-bit — CPU only)",
-            "tbq3_0 (TurboQuant 3-bit — CPU only)",
-            "tq3_0 (TurboQuant 3-bit — GPU)",
+            "f16 (default)",          # 0
+            "bf16 (bfloat16)",         # 1
+            "f32 (float32)",           # 2
+            "q8_0 (8-bit)",            # 3
+            "q5_1 (5-bit)",            # 4
+            "q5_0 (5-bit)",            # 5
+            "q4_1 (4-bit)",            # 6
+            "q4_0 (4-bit)",            # 7
+            "iq4_nl (4-bit iQuant)",   # 8
+            "tbq4_0 (TurboQ 4-bit — CPU only)",  # 9
+            "tbq3_0 (TurboQ 3-bit — CPU only)",  # 10
+            "tq3_0 (TurboQ 3-bit — GPU)",         # 11
         ])
         self.server_kv_cache_combo.setToolTip(
             "KV cache quantization types:\n"
-            "tbq4_0: CPU-only, 3.94x savings (forces -ngl 0)\n"
-            "tbq3_0: CPU-only, 5.22x savings (forces -ngl 0)\n"
-            "tq3_0: GPU-accelerated 3-bit (CUDA/ROCm), 3.5 bpw\n"
+            "f16: default half-precision (narrow range ±65504)\n"
+            "bf16: bfloat16 — wider range, recommended for Qwen3.5/3.6\n"
+            "q8_0/q5_x/q4_x/iq4_nl: quantized — saves VRAM\n"
+            "tbq4_0/tbq3_0: TurboQuant CPU-only (forces -ngl 0)\n"
+            "tq3_0: TurboQuant GPU (CUDA/ROCm), 3.5 bpw\n"
             "All TurboQuant types require flash_attn=on."
         )
         kv_cache_layout.addWidget(self.server_kv_cache_combo)
         kv_cache_layout.addStretch()
         server_params_layout.addLayout(kv_cache_layout)
 
+        # Flash Attention
+        self.server_flash_attn_checkbox = QCheckBox("Flash Attention (--flash-attn) — saves VRAM, faster for long context")
+        self.server_flash_attn_checkbox.setChecked(False)
+        server_params_layout.addWidget(self.server_flash_attn_checkbox)
+
+        # No mmap (eager loading)
+        self.server_no_mmap_checkbox = QCheckBox("No mmap (--no-mmap) — load model into RAM at startup, faster first prompt")
+        self.server_no_mmap_checkbox.setChecked(False)
+        self.server_no_mmap_checkbox.setToolTip(
+            "Without this, model is memory-mapped from disk.\n"
+            "First prompt triggers disk I/O which slows prefill.\n"
+            "With --no-mmap, the model is loaded eagerly at startup.\n"
+            "Costs ~12 GB RAM but eliminates disk-related stalls."
+        )
+        server_params_layout.addWidget(self.server_no_mmap_checkbox)
+
+        # Parallel slots
+        parallel_layout = QHBoxLayout()
+        parallel_layout.addWidget(QLabel("Parallel Slots:"))
+        self.server_parallel_spin = QSpinBox()
+        self.server_parallel_spin.setRange(1, 32)
+        self.server_parallel_spin.setValue(1)
+        self.server_parallel_spin.setToolTip("Number of concurrent request slots. Each slot reserves KV cache memory.\nReduce to save VRAM or increase context size.")
+        parallel_layout.addWidget(self.server_parallel_spin)
+        parallel_layout.addStretch()
+        server_params_layout.addLayout(parallel_layout)
+
+        # Model Preset button and info
+        preset_layout = QHBoxLayout()
+        self.server_preset_btn = QPushButton("⚡ Apply Recommended Preset")
+        self.server_preset_btn.setToolTip("Auto-detect model family and apply recommended parameters from model_presets.json")
+        self.server_preset_btn.clicked.connect(self.apply_model_preset)
+        self.server_preset_btn.setStyleSheet("QPushButton { padding: 6px 12px; background-color: #FF9800; color: white; font-weight: bold; }")
+        preset_layout.addWidget(self.server_preset_btn)
+
+        self.server_edit_presets_btn = QPushButton("📝 Edit Presets")
+        self.server_edit_presets_btn.setToolTip("Open model_presets.json for editing")
+        self.server_edit_presets_btn.clicked.connect(self.open_presets_file)
+        preset_layout.addWidget(self.server_edit_presets_btn)
+
+        preset_layout.addStretch()
+        server_params_layout.addLayout(preset_layout)
+
+        self.server_preset_info_label = QLabel("")
+        self.server_preset_info_label.setWordWrap(True)
+        self.server_preset_info_label.setStyleSheet("color: #888; font-style: italic; padding: 2px 0px;")
+        server_params_layout.addWidget(self.server_preset_info_label)
+
+        # --- Sampling Defaults (server-level defaults, clients can override per-request) ---
+        sampling_group = QGroupBox("Sampling Defaults (server-level, override per request)")
+        sampling_layout = QGridLayout()
+
+        # Temperature
+        sampling_layout.addWidget(QLabel("Temperature:"), 0, 0)
+        self.server_temp_spin = QDoubleSpinBox()
+        self.server_temp_spin.setRange(0.0, 2.0)
+        self.server_temp_spin.setSingleStep(0.05)
+        self.server_temp_spin.setDecimals(2)
+        self.server_temp_spin.setValue(0.80)
+        self.server_temp_spin.setToolTip("Sampling temperature. 0 = greedy, 0.7-1.0 = creative.")
+        sampling_layout.addWidget(self.server_temp_spin, 0, 1)
+
+        # Top-P
+        sampling_layout.addWidget(QLabel("Top-P:"), 0, 2)
+        self.server_top_p_spin = QDoubleSpinBox()
+        self.server_top_p_spin.setRange(0.0, 1.0)
+        self.server_top_p_spin.setSingleStep(0.05)
+        self.server_top_p_spin.setDecimals(2)
+        self.server_top_p_spin.setValue(0.95)
+        self.server_top_p_spin.setToolTip("Nucleus sampling. 0.95 = consider top 95% probability mass.")
+        sampling_layout.addWidget(self.server_top_p_spin, 0, 3)
+
+        # Top-K
+        sampling_layout.addWidget(QLabel("Top-K:"), 0, 4)
+        self.server_top_k_spin = QSpinBox()
+        self.server_top_k_spin.setRange(0, 200)
+        self.server_top_k_spin.setValue(40)
+        self.server_top_k_spin.setToolTip("Top-K sampling. 0 = disabled, 20-40 = typical.")
+        sampling_layout.addWidget(self.server_top_k_spin, 0, 5)
+
+        # Min-P
+        sampling_layout.addWidget(QLabel("Min-P:"), 1, 0)
+        self.server_min_p_spin = QDoubleSpinBox()
+        self.server_min_p_spin.setRange(0.0, 1.0)
+        self.server_min_p_spin.setSingleStep(0.01)
+        self.server_min_p_spin.setDecimals(2)
+        self.server_min_p_spin.setValue(0.05)
+        self.server_min_p_spin.setToolTip("Min-P sampling. Filters tokens below this fraction of top token probability.")
+        sampling_layout.addWidget(self.server_min_p_spin, 1, 1)
+
+        # Presence Penalty
+        sampling_layout.addWidget(QLabel("Presence Penalty:"), 1, 2)
+        self.server_presence_penalty_spin = QDoubleSpinBox()
+        self.server_presence_penalty_spin.setRange(-2.0, 2.0)
+        self.server_presence_penalty_spin.setSingleStep(0.1)
+        self.server_presence_penalty_spin.setDecimals(1)
+        self.server_presence_penalty_spin.setValue(0.0)
+        self.server_presence_penalty_spin.setToolTip("Presence penalty. 1.0-1.5 reduces repetition. Qwen3 thinking mode recommends 1.5.")
+        sampling_layout.addWidget(self.server_presence_penalty_spin, 1, 3)
+
+        # Repeat Penalty
+        sampling_layout.addWidget(QLabel("Repeat Penalty:"), 1, 4)
+        self.server_repeat_penalty_spin = QDoubleSpinBox()
+        self.server_repeat_penalty_spin.setRange(0.0, 3.0)
+        self.server_repeat_penalty_spin.setSingleStep(0.05)
+        self.server_repeat_penalty_spin.setDecimals(2)
+        self.server_repeat_penalty_spin.setValue(1.00)
+        self.server_repeat_penalty_spin.setToolTip("Repetition penalty. 1.0 = disabled, 1.1 = light, 1.3 = strong.")
+        sampling_layout.addWidget(self.server_repeat_penalty_spin, 1, 5)
+
+        sampling_group.setLayout(sampling_layout)
+        server_params_layout.addWidget(sampling_group)
+
         # Extra arguments
         extra_args_layout = QHBoxLayout()
         extra_args_layout.addWidget(QLabel("Extra Arguments:"))
         self.server_extra_args_edit = QLineEdit()
-        self.server_extra_args_edit.setPlaceholderText("e.g. --parallel 1 --mlock  (space separated)")
+        self.server_extra_args_edit.setPlaceholderText("e.g. --mlock  (space separated)")
         extra_args_layout.addWidget(self.server_extra_args_edit)
         server_params_layout.addLayout(extra_args_layout)
 
@@ -1727,7 +1848,105 @@ class LlamaCppGUI(QMainWindow):
         if model_name and model_name != "-- Выберите модель --":
             model_path = self.models_dir / model_name
             self.server_model_path_edit.setText(str(model_path))
-            
+
+    def _load_model_presets(self) -> list:
+        """Load model presets from JSON file"""
+        presets_path = Path(__file__).parent / "model_presets.json"
+        if not presets_path.exists():
+            return []
+        try:
+            with open(presets_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("presets", [])
+        except Exception:
+            return []
+
+    def _find_matching_preset(self, model_filename: str) -> dict:
+        """Find a preset matching the model filename"""
+        import re
+        presets = self._load_model_presets()
+        for preset in presets:
+            pattern = preset.get("pattern", "")
+            if pattern and re.search(pattern, model_filename, re.IGNORECASE):
+                return preset
+        return {}
+
+    def apply_model_preset(self):
+        """Auto-detect model and apply recommended parameters"""
+        model_path = self.server_model_path_edit.text().strip()
+        if not model_path:
+            QMessageBox.information(self, "No Model", "Please select a model first, then apply the preset.")
+            return
+
+        model_filename = Path(model_path).name
+        preset = self._find_matching_preset(model_filename)
+
+        if not preset:
+            # Show available presets
+            presets = self._load_model_presets()
+            names = [p.get("name", p.get("pattern", "?")) for p in presets]
+            QMessageBox.information(
+                self, "No Preset Found",
+                f"No preset found for:\n{model_filename}\n\n"
+                f"Available presets:\n" + "\n".join(f"  • {n}" for n in names) +
+                "\n\nYou can add a new preset in model_presets.json."
+            )
+            return
+
+        # Apply parameters
+        ctx = preset.get("ctx", 8192)
+        ctx_steps = max(1, min(32, ctx // 8192))
+        self.server_ctx_slider.setValue(ctx_steps)
+
+        batch = preset.get("batch_size", 512)
+        batch_steps = max(1, min(256, batch // 32))
+        self.server_batch_slider.setValue(batch_steps)
+
+        gpu_layers = preset.get("gpu_layers", 33)
+        if gpu_layers == 999:
+            gpu_layers = 100  # 999 means "all"
+        self.server_gpu_layers_slider.setValue(min(100, gpu_layers))
+
+        if preset.get("parallel", 1) > 0:
+            self.server_parallel_spin.setValue(preset["parallel"])
+
+        if preset.get("flash_attn", False):
+            self.server_flash_attn_checkbox.setChecked(True)
+        else:
+            self.server_flash_attn_checkbox.setChecked(False)
+
+        kv_idx = preset.get("kv_cache", 0)
+        if 0 <= kv_idx < self.server_kv_cache_combo.count():
+            self.server_kv_cache_combo.setCurrentIndex(kv_idx)
+
+        # Sampling defaults from preset
+        if "temperature" in preset:
+            self.server_temp_spin.setValue(preset["temperature"])
+        if "top_p" in preset:
+            self.server_top_p_spin.setValue(preset["top_p"])
+        if "top_k" in preset:
+            self.server_top_k_spin.setValue(preset["top_k"])
+        if "min_p" in preset:
+            self.server_min_p_spin.setValue(preset["min_p"])
+        if "presence_penalty" in preset:
+            self.server_presence_penalty_spin.setValue(preset["presence_penalty"])
+        if "repeat_penalty" in preset:
+            self.server_repeat_penalty_spin.setValue(preset["repeat_penalty"])
+
+        # Show preset info
+        notes = preset.get("notes", "")
+        name = preset.get("name", "")
+        self.server_preset_info_label.setText(f"✅ Preset applied: {name}\n{notes}")
+        self.server_preset_info_label.setStyleSheet("color: #4CAF50; font-style: italic; padding: 2px 0px;")
+
+    def open_presets_file(self):
+        """Open model_presets.json in system editor"""
+        presets_path = Path(__file__).parent / "model_presets.json"
+        if presets_path.exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(presets_path)))
+        else:
+            QMessageBox.warning(self, "File Not Found", f"model_presets.json not found at:\n{presets_path}")
+
     def start_server(self):
         """Start llama-server"""
         model_path = self.server_model_path_edit.text()
@@ -1825,6 +2044,17 @@ class LlamaCppGUI(QMainWindow):
             "-t", str(self.server_threads_spin.value()),
             "--batch-size", str(self.server_batch_slider.value() * 32),
         ]
+
+        # Parallel slots (always send to prevent auto-detection choosing too many)
+        parallel_val = self.server_parallel_spin.value()
+        command.extend(["--parallel", str(parallel_val)])
+
+        # Flash attention (explicit flag if checked)
+        flash_attn_on = self.server_flash_attn_checkbox.isChecked()
+
+        # No mmap (eager loading for faster first prompt)
+        if self.server_no_mmap_checkbox.isChecked():
+            command.append("--no-mmap")
         
         # Add backend-specific arguments if GPU is enabled
         if self.server_gpu_checkbox.isChecked():
@@ -1838,17 +2068,41 @@ class LlamaCppGUI(QMainWindow):
             command.append("--no-warmup")
 
         # KV cache type (TurboQuant support)
-        kv_cache_types = ["f16", "q8_0", "q4_0", "tbq4_0", "tbq3_0", "tq3_0"]
+        kv_cache_types = ["f16", "bf16", "f32", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl", "tbq4_0", "tbq3_0", "tq3_0"]
         kv_idx = self.server_kv_cache_combo.currentIndex()
         if kv_idx > 0:  # not default f16
             kv_type = kv_cache_types[kv_idx]
             command.extend(["--cache-type-k", kv_type, "--cache-type-v", kv_type])
             # All TurboQuant variants require flash attention
             if kv_type.startswith("tbq") or kv_type.startswith("tq"):
-                command.extend(["--flash-attn", "on"])
+                flash_attn_on = True
             # CPU-only TBQ types: force all layers to CPU
             if kv_type.startswith("tbq"):
                 command.extend(["-ngl", "0", "-fit", "off"])
+
+        # Flash attention flag
+        if flash_attn_on:
+            command.extend(["--flash-attn", "on"])
+
+        # Sampling defaults (only if non-default)
+        temp_val = self.server_temp_spin.value()
+        if abs(temp_val - 0.80) > 0.001:
+            command.extend(["--temp", f"{temp_val:.2f}"])
+        top_p_val = self.server_top_p_spin.value()
+        if abs(top_p_val - 0.95) > 0.001:
+            command.extend(["--top-p", f"{top_p_val:.2f}"])
+        top_k_val = self.server_top_k_spin.value()
+        if top_k_val != 40:
+            command.extend(["--top-k", str(top_k_val)])
+        min_p_val = self.server_min_p_spin.value()
+        if abs(min_p_val - 0.05) > 0.001:
+            command.extend(["--min-p", f"{min_p_val:.2f}"])
+        presence_val = self.server_presence_penalty_spin.value()
+        if abs(presence_val) > 0.001:
+            command.extend(["--presence-penalty", f"{presence_val:.1f}"])
+        repeat_val = self.server_repeat_penalty_spin.value()
+        if abs(repeat_val - 1.0) > 0.001:
+            command.extend(["--repeat-penalty", f"{repeat_val:.2f}"])
 
         # Extra user-defined arguments
         extra_args_text = self.server_extra_args_edit.text().strip()
@@ -3110,6 +3364,29 @@ class LlamaCppGUI(QMainWindow):
             self.server_threads_spin.setValue(self.settings.value("server_threads", os.cpu_count() or 4, type=int))
         if hasattr(self, 'server_gpu_layers_slider'):
             self.server_gpu_layers_slider.setValue(self.settings.value("server_gpu_layers", 33, type=int))
+        if hasattr(self, 'server_parallel_spin'):
+            self.server_parallel_spin.setValue(self.settings.value("server_parallel", 1, type=int))
+        if hasattr(self, 'server_flash_attn_checkbox'):
+            self.server_flash_attn_checkbox.setChecked(self.settings.value("server_flash_attn", False, type=bool))
+        if hasattr(self, 'server_no_mmap_checkbox'):
+            self.server_no_mmap_checkbox.setChecked(self.settings.value("server_no_mmap", False, type=bool))
+        if hasattr(self, 'server_kv_cache_combo'):
+            self.server_kv_cache_combo.setCurrentIndex(self.settings.value("server_kv_cache", 0, type=int))
+        if hasattr(self, 'server_no_warmup_checkbox'):
+            self.server_no_warmup_checkbox.setChecked(self.settings.value("server_no_warmup", os.name != 'nt', type=bool))
+        # Sampling defaults
+        if hasattr(self, 'server_temp_spin'):
+            self.server_temp_spin.setValue(self.settings.value("server_temp", 0.8, type=float))
+        if hasattr(self, 'server_top_p_spin'):
+            self.server_top_p_spin.setValue(self.settings.value("server_top_p", 0.95, type=float))
+        if hasattr(self, 'server_top_k_spin'):
+            self.server_top_k_spin.setValue(self.settings.value("server_top_k", 40, type=int))
+        if hasattr(self, 'server_min_p_spin'):
+            self.server_min_p_spin.setValue(self.settings.value("server_min_p", 0.05, type=float))
+        if hasattr(self, 'server_presence_penalty_spin'):
+            self.server_presence_penalty_spin.setValue(self.settings.value("server_presence_penalty", 0.0, type=float))
+        if hasattr(self, 'server_repeat_penalty_spin'):
+            self.server_repeat_penalty_spin.setValue(self.settings.value("server_repeat_penalty", 1.0, type=float))
         
         # Load Quick Select model selection
         saved_model_name = self.settings.value("server_quick_select_model", "")
@@ -3320,6 +3597,29 @@ class LlamaCppGUI(QMainWindow):
             self.settings.setValue("server_batch", self.server_batch_slider.value() * 32)  # Save actual value
         if hasattr(self, 'server_gpu_layers_slider'):
             self.settings.setValue("server_gpu_layers", self.server_gpu_layers_slider.value())
+        if hasattr(self, 'server_parallel_spin'):
+            self.settings.setValue("server_parallel", self.server_parallel_spin.value())
+        if hasattr(self, 'server_flash_attn_checkbox'):
+            self.settings.setValue("server_flash_attn", self.server_flash_attn_checkbox.isChecked())
+        if hasattr(self, 'server_no_mmap_checkbox'):
+            self.settings.setValue("server_no_mmap", self.server_no_mmap_checkbox.isChecked())
+        if hasattr(self, 'server_kv_cache_combo'):
+            self.settings.setValue("server_kv_cache", self.server_kv_cache_combo.currentIndex())
+        if hasattr(self, 'server_no_warmup_checkbox'):
+            self.settings.setValue("server_no_warmup", self.server_no_warmup_checkbox.isChecked())
+        # Save sampling defaults
+        if hasattr(self, 'server_temp_spin'):
+            self.settings.setValue("server_temp", self.server_temp_spin.value())
+        if hasattr(self, 'server_top_p_spin'):
+            self.settings.setValue("server_top_p", self.server_top_p_spin.value())
+        if hasattr(self, 'server_top_k_spin'):
+            self.settings.setValue("server_top_k", self.server_top_k_spin.value())
+        if hasattr(self, 'server_min_p_spin'):
+            self.settings.setValue("server_min_p", self.server_min_p_spin.value())
+        if hasattr(self, 'server_presence_penalty_spin'):
+            self.settings.setValue("server_presence_penalty", self.server_presence_penalty_spin.value())
+        if hasattr(self, 'server_repeat_penalty_spin'):
+            self.settings.setValue("server_repeat_penalty", self.server_repeat_penalty_spin.value())
         # Save Quick Select model selection
         if hasattr(self, 'server_models_list'):
             current_model = self.server_models_list.currentText()
