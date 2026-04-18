@@ -103,6 +103,9 @@
 
 /.venv
 __pycache__/
+
+# Upstream AI instructions (этот форк использует свой CLAUDE.md)
+AGENTS.md
 */poetry.lock
 poetry.toml
 

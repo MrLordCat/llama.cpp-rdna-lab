@@ -2,3 +2,7 @@
 # Git's pack-file delta compression still works (byte-level), but this prevents
 # git diff from printing the entire minified file on every change.
 tools/server/public/index.html -diff
+
+# При merge из upstream: всегда сохранять нашу версию этих файлов
+AGENTS.md merge=ours
+CLAUDE.md merge=ours
