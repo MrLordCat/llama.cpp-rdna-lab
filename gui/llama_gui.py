@@ -712,6 +712,12 @@ class LlamaCppGUI(QMainWindow):
         self.server_threads_spin.setRange(1, 64)
         self.server_threads_spin.setValue(os.cpu_count() or 4)
         threads_layout.addWidget(self.server_threads_spin)
+        threads_layout.addWidget(QLabel("HTTP:"))
+        self.server_http_threads_spin = QSpinBox()
+        self.server_http_threads_spin.setRange(1, 64)
+        self.server_http_threads_spin.setValue(max(1, (os.cpu_count() or 4) // 2))
+        self.server_http_threads_spin.setToolTip("HTTP threads for request processing (default: cpu/2)")
+        threads_layout.addWidget(self.server_http_threads_spin)
         col2.addLayout(threads_layout)
         
         batch_layout = QHBoxLayout()
@@ -729,6 +735,22 @@ class LlamaCppGUI(QMainWindow):
         batch_layout.addWidget(self.server_batch_label)
         self.server_batch_slider.valueChanged.connect(lambda v: self.server_batch_label.setText(str(v * 32)))
         col2.addLayout(batch_layout)
+
+        ubatch_layout = QHBoxLayout()
+        ubatch_layout.addWidget(QLabel("μBatch Size:"))
+        self.server_ubatch_slider = QSlider(Qt.Orientation.Horizontal)
+        self.server_ubatch_slider.setRange(1, 256)  # 1-256 steps (32 * step), max 8192
+        self.server_ubatch_slider.setValue(16)  # 512
+        self.server_ubatch_slider.setSingleStep(1)
+        self.server_ubatch_slider.setPageStep(4)
+        self.server_ubatch_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.server_ubatch_slider.setTickInterval(32)
+        ubatch_layout.addWidget(self.server_ubatch_slider)
+        self.server_ubatch_label = QLabel("512")
+        self.server_ubatch_label.setMinimumWidth(50)
+        ubatch_layout.addWidget(self.server_ubatch_label)
+        self.server_ubatch_slider.valueChanged.connect(lambda v: self.server_ubatch_label.setText(str(v * 32)))
+        col2.addLayout(ubatch_layout)
         
         params_grid.addLayout(col2)
         
@@ -1902,6 +1924,10 @@ class LlamaCppGUI(QMainWindow):
         batch_steps = max(1, min(256, batch // 32))
         self.server_batch_slider.setValue(batch_steps)
 
+        ubatch = preset.get("ubatch_size", 512)
+        ubatch_steps = max(1, min(256, ubatch // 32))
+        self.server_ubatch_slider.setValue(ubatch_steps)
+
         gpu_layers = preset.get("gpu_layers", 33)
         if gpu_layers == 999:
             gpu_layers = 100  # 999 means "all"
@@ -2042,7 +2068,9 @@ class LlamaCppGUI(QMainWindow):
             "--port", str(port),
             "-c", str(self.server_ctx_slider.value() * 8192),
             "-t", str(self.server_threads_spin.value()),
+            "--threads-http", str(self.server_http_threads_spin.value()),
             "--batch-size", str(self.server_batch_slider.value() * 32),
+            "--ubatch-size", str(self.server_ubatch_slider.value() * 32),
         ]
 
         # Parallel slots (always send to prevent auto-detection choosing too many)
@@ -3360,8 +3388,13 @@ class LlamaCppGUI(QMainWindow):
         if hasattr(self, 'server_batch_slider'):
             batch_val = self.settings.value("server_batch", 512, type=int)
             self.server_batch_slider.setValue(max(1, batch_val // 32))  # Convert to step
+        if hasattr(self, 'server_ubatch_slider'):
+            ubatch_val = self.settings.value("server_ubatch", 512, type=int)
+            self.server_ubatch_slider.setValue(max(1, ubatch_val // 32))  # Convert to step
         if hasattr(self, 'server_threads_spin'):
             self.server_threads_spin.setValue(self.settings.value("server_threads", os.cpu_count() or 4, type=int))
+        if hasattr(self, 'server_http_threads_spin'):
+            self.server_http_threads_spin.setValue(self.settings.value("server_http_threads", max(1, (os.cpu_count() or 4) // 2), type=int))
         if hasattr(self, 'server_gpu_layers_slider'):
             self.server_gpu_layers_slider.setValue(self.settings.value("server_gpu_layers", 33, type=int))
         if hasattr(self, 'server_parallel_spin'):
@@ -3591,10 +3624,14 @@ class LlamaCppGUI(QMainWindow):
             self.settings.setValue("server_model_path", self.server_model_path_edit.text())
         if hasattr(self, 'server_threads_spin'):
             self.settings.setValue("server_threads", self.server_threads_spin.value())
+        if hasattr(self, 'server_http_threads_spin'):
+            self.settings.setValue("server_http_threads", self.server_http_threads_spin.value())
         if hasattr(self, 'server_ctx_slider'):
             self.settings.setValue("server_ctx", self.server_ctx_slider.value() * 8192)  # Save actual value
         if hasattr(self, 'server_batch_slider'):
             self.settings.setValue("server_batch", self.server_batch_slider.value() * 32)  # Save actual value
+        if hasattr(self, 'server_ubatch_slider'):
+            self.settings.setValue("server_ubatch", self.server_ubatch_slider.value() * 32)  # Save actual value
         if hasattr(self, 'server_gpu_layers_slider'):
             self.settings.setValue("server_gpu_layers", self.server_gpu_layers_slider.value())
         if hasattr(self, 'server_parallel_spin'):

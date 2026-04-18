@@ -1,0 +1,1963 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+    - generic [ref=e4]: Skip to main content
+  - generic [ref=e6]:
+    - generic:
+      - generic [ref=e7]:
+        - generic: "RTX 5070 Ti + 9800X3D running Qwen3.6-35B-A3B at 79 t/s with 128K context, the --n-cpu-moe flag is the most important part. : r/LocalLLaMA"
+      - banner [ref=e10]:
+        - navigation [ref=e11]:
+          - link "Home" [ref=e15] [cursor=pointer]:
+            - /url: /
+            - img [ref=e17]
+          - search [ref=e34]:
+            - generic [ref=e36]:
+              - img [ref=e39]
+              - generic "Remove r/LocalLLaMA filter and expand search to all of Reddit" [ref=e42] [cursor=pointer]:
+                - button [pressed] [ref=e43]:
+                  - generic [ref=e47]: r/LocalLLaMA
+                  - img [ref=e49]
+              - textbox "Remove r/LocalLLaMA filter and expand search to all of Reddit" [ref=e52]:
+                - /placeholder: Search in r/LocalLLaMA
+          - generic [ref=e53]:
+            - button "Get App" [ref=e58] [cursor=pointer]:
+              - generic [ref=e59]:
+                - img [ref=e61]
+                - generic [ref=e63]: Get App
+            - link "Log In" [ref=e67] [cursor=pointer]:
+              - /url: https://www.reddit.com/login/
+              - generic [ref=e69]: Log In
+            - button "Expand user menu" [ref=e74] [cursor=pointer]:
+              - img [ref=e77]
+              - generic [ref=e79]:
+                - generic: Expand user menu
+      - generic [ref=e80]:
+        - generic [ref=e81]:
+          - generic [ref=e82]:
+            - generic:
+              - generic:
+                - link "Skip to Navigation" [ref=e83] [cursor=pointer]:
+                  - /url: "#left-sidebar-container"
+                - link "Skip to Right Sidebar" [ref=e84] [cursor=pointer]:
+                  - /url: "#right-sidebar-container"
+          - generic [ref=e85]:
+            - main [ref=e86]:
+              - 'generic "RTX 5070 Ti + 9800X3D running Qwen3.6-35B-A3B at 79 t/s with 128K context, the --n-cpu-moe flag is the most important part. : r/LocalLLaMA"'
+              - generic [ref=e87]:
+                - generic [ref=e88]:
+                  - generic [ref=e89]:
+                    - button "Back" [ref=e91] [cursor=pointer]:
+                      - img [ref=e94]
+                      - generic [ref=e96]:
+                        - generic: Back
+                    - link "Go to LocalLLaMA" [ref=e99] [cursor=pointer]:
+                      - /url: /r/LocalLLaMA/
+                      - generic [ref=e103]:
+                        - generic: Go to LocalLLaMA
+                    - group [ref=e104]:
+                      - generic [ref=e105]:
+                        - link "r/LocalLLaMA" [ref=e109] [cursor=pointer]:
+                          - /url: /r/LocalLLaMA/
+                        - generic [ref=e110]: •
+                        - time [ref=e111]: 3h ago
+                      - 'link "Author: marlang" [ref=e117] [cursor=pointer]':
+                        - /url: /user/marlang/
+                        - text: marlang
+                  - button "Open user actions" [ref=e121] [cursor=pointer]:
+                    - img [ref=e124]
+                - generic [ref=e127]:
+                  - 'heading "Post Title: RTX 5070 Ti + 9800X3D running Qwen3.6-35B-A3B at 79 t/s with 128K context, the --n-cpu-moe flag is the most important part." [level=1] [ref=e128]': RTX 5070 Ti + 9800X3D running Qwen3.6-35B-A3B at 79 t/s with 128K context, the --n-cpu-moe flag is the most important part.
+                  - 'link "Flair: Discussion" [ref=e131] [cursor=pointer]':
+                    - /url: /r/LocalLLaMA/?f=flair_name%3A%22Discussion%22
+                    - 'generic "Flair: Discussion" [ref=e133]': Discussion
+                - generic [ref=e137]:
+                  - paragraph [ref=e138]:
+                    - text: "Spent an evening dialing in Qwen3.6-35B-A3B on consumer hardware. Fun side note: I had"
+                    - strong [ref=e139]: Claude Opus 4.7 (just the $20 sub)
+                    - text: build the config, launch the servers in the background, run the benchmarks, read the VRAM splits from the llama.cpp logs, and iterate on the tuning — basically did the whole thing autonomously. I just told it what hardware I have and what I wanted to run.
+                  - paragraph [ref=e140]:
+                    - text: Sharing because the common
+                    - code [ref=e141]: "--cpu-moe"
+                    - text: advice is leaving
+                    - strong [ref=e142]: 54% of your speed on the table
+                    - text: on 16GB GPUs.
+                  - heading "Hardware" [level=1] [ref=e143]
+                  - list [ref=e144]:
+                    - listitem [ref=e145]:
+                      - paragraph [ref=e146]:
+                        - strong [ref=e147]: "GPU:"
+                        - text: RTX 5070 Ti (16GB GDDR7, Blackwell)
+                    - listitem [ref=e148]:
+                      - paragraph [ref=e149]:
+                        - strong [ref=e150]: "CPU:"
+                        - text: Ryzen 9800X3D (96MB L3 V-Cache)
+                    - listitem [ref=e151]:
+                      - paragraph [ref=e152]:
+                        - strong [ref=e153]: "RAM:"
+                        - text: 32GB DDR5
+                    - listitem [ref=e154]:
+                      - paragraph [ref=e155]:
+                        - strong [ref=e156]: "Stack:"
+                        - text: llama.cpp b8829 (CUDA 13.1, Windows x64)
+                    - listitem [ref=e157]:
+                      - paragraph [ref=e158]:
+                        - strong [ref=e159]: "Model:"
+                        - code [ref=e160]: unsloth/Qwen3.6-35B-A3B-GGUF
+                        - text: —
+                        - code [ref=e161]: UD-Q4_K_M
+                        - text: (22.1 GB)
+                  - heading "The finding — --cpu-moe vs --n-cpu-moe N" [level=1] [ref=e162]
+                  - paragraph [ref=e163]:
+                    - text: Everyone’s using
+                    - code [ref=e164]: "--cpu-moe"
+                    - text: which pushes ALL MoE experts to CPU. On a 16GB GPU with a 22GB MoE model that means
+                    - strong [ref=e165]: only ~1.9 GB of your VRAM gets used
+                    - text: — the other ~12 GB sits idle.
+                  - paragraph [ref=e166]:
+                    - code [ref=e167]: "--n-cpu-moe N"
+                    - text: keeps experts of the first N layers on CPU and puts the rest on GPU. With
+                    - code [ref=e168]: N=20
+                    - text: on a 40-layer model, the split uses VRAM properly.
+                  - heading "Benchmarks (300-token generation, Q4_K_M)" [level=1] [ref=e169]
+                  - table [ref=e170]:
+                    - rowgroup [ref=e171]:
+                      - row "Config Gen t/s Prompt t/s VRAM used" [ref=e172]:
+                        - columnheader "Config" [ref=e173]
+                        - columnheader "Gen t/s" [ref=e174]
+                        - columnheader "Prompt t/s" [ref=e175]
+                        - columnheader "VRAM used" [ref=e176]
+                      - row
+                    - rowgroup [ref=e177]:
+                      - row "--cpu-moe (baseline) 51.2 87.9 3.5 GB" [ref=e178]:
+                        - cell "--cpu-moe (baseline)" [ref=e179]:
+                          - code [ref=e180]: "--cpu-moe"
+                          - text: (baseline)
+                        - cell "51.2" [ref=e181]
+                        - cell "87.9" [ref=e182]
+                        - cell "3.5 GB" [ref=e183]
+                      - row "--n-cpu-moe 20 78.7 100.6 12.7 GB" [ref=e184]:
+                        - cell "--n-cpu-moe 20" [ref=e185]:
+                          - code [ref=e186]: "--n-cpu-moe 20"
+                        - cell "78.7" [ref=e187]:
+                          - strong [ref=e188]: "78.7"
+                        - cell "100.6" [ref=e189]:
+                          - strong [ref=e190]: "100.6"
+                        - cell "12.7 GB" [ref=e191]
+                      - row "--n-cpu-moe 20 + -np 1 + 128K ctx 79.3 135.8 13.2 GB" [ref=e192]:
+                        - cell "--n-cpu-moe 20 + -np 1 + 128K ctx" [ref=e193]:
+                          - code [ref=e194]: "--n-cpu-moe 20"
+                          - text: +
+                          - code [ref=e195]: "-np 1"
+                          - text: + 128K ctx
+                        - cell "79.3" [ref=e196]:
+                          - strong [ref=e197]: "79.3"
+                        - cell "135.8" [ref=e198]:
+                          - strong [ref=e199]: "135.8"
+                        - cell "13.2 GB" [ref=e200]
+                  - paragraph [ref=e201]:
+                    - strong [ref=e202]: +54% generation speed, +54% prompt speed
+                    - text: vs. naive
+                    - code [ref=e203]: "--cpu-moe"
+                    - text: . Jumping to 128K context is essentially free thanks to
+                    - code [ref=e204]: "-np 1"
+                    - text: dropping recurrent-state memory.
+                  - heading "Startup command that works" [level=1] [ref=e205]
+                  - generic [ref=e206]: llama-server.exe ^ -m "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" ^ --n-cpu-moe 20 ^ -ngl 99 ^ -np 1 ^ -fa on ^ -ctk q8_0 -ctv q8_0 ^ -c 131072 ^ --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0 ^ --presence-penalty 0.0 --repeat-penalty 1.0 ^ --reasoning-budget -1 ^ --host 0.0.0.0 --port 8080
+                  - paragraph [ref=e207]:
+                    - text: "That’s Unsloth’s “Precise Coding” sampling preset. For general use:"
+                    - code [ref=e208]: "--temp 1.0 --presence-penalty 1.5"
+                    - text: .
+                  - heading "Gotchas I hit (well, that Opus hit and fixed)" [level=1] [ref=e209]
+                  - list [ref=e210]:
+                    - listitem [ref=e211]:
+                      - paragraph [ref=e212]:
+                        - code [ref=e213]: "-np"
+                        - strong [ref=e214]: defaults to auto=4 slots.
+                        - text: Wastes memory on recurrent state (~190 MB). Set
+                        - code [ref=e215]: "-np 1"
+                        - text: for single-user setups (OpenCode etc.).
+                    - listitem [ref=e216]:
+                      - paragraph [ref=e217]:
+                        - code [ref=e218]: "--fit-target"
+                        - strong [ref=e219]: doesn’t help here
+                        - text: —
+                        - code [ref=e220]: "-ngl 99"
+                        - text: +
+                        - code [ref=e221]: "--n-cpu-moe N"
+                        - text: already gives you deterministic control.
+                    - listitem [ref=e222]:
+                      - paragraph [ref=e223]:
+                        - code [ref=e224]: "-ctk q8_0 -ctv q8_0"
+                        - text: is nearly lossless and halves your KV cache vs fp16. 128K ctx only costs 1.36 GB VRAM.
+                    - listitem [ref=e225]:
+                      - paragraph [ref=e226]:
+                        - strong [ref=e227]: Qwen3.6 is a hybrid architecture
+                        - text: — only 10 layers are standard attention, the other 40 are Gated Delta Net (recurrent). That’s why KV memory is so small.
+                  - heading "How to tune N for your GPU" [level=1] [ref=e228]
+                  - paragraph [ref=e229]: "Each MoE layer on GPU costs ~530 MB VRAM. Non-MoE weights are ~1.9 GB fixed. For a 40-layer model:"
+                  - table [ref=e230]:
+                    - rowgroup [ref=e231]:
+                      - row "GPU VRAM Recommended N" [ref=e232]:
+                        - columnheader "GPU VRAM" [ref=e233]
+                        - columnheader "Recommended N" [ref=e234]:
+                          - text: Recommended
+                          - code [ref=e235]: "N"
+                      - row
+                    - rowgroup [ref=e236]:
+                      - row "8 GB stay with --cpu-moe" [ref=e237]:
+                        - cell "8 GB" [ref=e238]
+                        - cell "stay with --cpu-moe" [ref=e239]:
+                          - text: stay with
+                          - code [ref=e240]: "--cpu-moe"
+                      - row "12 GB N=26" [ref=e241]:
+                        - cell "12 GB" [ref=e242]
+                        - cell "N=26" [ref=e243]:
+                          - code [ref=e244]: N=26
+                      - row "16 GB N=20 (sweet spot)" [ref=e245]:
+                        - cell "16 GB" [ref=e246]
+                        - cell "N=20 (sweet spot)" [ref=e247]:
+                          - code [ref=e248]: N=20
+                          - text: (sweet spot)
+                      - row "24 GB N=8 (fits almost everything)" [ref=e249]:
+                        - cell "24 GB" [ref=e250]
+                        - cell "N=8 (fits almost everything)" [ref=e251]:
+                          - code [ref=e252]: N=8
+                          - text: (fits almost everything)
+                  - paragraph [ref=e253]:
+                    - text: Start conservative, watch VRAM during a long-context generation, then step
+                    - code [ref=e254]: "N"
+                    - text: down by 2-3 until you have ~2 GB headroom.
+                  - heading "TL;DR" [level=1] [ref=e255]
+                  - paragraph [ref=e256]:
+                    - text: Replace
+                    - code [ref=e257]: "--cpu-moe"
+                    - text: with
+                    - code [ref=e258]: "--n-cpu-moe 20"
+                    - text: ", add"
+                    - code [ref=e259]: "-np 1"
+                    - text: ", and you get"
+                    - strong [ref=e260]: 79 t/s + 128K context
+                    - text: on a 5070 Ti. The 9800X3D’s V-Cache carries the CPU side effortlessly.
+                  - paragraph [ref=e261]: And Claude Opus 4.7 on the $20 Pro sub is genuinely good enough now to run this kind of hardware-tuning loop end-to-end — launch servers in background, parse logs, iterate — without hand-holding. Kind of wild.
+                  - paragraph [ref=e262]: Happy to test other configs if anyone wants comparisons.
+                - generic "Actions available for this post" [ref=e263]:
+                  - generic [ref=e266]:
+                    - button "Upvote" [ref=e267] [cursor=pointer]:
+                      - img [ref=e269]
+                      - generic [ref=e271]:
+                        - generic: Upvote
+                    - generic [ref=e273]: "59"
+                    - button "Downvote" [ref=e274] [cursor=pointer]:
+                      - img [ref=e276]
+                      - generic [ref=e278]:
+                        - generic: Downvote
+                  - button "29 Go to comments" [ref=e279] [cursor=pointer]:
+                    - generic [ref=e280]:
+                      - img [ref=e282]
+                      - generic [ref=e285]: "29"
+                    - generic [ref=e286]:
+                      - generic: Go to comments
+                  - button "Give award" [ref=e288] [cursor=pointer]:
+                    - img [ref=e291]
+                  - button "Share" [ref=e296] [cursor=pointer]:
+                    - generic [ref=e297]:
+                      - img [ref=e299]
+                      - generic [ref=e301]: Share
+              - generic "Remember when AI-generated textures looked like someone smeared vaseline on a UV map? Meshy 6 fixed that." [ref=e302]:
+                - generic [ref=e303]:
+                  - 'generic "Advertisement: Remember when AI-generated textures looked like someone smeared vaseline on a UV map? Meshy 6 fixed that." [ref=e304]':
+                    - 'link "Advertisement: Remember when AI-generated textures looked like someone smeared vaseline on a UV map? Meshy 6 fixed that." [ref=e305] [cursor=pointer]':
+                      - /url: https://alb.reddit.com/cr?za=7Mqeqlv4qjgyN9zyvKI-ogtYERIRx6xAhPZ-CPK4T4YiycWXZYxBQ-HB9WbgJg8V_qpPq8vHhWWfHKs1mnN7tqoCTyUEM_r2azSZN7aXp2oIA2Jy9ZBpzF6qjM-DjHtGiTD19vYKrhIBId3yceAW1GfjTDjhz4ydt_CUl5i801F5MQHOIs-ipz7PUTXBNco8r6xre43hvcIA4d9HZMgBZyBWT-PyXAnnTDJ2vrYgUX5VTwZ2f_uyeIy3Mq-zKLzPF8jGldsy1hbhSeOE0A1xnci6TH1Vf_tTmanaplthAPYT-pDfrcrradBVW8aWZCQb9qXCxXpK9LUx3dfH_1JKQDrKERcl_0diIyFKRWv_ca3oJKbyF45-9StYRPxqZKgZhHYsniEVgQShXIfMgaZMIGDVzOCBeSDNaMVLjsid0Sa5Bd9LUmdpaBoZbtkHn1fyoT99YRdX4QB7Cj7PnEn2Lmy6kAdG8iQ816v7F3beh0qGq-eJjP_AyyrXsj8t1vjf6KgaWpAiMGeHIZuBa6EimvEJ8UOgmG6po6INMKSrvMvXVQLKkIHxzeeX-rbhSLGLEnIV8CNlDUyRKOK3aojCfOA0WYb3q86MvzIxw17p5iXRDh5Dm0dV8Jaiz-EASAuqeQiyHn3IwbkElQTDfLFfQhVcrcP7T4qOsMVpCZxzEREu1XEJKmz6xfuCDXw6u2Rb58axhiRh8D_3kllBbwjPoV30j94Wnk1Gbk6rtx8l57QboUlC7lPg4kc&zp=ngrWWXeZj2Nw46FLF6bkQoRSbeqY7uFan4CDE9iW5FWzxfuexPX918pPCA27KZvWuudSA46X0ybKmyDNy4qUrtkGqdkHQj5HSfldKtAVSHY-dNR9Vm0YkSx_UAa20ht3u23cvStdIVFFHNVbR4igDa1uzxklyGfuYn17cTZSz0hLnFVVSILPumu3hQV4rHCZWukHmQXrVBBK-a_LqCnRR4bTAmkgKOoc-TN5wsuLYjzxsXSecsEBsrP2ON6EGQeO-oTDIOmo0-_nrwPJFLHBkkQ09Hv8Ajbn2k7U_sgcPSbwOqVRIft1cLw1waPznKPKL1piDen6Q9iAB99WCKt56vayMiioqEFSQJfR-lqzvnbi3q3CcLzYDw
+                  - generic [ref=e306]:
+                    - generic [ref=e307]:
+                      - link "u/Meshyai avatar Meshyai" [ref=e310] [cursor=pointer]:
+                        - /url: /user/Meshyai/
+                        - img "u/Meshyai avatar" [ref=e315]
+                        - generic [ref=e316]: Meshyai
+                      - generic [ref=e317]: •
+                      - link "Promoted" [ref=e319] [cursor=pointer]:
+                        - /url: /user/Meshyai/
+                        - generic [ref=e320]: Promoted
+                      - link [ref=e322] [cursor=pointer]:
+                        - /url: https://alb.reddit.com/cr?za=7Mqeqlv4qjgyN9zyvKI-ogtYERIRx6xAhPZ-CPK4T4YiycWXZYxBQ-HB9WbgJg8V_qpPq8vHhWWfHKs1mnN7tqoCTyUEM_r2azSZN7aXp2oIA2Jy9ZBpzF6qjM-DjHtGiTD19vYKrhIBId3yceAW1GfjTDjhz4ydt_CUl5i801F5MQHOIs-ipz7PUTXBNco8r6xre43hvcIA4d9HZMgBZyBWT-PyXAnnTDJ2vrYgUX5VTwZ2f_uyeIy3Mq-zKLzPF8jGldsy1hbhSeOE0A1xnci6TH1Vf_tTmanaplthAPYT-pDfrcrradBVW8aWZCQb9qXCxXpK9LUx3dfH_1JKQDrKERcl_0diIyFKRWv_ca3oJKbyF45-9StYRPxqZKgZhHYsniEVgQShXIfMgaZMIGDVzOCBeSDNaMVLjsid0Sa5Bd9LUmdpaBoZbtkHn1fyoT99YRdX4QB7Cj7PnEn2Lmy6kAdG8iQ816v7F3beh0qGq-eJjP_AyyrXsj8t1vjf6KgaWpAiMGeHIZuBa6EimvEJ8UOgmG6po6INMKSrvMvXVQLKkIHxzeeX-rbhSLGLEnIV8CNlDUyRKOK3aojCfOA0WYb3q86MvzIxw17p5iXRDh5Dm0dV8Jaiz-EASAuqeQiyHn3IwbkElQTDfLFfQhVcrcP7T4qOsMVpCZxzEREu1XEJKmz6xfuCDXw6u2Rb58axhiRh8D_3kllBbwjPoV30j94Wnk1Gbk6rtx8l57QboUlC7lPg4kc&zp=ngrWWXeZj2Nw46FLF6bkQoRSbeqY7uFan4CDE9iW5FWzxfuexPX918pPCA27KZvWuudSA46X0ybKmyDNy4qUrtkGqdkHQj5HSfldKtAVSHY-dNR9Vm0YkSx_UAa20ht3u23cvStdIVFFHNVbR4igDa1uzxklyGfuYn17cTZSz0hLnFVVSILPumu3hQV4rHCZWukHmQXrVBBK-a_LqCnRR4bTAmkgKOoc-TN5wsuLYjzxsXSecsEBsrP2ON6EGQeO-oTDIOmo0-_nrwPJFLHBkkQ09Hv8Ajbn2k7U_sgcPSbwOqVRIft1cLw1waPznKPKL1piDen6Q9iAB99WCKt56vayMiioqEFSQJfR-lqzvnbi3q3CcLzYDw
+                    - button "Open user actions" [ref=e327] [cursor=pointer]:
+                      - img [ref=e330]
+                  - generic [ref=e333]:
+                    - generic [ref=e334]:
+                      - link "Remember when AI-generated textures looked like someone smeared vaseline on a UV map? Meshy 6 fixed that." [ref=e336] [cursor=pointer]:
+                        - /url: https://alb.reddit.com/cr?za=7Mqeqlv4qjgyN9zyvKI-ogtYERIRx6xAhPZ-CPK4T4YiycWXZYxBQ-HB9WbgJg8V_qpPq8vHhWWfHKs1mnN7tqoCTyUEM_r2azSZN7aXp2oIA2Jy9ZBpzF6qjM-DjHtGiTD19vYKrhIBId3yceAW1GfjTDjhz4ydt_CUl5i801F5MQHOIs-ipz7PUTXBNco8r6xre43hvcIA4d9HZMgBZyBWT-PyXAnnTDJ2vrYgUX5VTwZ2f_uyeIy3Mq-zKLzPF8jGldsy1hbhSeOE0A1xnci6TH1Vf_tTmanaplthAPYT-pDfrcrradBVW8aWZCQb9qXCxXpK9LUx3dfH_1JKQDrKERcl_0diIyFKRWv_ca3oJKbyF45-9StYRPxqZKgZhHYsniEVgQShXIfMgaZMIGDVzOCBeSDNaMVLjsid0Sa5Bd9LUmdpaBoZbtkHn1fyoT99YRdX4QB7Cj7PnEn2Lmy6kAdG8iQ816v7F3beh0qGq-eJjP_AyyrXsj8t1vjf6KgaWpAiMGeHIZuBa6EimvEJ8UOgmG6po6INMKSrvMvXVQLKkIHxzeeX-rbhSLGLEnIV8CNlDUyRKOK3aojCfOA0WYb3q86MvzIxw17p5iXRDh5Dm0dV8Jaiz-EASAuqeQiyHn3IwbkElQTDfLFfQhVcrcP7T4qOsMVpCZxzEREu1XEJKmz6xfuCDXw6u2Rb58axhiRh8D_3kllBbwjPoV30j94Wnk1Gbk6rtx8l57QboUlC7lPg4kc&zp=ngrWWXeZj2Nw46FLF6bkQoRSbeqY7uFan4CDE9iW5FWzxfuexPX918pPCA27KZvWuudSA46X0ybKmyDNy4qUrtkGqdkHQj5HSfldKtAVSHY-dNR9Vm0YkSx_UAa20ht3u23cvStdIVFFHNVbR4igDa1uzxklyGfuYn17cTZSz0hLnFVVSILPumu3hQV4rHCZWukHmQXrVBBK-a_LqCnRR4bTAmkgKOoc-TN5wsuLYjzxsXSecsEBsrP2ON6EGQeO-oTDIOmo0-_nrwPJFLHBkkQ09Hv8Ajbn2k7U_sgcPSbwOqVRIft1cLw1waPznKPKL1piDen6Q9iAB99WCKt56vayMiioqEFSQJfR-lqzvnbi3q3CcLzYDw
+                        - generic: Remember when AI-generated textures looked like someone smeared vaseline on a UV map? Meshy 6 fixed that.
+                      - generic [ref=e337]:
+                        - link [ref=e339] [cursor=pointer]:
+                          - /url: https://alb.reddit.com/cr?za=7Mqeqlv4qjgyN9zyvKI-ogtYERIRx6xAhPZ-CPK4T4YiycWXZYxBQ-HB9WbgJg8V_qpPq8vHhWWfHKs1mnN7tqoCTyUEM_r2azSZN7aXp2oIA2Jy9ZBpzF6qjM-DjHtGiTD19vYKrhIBId3yceAW1GfjTDjhz4ydt_CUl5i801F5MQHOIs-ipz7PUTXBNco8r6xre43hvcIA4d9HZMgBZyBWT-PyXAnnTDJ2vrYgUX5VTwZ2f_uyeIy3Mq-zKLzPF8jGldsy1hbhSeOE0A1xnci6TH1Vf_tTmanaplthAPYT-pDfrcrradBVW8aWZCQb9qXCxXpK9LUx3dfH_1JKQDrKERcl_0diIyFKRWv_ca3oJKbyF45-9StYRPxqZKgZhHYsniEVgQShXIfMgaZMIGDVzOCBeSDNaMVLjsid0Sa5Bd9LUmdpaBoZbtkHn1fyoT99YRdX4QB7Cj7PnEn2Lmy6kAdG8iQ816v7F3beh0qGq-eJjP_AyyrXsj8t1vjf6KgaWpAiMGeHIZuBa6EimvEJ8UOgmG6po6INMKSrvMvXVQLKkIHxzeeX-rbhSLGLEnIV8CNlDUyRKOK3aojCfOA0WYb3q86MvzIxw17p5iXRDh5Dm0dV8Jaiz-EASAuqeQiyHn3IwbkElQTDfLFfQhVcrcP7T4qOsMVpCZxzEREu1XEJKmz6xfuCDXw6u2Rb58axhiRh8D_3kllBbwjPoV30j94Wnk1Gbk6rtx8l57QboUlC7lPg4kc&zp=ngrWWXeZj2Nw46FLF6bkQoRSbeqY7uFan4CDE9iW5FWzxfuexPX918pPCA27KZvWuudSA46X0ybKmyDNy4qUrtkGqdkHQj5HSfldKtAVSHY-dNR9Vm0YkSx_UAa20ht3u23cvStdIVFFHNVbR4igDa1uzxklyGfuYn17cTZSz0hLnFVVSILPumu3hQV4rHCZWukHmQXrVBBK-a_LqCnRR4bTAmkgKOoc-TN5wsuLYjzxsXSecsEBsrP2ON6EGQeO-oTDIOmo0-_nrwPJFLHBkkQ09Hv8Ajbn2k7U_sgcPSbwOqVRIft1cLw1waPznKPKL1piDen6Q9iAB99WCKt56vayMiioqEFSQJfR-lqzvnbi3q3CcLzYDw
+                        - generic [ref=e340]:
+                          - link "Sign Up" [ref=e342] [cursor=pointer]:
+                            - /url: https://alb.reddit.com/cr?za=7Mqeqlv4qjgyN9zyvKI-ogtYERIRx6xAhPZ-CPK4T4YiycWXZYxBQ-HB9WbgJg8V_qpPq8vHhWWfHKs1mnN7tqoCTyUEM_r2azSZN7aXp2oIA2Jy9ZBpzF6qjM-DjHtGiTD19vYKrhIBId3yceAW1GfjTDjhz4ydt_CUl5i801F5MQHOIs-ipz7PUTXBNco8r6xre43hvcIA4d9HZMgBZyBWT-PyXAnnTDJ2vrYgUX5VTwZ2f_uyeIy3Mq-zKLzPF8jGldsy1hbhSeOE0A1xnci6TH1Vf_tTmanaplthAPYT-pDfrcrradBVW8aWZCQb9qXCxXpK9LUx3dfH_1JKQDrKERcl_0diIyFKRWv_ca3oJKbyF45-9StYRPxqZKgZhHYsniEVgQShXIfMgaZMIGDVzOCBeSDNaMVLjsid0Sa5Bd9LUmdpaBoZbtkHn1fyoT99YRdX4QB7Cj7PnEn2Lmy6kAdG8iQ816v7F3beh0qGq-eJjP_AyyrXsj8t1vjf6KgaWpAiMGeHIZuBa6EimvEJ8UOgmG6po6INMKSrvMvXVQLKkIHxzeeX-rbhSLGLEnIV8CNlDUyRKOK3aojCfOA0WYb3q86MvzIxw17p5iXRDh5Dm0dV8Jaiz-EASAuqeQiyHn3IwbkElQTDfLFfQhVcrcP7T4qOsMVpCZxzEREu1XEJKmz6xfuCDXw6u2Rb58axhiRh8D_3kllBbwjPoV30j94Wnk1Gbk6rtx8l57QboUlC7lPg4kc&zp=ngrWWXeZj2Nw46FLF6bkQoRSbeqY7uFan4CDE9iW5FWzxfuexPX918pPCA27KZvWuudSA46X0ybKmyDNy4qUrtkGqdkHQj5HSfldKtAVSHY-dNR9Vm0YkSx_UAa20ht3u23cvStdIVFFHNVbR4igDa1uzxklyGfuYn17cTZSz0hLnFVVSILPumu3hQV4rHCZWukHmQXrVBBK-a_LqCnRR4bTAmkgKOoc-TN5wsuLYjzxsXSecsEBsrP2ON6EGQeO-oTDIOmo0-_nrwPJFLHBkkQ09Hv8Ajbn2k7U_sgcPSbwOqVRIft1cLw1waPznKPKL1piDen6Q9iAB99WCKt56vayMiioqEFSQJfR-lqzvnbi3q3CcLzYDw
+                            - generic [ref=e344]:
+                              - generic: Sign Up
+                          - link "meshy.ai" [ref=e347] [cursor=pointer]:
+                            - /url: https://alb.reddit.com/cr?za=7Mqeqlv4qjgyN9zyvKI-ogtYERIRx6xAhPZ-CPK4T4YiycWXZYxBQ-HB9WbgJg8V_qpPq8vHhWWfHKs1mnN7tqoCTyUEM_r2azSZN7aXp2oIA2Jy9ZBpzF6qjM-DjHtGiTD19vYKrhIBId3yceAW1GfjTDjhz4ydt_CUl5i801F5MQHOIs-ipz7PUTXBNco8r6xre43hvcIA4d9HZMgBZyBWT-PyXAnnTDJ2vrYgUX5VTwZ2f_uyeIy3Mq-zKLzPF8jGldsy1hbhSeOE0A1xnci6TH1Vf_tTmanaplthAPYT-pDfrcrradBVW8aWZCQb9qXCxXpK9LUx3dfH_1JKQDrKERcl_0diIyFKRWv_ca3oJKbyF45-9StYRPxqZKgZhHYsniEVgQShXIfMgaZMIGDVzOCBeSDNaMVLjsid0Sa5Bd9LUmdpaBoZbtkHn1fyoT99YRdX4QB7Cj7PnEn2Lmy6kAdG8iQ816v7F3beh0qGq-eJjP_AyyrXsj8t1vjf6KgaWpAiMGeHIZuBa6EimvEJ8UOgmG6po6INMKSrvMvXVQLKkIHxzeeX-rbhSLGLEnIV8CNlDUyRKOK3aojCfOA0WYb3q86MvzIxw17p5iXRDh5Dm0dV8Jaiz-EASAuqeQiyHn3IwbkElQTDfLFfQhVcrcP7T4qOsMVpCZxzEREu1XEJKmz6xfuCDXw6u2Rb58axhiRh8D_3kllBbwjPoV30j94Wnk1Gbk6rtx8l57QboUlC7lPg4kc&zp=ngrWWXeZj2Nw46FLF6bkQoRSbeqY7uFan4CDE9iW5FWzxfuexPX918pPCA27KZvWuudSA46X0ybKmyDNy4qUrtkGqdkHQj5HSfldKtAVSHY-dNR9Vm0YkSx_UAa20ht3u23cvStdIVFFHNVbR4igDa1uzxklyGfuYn17cTZSz0hLnFVVSILPumu3hQV4rHCZWukHmQXrVBBK-a_LqCnRR4bTAmkgKOoc-TN5wsuLYjzxsXSecsEBsrP2ON6EGQeO-oTDIOmo0-_nrwPJFLHBkkQ09Hv8Ajbn2k7U_sgcPSbwOqVRIft1cLw1waPznKPKL1piDen6Q9iAB99WCKt56vayMiioqEFSQJfR-lqzvnbi3q3CcLzYDw
+                            - generic: meshy.ai
+                    - generic [ref=e348] [cursor=pointer]:
+                      - 'img "Clickable image which will reveal the video player: Remember when AI-generated textures looked like someone smeared vaseline on a UV map? Meshy 6 fixed that." [ref=e349]'
+                      - button "Play video" [ref=e350]:
+                        - img [ref=e351]
+                  - button "Collapse video player" [ref=e353] [cursor=pointer]:
+                    - img [ref=e354]
+                    - generic [ref=e356]:
+                      - generic: Collapse video player
+              - generic [ref=e361]:
+                - generic [ref=e362]:
+                  - button "Button to add a comment" [disabled]:
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic:
+                            - generic:
+                              - textbox [disabled]:
+                                - /placeholder: Join the conversation
+                - generic [ref=e366]: "Sort by:"
+              - region "Comments" [ref=e369]:
+                - heading "Comments Section" [level=1] [ref=e370]
+                - article "Comment from dreamai87 2 hours ago" [ref=e372]:
+                  - generic "Metadata for dreamai87's comment" [ref=e373]:
+                    - link "dreamai87's profile --- avatar" [ref=e379] [cursor=pointer]:
+                      - /url: /user/dreamai87/
+                      - generic [ref=e381]:
+                        - img [ref=e383]
+                        - img [ref=e387]
+                        - img [ref=e390]
+                    - generic [ref=e396]:
+                      - link "dreamai87's profile" [ref=e400] [cursor=pointer]:
+                        - /url: /user/dreamai87/
+                        - text: dreamai87
+                      - generic [ref=e401]: •
+                      - link "2h ago" [ref=e402] [cursor=pointer]:
+                        - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv04q3/
+                        - time [ref=e403]: 2h ago
+                  - generic [ref=e404]:
+                    - paragraph [ref=e413]: It’s okay you are exploring all possible stuff But simple command -fit on will get the best from your configuration .
+                    - button "Toggle Comment Thread" [expanded] [ref=e416] [cursor=pointer]:
+                      - img [ref=e419]
+                    - generic [ref=e423]:
+                      - 'article "Comment thread level 1: Reply from marlang 2 hours ago" [ref=e425]':
+                        - generic "Metadata for marlang's comment" [ref=e426]:
+                          - link "marlang's profile --- avatar" [ref=e432] [cursor=pointer]:
+                            - /url: /user/marlang/
+                            - generic [ref=e434]:
+                              - img [ref=e436]
+                              - img [ref=e440]
+                              - img [ref=e443]
+                          - generic [ref=e449]:
+                            - link "marlang's profile" [ref=e453] [cursor=pointer]:
+                              - /url: /user/marlang/
+                              - text: marlang
+                            - generic "Comment distinguished as the original poster" [ref=e456]: OP
+                            - generic [ref=e457]: •
+                            - link "2h ago" [ref=e458] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv1h58/
+                              - time [ref=e459]: 2h ago
+                        - generic [ref=e460]:
+                          - generic [ref=e468]:
+                            - paragraph [ref=e469]:
+                              - text: Solid tip, I actually went back and tested this properly after your comment. You’re right,
+                              - code [ref=e470]: "--fit on"
+                              - text: arrives at the
+                              - text: same MoE split I calculated manually (20 layers overflowing, 20 on GPU). One command vs hardware math, so yeah, clearly
+                              - text: the better advice.
+                            - paragraph [ref=e471]: "Full numbers for anyone reading:"
+                            - table [ref=e472]:
+                              - rowgroup [ref=e473]:
+                                - row "Config Context Gen t/s Prompt t/s" [ref=e474]:
+                                  - columnheader "Config" [ref=e475]
+                                  - columnheader "Context" [ref=e476]
+                                  - columnheader "Gen t/s" [ref=e477]
+                                  - columnheader "Prompt t/s" [ref=e478]
+                                - row
+                              - rowgroup [ref=e479]:
+                                - row "--n-cpu-moe 20 (my manual tune) 128K 79.3 135.8" [ref=e480]:
+                                  - cell "--n-cpu-moe 20 (my manual tune)" [ref=e481]:
+                                    - code [ref=e482]: "--n-cpu-moe 20"
+                                    - text: (my manual tune)
+                                  - cell "128K" [ref=e483]
+                                  - cell "79.3" [ref=e484]
+                                  - cell "135.8" [ref=e485]
+                                - row "--fit on (bare) 4K (!) 88.2 270.0" [ref=e486]:
+                                  - cell "--fit on (bare)" [ref=e487]:
+                                    - code [ref=e488]: "--fit on"
+                                    - text: (bare)
+                                  - cell "4K (!)" [ref=e489]
+                                  - cell "88.2" [ref=e490]
+                                  - cell "270.0" [ref=e491]
+                                - row "--fit on -c 131072 128K 81.2 101.6" [ref=e492]:
+                                  - cell "--fit on -c 131072" [ref=e493]:
+                                    - code [ref=e494]: "--fit on -c 131072"
+                                  - cell "128K" [ref=e495]
+                                  - cell "81.2" [ref=e496]
+                                  - cell "101.6" [ref=e497]
+                            - paragraph [ref=e498]:
+                              - strong [ref=e499]: "One caveat people should know:"
+                              - text: bare
+                              - code [ref=e500]: "--fit on"
+                              - text: silently reduces your context to
+                              - strong [ref=e501]: 4K
+                              - text: because it treats
+                              - code [ref=e502]: "-c"
+                              - text: as an
+                              - text: unset argument and minimizes it for max speed. If you want full context (coding/agentic use), you still have to set
+                              - code [ref=e503]: "-c"
+                              - text: explicitly — then fit only decides the offload split.
+                            - paragraph [ref=e504]: "So the final recommendation for a 16GB GPU is basically:"
+                            - generic [ref=e505]: "--fit on -c 131072 -np 1 -fa on -ctk q8_0 -ctv q8_0"
+                            - paragraph [ref=e506]: Thanks for pushing back — updated my scripts.
+                          - button "Toggle Comment Thread" [expanded] [ref=e509] [cursor=pointer]:
+                            - img [ref=e512]
+                          - generic [ref=e516]:
+                            - 'article "Comment thread level 2: Reply from iamapizza 2 hours ago" [ref=e518]':
+                              - generic "Metadata for iamapizza's comment" [ref=e519]:
+                                - link "iamapizza's profile --- avatar" [ref=e525] [cursor=pointer]:
+                                  - /url: /user/iamapizza/
+                                  - img "u/iamapizza avatar" [ref=e528]
+                                - generic [ref=e533]:
+                                  - link "iamapizza's profile" [ref=e537] [cursor=pointer]:
+                                    - /url: /user/iamapizza/
+                                    - text: iamapizza
+                                  - generic [ref=e538]: •
+                                  - link "2h ago" [ref=e539] [cursor=pointer]:
+                                    - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv1v7w/
+                                    - time [ref=e540]: 2h ago
+                                  - generic [ref=e541]: •
+                                  - generic [ref=e542]:
+                                    - text: Edited
+                                    - time [ref=e543]: 2h ago
+                              - generic [ref=e550]:
+                                - paragraph [ref=e551]: Thank you for testing with fit. Even though it's doing a lot of the heavy lifting you did at least validate and learn stuff along the way (and teach me something too)
+                                - paragraph [ref=e552]: You can squeeze even more out using fit target. Fit target says how much vram to leave spare. Try with 512.
+                            - 'article "Comment thread level 2: Reply from Danmoreng 1 hour ago" [ref=e558]':
+                              - generic "Metadata for Danmoreng's comment" [ref=e559]:
+                                - link "Danmoreng's profile --- avatar" [ref=e565] [cursor=pointer]:
+                                  - /url: /user/Danmoreng/
+                                  - img "u/Danmoreng avatar" [ref=e568]
+                                - generic [ref=e573]:
+                                  - link "Danmoreng's profile" [ref=e577] [cursor=pointer]:
+                                    - /url: /user/Danmoreng/
+                                    - text: Danmoreng
+                                  - generic [ref=e578]: •
+                                  - link "1h ago" [ref=e579] [cursor=pointer]:
+                                    - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv6tpk/
+                                    - time [ref=e580]: 1h ago
+                                  - generic [ref=e581]: •
+                                  - generic [ref=e582]:
+                                    - text: Edited
+                                    - time [ref=e583]: 54m ago
+                              - generic [ref=e590]:
+                                - paragraph [ref=e591]:
+                                  - text: "No you need to use fit together with fit-ctx and fit-target:"
+                                  - link "https://github.com/Danmoreng/local-qwen3-coder-env#server-optimization-details" [ref=e592] [cursor=pointer]:
+                                    - /url: https://github.com/Danmoreng/local-qwen3-coder-env#server-optimization-details
+                                - paragraph [ref=e593]: np 1 sounds interesting though, haven’t tried that one out and might improve my config
+                                - paragraph [ref=e594]: "Edit: Okay np 1 actually improves t/s slightly for my setup, so I added it as well to the config. Thanks for that!"
+                            - 'article "Comment thread level 2: Reply from st0n1th 2 hours ago" [ref=e600]':
+                              - generic "Metadata for st0n1th's comment" [ref=e601]:
+                                - link "st0n1th's profile --- avatar" [ref=e607] [cursor=pointer]:
+                                  - /url: /user/st0n1th/
+                                  - img [ref=e612]
+                                - generic [ref=e618]:
+                                  - link "st0n1th's profile" [ref=e622] [cursor=pointer]:
+                                    - /url: /user/st0n1th/
+                                    - text: st0n1th
+                                  - generic [ref=e623]: •
+                                  - link "2h ago" [ref=e624] [cursor=pointer]:
+                                    - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv58zh/
+                                    - time [ref=e625]: 2h ago
+                              - paragraph [ref=e633]: Yeah I tried with 20 on cpu and it left 2GB free on my 5080 gpu and noticed more cpu than gpu utilization. Switched back to —fit.
+                            - 'article "Comment thread level 2: Reply from dreamai87 38 minutes ago" [ref=e641]':
+                              - generic "Metadata for dreamai87's comment" [ref=e642]:
+                                - link "dreamai87's profile --- avatar" [ref=e648] [cursor=pointer]:
+                                  - /url: /user/dreamai87/
+                                  - generic [ref=e650]:
+                                    - img [ref=e652]
+                                    - img [ref=e656]
+                                    - img [ref=e659]
+                                - generic [ref=e665]:
+                                  - link "dreamai87's profile" [ref=e669] [cursor=pointer]:
+                                    - /url: /user/dreamai87/
+                                    - text: dreamai87
+                                  - generic [ref=e670]: •
+                                  - link "38m ago" [ref=e671] [cursor=pointer]:
+                                    - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogvbwfs/
+                                    - time [ref=e672]: 38m ago
+                              - paragraph [ref=e680]:
+                                - text: thanks it helps you.
+                                - text: my comment was mainly to help on allocation of better split of model between gpu and cpu.
+                                - text: "-c you have to provide otherwise it takes the default."
+                      - 'article "Comment thread level 1: Reply from abu_shawarib 49 minutes ago" [ref=e686]':
+                        - generic "Metadata for abu_shawarib's comment" [ref=e687]:
+                          - link "abu_shawarib's profile --- avatar" [ref=e693] [cursor=pointer]:
+                            - /url: /user/abu_shawarib/
+                            - img [ref=e698]
+                          - generic [ref=e704]:
+                            - link "abu_shawarib's profile" [ref=e708] [cursor=pointer]:
+                              - /url: /user/abu_shawarib/
+                              - text: abu_shawarib
+                            - generic [ref=e709]: •
+                            - link "49m ago" [ref=e710] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogvaodp/
+                              - time [ref=e711]: 49m ago
+                        - paragraph [ref=e719]: Command line says it's already on by default.
+                      - 'article "Comment thread level 1: Reply from Ferilox 27 minutes ago" [ref=e725]':
+                        - generic "Metadata for Ferilox's comment" [ref=e726]:
+                          - link "Ferilox's profile --- avatar" [ref=e732] [cursor=pointer]:
+                            - /url: /user/Ferilox/
+                            - img "u/Ferilox avatar" [ref=e735]
+                          - generic [ref=e740]:
+                            - link "Ferilox's profile" [ref=e744] [cursor=pointer]:
+                              - /url: /user/Ferilox/
+                              - text: Ferilox
+                            - generic [ref=e745]: •
+                            - link "27m ago" [ref=e746] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogvd1f7/
+                              - time [ref=e747]: 27m ago
+                        - paragraph [ref=e755]: Except when the model has a vision component. Then it kind of struggles. Setting the fitting target parameter helps in that case.
+                      - button "3 more replies" [ref=e766] [cursor=pointer]:
+                        - img [ref=e768]
+                        - generic [ref=e771]:
+                          - generic [ref=e772]: "3"
+                          - text: more replies
+                - article "Comment from Mister_bruhmoment 2 hours ago" [ref=e774]:
+                  - generic "Metadata for Mister_bruhmoment's comment" [ref=e775]:
+                    - link "Mister_bruhmoment's profile --- avatar" [ref=e781] [cursor=pointer]:
+                      - /url: /user/Mister_bruhmoment/
+                      - img [ref=e786]
+                    - generic [ref=e792]:
+                      - link "Mister_bruhmoment's profile" [ref=e796] [cursor=pointer]:
+                        - /url: /user/Mister_bruhmoment/
+                        - text: Mister_bruhmoment
+                      - generic [ref=e797]: •
+                      - link "2h ago" [ref=e798] [cursor=pointer]:
+                        - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv0mnk/
+                        - time [ref=e799]: 2h ago
+                  - generic [ref=e800]:
+                    - paragraph [ref=e809]: Hey, I basically have the last version of your rig besides the RAM - 4070 ti super, R7 7800X3D. Are those settings applicable in lm studio? I am still figuring out how everything works with LLMs atm
+                    - button "Toggle Comment Thread" [expanded] [ref=e812] [cursor=pointer]:
+                      - img [ref=e815]
+                    - 'article "Comment thread level 1: Reply from marlang 2 hours ago" [ref=e823]':
+                      - generic "Metadata for marlang's comment" [ref=e824]:
+                        - link "marlang's profile --- avatar" [ref=e830] [cursor=pointer]:
+                          - /url: /user/marlang/
+                          - generic [ref=e832]:
+                            - img [ref=e834]
+                            - img [ref=e838]
+                            - img [ref=e841]
+                        - generic [ref=e847]:
+                          - link "marlang's profile" [ref=e851] [cursor=pointer]:
+                            - /url: /user/marlang/
+                            - text: marlang
+                          - generic "Comment distinguished as the original poster" [ref=e854]: OP
+                          - generic [ref=e855]: •
+                          - link "2h ago" [ref=e856] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv340n/
+                            - time [ref=e857]: 2h ago
+                      - generic [ref=e858]:
+                        - generic [ref=e866]:
+                          - paragraph [ref=e867]: LM Studio settings for your rig
+                          - paragraph [ref=e868]: "Load Qwen3.6-35B-A3B-UD-Q4_K_M from unsloth, then in the load modal → Advanced Configuration:"
+                          - paragraph [ref=e869]: "- Context Length: 131072 (or 65536 if it complains)"
+                          - paragraph [ref=e870]: "- GPU Offload: max (all the way right)"
+                          - paragraph [ref=e871]: "- CPU Thread Pool Size: 8 (matches your 7800X3D's 8 cores)"
+                          - paragraph [ref=e872]: "- Flash Attention: ON"
+                          - paragraph [ref=e873]: "- K Cache Quantization Type: Q8_0"
+                          - paragraph [ref=e874]: "- V Cache Quantization Type: Q8_0"
+                          - paragraph [ref=e875]: "- Offload MoE Experts to CPU: 20 ← the key setting"
+                          - paragraph [ref=e876]: "- Try mmap(): ON"
+                          - paragraph [ref=e877]: "- Keep Model in Memory: OFF"
+                        - button "Toggle Comment Thread" [expanded] [ref=e880] [cursor=pointer]:
+                          - img [ref=e883]
+                        - generic [ref=e887]:
+                          - 'article "Comment thread level 2: Reply from Mister_bruhmoment 2 hours ago" [ref=e889]':
+                            - generic "Metadata for Mister_bruhmoment's comment" [ref=e890]:
+                              - link "Mister_bruhmoment's profile --- avatar" [ref=e896] [cursor=pointer]:
+                                - /url: /user/Mister_bruhmoment/
+                                - img [ref=e901]
+                              - generic [ref=e907]:
+                                - link "Mister_bruhmoment's profile" [ref=e911] [cursor=pointer]:
+                                  - /url: /user/Mister_bruhmoment/
+                                  - text: Mister_bruhmoment
+                                - generic [ref=e912]: •
+                                - link "2h ago" [ref=e913] [cursor=pointer]:
+                                  - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv46cm/
+                                  - time [ref=e914]: 2h ago
+                            - paragraph [ref=e922]: Thank you so much!
+                          - 'article "Comment thread level 2: Reply from yoohjm 1 hour ago" [ref=e928]':
+                            - generic "Metadata for yoohjm's comment" [ref=e929]:
+                              - link "yoohjm's profile --- avatar" [ref=e935] [cursor=pointer]:
+                                - /url: /user/yoohjm/
+                                - img [ref=e940]
+                              - generic [ref=e946]:
+                                - link "yoohjm's profile" [ref=e950] [cursor=pointer]:
+                                  - /url: /user/yoohjm/
+                                  - text: yoohjm
+                                - generic [ref=e951]: •
+                                - link "1h ago" [ref=e952] [cursor=pointer]:
+                                  - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv9gro/
+                                  - time [ref=e953]: 1h ago
+                            - generic [ref=e960]:
+                              - paragraph [ref=e961]: lmstudio user with a RTX 5070ti here. This is amazing, such a speed up from my previous config and that context length is much more than i thought i would be able to fit
+                              - paragraph [ref=e962]: many thanks!
+                          - 'article "Comment thread level 2: Reply from moahmo88 14 minutes ago" [ref=e970]':
+                            - generic "Metadata for moahmo88's comment" [ref=e971]:
+                              - link "moahmo88's profile --- avatar" [ref=e977] [cursor=pointer]:
+                                - /url: /user/moahmo88/
+                                - img "u/moahmo88 avatar" [ref=e980]
+                              - generic [ref=e985]:
+                                - link "moahmo88's profile" [ref=e989] [cursor=pointer]:
+                                  - /url: /user/moahmo88/
+                                  - text: moahmo88
+                                - generic [ref=e990]: •
+                                - link "14m ago" [ref=e991] [cursor=pointer]:
+                                  - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogvejqf/
+                                  - time [ref=e992]: 14m ago
+                            - paragraph [ref=e1000]:
+                              - text: "Try this @ 59 t/s with 5070ti:"
+                              - text: LM Studio settings for you：
+                              - text: "Load Qwen3.6-35B-A3B-UD-Q5_K_M from unsloth，You can use Q5_K_M:"
+                              - text: "- GPU Offload: max (all the way right)"
+                              - text: "- Offload MoE Experts to CPU: 24 ← the key setting"
+                - article "Comment from truthputer 2 hours ago" [ref=e1006]:
+                  - generic "Metadata for truthputer's comment" [ref=e1007]:
+                    - link "truthputer's profile --- avatar" [ref=e1013] [cursor=pointer]:
+                      - /url: /user/truthputer/
+                      - img "u/truthputer avatar" [ref=e1016]
+                    - generic [ref=e1021]:
+                      - link "truthputer's profile" [ref=e1025] [cursor=pointer]:
+                        - /url: /user/truthputer/
+                        - text: truthputer
+                      - generic [ref=e1026]: •
+                      - link "2h ago" [ref=e1027] [cursor=pointer]:
+                        - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv5zct/
+                        - time [ref=e1028]: 2h ago
+                  - generic [ref=e1035]:
+                    - paragraph [ref=e1036]: In my testing context 256k (44 t/s) was slightly faster than context 128k (35 t/s). But my hardware is weird and heavily leans on the CPU with that context size.
+                    - paragraph [ref=e1037]: Commenting here to remind me to try your config and will update this comment later.
+                - generic "Praegu on ideaalne aeg suurepärasteks pakkumisteks. Ära maga parimaid diile maha!" [ref=e1043]:
+                  - generic [ref=e1044]:
+                    - 'generic "Advertisement: Praegu on ideaalne aeg suurepärasteks pakkumisteks. Ära maga parimaid diile maha!" [ref=e1045]':
+                      - 'link "Advertisement: Praegu on ideaalne aeg suurepärasteks pakkumisteks. Ära maga parimaid diile maha!" [ref=e1046] [cursor=pointer]':
+                        - /url: https://alb.reddit.com/cr?za=2Oq6WMPHC_7SMw8i6KG6Qh3IBFcYCg5FbTi64HyeDnwfA2mDJohVwqjO-IOLm3zSprr370OivROQs_zagw8uFUYlHGYsQ0sKCpQkSkYjY5g7-1CeHnuiZvshT9kEuKoZnh6JysUT9DNR9AWvTTMEIS9DyHSS0f_2NSF0WmfqNFgdMsnE8ctlC-5u__PTWCqgrd77ZPKPghqyFIGr3HGMl0l6oOL5IM-8zuwrd4jr5BW3WRHyq4Bnp-6vIBonQlLnkAv3b5GrKwOkQA5ydV_gxNXGckLCVHitqJB9O9B0h6v4FQlFRDcwzi5S82edCX3W0ZAr9wPzMnU43nmdsU5bFtTOr9qP-jS9GPlg8MpWUC8ziT-OOzL_eFhQekC-z8-oiQ7QQ-Z-4SwvLuWznVzrL0dWXLZV6EffVQBWAF4sf8fBXtzMazlkpwc_MvLS_wjHssQG-wUTH8cKCbS8eYUr857Cb5ImLtVn7fS2cfR9TlgvYSvfEbnoZca0Fp9Ata6VRWffm1cf8hAmda-Z_gTTISpkYW8O-SqFYxTMGiu9-I991sk9Ezh-RmfOP5byDjBOiHgtBgEKocoI7qOKJueebFWsUMWryFC74-iCZJ7DCavGOAJUpFuQ1hteRfLJw9a-0l4FbZQo7kvEMCvKFV4IzH1gEHS6NjSZGxLVTNyupnMPc_PfHn4eztgxRYqR6SDz99pgRmEuGpYtseWfsvFsEwSpA11PzX3y34v2Lg05sA7FY5ldg1M7-Kg9wg&zp=Uj4zziSuwOh-pAzAVuNs-ryV_hLsrvaHSL9431kiBxgw8TRSpYKs841EMLfFkV7FAgoqxGANgL0QsW1feql0vrJfbLK9ckAnF5NWwV_d-XCxd4haaEWMAGJj9fT0iFOmOR0v8WA7jTB0aboQLkcm_YcJ_mz_YKSV-vlkzs1ZbWx61xCeN_fR5oxG63LUG4ziVPBiZaGP3-FdC2-S8NfskL89vcfkpdO1jUocQWNXiHTc7xyL3M5edbImQZUdwacwfZW2TU8VPZdYQN_szzR2FsmnI_p3Lbk8eU0nAa-Ofik--nGw-II4DnyfzCf0oFyqZrYvZpnyg2Ej6DgObjj6Ecxl1AeZGuoUt8BzTUXhB_vUT5Y6qUK4ueowVAf6DK0FE7T1Rnjhqjn4qWjHozgq9dHsCMawvTKC0g7WFguu6STgsONwGvHtkz1-nbvgeqMfokjx-NxGztRZrXixxjv7TF5z0RDnrwM1EobNAmaeTUXrewUNN8U57wpMq6wKbT1lBmg
+                    - generic [ref=e1047]:
+                      - generic [ref=e1048]:
+                        - link "u/Euronics_Eesti avatar u/Euronics_Eesti" [ref=e1051] [cursor=pointer]:
+                          - /url: /user/Euronics_Eesti/
+                          - generic [ref=e1055]:
+                            - img "u/Euronics_Eesti avatar"
+                          - generic [ref=e1056]: u/Euronics_Eesti
+                        - generic [ref=e1057]: •
+                        - link "Promoted" [ref=e1059] [cursor=pointer]:
+                          - /url: /user/Euronics_Eesti/
+                          - generic [ref=e1060]: Promoted
+                        - link [ref=e1062] [cursor=pointer]:
+                          - /url: https://alb.reddit.com/cr?za=2Oq6WMPHC_7SMw8i6KG6Qh3IBFcYCg5FbTi64HyeDnwfA2mDJohVwqjO-IOLm3zSprr370OivROQs_zagw8uFUYlHGYsQ0sKCpQkSkYjY5g7-1CeHnuiZvshT9kEuKoZnh6JysUT9DNR9AWvTTMEIS9DyHSS0f_2NSF0WmfqNFgdMsnE8ctlC-5u__PTWCqgrd77ZPKPghqyFIGr3HGMl0l6oOL5IM-8zuwrd4jr5BW3WRHyq4Bnp-6vIBonQlLnkAv3b5GrKwOkQA5ydV_gxNXGckLCVHitqJB9O9B0h6v4FQlFRDcwzi5S82edCX3W0ZAr9wPzMnU43nmdsU5bFtTOr9qP-jS9GPlg8MpWUC8ziT-OOzL_eFhQekC-z8-oiQ7QQ-Z-4SwvLuWznVzrL0dWXLZV6EffVQBWAF4sf8fBXtzMazlkpwc_MvLS_wjHssQG-wUTH8cKCbS8eYUr857Cb5ImLtVn7fS2cfR9TlgvYSvfEbnoZca0Fp9Ata6VRWffm1cf8hAmda-Z_gTTISpkYW8O-SqFYxTMGiu9-I991sk9Ezh-RmfOP5byDjBOiHgtBgEKocoI7qOKJueebFWsUMWryFC74-iCZJ7DCavGOAJUpFuQ1hteRfLJw9a-0l4FbZQo7kvEMCvKFV4IzH1gEHS6NjSZGxLVTNyupnMPc_PfHn4eztgxRYqR6SDz99pgRmEuGpYtseWfsvFsEwSpA11PzX3y34v2Lg05sA7FY5ldg1M7-Kg9wg&zp=Uj4zziSuwOh-pAzAVuNs-ryV_hLsrvaHSL9431kiBxgw8TRSpYKs841EMLfFkV7FAgoqxGANgL0QsW1feql0vrJfbLK9ckAnF5NWwV_d-XCxd4haaEWMAGJj9fT0iFOmOR0v8WA7jTB0aboQLkcm_YcJ_mz_YKSV-vlkzs1ZbWx61xCeN_fR5oxG63LUG4ziVPBiZaGP3-FdC2-S8NfskL89vcfkpdO1jUocQWNXiHTc7xyL3M5edbImQZUdwacwfZW2TU8VPZdYQN_szzR2FsmnI_p3Lbk8eU0nAa-Ofik--nGw-II4DnyfzCf0oFyqZrYvZpnyg2Ej6DgObjj6Ecxl1AeZGuoUt8BzTUXhB_vUT5Y6qUK4ueowVAf6DK0FE7T1Rnjhqjn4qWjHozgq9dHsCMawvTKC0g7WFguu6STgsONwGvHtkz1-nbvgeqMfokjx-NxGztRZrXixxjv7TF5z0RDnrwM1EobNAmaeTUXrewUNN8U57wpMq6wKbT1lBmg
+                      - button "Open user actions" [ref=e1067] [cursor=pointer]:
+                        - img [ref=e1070]
+                    - generic [ref=e1072]:
+                      - link "Praegu on ideaalne aeg suurepärasteks pakkumisteks. Ära maga parimaid diile maha!" [ref=e1074] [cursor=pointer]:
+                        - /url: https://alb.reddit.com/cr?za=2Oq6WMPHC_7SMw8i6KG6Qh3IBFcYCg5FbTi64HyeDnwfA2mDJohVwqjO-IOLm3zSprr370OivROQs_zagw8uFUYlHGYsQ0sKCpQkSkYjY5g7-1CeHnuiZvshT9kEuKoZnh6JysUT9DNR9AWvTTMEIS9DyHSS0f_2NSF0WmfqNFgdMsnE8ctlC-5u__PTWCqgrd77ZPKPghqyFIGr3HGMl0l6oOL5IM-8zuwrd4jr5BW3WRHyq4Bnp-6vIBonQlLnkAv3b5GrKwOkQA5ydV_gxNXGckLCVHitqJB9O9B0h6v4FQlFRDcwzi5S82edCX3W0ZAr9wPzMnU43nmdsU5bFtTOr9qP-jS9GPlg8MpWUC8ziT-OOzL_eFhQekC-z8-oiQ7QQ-Z-4SwvLuWznVzrL0dWXLZV6EffVQBWAF4sf8fBXtzMazlkpwc_MvLS_wjHssQG-wUTH8cKCbS8eYUr857Cb5ImLtVn7fS2cfR9TlgvYSvfEbnoZca0Fp9Ata6VRWffm1cf8hAmda-Z_gTTISpkYW8O-SqFYxTMGiu9-I991sk9Ezh-RmfOP5byDjBOiHgtBgEKocoI7qOKJueebFWsUMWryFC74-iCZJ7DCavGOAJUpFuQ1hteRfLJw9a-0l4FbZQo7kvEMCvKFV4IzH1gEHS6NjSZGxLVTNyupnMPc_PfHn4eztgxRYqR6SDz99pgRmEuGpYtseWfsvFsEwSpA11PzX3y34v2Lg05sA7FY5ldg1M7-Kg9wg&zp=Uj4zziSuwOh-pAzAVuNs-ryV_hLsrvaHSL9431kiBxgw8TRSpYKs841EMLfFkV7FAgoqxGANgL0QsW1feql0vrJfbLK9ckAnF5NWwV_d-XCxd4haaEWMAGJj9fT0iFOmOR0v8WA7jTB0aboQLkcm_YcJ_mz_YKSV-vlkzs1ZbWx61xCeN_fR5oxG63LUG4ziVPBiZaGP3-FdC2-S8NfskL89vcfkpdO1jUocQWNXiHTc7xyL3M5edbImQZUdwacwfZW2TU8VPZdYQN_szzR2FsmnI_p3Lbk8eU0nAa-Ofik--nGw-II4DnyfzCf0oFyqZrYvZpnyg2Ej6DgObjj6Ecxl1AeZGuoUt8BzTUXhB_vUT5Y6qUK4ueowVAf6DK0FE7T1Rnjhqjn4qWjHozgq9dHsCMawvTKC0g7WFguu6STgsONwGvHtkz1-nbvgeqMfokjx-NxGztRZrXixxjv7TF5z0RDnrwM1EobNAmaeTUXrewUNN8U57wpMq6wKbT1lBmg
+                        - generic: Praegu on ideaalne aeg suurepärasteks pakkumisteks. Ära maga parimaid diile maha!
+                      - list [ref=e1078]:
+                        - generic:
+                          - listitem [ref=e1079]:
+                            - generic [ref=e1080]:
+                              - link [ref=e1082] [cursor=pointer]:
+                                - /url: https://alb.reddit.com/cr?za=2Oq6WMPHC_7SMw8i6KG6Qh3IBFcYCg5FbTi64HyeDnwfA2mDJohVwqjO-IOLm3zSprr370OivROQs_zagw8uFUYlHGYsQ0sKCpQkSkYjY5g7-1CeHnuiZvshT9kEuKoZnh6JysUT9DNR9AWvTTMEIS9DyHSS0f_2NSF0WmfqNFgdMsnE8ctlC-5u__PTWCqgrd77ZPKPghqyFIGr3HGMl0l6oOL5IM-8zuwrd4jr5BW3WRHyq4Bnp-6vIBonQlLnkAv3b5GrKwOkQA5ydV_gxNXGckLCVHitqJB9O9B0h6v4FQlFRDcwzi5S82edCX3W0ZAr9wPzMnU43nmdsU5bFtTOr9qP-jS9GPlg8MpWUC8ziT-OOzL_eFhQekC-z8-oiQ7QQ-Z-4SwvLuWznVzrL0dWXLZV6EffVQBWAF4sf8fBXtzMazlkpwc_MvLS_wjHssQG-wUTH8cKCbS8eYUr857Cb5ImLtVn7fS2cfR9TlgvYSvfEbnoZca0Fp9Ata6VRWffm1cf8hAmda-Z_gTTISpkYW8O-SqFYxTMGiu9-I991sk9Ezh-RmfOP5byDjBOiHgtBgEKocoI7qOKJueebFWsUMWryFC74-iCZJ7DCavGOAJUpFuQ1hteRfLJw9a-0l4FbZQo7kvEMCvKFV4IzH1gEHS6NjSZGxLVTNyupnMPc_PfHn4eztgxRYqR6SDz99pgRmEuGpYtseWfsvFsEwSpA11PzX3y34v2Lg05sA7FY5ldg1M7-Kg9wg&zp=Uj4zziSuwOh-pAzAVuNs-ryV_hLsrvaHSL9431kiBxgw8TRSpYKs841EMLfFkV7FAgoqxGANgL0QsW1feql0vrJfbLK9ckAnF5NWwV_d-XCxd4haaEWMAGJj9fT0iFOmOR0v8WA7jTB0aboQLkcm_YcJ_mz_YKSV-vlkzs1ZbWx61xCeN_fR5oxG63LUG4ziVPBiZaGP3-FdC2-S8NfskL89vcfkpdO1jUocQWNXiHTc7xyL3M5edbImQZUdwacwfZW2TU8VPZdYQN_szzR2FsmnI_p3Lbk8eU0nAa-Ofik--nGw-II4DnyfzCf0oFyqZrYvZpnyg2Ej6DgObjj6Ecxl1AeZGuoUt8BzTUXhB_vUT5Y6qUK4ueowVAf6DK0FE7T1Rnjhqjn4qWjHozgq9dHsCMawvTKC0g7WFguu6STgsONwGvHtkz1-nbvgeqMfokjx-NxGztRZrXixxjv7TF5z0RDnrwM1EobNAmaeTUXrewUNN8U57wpMq6wKbT1lBmg
+                              - link "Leia oma parimad pakkumised" [ref=e1084] [cursor=pointer]:
+                                - /url: https://alb.reddit.com/cr?za=2Oq6WMPHC_7SMw8i6KG6Qh3IBFcYCg5FbTi64HyeDnwfA2mDJohVwqjO-IOLm3zSprr370OivROQs_zagw8uFUYlHGYsQ0sKCpQkSkYjY5g7-1CeHnuiZvshT9kEuKoZnh6JysUT9DNR9AWvTTMEIS9DyHSS0f_2NSF0WmfqNFgdMsnE8ctlC-5u__PTWCqgrd77ZPKPghqyFIGr3HGMl0l6oOL5IM-8zuwrd4jr5BW3WRHyq4Bnp-6vIBonQlLnkAv3b5GrKwOkQA5ydV_gxNXGckLCVHitqJB9O9B0h6v4FQlFRDcwzi5S82edCX3W0ZAr9wPzMnU43nmdsU5bFtTOr9qP-jS9GPlg8MpWUC8ziT-OOzL_eFhQekC-z8-oiQ7QQ-Z-4SwvLuWznVzrL0dWXLZV6EffVQBWAF4sf8fBXtzMazlkpwc_MvLS_wjHssQG-wUTH8cKCbS8eYUr857Cb5ImLtVn7fS2cfR9TlgvYSvfEbnoZca0Fp9Ata6VRWffm1cf8hAmda-Z_gTTISpkYW8O-SqFYxTMGiu9-I991sk9Ezh-RmfOP5byDjBOiHgtBgEKocoI7qOKJueebFWsUMWryFC74-iCZJ7DCavGOAJUpFuQ1hteRfLJw9a-0l4FbZQo7kvEMCvKFV4IzH1gEHS6NjSZGxLVTNyupnMPc_PfHn4eztgxRYqR6SDz99pgRmEuGpYtseWfsvFsEwSpA11PzX3y34v2Lg05sA7FY5ldg1M7-Kg9wg&zp=Uj4zziSuwOh-pAzAVuNs-ryV_hLsrvaHSL9431kiBxgw8TRSpYKs841EMLfFkV7FAgoqxGANgL0QsW1feql0vrJfbLK9ckAnF5NWwV_d-XCxd4haaEWMAGJj9fT0iFOmOR0v8WA7jTB0aboQLkcm_YcJ_mz_YKSV-vlkzs1ZbWx61xCeN_fR5oxG63LUG4ziVPBiZaGP3-FdC2-S8NfskL89vcfkpdO1jUocQWNXiHTc7xyL3M5edbImQZUdwacwfZW2TU8VPZdYQN_szzR2FsmnI_p3Lbk8eU0nAa-Ofik--nGw-II4DnyfzCf0oFyqZrYvZpnyg2Ej6DgObjj6Ecxl1AeZGuoUt8BzTUXhB_vUT5Y6qUK4ueowVAf6DK0FE7T1Rnjhqjn4qWjHozgq9dHsCMawvTKC0g7WFguu6STgsONwGvHtkz1-nbvgeqMfokjx-NxGztRZrXixxjv7TF5z0RDnrwM1EobNAmaeTUXrewUNN8U57wpMq6wKbT1lBmg
+                                - img "Leia oma parimad pakkumised" [ref=e1085]
+                          - listitem [ref=e1086]:
+                            - generic [ref=e1087]:
+                              - link [ref=e1089] [cursor=pointer]:
+                                - /url: https://alb.reddit.com/cr?za=2Oq6WMPHC_7SMw8i6KG6Qh3IBFcYCg5FbTi64HyeDnwfA2mDJohVwqjO-IOLm3zSprr370OivROQs_zagw8uFUYlHGYsQ0sKCpQkSkYjY5g7-1CeHnuiZvshT9kEuKoZnh6JysUT9DNR9AWvTTMEIS9DyHSS0f_2NSF0WmfqNFgdMsnE8ctlC-5u__PTWCqgrd77ZPKPghqyFIGr3HGMl0l6oOL5IM-8zuwrd4jr5BW3WRHyq4Bnp-6vIBonQlLnkAv3b5GrKwOkQA5ydV_gxNXGckLCVHitqJB9O9B0h6v4FQlFRDcwzi5S82edCX3W0ZAr9wPzMnU43nmdsU5bFtTOr9qP-jS9GPlg8MpWUC8ziT-OOzL_eFhQekC-z8-oiQ7QQ-Z-4SwvLuWznVzrL0dWXLZV6EffVQBWAF4sf8fBXtzMazlkpwc_MvLS_wjHssQG-wUTH8cKCbS8eYUr857Cb5ImLtVn7fS2cfR9TlgvYSvfEbnoZca0Fp9Ata6VRWffm1cf8hAmda-Z_gTTISpkYW8O-SqFYxTMGiu9-I991sk9Ezh-RmfOP5byDjBOiHgtBgEKocoI7qOKJueebFWsUMWryFC74-iCZJ7DCavGOAJUpFuQ1hteRfLJw9a-0l4FbZQo7kvEMCvKFV4IzH1gEHS6NjSZGxLVTNyupnMPc_PfHn4eztgxRYqR6SDz99pgRmEuGpYtseWfsvFsEwSpA11PzX3y34v2Lg05sA7FY5ldg1M7-Kg9wg&zp=dUxBT2itc28IbTMNc7iy1hD_YBoxbwLAgZ59wepK5VG2IblOk9EeFs4l0cnQSUHX5NRG-jYuJSQSSOoM1W9R9haD-vsxf4w5TN9WQhy81m4cxRZBSv7nsHnnS6SkkTc3K2vK1A4lpDkuEwiQqqUNU0BXKFzbqU0mP16dntKg9wL-e3JvUD22vv_Oj2GFEQVZ_XoGSUwwIgyJTVNQiffMfIVGAd8QYoAAYZD8aIaZXgERFZ7BetfxqkzmCAv0jhHBkbjWbwXGbJrLWkSuKyKDe9AZo04FjT5CG8Y1HZnZ3dGb4g4RuvxilyjEfiImBYGr-Ot-QBzcJ0wlgs4jDpRglTfl-vndbtfLkIq8jb6JxHmobVjuQjOeTOaaOX-2-uOSwuzPK8dL80_2NneAqX4TxEQg9cdj-s-f2jelZEEg_mfX96w3-RmNQrczcpVJujVs76yFHNZB3OqMvrNeWtKvNdIXDeENr4wCv0c_38b7DLPamrAX94J0VCIQp1Y9vUUXJv8
+                              - link "Huawei GT6 – stiil ja jõudlus" [ref=e1091] [cursor=pointer]:
+                                - /url: https://alb.reddit.com/cr?za=2Oq6WMPHC_7SMw8i6KG6Qh3IBFcYCg5FbTi64HyeDnwfA2mDJohVwqjO-IOLm3zSprr370OivROQs_zagw8uFUYlHGYsQ0sKCpQkSkYjY5g7-1CeHnuiZvshT9kEuKoZnh6JysUT9DNR9AWvTTMEIS9DyHSS0f_2NSF0WmfqNFgdMsnE8ctlC-5u__PTWCqgrd77ZPKPghqyFIGr3HGMl0l6oOL5IM-8zuwrd4jr5BW3WRHyq4Bnp-6vIBonQlLnkAv3b5GrKwOkQA5ydV_gxNXGckLCVHitqJB9O9B0h6v4FQlFRDcwzi5S82edCX3W0ZAr9wPzMnU43nmdsU5bFtTOr9qP-jS9GPlg8MpWUC8ziT-OOzL_eFhQekC-z8-oiQ7QQ-Z-4SwvLuWznVzrL0dWXLZV6EffVQBWAF4sf8fBXtzMazlkpwc_MvLS_wjHssQG-wUTH8cKCbS8eYUr857Cb5ImLtVn7fS2cfR9TlgvYSvfEbnoZca0Fp9Ata6VRWffm1cf8hAmda-Z_gTTISpkYW8O-SqFYxTMGiu9-I991sk9Ezh-RmfOP5byDjBOiHgtBgEKocoI7qOKJueebFWsUMWryFC74-iCZJ7DCavGOAJUpFuQ1hteRfLJw9a-0l4FbZQo7kvEMCvKFV4IzH1gEHS6NjSZGxLVTNyupnMPc_PfHn4eztgxRYqR6SDz99pgRmEuGpYtseWfsvFsEwSpA11PzX3y34v2Lg05sA7FY5ldg1M7-Kg9wg&zp=dUxBT2itc28IbTMNc7iy1hD_YBoxbwLAgZ59wepK5VG2IblOk9EeFs4l0cnQSUHX5NRG-jYuJSQSSOoM1W9R9haD-vsxf4w5TN9WQhy81m4cxRZBSv7nsHnnS6SkkTc3K2vK1A4lpDkuEwiQqqUNU0BXKFzbqU0mP16dntKg9wL-e3JvUD22vv_Oj2GFEQVZ_XoGSUwwIgyJTVNQiffMfIVGAd8QYoAAYZD8aIaZXgERFZ7BetfxqkzmCAv0jhHBkbjWbwXGbJrLWkSuKyKDe9AZo04FjT5CG8Y1HZnZ3dGb4g4RuvxilyjEfiImBYGr-Ot-QBzcJ0wlgs4jDpRglTfl-vndbtfLkIq8jb6JxHmobVjuQjOeTOaaOX-2-uOSwuzPK8dL80_2NneAqX4TxEQg9cdj-s-f2jelZEEg_mfX96w3-RmNQrczcpVJujVs76yFHNZB3OqMvrNeWtKvNdIXDeENr4wCv0c_38b7DLPamrAX94J0VCIQp1Y9vUUXJv8
+                                - img "Huawei GT6 – stiil ja jõudlus" [ref=e1092]
+                          - listitem [ref=e1093]:
+                            - generic [ref=e1094]:
+                              - link [ref=e1096] [cursor=pointer]:
+                                - /url: https://alb.reddit.com/cr?za=2Oq6WMPHC_7SMw8i6KG6Qh3IBFcYCg5FbTi64HyeDnwfA2mDJohVwqjO-IOLm3zSprr370OivROQs_zagw8uFUYlHGYsQ0sKCpQkSkYjY5g7-1CeHnuiZvshT9kEuKoZnh6JysUT9DNR9AWvTTMEIS9DyHSS0f_2NSF0WmfqNFgdMsnE8ctlC-5u__PTWCqgrd77ZPKPghqyFIGr3HGMl0l6oOL5IM-8zuwrd4jr5BW3WRHyq4Bnp-6vIBonQlLnkAv3b5GrKwOkQA5ydV_gxNXGckLCVHitqJB9O9B0h6v4FQlFRDcwzi5S82edCX3W0ZAr9wPzMnU43nmdsU5bFtTOr9qP-jS9GPlg8MpWUC8ziT-OOzL_eFhQekC-z8-oiQ7QQ-Z-4SwvLuWznVzrL0dWXLZV6EffVQBWAF4sf8fBXtzMazlkpwc_MvLS_wjHssQG-wUTH8cKCbS8eYUr857Cb5ImLtVn7fS2cfR9TlgvYSvfEbnoZca0Fp9Ata6VRWffm1cf8hAmda-Z_gTTISpkYW8O-SqFYxTMGiu9-I991sk9Ezh-RmfOP5byDjBOiHgtBgEKocoI7qOKJueebFWsUMWryFC74-iCZJ7DCavGOAJUpFuQ1hteRfLJw9a-0l4FbZQo7kvEMCvKFV4IzH1gEHS6NjSZGxLVTNyupnMPc_PfHn4eztgxRYqR6SDz99pgRmEuGpYtseWfsvFsEwSpA11PzX3y34v2Lg05sA7FY5ldg1M7-Kg9wg&zp=OJaqkkOgM3JY9JBrH155zqizeh_DmOhE9C63a3mEiUMSsumdlwBvcZkmqjXxRwvIU_Br1gYLRsOM2O-QZO_Ayb6hcnGGyinCAOb-IY70D2WeuSAdhyLTMABcHzP0Ce2AoNeI-F8XvFfaJpZnl5PUvB1EFeNgLBNJS7BIzrWH0M1hyzgA-u3pGjUlADyq6e85EOjrGNZqCRxV3QUu5P5tiWyw-kCQpw91mH1Da5ru1AOEhfNZpE-W721f_-nggwvxfD4MC9MEfb1x1SloASVnI7_fYBXYhlRBZoup2cwNL9n_Cwyiw4SyWtLFgxH7iLxXFt6xEs0vEAVgmrwkrwNPz_Bb8Qrqnpwq1u9Bf0SslPNt0LibDzoKqzsjp3LcNXwIWFLiwORrAqzT7T95BMIOt8KV3e5jOfJSc7gI18z4RSfZStAMbMnvY8WLLS5smDo2hVe-ewmDKJRLhXEPOPsl99Q4Ecu9cyX8crkjc-qMsAX0y_mkvtghnMrIayAQh4wN15A
+                              - link "Garmin Venu 4 igaks päevaks" [ref=e1098] [cursor=pointer]:
+                                - /url: https://alb.reddit.com/cr?za=2Oq6WMPHC_7SMw8i6KG6Qh3IBFcYCg5FbTi64HyeDnwfA2mDJohVwqjO-IOLm3zSprr370OivROQs_zagw8uFUYlHGYsQ0sKCpQkSkYjY5g7-1CeHnuiZvshT9kEuKoZnh6JysUT9DNR9AWvTTMEIS9DyHSS0f_2NSF0WmfqNFgdMsnE8ctlC-5u__PTWCqgrd77ZPKPghqyFIGr3HGMl0l6oOL5IM-8zuwrd4jr5BW3WRHyq4Bnp-6vIBonQlLnkAv3b5GrKwOkQA5ydV_gxNXGckLCVHitqJB9O9B0h6v4FQlFRDcwzi5S82edCX3W0ZAr9wPzMnU43nmdsU5bFtTOr9qP-jS9GPlg8MpWUC8ziT-OOzL_eFhQekC-z8-oiQ7QQ-Z-4SwvLuWznVzrL0dWXLZV6EffVQBWAF4sf8fBXtzMazlkpwc_MvLS_wjHssQG-wUTH8cKCbS8eYUr857Cb5ImLtVn7fS2cfR9TlgvYSvfEbnoZca0Fp9Ata6VRWffm1cf8hAmda-Z_gTTISpkYW8O-SqFYxTMGiu9-I991sk9Ezh-RmfOP5byDjBOiHgtBgEKocoI7qOKJueebFWsUMWryFC74-iCZJ7DCavGOAJUpFuQ1hteRfLJw9a-0l4FbZQo7kvEMCvKFV4IzH1gEHS6NjSZGxLVTNyupnMPc_PfHn4eztgxRYqR6SDz99pgRmEuGpYtseWfsvFsEwSpA11PzX3y34v2Lg05sA7FY5ldg1M7-Kg9wg&zp=OJaqkkOgM3JY9JBrH155zqizeh_DmOhE9C63a3mEiUMSsumdlwBvcZkmqjXxRwvIU_Br1gYLRsOM2O-QZO_Ayb6hcnGGyinCAOb-IY70D2WeuSAdhyLTMABcHzP0Ce2AoNeI-F8XvFfaJpZnl5PUvB1EFeNgLBNJS7BIzrWH0M1hyzgA-u3pGjUlADyq6e85EOjrGNZqCRxV3QUu5P5tiWyw-kCQpw91mH1Da5ru1AOEhfNZpE-W721f_-nggwvxfD4MC9MEfb1x1SloASVnI7_fYBXYhlRBZoup2cwNL9n_Cwyiw4SyWtLFgxH7iLxXFt6xEs0vEAVgmrwkrwNPz_Bb8Qrqnpwq1u9Bf0SslPNt0LibDzoKqzsjp3LcNXwIWFLiwORrAqzT7T95BMIOt8KV3e5jOfJSc7gI18z4RSfZStAMbMnvY8WLLS5smDo2hVe-ewmDKJRLhXEPOPsl99Q4Ecu9cyX8crkjc-qMsAX0y_mkvtghnMrIayAQh4wN15A
+                                - img "Garmin Venu 4 igaks päevaks" [ref=e1099]
+                          - listitem [ref=e1100]:
+                            - generic [ref=e1101]:
+                              - link [ref=e1103] [cursor=pointer]:
+                                - /url: https://alb.reddit.com/cr?za=2Oq6WMPHC_7SMw8i6KG6Qh3IBFcYCg5FbTi64HyeDnwfA2mDJohVwqjO-IOLm3zSprr370OivROQs_zagw8uFUYlHGYsQ0sKCpQkSkYjY5g7-1CeHnuiZvshT9kEuKoZnh6JysUT9DNR9AWvTTMEIS9DyHSS0f_2NSF0WmfqNFgdMsnE8ctlC-5u__PTWCqgrd77ZPKPghqyFIGr3HGMl0l6oOL5IM-8zuwrd4jr5BW3WRHyq4Bnp-6vIBonQlLnkAv3b5GrKwOkQA5ydV_gxNXGckLCVHitqJB9O9B0h6v4FQlFRDcwzi5S82edCX3W0ZAr9wPzMnU43nmdsU5bFtTOr9qP-jS9GPlg8MpWUC8ziT-OOzL_eFhQekC-z8-oiQ7QQ-Z-4SwvLuWznVzrL0dWXLZV6EffVQBWAF4sf8fBXtzMazlkpwc_MvLS_wjHssQG-wUTH8cKCbS8eYUr857Cb5ImLtVn7fS2cfR9TlgvYSvfEbnoZca0Fp9Ata6VRWffm1cf8hAmda-Z_gTTISpkYW8O-SqFYxTMGiu9-I991sk9Ezh-RmfOP5byDjBOiHgtBgEKocoI7qOKJueebFWsUMWryFC74-iCZJ7DCavGOAJUpFuQ1hteRfLJw9a-0l4FbZQo7kvEMCvKFV4IzH1gEHS6NjSZGxLVTNyupnMPc_PfHn4eztgxRYqR6SDz99pgRmEuGpYtseWfsvFsEwSpA11PzX3y34v2Lg05sA7FY5ldg1M7-Kg9wg&zp=ThYmhDknYai3Sx5qmp2xUgyMIkEFsrb5U5rbjm5kv0wwlePale5kKiyp2YNti9s3qDipqmajPBzmTMqpPPY57skfMGlFpQVKUxyyanNOrPQsca9FzkRZqL_eoIRg4IT81_aTgK4o7oKfChwQLQiyZMFq3Bew1tA6CtVsQnwvw-l7Ejx0yO9JEllbeTOxNksj4os3t5uXakqCye0bSAnZg5E1hHo-ZhvsyoUrkeEKmCpiAqCoLvE5Qy1lTBZWAxk8YgTnbZwarc2e-B0kI1hQjBbPH6pISp_ltBe8S8pm2270-_ummzFMWQOOrm3SWDHj21-TCsboANZpdJppBT_SIKfRUVz56CoThYYnU7Mad9oq6fx4jkUsX8Z_7D9OQia54lRgWMX-J_UI7FTlTwFCyh0JabeFiQl5WBD2vMiwlXIXkbUDzXWw3GKTD4RFWX8JMg8px-dsjDzNAu6MNs1a1VLfhE8L2fXennCKmUE0BbSHdD0CJqgIC_eV0_3yC2cCF3A
+                              - link "Samsung Galaxy Tab A11+" [ref=e1105] [cursor=pointer]:
+                                - /url: https://alb.reddit.com/cr?za=2Oq6WMPHC_7SMw8i6KG6Qh3IBFcYCg5FbTi64HyeDnwfA2mDJohVwqjO-IOLm3zSprr370OivROQs_zagw8uFUYlHGYsQ0sKCpQkSkYjY5g7-1CeHnuiZvshT9kEuKoZnh6JysUT9DNR9AWvTTMEIS9DyHSS0f_2NSF0WmfqNFgdMsnE8ctlC-5u__PTWCqgrd77ZPKPghqyFIGr3HGMl0l6oOL5IM-8zuwrd4jr5BW3WRHyq4Bnp-6vIBonQlLnkAv3b5GrKwOkQA5ydV_gxNXGckLCVHitqJB9O9B0h6v4FQlFRDcwzi5S82edCX3W0ZAr9wPzMnU43nmdsU5bFtTOr9qP-jS9GPlg8MpWUC8ziT-OOzL_eFhQekC-z8-oiQ7QQ-Z-4SwvLuWznVzrL0dWXLZV6EffVQBWAF4sf8fBXtzMazlkpwc_MvLS_wjHssQG-wUTH8cKCbS8eYUr857Cb5ImLtVn7fS2cfR9TlgvYSvfEbnoZca0Fp9Ata6VRWffm1cf8hAmda-Z_gTTISpkYW8O-SqFYxTMGiu9-I991sk9Ezh-RmfOP5byDjBOiHgtBgEKocoI7qOKJueebFWsUMWryFC74-iCZJ7DCavGOAJUpFuQ1hteRfLJw9a-0l4FbZQo7kvEMCvKFV4IzH1gEHS6NjSZGxLVTNyupnMPc_PfHn4eztgxRYqR6SDz99pgRmEuGpYtseWfsvFsEwSpA11PzX3y34v2Lg05sA7FY5ldg1M7-Kg9wg&zp=ThYmhDknYai3Sx5qmp2xUgyMIkEFsrb5U5rbjm5kv0wwlePale5kKiyp2YNti9s3qDipqmajPBzmTMqpPPY57skfMGlFpQVKUxyyanNOrPQsca9FzkRZqL_eoIRg4IT81_aTgK4o7oKfChwQLQiyZMFq3Bew1tA6CtVsQnwvw-l7Ejx0yO9JEllbeTOxNksj4os3t5uXakqCye0bSAnZg5E1hHo-ZhvsyoUrkeEKmCpiAqCoLvE5Qy1lTBZWAxk8YgTnbZwarc2e-B0kI1hQjBbPH6pISp_ltBe8S8pm2270-_ummzFMWQOOrm3SWDHj21-TCsboANZpdJppBT_SIKfRUVz56CoThYYnU7Mad9oq6fx4jkUsX8Z_7D9OQia54lRgWMX-J_UI7FTlTwFCyh0JabeFiQl5WBD2vMiwlXIXkbUDzXWw3GKTD4RFWX8JMg8px-dsjDzNAu6MNs1a1VLfhE8L2fXennCKmUE0BbSHdD0CJqgIC_eV0_3yC2cCF3A
+                                - img "Samsung Galaxy Tab A11+" [ref=e1106]
+                      - generic [ref=e1107]:
+                        - link [ref=e1109] [cursor=pointer]:
+                          - /url: https://alb.reddit.com/cr?za=2Oq6WMPHC_7SMw8i6KG6Qh3IBFcYCg5FbTi64HyeDnwfA2mDJohVwqjO-IOLm3zSprr370OivROQs_zagw8uFUYlHGYsQ0sKCpQkSkYjY5g7-1CeHnuiZvshT9kEuKoZnh6JysUT9DNR9AWvTTMEIS9DyHSS0f_2NSF0WmfqNFgdMsnE8ctlC-5u__PTWCqgrd77ZPKPghqyFIGr3HGMl0l6oOL5IM-8zuwrd4jr5BW3WRHyq4Bnp-6vIBonQlLnkAv3b5GrKwOkQA5ydV_gxNXGckLCVHitqJB9O9B0h6v4FQlFRDcwzi5S82edCX3W0ZAr9wPzMnU43nmdsU5bFtTOr9qP-jS9GPlg8MpWUC8ziT-OOzL_eFhQekC-z8-oiQ7QQ-Z-4SwvLuWznVzrL0dWXLZV6EffVQBWAF4sf8fBXtzMazlkpwc_MvLS_wjHssQG-wUTH8cKCbS8eYUr857Cb5ImLtVn7fS2cfR9TlgvYSvfEbnoZca0Fp9Ata6VRWffm1cf8hAmda-Z_gTTISpkYW8O-SqFYxTMGiu9-I991sk9Ezh-RmfOP5byDjBOiHgtBgEKocoI7qOKJueebFWsUMWryFC74-iCZJ7DCavGOAJUpFuQ1hteRfLJw9a-0l4FbZQo7kvEMCvKFV4IzH1gEHS6NjSZGxLVTNyupnMPc_PfHn4eztgxRYqR6SDz99pgRmEuGpYtseWfsvFsEwSpA11PzX3y34v2Lg05sA7FY5ldg1M7-Kg9wg&zp=Uj4zziSuwOh-pAzAVuNs-ryV_hLsrvaHSL9431kiBxgw8TRSpYKs841EMLfFkV7FAgoqxGANgL0QsW1feql0vrJfbLK9ckAnF5NWwV_d-XCxd4haaEWMAGJj9fT0iFOmOR0v8WA7jTB0aboQLkcm_YcJ_mz_YKSV-vlkzs1ZbWx61xCeN_fR5oxG63LUG4ziVPBiZaGP3-FdC2-S8NfskL89vcfkpdO1jUocQWNXiHTc7xyL3M5edbImQZUdwacwfZW2TU8VPZdYQN_szzR2FsmnI_p3Lbk8eU0nAa-Ofik--nGw-II4DnyfzCf0oFyqZrYvZpnyg2Ej6DgObjj6Ecxl1AeZGuoUt8BzTUXhB_vUT5Y6qUK4ueowVAf6DK0FE7T1Rnjhqjn4qWjHozgq9dHsCMawvTKC0g7WFguu6STgsONwGvHtkz1-nbvgeqMfokjx-NxGztRZrXixxjv7TF5z0RDnrwM1EobNAmaeTUXrewUNN8U57wpMq6wKbT1lBmg
+                        - generic [ref=e1110]:
+                          - link "euronics.ee" [ref=e1114] [cursor=pointer]:
+                            - /url: https://alb.reddit.com/cr?za=2Oq6WMPHC_7SMw8i6KG6Qh3IBFcYCg5FbTi64HyeDnwfA2mDJohVwqjO-IOLm3zSprr370OivROQs_zagw8uFUYlHGYsQ0sKCpQkSkYjY5g7-1CeHnuiZvshT9kEuKoZnh6JysUT9DNR9AWvTTMEIS9DyHSS0f_2NSF0WmfqNFgdMsnE8ctlC-5u__PTWCqgrd77ZPKPghqyFIGr3HGMl0l6oOL5IM-8zuwrd4jr5BW3WRHyq4Bnp-6vIBonQlLnkAv3b5GrKwOkQA5ydV_gxNXGckLCVHitqJB9O9B0h6v4FQlFRDcwzi5S82edCX3W0ZAr9wPzMnU43nmdsU5bFtTOr9qP-jS9GPlg8MpWUC8ziT-OOzL_eFhQekC-z8-oiQ7QQ-Z-4SwvLuWznVzrL0dWXLZV6EffVQBWAF4sf8fBXtzMazlkpwc_MvLS_wjHssQG-wUTH8cKCbS8eYUr857Cb5ImLtVn7fS2cfR9TlgvYSvfEbnoZca0Fp9Ata6VRWffm1cf8hAmda-Z_gTTISpkYW8O-SqFYxTMGiu9-I991sk9Ezh-RmfOP5byDjBOiHgtBgEKocoI7qOKJueebFWsUMWryFC74-iCZJ7DCavGOAJUpFuQ1hteRfLJw9a-0l4FbZQo7kvEMCvKFV4IzH1gEHS6NjSZGxLVTNyupnMPc_PfHn4eztgxRYqR6SDz99pgRmEuGpYtseWfsvFsEwSpA11PzX3y34v2Lg05sA7FY5ldg1M7-Kg9wg&zp=Uj4zziSuwOh-pAzAVuNs-ryV_hLsrvaHSL9431kiBxgw8TRSpYKs841EMLfFkV7FAgoqxGANgL0QsW1feql0vrJfbLK9ckAnF5NWwV_d-XCxd4haaEWMAGJj9fT0iFOmOR0v8WA7jTB0aboQLkcm_YcJ_mz_YKSV-vlkzs1ZbWx61xCeN_fR5oxG63LUG4ziVPBiZaGP3-FdC2-S8NfskL89vcfkpdO1jUocQWNXiHTc7xyL3M5edbImQZUdwacwfZW2TU8VPZdYQN_szzR2FsmnI_p3Lbk8eU0nAa-Ofik--nGw-II4DnyfzCf0oFyqZrYvZpnyg2Ej6DgObjj6Ecxl1AeZGuoUt8BzTUXhB_vUT5Y6qUK4ueowVAf6DK0FE7T1Rnjhqjn4qWjHozgq9dHsCMawvTKC0g7WFguu6STgsONwGvHtkz1-nbvgeqMfokjx-NxGztRZrXixxjv7TF5z0RDnrwM1EobNAmaeTUXrewUNN8U57wpMq6wKbT1lBmg
+                            - generic: euronics.ee
+                          - link "Shop Now" [ref=e1116] [cursor=pointer]:
+                            - /url: https://alb.reddit.com/cr?za=2Oq6WMPHC_7SMw8i6KG6Qh3IBFcYCg5FbTi64HyeDnwfA2mDJohVwqjO-IOLm3zSprr370OivROQs_zagw8uFUYlHGYsQ0sKCpQkSkYjY5g7-1CeHnuiZvshT9kEuKoZnh6JysUT9DNR9AWvTTMEIS9DyHSS0f_2NSF0WmfqNFgdMsnE8ctlC-5u__PTWCqgrd77ZPKPghqyFIGr3HGMl0l6oOL5IM-8zuwrd4jr5BW3WRHyq4Bnp-6vIBonQlLnkAv3b5GrKwOkQA5ydV_gxNXGckLCVHitqJB9O9B0h6v4FQlFRDcwzi5S82edCX3W0ZAr9wPzMnU43nmdsU5bFtTOr9qP-jS9GPlg8MpWUC8ziT-OOzL_eFhQekC-z8-oiQ7QQ-Z-4SwvLuWznVzrL0dWXLZV6EffVQBWAF4sf8fBXtzMazlkpwc_MvLS_wjHssQG-wUTH8cKCbS8eYUr857Cb5ImLtVn7fS2cfR9TlgvYSvfEbnoZca0Fp9Ata6VRWffm1cf8hAmda-Z_gTTISpkYW8O-SqFYxTMGiu9-I991sk9Ezh-RmfOP5byDjBOiHgtBgEKocoI7qOKJueebFWsUMWryFC74-iCZJ7DCavGOAJUpFuQ1hteRfLJw9a-0l4FbZQo7kvEMCvKFV4IzH1gEHS6NjSZGxLVTNyupnMPc_PfHn4eztgxRYqR6SDz99pgRmEuGpYtseWfsvFsEwSpA11PzX3y34v2Lg05sA7FY5ldg1M7-Kg9wg&zp=Uj4zziSuwOh-pAzAVuNs-ryV_hLsrvaHSL9431kiBxgw8TRSpYKs841EMLfFkV7FAgoqxGANgL0QsW1feql0vrJfbLK9ckAnF5NWwV_d-XCxd4haaEWMAGJj9fT0iFOmOR0v8WA7jTB0aboQLkcm_YcJ_mz_YKSV-vlkzs1ZbWx61xCeN_fR5oxG63LUG4ziVPBiZaGP3-FdC2-S8NfskL89vcfkpdO1jUocQWNXiHTc7xyL3M5edbImQZUdwacwfZW2TU8VPZdYQN_szzR2FsmnI_p3Lbk8eU0nAa-Ofik--nGw-II4DnyfzCf0oFyqZrYvZpnyg2Ej6DgObjj6Ecxl1AeZGuoUt8BzTUXhB_vUT5Y6qUK4ueowVAf6DK0FE7T1Rnjhqjn4qWjHozgq9dHsCMawvTKC0g7WFguu6STgsONwGvHtkz1-nbvgeqMfokjx-NxGztRZrXixxjv7TF5z0RDnrwM1EobNAmaeTUXrewUNN8U57wpMq6wKbT1lBmg
+                            - generic [ref=e1118]:
+                              - generic: Shop Now
+                - article "Comment from BassAzayda 2 hours ago" [ref=e1120]:
+                  - generic "Metadata for BassAzayda's comment" [ref=e1121]:
+                    - link "BassAzayda's profile --- avatar" [ref=e1127] [cursor=pointer]:
+                      - /url: /user/BassAzayda/
+                      - img "u/BassAzayda avatar" [ref=e1130]
+                    - generic [ref=e1135]:
+                      - link "BassAzayda's profile" [ref=e1139] [cursor=pointer]:
+                        - /url: /user/BassAzayda/
+                        - text: BassAzayda
+                      - generic [ref=e1140]: •
+                      - link "2h ago" [ref=e1141] [cursor=pointer]:
+                        - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv3vvo/
+                        - time [ref=e1142]: 2h ago
+                  - generic [ref=e1143]:
+                    - paragraph [ref=e1152]: I use the 3 fits so --fit on --fit-ctx 128000 --fit-target 512 Moe and dense works a treat everytime
+                    - button "Toggle Comment Thread" [expanded] [ref=e1155] [cursor=pointer]:
+                      - img [ref=e1158]
+                    - generic [ref=e1162]:
+                      - 'article "Comment thread level 1: Reply from marlang 2 hours ago" [ref=e1164]':
+                        - generic "Metadata for marlang's comment" [ref=e1165]:
+                          - link "marlang's profile --- avatar" [ref=e1171] [cursor=pointer]:
+                            - /url: /user/marlang/
+                            - generic [ref=e1173]:
+                              - img [ref=e1175]
+                              - img [ref=e1179]
+                              - img [ref=e1182]
+                          - generic [ref=e1188]:
+                            - link "marlang's profile" [ref=e1192] [cursor=pointer]:
+                              - /url: /user/marlang/
+                              - text: marlang
+                            - generic "Comment distinguished as the original poster" [ref=e1195]: OP
+                            - generic [ref=e1196]: •
+                            - link "2h ago" [ref=e1197] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv5esq/
+                              - time [ref=e1198]: 2h ago
+                        - paragraph [ref=e1206]: Thank you! my startup scripts get better and better with every comment in here
+                      - button "1 more reply" [ref=e1217] [cursor=pointer]:
+                        - img [ref=e1219]
+                        - generic [ref=e1222]:
+                          - generic [ref=e1223]: "1"
+                          - text: more reply
+                - article "Comment from Jackw78 2 hours ago" [ref=e1225]:
+                  - generic "Metadata for Jackw78's comment" [ref=e1226]:
+                    - link "Jackw78's profile --- avatar" [ref=e1232] [cursor=pointer]:
+                      - /url: /user/Jackw78/
+                      - img "u/Jackw78 avatar" [ref=e1235]
+                    - generic [ref=e1240]:
+                      - link "Jackw78's profile" [ref=e1244] [cursor=pointer]:
+                        - /url: /user/Jackw78/
+                        - text: Jackw78
+                      - generic [ref=e1245]: •
+                      - link "2h ago" [ref=e1246] [cursor=pointer]:
+                        - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv3coq/
+                        - time [ref=e1247]: 2h ago
+                  - generic [ref=e1248]:
+                    - paragraph [ref=e1257]: The prefill speed is either inaccurate due to cold startup or something very wrong with the setup. Should be 1k minimum for a 5070ti
+                    - button "Toggle Comment Thread" [expanded] [ref=e1260] [cursor=pointer]:
+                      - img [ref=e1263]
+                    - 'article "Comment thread level 1: Reply from marlang 2 hours ago" [ref=e1271]':
+                      - generic "Metadata for marlang's comment" [ref=e1272]:
+                        - link "marlang's profile --- avatar" [ref=e1278] [cursor=pointer]:
+                          - /url: /user/marlang/
+                          - generic [ref=e1280]:
+                            - img [ref=e1282]
+                            - img [ref=e1286]
+                            - img [ref=e1289]
+                        - generic [ref=e1295]:
+                          - link "marlang's profile" [ref=e1299] [cursor=pointer]:
+                            - /url: /user/marlang/
+                            - text: marlang
+                          - generic "Comment distinguished as the original poster" [ref=e1302]: OP
+                          - generic [ref=e1303]: •
+                          - link "2h ago" [ref=e1304] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv42hq/
+                            - time [ref=e1305]: 2h ago
+                      - generic [ref=e1312]:
+                        - paragraph [ref=e1313]: "You were right. I went back with llama-bench.exe, the right tool instead of a short completion test, and got:"
+                        - paragraph [ref=e1314]: "- pp512: 927 t/s"
+                        - paragraph [ref=e1315]: "- pp2048: 1068 t/s"
+                        - paragraph [ref=e1316]: "- tg128: 82 t/s"
+                - article "Comment from bdsmmaster007 1 hour ago" [ref=e1322]:
+                  - generic "Metadata for bdsmmaster007's comment" [ref=e1323]:
+                    - link "bdsmmaster007's profile --- avatar" [ref=e1329] [cursor=pointer]:
+                      - /url: /user/bdsmmaster007/
+                      - img "u/bdsmmaster007 avatar" [ref=e1332]
+                    - generic [ref=e1337]:
+                      - link "bdsmmaster007's profile" [ref=e1341] [cursor=pointer]:
+                        - /url: /user/bdsmmaster007/
+                        - text: bdsmmaster007
+                      - generic [ref=e1342]: •
+                      - link "1h ago" [ref=e1343] [cursor=pointer]:
+                        - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv89o8/
+                        - time [ref=e1344]: 1h ago
+                  - paragraph [ref=e1352]: Ive not fumbled around with local hosting in quite a while, but qwen intrigues me. Tho im on AMD and not sure how its looking with the support. Can anybody estimate how much i would get on a 7600x and a rx6800? are +20 tk/s realistic? or even +40?
+                - article "Comment from admajic 1 hour ago" [ref=e1358]:
+                  - generic "Metadata for admajic's comment" [ref=e1359]:
+                    - link "admajic's profile --- avatar" [ref=e1365] [cursor=pointer]:
+                      - /url: /user/admajic/
+                      - img [ref=e1370]
+                    - generic [ref=e1376]:
+                      - link "admajic's profile" [ref=e1380] [cursor=pointer]:
+                        - /url: /user/admajic/
+                        - text: admajic
+                      - generic [ref=e1381]: •
+                      - link "1h ago" [ref=e1382] [cursor=pointer]:
+                        - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogv9for/
+                        - time [ref=e1383]: 1h ago
+                  - generic [ref=e1384]:
+                    - generic [ref=e1392]:
+                      - paragraph [ref=e1393]: On a 3090 24gb vram get 110 token /s and i can afford a car too. Interesting world we live in.
+                      - paragraph [ref=e1394]: Will love the 50% speed increases. I'll check and advise
+                    - button "Toggle Comment Thread" [expanded] [ref=e1397] [cursor=pointer]:
+                      - img [ref=e1400]
+                    - 'article "Comment thread level 1: Reply from smolpotat0_x 28 minutes ago" [ref=e1408]':
+                      - generic "Metadata for smolpotat0_x's comment" [ref=e1409]:
+                        - link "smolpotat0_x's profile --- avatar" [ref=e1415] [cursor=pointer]:
+                          - /url: /user/smolpotat0_x/
+                          - img [ref=e1420]
+                        - generic [ref=e1426]:
+                          - link "smolpotat0_x's profile" [ref=e1430] [cursor=pointer]:
+                            - /url: /user/smolpotat0_x/
+                            - text: smolpotat0_x
+                          - generic [ref=e1431]: •
+                          - link "28m ago" [ref=e1432] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogvczew/
+                            - time [ref=e1433]: 28m ago
+                      - paragraph [ref=e1441]: we are not a car.
+                - generic "The Ultimate U-shaped Standing Desk?" [ref=e1447]:
+                  - generic [ref=e1448]:
+                    - 'generic "Advertisement: The Ultimate U-shaped Standing Desk?" [ref=e1449]':
+                      - 'link "Advertisement: The Ultimate U-shaped Standing Desk?" [ref=e1450] [cursor=pointer]':
+                        - /url: https://alb.reddit.com/cr?za=-Onjli2qadP7_ppRt0cIO4TrDVztEniOGUJaKde0JSdI1kAzXZ2qcC_8vZ2UtfwFZbQ2_ukFaPUfcV963m9NTTRbEebf_2-oK-b0y_SlJ21kW_n4DOAWpAnZXDHQ993xLumdXPf3TMopZo9he5Ovs-peEkaDUubzawmW4d0C0gANtczEmkNaszK0TfuBEykAaOp-mLT0xOwDOrlyPyjEcj2b3HNPqH8IZ_7JxkNkZJ01LGLH9Cfe62WCEBa0jFHNN75qhBQ3O6LAOamMexYHgXsl-B2fZLrOZG6AOwcuYx5Bksc9CdvolSQ2hbNMiylaOCfTOGwq01vi_7_fjWy8EhocJHvF8XCy9v942BOVAxQ181nl3Bb0GztLvy5Jvv82nQyZY5EzboA4MfE9TmUM2ES1OOeCQYFk6iT7qVesjes1F9oBkSo64knDoYGUOX3l637-L-Dl-38jBL1l8jPTXv9N4WP_9jBdEGUn7oU-upuBIqGeLAHLy9xeA_06Fe1nx4vg8Cel3lAmvt40VOgs0joHx1tyTPmeYzzkx-1RCaBrUuDXlkcVhknSB0qP0pwAeVfUwx5emJqvhNtkDSaAGs-6VDALhZFtmbZl94KiRNBj1sCEMFF8YMI1SN9SyHHF8cjN1Y-UDg4IHNdvZkNV_rbDyNkHtA326CzprcUJXk0li0uLJzZHX0X69iAsSusl1UejKwdbDq21pA9uJrodN1eKPC3IJRuFcSSki9gdPDBz2MInEaA&zp=MMyUcYd0W7L3qhT52lvjFPWrI1z2a0VPxk8Vijw6hXBQoaZxhECcMCZLzXjr0kqy0BCfcGFAM3SCmY4kZZkuZ3OPJW1wErJJxvuH8Apc11auzTWKnmYGg23YucPxO2qazGRkhvOog6q6SSprjWxA3in8J6PiVsoCBcc5HFFd4DRd4KmkMW2piE4oXf4Tq_SYhLDEvkziuTqs_mDbrB6wI087R_kPJlzJ_jG2aKWnAqXaAA3VpbLxG0eAxXZvBfK7FF-ik9UBFCymkm4xtnedXJhdQyVk8BNtrNOu
+                    - generic [ref=e1451]:
+                      - generic [ref=e1452]:
+                        - link "u/VIVO_US avatar u/VIVO_US" [ref=e1455] [cursor=pointer]:
+                          - /url: /user/VIVO_US/
+                          - generic [ref=e1459]:
+                            - img "u/VIVO_US avatar"
+                          - generic [ref=e1460]: u/VIVO_US
+                        - generic [ref=e1461]: •
+                        - link "Promoted" [ref=e1463] [cursor=pointer]:
+                          - /url: /user/VIVO_US/
+                          - generic [ref=e1464]: Promoted
+                        - link [ref=e1466] [cursor=pointer]:
+                          - /url: https://alb.reddit.com/cr?za=-Onjli2qadP7_ppRt0cIO4TrDVztEniOGUJaKde0JSdI1kAzXZ2qcC_8vZ2UtfwFZbQ2_ukFaPUfcV963m9NTTRbEebf_2-oK-b0y_SlJ21kW_n4DOAWpAnZXDHQ993xLumdXPf3TMopZo9he5Ovs-peEkaDUubzawmW4d0C0gANtczEmkNaszK0TfuBEykAaOp-mLT0xOwDOrlyPyjEcj2b3HNPqH8IZ_7JxkNkZJ01LGLH9Cfe62WCEBa0jFHNN75qhBQ3O6LAOamMexYHgXsl-B2fZLrOZG6AOwcuYx5Bksc9CdvolSQ2hbNMiylaOCfTOGwq01vi_7_fjWy8EhocJHvF8XCy9v942BOVAxQ181nl3Bb0GztLvy5Jvv82nQyZY5EzboA4MfE9TmUM2ES1OOeCQYFk6iT7qVesjes1F9oBkSo64knDoYGUOX3l637-L-Dl-38jBL1l8jPTXv9N4WP_9jBdEGUn7oU-upuBIqGeLAHLy9xeA_06Fe1nx4vg8Cel3lAmvt40VOgs0joHx1tyTPmeYzzkx-1RCaBrUuDXlkcVhknSB0qP0pwAeVfUwx5emJqvhNtkDSaAGs-6VDALhZFtmbZl94KiRNBj1sCEMFF8YMI1SN9SyHHF8cjN1Y-UDg4IHNdvZkNV_rbDyNkHtA326CzprcUJXk0li0uLJzZHX0X69iAsSusl1UejKwdbDq21pA9uJrodN1eKPC3IJRuFcSSki9gdPDBz2MInEaA&zp=MMyUcYd0W7L3qhT52lvjFPWrI1z2a0VPxk8Vijw6hXBQoaZxhECcMCZLzXjr0kqy0BCfcGFAM3SCmY4kZZkuZ3OPJW1wErJJxvuH8Apc11auzTWKnmYGg23YucPxO2qazGRkhvOog6q6SSprjWxA3in8J6PiVsoCBcc5HFFd4DRd4KmkMW2piE4oXf4Tq_SYhLDEvkziuTqs_mDbrB6wI087R_kPJlzJ_jG2aKWnAqXaAA3VpbLxG0eAxXZvBfK7FF-ik9UBFCymkm4xtnedXJhdQyVk8BNtrNOu
+                      - button "Open user actions" [ref=e1471] [cursor=pointer]:
+                        - img [ref=e1474]
+                    - generic [ref=e1476]:
+                      - link "The Ultimate U-shaped Standing Desk?" [ref=e1478] [cursor=pointer]:
+                        - /url: https://alb.reddit.com/cr?za=-Onjli2qadP7_ppRt0cIO4TrDVztEniOGUJaKde0JSdI1kAzXZ2qcC_8vZ2UtfwFZbQ2_ukFaPUfcV963m9NTTRbEebf_2-oK-b0y_SlJ21kW_n4DOAWpAnZXDHQ993xLumdXPf3TMopZo9he5Ovs-peEkaDUubzawmW4d0C0gANtczEmkNaszK0TfuBEykAaOp-mLT0xOwDOrlyPyjEcj2b3HNPqH8IZ_7JxkNkZJ01LGLH9Cfe62WCEBa0jFHNN75qhBQ3O6LAOamMexYHgXsl-B2fZLrOZG6AOwcuYx5Bksc9CdvolSQ2hbNMiylaOCfTOGwq01vi_7_fjWy8EhocJHvF8XCy9v942BOVAxQ181nl3Bb0GztLvy5Jvv82nQyZY5EzboA4MfE9TmUM2ES1OOeCQYFk6iT7qVesjes1F9oBkSo64knDoYGUOX3l637-L-Dl-38jBL1l8jPTXv9N4WP_9jBdEGUn7oU-upuBIqGeLAHLy9xeA_06Fe1nx4vg8Cel3lAmvt40VOgs0joHx1tyTPmeYzzkx-1RCaBrUuDXlkcVhknSB0qP0pwAeVfUwx5emJqvhNtkDSaAGs-6VDALhZFtmbZl94KiRNBj1sCEMFF8YMI1SN9SyHHF8cjN1Y-UDg4IHNdvZkNV_rbDyNkHtA326CzprcUJXk0li0uLJzZHX0X69iAsSusl1UejKwdbDq21pA9uJrodN1eKPC3IJRuFcSSki9gdPDBz2MInEaA&zp=MMyUcYd0W7L3qhT52lvjFPWrI1z2a0VPxk8Vijw6hXBQoaZxhECcMCZLzXjr0kqy0BCfcGFAM3SCmY4kZZkuZ3OPJW1wErJJxvuH8Apc11auzTWKnmYGg23YucPxO2qazGRkhvOog6q6SSprjWxA3in8J6PiVsoCBcc5HFFd4DRd4KmkMW2piE4oXf4Tq_SYhLDEvkziuTqs_mDbrB6wI087R_kPJlzJ_jG2aKWnAqXaAA3VpbLxG0eAxXZvBfK7FF-ik9UBFCymkm4xtnedXJhdQyVk8BNtrNOu
+                        - generic: The Ultimate U-shaped Standing Desk?
+                      - list [ref=e1482]:
+                        - generic:
+                          - listitem [ref=e1483]:
+                            - generic [ref=e1484]:
+                              - link [ref=e1486] [cursor=pointer]:
+                                - /url: https://alb.reddit.com/cr?za=-Onjli2qadP7_ppRt0cIO4TrDVztEniOGUJaKde0JSdI1kAzXZ2qcC_8vZ2UtfwFZbQ2_ukFaPUfcV963m9NTTRbEebf_2-oK-b0y_SlJ21kW_n4DOAWpAnZXDHQ993xLumdXPf3TMopZo9he5Ovs-peEkaDUubzawmW4d0C0gANtczEmkNaszK0TfuBEykAaOp-mLT0xOwDOrlyPyjEcj2b3HNPqH8IZ_7JxkNkZJ01LGLH9Cfe62WCEBa0jFHNN75qhBQ3O6LAOamMexYHgXsl-B2fZLrOZG6AOwcuYx5Bksc9CdvolSQ2hbNMiylaOCfTOGwq01vi_7_fjWy8EhocJHvF8XCy9v942BOVAxQ181nl3Bb0GztLvy5Jvv82nQyZY5EzboA4MfE9TmUM2ES1OOeCQYFk6iT7qVesjes1F9oBkSo64knDoYGUOX3l637-L-Dl-38jBL1l8jPTXv9N4WP_9jBdEGUn7oU-upuBIqGeLAHLy9xeA_06Fe1nx4vg8Cel3lAmvt40VOgs0joHx1tyTPmeYzzkx-1RCaBrUuDXlkcVhknSB0qP0pwAeVfUwx5emJqvhNtkDSaAGs-6VDALhZFtmbZl94KiRNBj1sCEMFF8YMI1SN9SyHHF8cjN1Y-UDg4IHNdvZkNV_rbDyNkHtA326CzprcUJXk0li0uLJzZHX0X69iAsSusl1UejKwdbDq21pA9uJrodN1eKPC3IJRuFcSSki9gdPDBz2MInEaA&zp=MMyUcYd0W7L3qhT52lvjFPWrI1z2a0VPxk8Vijw6hXBQoaZxhECcMCZLzXjr0kqy0BCfcGFAM3SCmY4kZZkuZ3OPJW1wErJJxvuH8Apc11auzTWKnmYGg23YucPxO2qazGRkhvOog6q6SSprjWxA3in8J6PiVsoCBcc5HFFd4DRd4KmkMW2piE4oXf4Tq_SYhLDEvkziuTqs_mDbrB6wI087R_kPJlzJ_jG2aKWnAqXaAA3VpbLxG0eAxXZvBfK7FF-ik9UBFCymkm4xtnedXJhdQyVk8BNtrNOu
+                              - link "The Ultimate U-shaped Standing Desk?" [ref=e1488] [cursor=pointer]:
+                                - /url: https://alb.reddit.com/cr?za=-Onjli2qadP7_ppRt0cIO4TrDVztEniOGUJaKde0JSdI1kAzXZ2qcC_8vZ2UtfwFZbQ2_ukFaPUfcV963m9NTTRbEebf_2-oK-b0y_SlJ21kW_n4DOAWpAnZXDHQ993xLumdXPf3TMopZo9he5Ovs-peEkaDUubzawmW4d0C0gANtczEmkNaszK0TfuBEykAaOp-mLT0xOwDOrlyPyjEcj2b3HNPqH8IZ_7JxkNkZJ01LGLH9Cfe62WCEBa0jFHNN75qhBQ3O6LAOamMexYHgXsl-B2fZLrOZG6AOwcuYx5Bksc9CdvolSQ2hbNMiylaOCfTOGwq01vi_7_fjWy8EhocJHvF8XCy9v942BOVAxQ181nl3Bb0GztLvy5Jvv82nQyZY5EzboA4MfE9TmUM2ES1OOeCQYFk6iT7qVesjes1F9oBkSo64knDoYGUOX3l637-L-Dl-38jBL1l8jPTXv9N4WP_9jBdEGUn7oU-upuBIqGeLAHLy9xeA_06Fe1nx4vg8Cel3lAmvt40VOgs0joHx1tyTPmeYzzkx-1RCaBrUuDXlkcVhknSB0qP0pwAeVfUwx5emJqvhNtkDSaAGs-6VDALhZFtmbZl94KiRNBj1sCEMFF8YMI1SN9SyHHF8cjN1Y-UDg4IHNdvZkNV_rbDyNkHtA326CzprcUJXk0li0uLJzZHX0X69iAsSusl1UejKwdbDq21pA9uJrodN1eKPC3IJRuFcSSki9gdPDBz2MInEaA&zp=MMyUcYd0W7L3qhT52lvjFPWrI1z2a0VPxk8Vijw6hXBQoaZxhECcMCZLzXjr0kqy0BCfcGFAM3SCmY4kZZkuZ3OPJW1wErJJxvuH8Apc11auzTWKnmYGg23YucPxO2qazGRkhvOog6q6SSprjWxA3in8J6PiVsoCBcc5HFFd4DRd4KmkMW2piE4oXf4Tq_SYhLDEvkziuTqs_mDbrB6wI087R_kPJlzJ_jG2aKWnAqXaAA3VpbLxG0eAxXZvBfK7FF-ik9UBFCymkm4xtnedXJhdQyVk8BNtrNOu
+                                - img "The Ultimate U-shaped Standing Desk?" [ref=e1489]
+                          - listitem [ref=e1490]:
+                            - generic [ref=e1491]:
+                              - link [ref=e1493] [cursor=pointer]:
+                                - /url: https://alb.reddit.com/cr?za=-Onjli2qadP7_ppRt0cIO4TrDVztEniOGUJaKde0JSdI1kAzXZ2qcC_8vZ2UtfwFZbQ2_ukFaPUfcV963m9NTTRbEebf_2-oK-b0y_SlJ21kW_n4DOAWpAnZXDHQ993xLumdXPf3TMopZo9he5Ovs-peEkaDUubzawmW4d0C0gANtczEmkNaszK0TfuBEykAaOp-mLT0xOwDOrlyPyjEcj2b3HNPqH8IZ_7JxkNkZJ01LGLH9Cfe62WCEBa0jFHNN75qhBQ3O6LAOamMexYHgXsl-B2fZLrOZG6AOwcuYx5Bksc9CdvolSQ2hbNMiylaOCfTOGwq01vi_7_fjWy8EhocJHvF8XCy9v942BOVAxQ181nl3Bb0GztLvy5Jvv82nQyZY5EzboA4MfE9TmUM2ES1OOeCQYFk6iT7qVesjes1F9oBkSo64knDoYGUOX3l637-L-Dl-38jBL1l8jPTXv9N4WP_9jBdEGUn7oU-upuBIqGeLAHLy9xeA_06Fe1nx4vg8Cel3lAmvt40VOgs0joHx1tyTPmeYzzkx-1RCaBrUuDXlkcVhknSB0qP0pwAeVfUwx5emJqvhNtkDSaAGs-6VDALhZFtmbZl94KiRNBj1sCEMFF8YMI1SN9SyHHF8cjN1Y-UDg4IHNdvZkNV_rbDyNkHtA326CzprcUJXk0li0uLJzZHX0X69iAsSusl1UejKwdbDq21pA9uJrodN1eKPC3IJRuFcSSki9gdPDBz2MInEaA&zp=lLkS7BO8J48e1wL_QoLPJ9z_GjWttX64AKHsDccxLpfdiKZVFs8TCY4oRSkvid9tjdGiAIH_0vA8v5j7mBd9wk-RdGPFk5FRv1TcqnAtuPcERlNBexp8OSI1obuWHCE1ZV619CGXHogGE3oKNaHgi4Uy0C7An9cVKJ0N5BHxRzDzOKTN4iqz8YfH2taLrvXKZ8C8kIsijhZp0_STEHrIqG9qOYXIYFUlXenhNuZQb4HAclNpJOWhmF21e21j5T9ZUq3bJvf6ZCdZISvhAhk5zunANNXmraTeXd3K
+                              - link "The Ultimate U-shaped Standing Desk?" [ref=e1495] [cursor=pointer]:
+                                - /url: https://alb.reddit.com/cr?za=-Onjli2qadP7_ppRt0cIO4TrDVztEniOGUJaKde0JSdI1kAzXZ2qcC_8vZ2UtfwFZbQ2_ukFaPUfcV963m9NTTRbEebf_2-oK-b0y_SlJ21kW_n4DOAWpAnZXDHQ993xLumdXPf3TMopZo9he5Ovs-peEkaDUubzawmW4d0C0gANtczEmkNaszK0TfuBEykAaOp-mLT0xOwDOrlyPyjEcj2b3HNPqH8IZ_7JxkNkZJ01LGLH9Cfe62WCEBa0jFHNN75qhBQ3O6LAOamMexYHgXsl-B2fZLrOZG6AOwcuYx5Bksc9CdvolSQ2hbNMiylaOCfTOGwq01vi_7_fjWy8EhocJHvF8XCy9v942BOVAxQ181nl3Bb0GztLvy5Jvv82nQyZY5EzboA4MfE9TmUM2ES1OOeCQYFk6iT7qVesjes1F9oBkSo64knDoYGUOX3l637-L-Dl-38jBL1l8jPTXv9N4WP_9jBdEGUn7oU-upuBIqGeLAHLy9xeA_06Fe1nx4vg8Cel3lAmvt40VOgs0joHx1tyTPmeYzzkx-1RCaBrUuDXlkcVhknSB0qP0pwAeVfUwx5emJqvhNtkDSaAGs-6VDALhZFtmbZl94KiRNBj1sCEMFF8YMI1SN9SyHHF8cjN1Y-UDg4IHNdvZkNV_rbDyNkHtA326CzprcUJXk0li0uLJzZHX0X69iAsSusl1UejKwdbDq21pA9uJrodN1eKPC3IJRuFcSSki9gdPDBz2MInEaA&zp=lLkS7BO8J48e1wL_QoLPJ9z_GjWttX64AKHsDccxLpfdiKZVFs8TCY4oRSkvid9tjdGiAIH_0vA8v5j7mBd9wk-RdGPFk5FRv1TcqnAtuPcERlNBexp8OSI1obuWHCE1ZV619CGXHogGE3oKNaHgi4Uy0C7An9cVKJ0N5BHxRzDzOKTN4iqz8YfH2taLrvXKZ8C8kIsijhZp0_STEHrIqG9qOYXIYFUlXenhNuZQb4HAclNpJOWhmF21e21j5T9ZUq3bJvf6ZCdZISvhAhk5zunANNXmraTeXd3K
+                                - img "The Ultimate U-shaped Standing Desk?" [ref=e1496]
+                      - generic [ref=e1497]:
+                        - link [ref=e1499] [cursor=pointer]:
+                          - /url: https://alb.reddit.com/cr?za=-Onjli2qadP7_ppRt0cIO4TrDVztEniOGUJaKde0JSdI1kAzXZ2qcC_8vZ2UtfwFZbQ2_ukFaPUfcV963m9NTTRbEebf_2-oK-b0y_SlJ21kW_n4DOAWpAnZXDHQ993xLumdXPf3TMopZo9he5Ovs-peEkaDUubzawmW4d0C0gANtczEmkNaszK0TfuBEykAaOp-mLT0xOwDOrlyPyjEcj2b3HNPqH8IZ_7JxkNkZJ01LGLH9Cfe62WCEBa0jFHNN75qhBQ3O6LAOamMexYHgXsl-B2fZLrOZG6AOwcuYx5Bksc9CdvolSQ2hbNMiylaOCfTOGwq01vi_7_fjWy8EhocJHvF8XCy9v942BOVAxQ181nl3Bb0GztLvy5Jvv82nQyZY5EzboA4MfE9TmUM2ES1OOeCQYFk6iT7qVesjes1F9oBkSo64knDoYGUOX3l637-L-Dl-38jBL1l8jPTXv9N4WP_9jBdEGUn7oU-upuBIqGeLAHLy9xeA_06Fe1nx4vg8Cel3lAmvt40VOgs0joHx1tyTPmeYzzkx-1RCaBrUuDXlkcVhknSB0qP0pwAeVfUwx5emJqvhNtkDSaAGs-6VDALhZFtmbZl94KiRNBj1sCEMFF8YMI1SN9SyHHF8cjN1Y-UDg4IHNdvZkNV_rbDyNkHtA326CzprcUJXk0li0uLJzZHX0X69iAsSusl1UejKwdbDq21pA9uJrodN1eKPC3IJRuFcSSki9gdPDBz2MInEaA&zp=MMyUcYd0W7L3qhT52lvjFPWrI1z2a0VPxk8Vijw6hXBQoaZxhECcMCZLzXjr0kqy0BCfcGFAM3SCmY4kZZkuZ3OPJW1wErJJxvuH8Apc11auzTWKnmYGg23YucPxO2qazGRkhvOog6q6SSprjWxA3in8J6PiVsoCBcc5HFFd4DRd4KmkMW2piE4oXf4Tq_SYhLDEvkziuTqs_mDbrB6wI087R_kPJlzJ_jG2aKWnAqXaAA3VpbLxG0eAxXZvBfK7FF-ik9UBFCymkm4xtnedXJhdQyVk8BNtrNOu
+                        - link "vivo-us.com" [ref=e1504] [cursor=pointer]:
+                          - /url: https://alb.reddit.com/cr?za=-Onjli2qadP7_ppRt0cIO4TrDVztEniOGUJaKde0JSdI1kAzXZ2qcC_8vZ2UtfwFZbQ2_ukFaPUfcV963m9NTTRbEebf_2-oK-b0y_SlJ21kW_n4DOAWpAnZXDHQ993xLumdXPf3TMopZo9he5Ovs-peEkaDUubzawmW4d0C0gANtczEmkNaszK0TfuBEykAaOp-mLT0xOwDOrlyPyjEcj2b3HNPqH8IZ_7JxkNkZJ01LGLH9Cfe62WCEBa0jFHNN75qhBQ3O6LAOamMexYHgXsl-B2fZLrOZG6AOwcuYx5Bksc9CdvolSQ2hbNMiylaOCfTOGwq01vi_7_fjWy8EhocJHvF8XCy9v942BOVAxQ181nl3Bb0GztLvy5Jvv82nQyZY5EzboA4MfE9TmUM2ES1OOeCQYFk6iT7qVesjes1F9oBkSo64knDoYGUOX3l637-L-Dl-38jBL1l8jPTXv9N4WP_9jBdEGUn7oU-upuBIqGeLAHLy9xeA_06Fe1nx4vg8Cel3lAmvt40VOgs0joHx1tyTPmeYzzkx-1RCaBrUuDXlkcVhknSB0qP0pwAeVfUwx5emJqvhNtkDSaAGs-6VDALhZFtmbZl94KiRNBj1sCEMFF8YMI1SN9SyHHF8cjN1Y-UDg4IHNdvZkNV_rbDyNkHtA326CzprcUJXk0li0uLJzZHX0X69iAsSusl1UejKwdbDq21pA9uJrodN1eKPC3IJRuFcSSki9gdPDBz2MInEaA&zp=MMyUcYd0W7L3qhT52lvjFPWrI1z2a0VPxk8Vijw6hXBQoaZxhECcMCZLzXjr0kqy0BCfcGFAM3SCmY4kZZkuZ3OPJW1wErJJxvuH8Apc11auzTWKnmYGg23YucPxO2qazGRkhvOog6q6SSprjWxA3in8J6PiVsoCBcc5HFFd4DRd4KmkMW2piE4oXf4Tq_SYhLDEvkziuTqs_mDbrB6wI087R_kPJlzJ_jG2aKWnAqXaAA3VpbLxG0eAxXZvBfK7FF-ik9UBFCymkm4xtnedXJhdQyVk8BNtrNOu
+                          - generic: vivo-us.com
+                - article "Comment from AcrobaticChain1846 51 minutes ago" [ref=e1506]:
+                  - generic "Metadata for AcrobaticChain1846's comment" [ref=e1507]:
+                    - link "AcrobaticChain1846's profile --- avatar" [ref=e1513] [cursor=pointer]:
+                      - /url: /user/AcrobaticChain1846/
+                      - img "u/AcrobaticChain1846 avatar" [ref=e1516]
+                    - generic [ref=e1521]:
+                      - link "AcrobaticChain1846's profile" [ref=e1525] [cursor=pointer]:
+                        - /url: /user/AcrobaticChain1846/
+                        - text: AcrobaticChain1846
+                      - generic [ref=e1526]: •
+                      - link "51m ago" [ref=e1527] [cursor=pointer]:
+                        - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogvaj4g/
+                        - time [ref=e1528]: 51m ago
+                  - generic [ref=e1529]:
+                    - generic [ref=e1537]:
+                      - paragraph [ref=e1538]:
+                        - text: "hey, I'm trying to run the `unsloth/qwen3.6-35b-a3b UD Q2_K_XL`"
+                        - text: I also have same hardware as yours
+                      - paragraph [ref=e1539]:
+                        - text: 5070 Ti
+                        - text: 64 GB RAM
+                        - text: 9950x3d
+                      - paragraph [ref=e1540]: Can you help me with setting things up?
+                      - paragraph [ref=e1541]:
+                        - link "https://www.reddit.com/r/LocalLLaMA/comments/1soqtry/comment/oguxrw1/" [ref=e1542] [cursor=pointer]:
+                          - /url: https://www.reddit.com/r/LocalLLaMA/comments/1soqtry/comment/oguxrw1/
+                      - paragraph [ref=e1543]: Also I'm getting really slow prompt processing...
+                      - paragraph [ref=e1544]: I want to know which model you are using like is it q4_k_xl or something else?
+                      - paragraph [ref=e1545]: Thank you :)
+                    - button "Toggle Comment Thread" [expanded] [ref=e1548] [cursor=pointer]:
+                      - img [ref=e1551]
+                    - 'article "Comment thread level 1: Reply from dreamai87 20 minutes ago" [ref=e1559]':
+                      - generic "Metadata for dreamai87's comment" [ref=e1560]:
+                        - link "dreamai87's profile --- avatar" [ref=e1566] [cursor=pointer]:
+                          - /url: /user/dreamai87/
+                          - generic [ref=e1568]:
+                            - img [ref=e1570]
+                            - img [ref=e1574]
+                            - img [ref=e1577]
+                        - generic [ref=e1583]:
+                          - link "dreamai87's profile" [ref=e1587] [cursor=pointer]:
+                            - /url: /user/dreamai87/
+                            - text: dreamai87
+                          - generic [ref=e1588]: •
+                          - link "20m ago" [ref=e1589] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogvdss1/
+                            - time [ref=e1590]: 20m ago
+                      - generic [ref=e1597]:
+                        - paragraph
+                        - paragraph [ref=e1598]:
+                          - text: Okay I saw your comment that brought me here.
+                          - text: Looking at settings; move this slider to 50% then see the performance, bringing 100% will put all experts to CPU which also reduce performance but still better that what you are getting. so first check at 50% then look GPU suage from task manager 10/12 or 8/12.
+                          - text: reduce from 50% to 20% and see where you are getting this best gpu usage find balance 10/12 assuming rtx 5070 12gb vram
+                        - paragraph [ref=e1599]: I replied on your thread as well
+                        - figure [ref=e1600]:
+                          - link "Comment Image" [ref=e1601] [cursor=pointer]:
+                            - /url: https://preview.redd.it/rtx-5070-ti-9800x3d-running-qwen3-6-35b-a3b-at-79-t-s-with-v0-3p9jvzer9xvg1.png?width=904&format=png&auto=webp&s=1cc6b12c592eeab22cf076f53b9761c5055fdaa1
+                            - img "Comment Image" [ref=e1602]
+                - article "Comment from FriendlyTitan 13 minutes ago" [ref=e1608]:
+                  - generic "Metadata for FriendlyTitan's comment" [ref=e1609]:
+                    - link "FriendlyTitan's profile --- avatar" [ref=e1615] [cursor=pointer]:
+                      - /url: /user/FriendlyTitan/
+                      - img "u/FriendlyTitan avatar" [ref=e1618]
+                    - generic [ref=e1623]:
+                      - link "FriendlyTitan's profile" [ref=e1627] [cursor=pointer]:
+                        - /url: /user/FriendlyTitan/
+                        - text: FriendlyTitan
+                      - generic [ref=e1628]: •
+                      - link "13m ago" [ref=e1629] [cursor=pointer]:
+                        - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogvem0o/
+                        - time [ref=e1630]: 13m ago
+                  - paragraph [ref=e1638]: Have you tested higher batch and ubatch numbers? I notice that for myself, giving up more experts to cpu and giving vram to batch improves prefill speed massively. Set -b and -ub to 4096 or even higher if you want to experiment. Prefill speed quadruples in my case sometimes.
+                - article "Comment from Ranmark 11 minutes ago" [ref=e1644]:
+                  - generic "Metadata for Ranmark's comment" [ref=e1645]:
+                    - link "Ranmark's profile --- avatar" [ref=e1651] [cursor=pointer]:
+                      - /url: /user/Ranmark/
+                      - img [ref=e1656]
+                    - generic [ref=e1662]:
+                      - link "Ranmark's profile" [ref=e1666] [cursor=pointer]:
+                        - /url: /user/Ranmark/
+                        - text: Ranmark
+                      - generic [ref=e1667]: •
+                      - link "11m ago" [ref=e1668] [cursor=pointer]:
+                        - /url: /r/LocalLLaMA/comments/1sor55y/comment/ogvet67/
+                        - time [ref=e1669]: 11m ago
+                  - paragraph [ref=e1677]:
+                    - text: iirc you can drop your top_p, presence_penalty, and reasoning_budget args as they by default has these values.
+                    - link "https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md" [ref=e1678] [cursor=pointer]:
+                      - /url: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+            - generic [ref=e1683]:
+              - generic [ref=e1684]:
+                - complementary [ref=e1687]:
+                  - generic [ref=e1688]:
+                    - generic [ref=e1689]: New to Reddit?
+                    - paragraph [ref=e1690]: Create your account and connect with a world of communities.
+                  - generic [ref=e1691]:
+                    - iframe [ref=e1700]:
+                      - button "Continue with Google. Opens in new tab" [ref=f1e3] [cursor=pointer]:
+                        - generic [ref=f1e5]:
+                          - img [ref=f1e7]
+                          - generic [ref=f1e14]: Continue with Google
+                    - link "Continue with Email" [ref=e1702] [cursor=pointer]:
+                      - /url: https://www.reddit.com/register/
+                      - generic [ref=e1705]:
+                        - img [ref=e1706]
+                        - generic [ref=e1708]: Continue with Email
+                  - generic [ref=e1709]:
+                    - text: By continuing, you agree to our
+                    - link "User Agreement" [ref=e1710] [cursor=pointer]:
+                      - /url: https://www.redditinc.com/policies/user-agreement
+                    - text: and acknowledge that you understand the
+                    - link "Privacy Policy" [ref=e1711] [cursor=pointer]:
+                      - /url: https://www.redditinc.com/policies/privacy-policy
+                    - text: .
+                - complementary "Related Answers Section" [ref=e1713]:
+                  - heading "Related Answers Section" [level=1] [ref=e1714]
+                  - generic [ref=e1715]:
+                    - img [ref=e1717]
+                    - generic [ref=e1719]: Related Answers
+                  - generic [ref=e1720]:
+                    - generic [ref=e1722]:
+                      - generic [ref=e1723]:
+                        - generic [ref=e1724]: Best practices for hosting LLaMA locally
+                        - generic [ref=e1725]:
+                          - paragraph [ref=e1726]: "Hosting LLaMA locally can be a rewarding experience, but it comes with its own set of challenges. Here are some best practices and insights from Redditors to help you navigate the process:"
+                          - heading "Hardware Considerations" [level=3] [ref=e1727]
+                          - list [ref=e1728]:
+                            - listitem [ref=e1729]:
+                              - paragraph [ref=e1730]:
+                                - strong [ref=e1731]: GPU Memory
+                                - text: ": This is often the biggest bottleneck. Ensure you have enough VRAM to run the models you intend to use."
+                                - link "\"16GB VRAM is enough to run Q4 of 27B, or Q8 of a 13-14B, which makes a real difference for reasoning tasks.\"" [ref=e1732] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLaMA/comments/1rgrlzv/comment/o7ummyz/
+                                  - text: "\"16GB VRAM is enough to run Q4 of 27B, or Q8 of a 13-14B, which makes a real difference for reasoning tasks.\""
+                                  - img [ref=e1734]
+                            - listitem [ref=e1736]:
+                              - paragraph [ref=e1737]:
+                                - strong [ref=e1738]: RAM
+                                - text: ": Sufficient system RAM is also crucial, especially if you're running models on the CPU or using hybrid setups."
+                                - link "\"My 128GB RAM AMD AI MAX machine seems to be just as good as Gemini at writing code.\"" [ref=e1739] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLM/comments/1qvktbl/comment/o3i8rbh/
+                                  - text: "\"My 128GB RAM AMD AI MAX machine seems to be just as good as Gemini at writing code.\""
+                                  - img [ref=e1741]
+                            - listitem [ref=e1743]:
+                              - paragraph [ref=e1744]:
+                                - strong [ref=e1745]: CPU Performance
+                                - text: ": For non-GPU setups, a powerful CPU can help, but it will still be slower."
+                                - link "\"CPU inference, even quad channel (maybe you have octa, but still) at these size models is just a no go for 1-2 people.\"" [ref=e1746] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLaMA/comments/1iobld4/comment/mcibzpk/
+                                  - text: "\"CPU inference, even quad channel (maybe you have octa, but still) at these size models is just a no go for 1-2 people.\""
+                                  - img [ref=e1748]
+                          - heading "Software Setup" [level=3] [ref=e1750]
+                          - list [ref=e1751]:
+                            - listitem [ref=e1752]:
+                              - paragraph [ref=e1753]:
+                                - strong [ref=e1754]: Ollama
+                                - text: ": Easy to set up and use, but may not offer the best performance out of the box."
+                                - link "\"Ollama is using llama.cpp under the hood, but adds some quality of life improvements on top of it.\"" [ref=e1755] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLaMA/comments/1iobld4/comment/mcifa6r/
+                                  - text: "\"Ollama is using llama.cpp under the hood, but adds some quality of life improvements on top of it.\""
+                                  - img [ref=e1757]
+                            - listitem [ref=e1759]:
+                              - paragraph [ref=e1760]:
+                                - strong [ref=e1761]: LM Studio
+                                - text: ": User-friendly and supports various models."
+                                - link "\"LM Studio is really easy to setup, easier than Ollama.\"" [ref=e1762] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLaMA/comments/1qrvx16/comment/o2r5zik/
+                                  - text: "\"LM Studio is really easy to setup, easier than Ollama.\""
+                                  - img [ref=e1764]
+                            - listitem [ref=e1766]:
+                              - paragraph [ref=e1767]:
+                                - strong [ref=e1768]: Llama.cpp
+                                - text: ": Offers more control and customization but requires a more complex setup."
+                                - link "\"You should try llama.cpp it is faster than Ollama and it is easier to setup now.\"" [ref=e1769] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLaMA/comments/1rgrlzv/comment/o7tnhwg/
+                                  - text: "\"You should try llama.cpp it is faster than Ollama and it is easier to setup now.\""
+                                  - img [ref=e1771]
+                          - heading "Model Selection" [level=3] [ref=e1773]
+                          - list [ref=e1774]:
+                            - listitem [ref=e1775]:
+                              - paragraph [ref=e1776]:
+                                - strong [ref=e1777]: Smaller Models
+                                - text: ": For quick tasks and limited hardware, smaller models (7B-13B) are often more practical."
+                                - link "\"Been running Ollama with Llama 3.1 8B for about 6 months now and it's honestly solid for daily stuff.\"" [ref=e1778] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLaMA/comments/1qrvx16/comment/o2r5mbj/
+                                  - text: "\"Been running Ollama with Llama 3.1 8B for about 6 months now and it's honestly solid for daily stuff.\""
+                                  - img [ref=e1780]
+                            - listitem [ref=e1782]:
+                              - paragraph [ref=e1783]:
+                                - strong [ref=e1784]: Coding Models
+                                - text: ": Qwen Coder and DeepSeek-Coder-V2 are recommended for coding tasks."
+                                - link "\"Qwen Coder and GLM 4.7 are very good and be run on somewhat affordable consumer machines.\"" [ref=e1785] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLM/comments/1qvktbl/comment/o3ib3zd/
+                                  - text: "\"Qwen Coder and GLM 4.7 are very good and be run on somewhat affordable consumer machines.\""
+                                  - img [ref=e1787]
+                            - listitem [ref=e1789]:
+                              - paragraph [ref=e1790]:
+                                - strong [ref=e1791]: General Use
+                                - text: ": Qwen 3.5 35B MoE and Gemma 4 26B MoE are good for general use on moderate hardware."
+                                - link "\"You need to try GPT-OSS-20b, it's the most 'ChatGPT' model you're going to get in 16gb of VRAM.\"" [ref=e1792] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLaMA/comments/1rgrlzv/comment/o7ugdzw/
+                                  - text: "\"You need to try GPT-OSS-20b, it's the most 'ChatGPT' model you're going to get in 16gb of VRAM.\""
+                                  - img [ref=e1794]
+                          - heading "Optimization and Performance" [level=3] [ref=e1796]
+                          - list [ref=e1797]:
+                            - listitem [ref=e1798]:
+                              - paragraph [ref=e1799]:
+                                - strong [ref=e1800]: Context Length
+                                - text: ": Increase the context length to improve performance."
+                                - link "\"Set OLLAMA_NUM_CTX=8192 at minimum and things get a lot more consistent.\"" [ref=e1801] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLaMA/comments/1rgrlzv/comment/o7ummyz/
+                                  - text: "\"Set OLLAMA_NUM_CTX=8192 at minimum and things get a lot more consistent.\""
+                                  - img [ref=e1803]
+                            - listitem [ref=e1805]:
+                              - paragraph [ref=e1806]:
+                                - strong [ref=e1807]: Quantization
+                                - text: ": Use quantized models to reduce VRAM usage."
+                                - link "\"16GB VRAM is enough to run Q4 of 27B, or Q8 of a 13-14B.\"" [ref=e1808] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLaMA/comments/1rgrlzv/comment/o7ummyz/
+                                  - text: "\"16GB VRAM is enough to run Q4 of 27B, or Q8 of a 13-14B.\""
+                                  - img [ref=e1810]
+                            - listitem [ref=e1812]:
+                              - paragraph [ref=e1813]:
+                                - strong [ref=e1814]: Hybrid Approach
+                                - text: ": Combine local and cloud models for the best of both worlds."
+                                - link "\"The hybrid approach mentioned above is honestly the sweet spot.\"" [ref=e1815] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLM/comments/1qvktbl/comment/o3jubjz/
+                                  - text: "\"The hybrid approach mentioned above is honestly the sweet spot.\""
+                                  - img [ref=e1817]
+                          - heading "Privacy and Control" [level=3] [ref=e1819]
+                          - list [ref=e1820]:
+                            - listitem [ref=e1821]:
+                              - paragraph [ref=e1822]:
+                                - strong [ref=e1823]: Local Hosting Benefits
+                                - text: ": Privacy, no token limits, and full control over the model."
+                                - link "\"Running it locally means I can see how it works, tweak it, and ensure my data is safe.\"" [ref=e1824] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLaMA/comments/1l6uvu1/comment/mwrtjpc/
+                                  - text: "\"Running it locally means I can see how it works, tweak it, and ensure my data is safe.\""
+                                  - img [ref=e1826]
+                            - listitem [ref=e1828]:
+                              - paragraph [ref=e1829]:
+                                - strong [ref=e1830]: Data Sensitivity
+                                - text: ": Local models are ideal for sensitive data."
+                                - link "\"Free=you’re the product. If your data is sensitive enough where that’s not ok, the decision is easy.\"" [ref=e1831] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLaMA/comments/1l6uvu1/comment/mwrti23/
+                                  - text: "\"Free=you’re the product. If your data is sensitive enough where that’s not ok, the decision is easy.\""
+                                  - img [ref=e1833]
+                          - heading "Additional Tips" [level=3] [ref=e1835]
+                          - list [ref=e1836]:
+                            - listitem [ref=e1837]:
+                              - paragraph [ref=e1838]:
+                                - strong [ref=e1839]: Tool Integration
+                                - text: ": Use tools and frameworks to extend the capabilities of your local LLM."
+                                - link "\"Did you provide it tools? And a framework on how to answer your queries?\"" [ref=e1840] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLaMA/comments/1rgrlzv/comment/o7tlccr/
+                                  - text: "\"Did you provide it tools? And a framework on how to answer your queries?\""
+                                  - img [ref=e1842]
+                            - listitem [ref=e1844]:
+                              - paragraph [ref=e1845]:
+                                - strong [ref=e1846]: System Prompts
+                                - text: ": Use clear system prompts to guide the LLM's behavior."
+                                - link "\"For starters use a system prompt saying along the line like don't use your own knowledge for factual information, search the internet first.\"" [ref=e1847] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLaMA/comments/1rgrlzv/comment/o7tzavn/
+                                  - text: "\"For starters use a system prompt saying along the line like don't use your own knowledge for factual information, search the internet first.\""
+                                  - img [ref=e1849]
+                            - listitem [ref=e1851]:
+                              - paragraph [ref=e1852]:
+                                - strong [ref=e1853]: Documentation
+                                - text: ": Refer to the model's documentation for specific prompting structures."
+                                - link "\"Have a look at the model documentation. Every model has a particular way of prompting structure.\"" [ref=e1854] [cursor=pointer]:
+                                  - /url: https://www.reddit.com/r/LocalLLaMA/comments/1rgrlzv/comment/o7tks9o/
+                                  - text: "\"Have a look at the model documentation. Every model has a particular way of prompting structure.\""
+                                  - img [ref=e1856]
+                          - paragraph [ref=e1858]: By following these best practices, you can make your local LLaMA hosting experience much more enjoyable and productive.
+                      - link "See Answer" [ref=e1863] [cursor=pointer]:
+                        - /url: https://www.reddit.com/answers/5a77ac56-2be7-4233-a7ea-347e5c390073/?q=Best+practices+for+hosting+LLaMA+locally&source=PDP
+                        - generic [ref=e1865]: See Answer
+                    - link "Top tools for optimizing AI model performance" [ref=e1867] [cursor=pointer]:
+                      - /url: https://www.reddit.com/answers/84a84bde-2ab3-44f6-82a8-c99ba5ae3f71/?q=Top+tools+for+optimizing+AI+model+performance&source=PDP
+                      - generic [ref=e1870]: Top tools for optimizing AI model performance
+                      - img [ref=e1873]
+                    - link "How to fine-tune LLaMA for specific tasks" [ref=e1876] [cursor=pointer]:
+                      - /url: https://www.reddit.com/answers/fa4134e5-ef98-45a3-928e-b3970600cbe4/?q=How+to+fine-tune+LLaMA+for+specific+tasks&source=PDP
+                      - generic [ref=e1879]: How to fine-tune LLaMA for specific tasks
+                      - img [ref=e1882]
+                    - link "Common challenges in local AI deployment" [ref=e1885] [cursor=pointer]:
+                      - /url: https://www.reddit.com/answers/cf8cfbb4-6cd0-44a3-b53e-df9a8f9694c6/?q=Common+challenges+in+local+AI+deployment&source=PDP
+                      - generic [ref=e1888]: Common challenges in local AI deployment
+                      - img [ref=e1891]
+                    - link "Innovative applications of LLaMA in business" [ref=e1894] [cursor=pointer]:
+                      - /url: https://www.reddit.com/answers/f4508443-cf4d-408a-b3c3-83d329d6b7b8/?q=Innovative+applications+of+LLaMA+in+business&source=PDP
+                      - generic [ref=e1897]: Innovative applications of LLaMA in business
+                      - img [ref=e1900]
+                - complementary "Related Posts Section" [ref=e1902]:
+                  - heading "Related Posts Section" [level=1] [ref=e1903]: More posts you may like
+                  - list [ref=e1909]:
+                    - listitem [ref=e1910]:
+                      - generic [ref=e1911]:
+                        - generic [ref=e1913]:
+                          - link "Qwen3.5 27B running at ~65tps with DFlash speculation on 2x 3090" [ref=e1914] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1set32u/qwen35_27b_running_at_65tps_with_dflash/
+                            - generic [ref=e1915]:
+                              - generic: Qwen3.5 27B running at ~65tps with DFlash speculation on 2x 3090
+                          - generic [ref=e1917]:
+                            - generic [ref=e1918]:
+                              - generic [ref=e1921]:
+                                - link "r/LocalLLaMA" [ref=e1922] [cursor=pointer]:
+                                  - /url: /r/LocalLLaMA/
+                                  - generic [ref=e1926]: r/LocalLLaMA
+                                - generic [ref=e1927]: •
+                                - time [ref=e1929]: 11d ago
+                              - link "List item post - Qwen3.5 27B running at ~65tps with DFlash speculation on 2x..." [ref=e1931] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/comments/1set32u/qwen35_27b_running_at_65tps_with_dflash/
+                                - heading "List item post - Qwen3.5 27B running at ~65tps with DFlash speculation on 2x..." [level=3] [ref=e1934]: Qwen3.5 27B running at ~65tps with DFlash speculation on 2x 3090
+                            - link "r/LocalLLaMA - Qwen3.5 27B running at ~65tps with DFlash speculation on 2x 3090" [ref=e1937] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1set32u/qwen35_27b_running_at_65tps_with_dflash/
+                              - img "r/LocalLLaMA - Qwen3.5 27B running at ~65tps with DFlash speculation on 2x 3090" [ref=e1938]
+                          - generic [ref=e1940]:
+                            - generic [ref=e1941]: "70"
+                            - text: upvotes ·
+                            - generic [ref=e1942]: "17"
+                            - text: comments
+                        - separator [ref=e1943]
+                    - listitem
+                    - listitem [ref=e1944]:
+                      - generic [ref=e1945]:
+                        - generic [ref=e1947]:
+                          - link "I spent 8+ hours benchmarking every MoE backend for Qwen3.5-397B NVFP4 on 4x RTX PRO 6000 (SM120). Here's what I found." [ref=e1948] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1rrfqlu/i_spent_8_hours_benchmarking_every_moe_backend/
+                            - generic [ref=e1949]:
+                              - generic: I spent 8+ hours benchmarking every MoE backend for Qwen3.5-397B NVFP4 on 4x RTX PRO 6000 (SM120). Here's what I found.
+                          - generic [ref=e1952]:
+                            - generic [ref=e1955]:
+                              - link "r/LocalLLaMA" [ref=e1956] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e1960]: r/LocalLLaMA
+                              - generic [ref=e1961]: •
+                              - time [ref=e1963]: 1mo ago
+                            - link "List item post - I spent 8+ hours benchmarking every MoE backend for Qwen3.5..." [ref=e1965] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1rrfqlu/i_spent_8_hours_benchmarking_every_moe_backend/
+                              - heading "List item post - I spent 8+ hours benchmarking every MoE backend for Qwen3.5..." [level=3] [ref=e1968]: I spent 8+ hours benchmarking every MoE backend for Qwen3.5-397B NVFP4 on 4x RTX PRO 6000 (SM120). Here's what I found.
+                          - generic [ref=e1970]:
+                            - generic [ref=e1971]: "238"
+                            - text: upvotes ·
+                            - generic [ref=e1972]: "73"
+                            - text: comments
+                        - separator [ref=e1973]
+                    - listitem [ref=e1974]:
+                      - generic [ref=e1975]:
+                        - generic [ref=e1977]:
+                          - link "Models that run in 72GB VRAM with context loaded in GPU (3x3090 benchmark test)" [ref=e1978] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1qh442y/models_that_run_in_72gb_vram_with_context_loaded/
+                            - generic [ref=e1979]:
+                              - generic: Models that run in 72GB VRAM with context loaded in GPU (3x3090 benchmark test)
+                          - generic [ref=e1981]:
+                            - generic [ref=e1982]:
+                              - generic [ref=e1985]:
+                                - link "r/LocalLLaMA" [ref=e1986] [cursor=pointer]:
+                                  - /url: /r/LocalLLaMA/
+                                  - generic [ref=e1990]: r/LocalLLaMA
+                                - generic [ref=e1991]: •
+                                - time [ref=e1993]: 3mo ago
+                              - link "List item post - Models that run in 72GB VRAM with context loaded in GPU (3x..." [ref=e1995] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/comments/1qh442y/models_that_run_in_72gb_vram_with_context_loaded/
+                                - heading "List item post - Models that run in 72GB VRAM with context loaded in GPU (3x..." [level=3] [ref=e1998]: Models that run in 72GB VRAM with context loaded in GPU (3x3090 benchmark test)
+                            - link "r/LocalLLaMA - Models that run in 72GB VRAM with context loaded in GPU (3x3090 benchmark test)" [ref=e2001] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1qh442y/models_that_run_in_72gb_vram_with_context_loaded/
+                              - img "r/LocalLLaMA - Models that run in 72GB VRAM with context loaded in GPU (3x3090 benchmark test)" [ref=e2002]
+                          - generic [ref=e2004]:
+                            - generic [ref=e2005]: "73"
+                            - text: upvotes ·
+                            - generic [ref=e2006]: "57"
+                            - text: comments
+                        - separator [ref=e2007]
+                    - listitem
+                    - listitem [ref=e2008]:
+                      - generic [ref=e2009]:
+                        - generic [ref=e2011]:
+                          - link "Bonsai-8B at 65K context in 3.9 GB RAM using flags/quant" [ref=e2012] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1satxjp/bonsai8b_at_65k_context_in_39_gb_ram_using/
+                            - generic [ref=e2013]:
+                              - generic: Bonsai-8B at 65K context in 3.9 GB RAM using flags/quant
+                          - generic [ref=e2016]:
+                            - generic [ref=e2019]:
+                              - link "r/LocalLLaMA" [ref=e2020] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2024]: r/LocalLLaMA
+                              - generic [ref=e2025]: •
+                              - time [ref=e2027]: 16d ago
+                            - link "List item post - Bonsai-8B at 65K context in 3.9 GB RAM using flags/quant" [ref=e2029] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1satxjp/bonsai8b_at_65k_context_in_39_gb_ram_using/
+                              - heading "List item post - Bonsai-8B at 65K context in 3.9 GB RAM using flags/quant" [level=3] [ref=e2032]: Bonsai-8B at 65K context in 3.9 GB RAM using flags/quant
+                          - generic [ref=e2034]:
+                            - generic [ref=e2035]: "10"
+                            - text: upvotes ·
+                            - generic [ref=e2036]: "2"
+                            - text: comments
+                        - separator [ref=e2037]
+                    - listitem [ref=e2038]:
+                      - generic [ref=e2039]:
+                        - generic [ref=e2041]:
+                          - link "[Solution Found] Qwen3-Next 80B MoE running at 39 t/s on RTX 5070 Ti + 5060 Ti (32GB VRAM)" [ref=e2042] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1r71af3/solution_found_qwen3next_80b_moe_running_at_39_ts/
+                            - generic [ref=e2043]:
+                              - generic: "[Solution Found] Qwen3-Next 80B MoE running at 39 t/s on RTX 5070 Ti + 5060 Ti (32GB VRAM)"
+                          - generic [ref=e2045]:
+                            - generic [ref=e2046]:
+                              - generic [ref=e2049]:
+                                - link "r/LocalLLaMA" [ref=e2050] [cursor=pointer]:
+                                  - /url: /r/LocalLLaMA/
+                                  - generic [ref=e2054]: r/LocalLLaMA
+                                - generic [ref=e2055]: •
+                                - time [ref=e2057]: 2mo ago
+                              - link "List item post - [Solution Found] Qwen3-Next 80B MoE running at 39 t/s on RT..." [ref=e2059] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/comments/1r71af3/solution_found_qwen3next_80b_moe_running_at_39_ts/
+                                - heading "List item post - [Solution Found] Qwen3-Next 80B MoE running at 39 t/s on RT..." [level=3] [ref=e2062]: "[Solution Found] Qwen3-Next 80B MoE running at 39 t/s on RTX 5070 Ti + 5060 Ti (32GB VRAM)"
+                            - link "r/LocalLLaMA - [Solution Found] Qwen3-Next 80B MoE running at 39 t/s on RTX 5070 Ti + 5060 Ti (32GB VRAM)" [ref=e2065] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1r71af3/solution_found_qwen3next_80b_moe_running_at_39_ts/
+                              - img "r/LocalLLaMA - [Solution Found] Qwen3-Next 80B MoE running at 39 t/s on RTX 5070 Ti + 5060 Ti (32GB VRAM)" [ref=e2066]
+                          - generic [ref=e2068]:
+                            - generic [ref=e2069]: "77"
+                            - text: upvotes ·
+                            - generic [ref=e2070]: "32"
+                            - text: comments
+                        - separator [ref=e2071]
+                    - listitem [ref=e2072]:
+                      - generic [ref=e2073]:
+                        - generic [ref=e2075]:
+                          - link "3x3090 + 3060 in a mid tower case" [ref=e2076] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1qgx83t/3x3090_3060_in_a_mid_tower_case/
+                            - generic [ref=e2077]:
+                              - generic: 3x3090 + 3060 in a mid tower case
+                          - generic [ref=e2079]:
+                            - generic [ref=e2080]:
+                              - generic [ref=e2083]:
+                                - link "r/LocalLLaMA" [ref=e2084] [cursor=pointer]:
+                                  - /url: /r/LocalLLaMA/
+                                  - generic [ref=e2088]: r/LocalLLaMA
+                                - generic [ref=e2089]: •
+                                - time [ref=e2091]: 3mo ago
+                              - link "List item post - 3x3090 + 3060 in a mid tower case" [ref=e2093] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/comments/1qgx83t/3x3090_3060_in_a_mid_tower_case/
+                                - heading "List item post - 3x3090 + 3060 in a mid tower case" [level=3] [ref=e2096]: 3x3090 + 3060 in a mid tower case
+                            - generic [ref=e2098]:
+                              - link "r/LocalLLaMA - 3x3090 + 3060 in a mid tower case" [ref=e2099] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/comments/1qgx83t/3x3090_3060_in_a_mid_tower_case/
+                                - img "r/LocalLLaMA - 3x3090 + 3060 in a mid tower case" [ref=e2100]
+                              - generic:
+                                - img
+                                - generic: "9"
+                          - generic [ref=e2102]:
+                            - generic [ref=e2103]: "66"
+                            - text: upvotes ·
+                            - generic [ref=e2104]: "37"
+                            - text: comments
+                        - separator [ref=e2105]
+                    - listitem [ref=e2106]:
+                      - generic [ref=e2107]:
+                        - generic [ref=e2109]:
+                          - link "Just put together my new setup(3x v620 for 96gb vram)" [ref=e2110] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1qgrw3d/just_put_together_my_new_setup3x_v620_for_96gb/
+                            - generic [ref=e2111]:
+                              - generic: Just put together my new setup(3x v620 for 96gb vram)
+                          - generic [ref=e2113]:
+                            - generic [ref=e2114]:
+                              - generic [ref=e2117]:
+                                - link "r/LocalLLaMA" [ref=e2118] [cursor=pointer]:
+                                  - /url: /r/LocalLLaMA/
+                                  - generic [ref=e2122]: r/LocalLLaMA
+                                - generic [ref=e2123]: •
+                                - time [ref=e2125]: 3mo ago
+                              - link "List item post - Just put together my new setup(3x v620 for 96gb vram)" [ref=e2127] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/comments/1qgrw3d/just_put_together_my_new_setup3x_v620_for_96gb/
+                                - heading "List item post - Just put together my new setup(3x v620 for 96gb vram)" [level=3] [ref=e2130]: Just put together my new setup(3x v620 for 96gb vram)
+                            - generic [ref=e2132]:
+                              - link "r/LocalLLaMA - Just put together my new setup(3x v620 for 96gb vram)" [ref=e2133] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/comments/1qgrw3d/just_put_together_my_new_setup3x_v620_for_96gb/
+                                - img "r/LocalLLaMA - Just put together my new setup(3x v620 for 96gb vram)" [ref=e2134]
+                              - generic:
+                                - img
+                                - generic: "2"
+                          - generic [ref=e2136]:
+                            - generic [ref=e2137]: "68"
+                            - text: upvotes ·
+                            - generic [ref=e2138]: "17"
+                            - text: comments
+                        - separator [ref=e2139]
+                    - listitem [ref=e2140]:
+                      - generic [ref=e2141]:
+                        - generic [ref=e2143]:
+                          - link "Qwen 3.5 27b and Qwen3.5-35B-A3B ran locally on my rtx 5060ti 16gb card" [ref=e2144] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1rhe4oo/qwen_35_27b_and_qwen3535ba3b_ran_locally_on_my/
+                            - generic [ref=e2145]:
+                              - generic: Qwen 3.5 27b and Qwen3.5-35B-A3B ran locally on my rtx 5060ti 16gb card
+                          - generic [ref=e2147]:
+                            - generic [ref=e2148]:
+                              - generic [ref=e2151]:
+                                - link "r/LocalLLaMA" [ref=e2152] [cursor=pointer]:
+                                  - /url: /r/LocalLLaMA/
+                                  - generic [ref=e2156]: r/LocalLLaMA
+                                - generic [ref=e2157]: •
+                                - time [ref=e2159]: 2mo ago
+                              - link "List item post - Qwen 3.5 27b and Qwen3.5-35B-A3B ran locally on my rtx 5060..." [ref=e2161] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/comments/1rhe4oo/qwen_35_27b_and_qwen3535ba3b_ran_locally_on_my/
+                                - heading "List item post - Qwen 3.5 27b and Qwen3.5-35B-A3B ran locally on my rtx 5060..." [level=3] [ref=e2164]: Qwen 3.5 27b and Qwen3.5-35B-A3B ran locally on my rtx 5060ti 16gb card
+                            - link "r/LocalLLaMA - Qwen 3.5 27b and Qwen3.5-35B-A3B ran locally on my rtx 5060ti 16gb card" [ref=e2167] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1rhe4oo/qwen_35_27b_and_qwen3535ba3b_ran_locally_on_my/
+                              - img "r/LocalLLaMA - Qwen 3.5 27b and Qwen3.5-35B-A3B ran locally on my rtx 5060ti 16gb card" [ref=e2168]
+                          - generic [ref=e2170]:
+                            - generic [ref=e2171]: "4"
+                            - text: upvotes ·
+                            - generic [ref=e2172]: "5"
+                            - text: comments
+                        - separator [ref=e2173]
+                    - listitem
+                    - listitem [ref=e2174]:
+                      - generic [ref=e2175]:
+                        - generic [ref=e2177]:
+                          - link "Optimizing Qwen3 Coder for RTX 5090 and PRO 6000 + Community Benchmarking Infrastructure" [ref=e2178] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1rm0qd5/optimizing_qwen3_coder_for_rtx_5090_and_pro_6000/
+                            - generic [ref=e2179]:
+                              - generic: Optimizing Qwen3 Coder for RTX 5090 and PRO 6000 + Community Benchmarking Infrastructure
+                          - generic [ref=e2182]:
+                            - generic [ref=e2185]:
+                              - link "r/LocalLLaMA" [ref=e2186] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2190]: r/LocalLLaMA
+                              - generic [ref=e2191]: •
+                              - time [ref=e2193]: 1mo ago
+                            - link "List item post - Optimizing Qwen3 Coder for RTX 5090 and PRO 6000 + Communit..." [ref=e2195] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1rm0qd5/optimizing_qwen3_coder_for_rtx_5090_and_pro_6000/
+                              - heading "List item post - Optimizing Qwen3 Coder for RTX 5090 and PRO 6000 + Communit..." [level=3] [ref=e2198]: Optimizing Qwen3 Coder for RTX 5090 and PRO 6000 + Community Benchmarking Infrastructure
+                          - generic [ref=e2200]:
+                            - generic [ref=e2201]: "19"
+                            - text: upvotes ·
+                            - generic [ref=e2202]: "7"
+                            - text: comments
+                        - separator [ref=e2203]
+                    - listitem [ref=e2204]:
+                      - generic [ref=e2205]:
+                        - generic [ref=e2207]:
+                          - link "Testing & Benchmarking Qwen3.5 2k→400k Context Limit on my 4090" [ref=e2208] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1rn59iv/testing_benchmarking_qwen35_2k400k_context_limit/
+                            - generic [ref=e2209]:
+                              - generic: Testing & Benchmarking Qwen3.5 2k→400k Context Limit on my 4090
+                          - generic [ref=e2211]:
+                            - generic [ref=e2212]:
+                              - generic [ref=e2215]:
+                                - link "r/LocalLLaMA" [ref=e2216] [cursor=pointer]:
+                                  - /url: /r/LocalLLaMA/
+                                  - generic [ref=e2220]: r/LocalLLaMA
+                                - generic [ref=e2221]: •
+                                - time [ref=e2223]: 1mo ago
+                              - link "List item post - Testing & Benchmarking Qwen3.5 2k→400k Context Limit on my ..." [ref=e2225] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/comments/1rn59iv/testing_benchmarking_qwen35_2k400k_context_limit/
+                                - heading "List item post - Testing & Benchmarking Qwen3.5 2k→400k Context Limit on my ..." [level=3] [ref=e2228]: Testing & Benchmarking Qwen3.5 2k→400k Context Limit on my 4090
+                            - link "r/LocalLLaMA - Testing & Benchmarking Qwen3.5 2k→400k Context Limit on my 4090" [ref=e2231] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1rn59iv/testing_benchmarking_qwen35_2k400k_context_limit/
+                              - img "r/LocalLLaMA - Testing & Benchmarking Qwen3.5 2k→400k Context Limit on my 4090" [ref=e2232]
+                          - generic [ref=e2234]:
+                            - generic [ref=e2235]: "12"
+                            - text: upvotes ·
+                            - generic [ref=e2236]: "20"
+                            - text: comments
+                        - separator [ref=e2237]
+                    - listitem [ref=e2238]:
+                      - generic [ref=e2239]:
+                        - generic [ref=e2241]:
+                          - link "I can't believe it actually runs - Qwen 235b @ 16GB VRAM" [ref=e2242] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1lqnwih/i_cant_believe_it_actually_runs_qwen_235b_16gb/
+                            - generic [ref=e2243]:
+                              - generic: I can't believe it actually runs - Qwen 235b @ 16GB VRAM
+                          - generic [ref=e2246]:
+                            - generic [ref=e2249]:
+                              - link "r/LocalLLaMA" [ref=e2250] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2254]: r/LocalLLaMA
+                              - generic [ref=e2255]: •
+                              - time [ref=e2257]: 10mo ago
+                            - link "List item post - I can't believe it actually runs - Qwen 235b @ 16GB VRAM" [ref=e2259] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1lqnwih/i_cant_believe_it_actually_runs_qwen_235b_16gb/
+                              - heading "List item post - I can't believe it actually runs - Qwen 235b @ 16GB VRAM" [level=3] [ref=e2262]: I can't believe it actually runs - Qwen 235b @ 16GB VRAM
+                          - generic [ref=e2264]:
+                            - generic [ref=e2265]: "264"
+                            - text: upvotes ·
+                            - generic [ref=e2266]: "117"
+                            - text: comments
+                        - separator [ref=e2267]
+                    - listitem [ref=e2268]:
+                      - generic [ref=e2269]:
+                        - generic [ref=e2271]:
+                          - link "Local Qwen 3.5 (9B) extremely slow on RTX 4060 Ti. Is this normal?" [ref=e2272] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1rla9c7/local_qwen_35_9b_extremely_slow_on_rtx_4060_ti_is/
+                            - generic [ref=e2273]:
+                              - generic: Local Qwen 3.5 (9B) extremely slow on RTX 4060 Ti. Is this normal?
+                          - generic [ref=e2276]:
+                            - generic [ref=e2279]:
+                              - link "r/LocalLLaMA" [ref=e2280] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2284]: r/LocalLLaMA
+                              - generic [ref=e2285]: •
+                              - time [ref=e2287]: 1mo ago
+                            - link "List item post - Local Qwen 3.5 (9B) extremely slow on RTX 4060 Ti. Is this ..." [ref=e2289] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1rla9c7/local_qwen_35_9b_extremely_slow_on_rtx_4060_ti_is/
+                              - heading "List item post - Local Qwen 3.5 (9B) extremely slow on RTX 4060 Ti. Is this ..." [level=3] [ref=e2292]: Local Qwen 3.5 (9B) extremely slow on RTX 4060 Ti. Is this normal?
+                          - generic [ref=e2294]:
+                            - generic [ref=e2295]: "10"
+                            - text: upvotes ·
+                            - generic [ref=e2296]: "25"
+                            - text: comments
+                        - separator [ref=e2297]
+                    - listitem [ref=e2298]:
+                      - generic [ref=e2299]:
+                        - generic [ref=e2301]:
+                          - link "Getting slow speeds with RTX 5090 and 64gb ram. Am I doing something wrong?" [ref=e2302] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1qwiwyh/getting_slow_speeds_with_rtx_5090_and_64gb_ram_am/
+                            - generic [ref=e2303]:
+                              - generic: Getting slow speeds with RTX 5090 and 64gb ram. Am I doing something wrong?
+                          - generic [ref=e2306]:
+                            - generic [ref=e2309]:
+                              - link "r/LocalLLaMA" [ref=e2310] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2314]: r/LocalLLaMA
+                              - generic [ref=e2315]: •
+                              - time [ref=e2317]: 2mo ago
+                            - link "List item post - Getting slow speeds with RTX 5090 and 64gb ram. Am I doing ..." [ref=e2319] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1qwiwyh/getting_slow_speeds_with_rtx_5090_and_64gb_ram_am/
+                              - heading "List item post - Getting slow speeds with RTX 5090 and 64gb ram. Am I doing ..." [level=3] [ref=e2322]: Getting slow speeds with RTX 5090 and 64gb ram. Am I doing something wrong?
+                          - generic [ref=e2324]:
+                            - generic [ref=e2325]: "2"
+                            - text: upvotes ·
+                            - generic [ref=e2326]: "38"
+                            - text: comments
+                        - separator [ref=e2327]
+                    - listitem [ref=e2328]:
+                      - generic [ref=e2329]:
+                        - generic [ref=e2331]:
+                          - link "2000 TPS with QWEN 3.5 27b on RTX-5090" [ref=e2332] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1rsz8k6/2000_tps_with_qwen_35_27b_on_rtx5090/
+                            - generic [ref=e2333]:
+                              - generic: 2000 TPS with QWEN 3.5 27b on RTX-5090
+                          - generic [ref=e2336]:
+                            - generic [ref=e2339]:
+                              - link "r/LocalLLaMA" [ref=e2340] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2344]: r/LocalLLaMA
+                              - generic [ref=e2345]: •
+                              - time [ref=e2347]: 1mo ago
+                            - link "List item post - 2000 TPS with QWEN 3.5 27b on RTX-5090" [ref=e2349] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1rsz8k6/2000_tps_with_qwen_35_27b_on_rtx5090/
+                              - heading "List item post - 2000 TPS with QWEN 3.5 27b on RTX-5090" [level=3] [ref=e2352]: 2000 TPS with QWEN 3.5 27b on RTX-5090
+                          - generic [ref=e2354]:
+                            - generic [ref=e2355]: "211"
+                            - text: upvotes ·
+                            - generic [ref=e2356]: "81"
+                            - text: comments
+                        - separator [ref=e2357]
+                    - listitem [ref=e2358]:
+                      - generic [ref=e2359]:
+                        - generic [ref=e2361]:
+                          - link "Qwen 30B A3B on RTX 3050 ( 6GB Vram ) runs at 12tps, but loop at the end..." [ref=e2362] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1ml4kpv/qwen_30b_a3b_on_rtx_3050_6gb_vram_runs_at_12tps/
+                            - generic [ref=e2363]:
+                              - generic: Qwen 30B A3B on RTX 3050 ( 6GB Vram ) runs at 12tps, but loop at the end...
+                          - generic [ref=e2366]:
+                            - generic [ref=e2369]:
+                              - link "r/LocalLLaMA" [ref=e2370] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2374]: r/LocalLLaMA
+                              - generic [ref=e2375]: •
+                              - time [ref=e2377]: 8mo ago
+                            - link "List item post - Qwen 30B A3B on RTX 3050 ( 6GB Vram ) runs at 12tps, but lo..." [ref=e2379] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1ml4kpv/qwen_30b_a3b_on_rtx_3050_6gb_vram_runs_at_12tps/
+                              - heading "List item post - Qwen 30B A3B on RTX 3050 ( 6GB Vram ) runs at 12tps, but lo..." [level=3] [ref=e2382]: Qwen 30B A3B on RTX 3050 ( 6GB Vram ) runs at 12tps, but loop at the end...
+                          - generic [ref=e2384]:
+                            - generic [ref=e2385]: "4"
+                            - text: upvotes ·
+                            - generic [ref=e2386]: "13"
+                            - text: comments
+                        - separator [ref=e2387]
+                    - listitem [ref=e2388]:
+                      - generic [ref=e2389]:
+                        - generic [ref=e2391]:
+                          - link "Local success (20B with 12 GB VRAM)" [ref=e2392] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1r4o9aq/local_success_20b_with_12_gb_vram/
+                            - generic [ref=e2393]:
+                              - generic: Local success (20B with 12 GB VRAM)
+                          - generic [ref=e2396]:
+                            - generic [ref=e2399]:
+                              - link "r/LocalLLaMA" [ref=e2400] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2404]: r/LocalLLaMA
+                              - generic [ref=e2405]: •
+                              - time [ref=e2407]: 2mo ago
+                            - link "List item post - Local success (20B with 12 GB VRAM)" [ref=e2409] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1r4o9aq/local_success_20b_with_12_gb_vram/
+                              - heading "List item post - Local success (20B with 12 GB VRAM)" [level=3] [ref=e2412]: Local success (20B with 12 GB VRAM)
+                          - generic [ref=e2414]:
+                            - generic [ref=e2415]: "6"
+                            - text: upvotes ·
+                            - generic [ref=e2416]: "7"
+                            - text: comments
+                        - separator [ref=e2417]
+                    - listitem [ref=e2418]:
+                      - generic [ref=e2419]:
+                        - generic [ref=e2421]:
+                          - link "Can I run Qwen3.5 122B-A10B on a single RTX 3090 + 64GB DDR4?" [ref=e2422] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1rett32/can_i_run_qwen35_122ba10b_on_a_single_rtx_3090/
+                            - generic [ref=e2423]:
+                              - generic: Can I run Qwen3.5 122B-A10B on a single RTX 3090 + 64GB DDR4?
+                          - generic [ref=e2426]:
+                            - generic [ref=e2429]:
+                              - link "r/LocalLLaMA" [ref=e2430] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2434]: r/LocalLLaMA
+                              - generic [ref=e2435]: •
+                              - time [ref=e2437]: 2mo ago
+                            - link "List item post - Can I run Qwen3.5 122B-A10B on a single RTX 3090 + 64GB DDR..." [ref=e2439] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1rett32/can_i_run_qwen35_122ba10b_on_a_single_rtx_3090/
+                              - heading "List item post - Can I run Qwen3.5 122B-A10B on a single RTX 3090 + 64GB DDR..." [level=3] [ref=e2442]: Can I run Qwen3.5 122B-A10B on a single RTX 3090 + 64GB DDR4?
+                          - generic [ref=e2444]:
+                            - generic [ref=e2445]: "10"
+                            - text: upvotes ·
+                            - generic [ref=e2446]: "32"
+                            - text: comments
+                        - separator [ref=e2447]
+                    - listitem [ref=e2448]:
+                      - generic [ref=e2449]:
+                        - generic [ref=e2451]:
+                          - link "running Qwen3.5-27B Q5 splitt across a 4070ti and an amd rx6800 over LAN @ 13t/s with a 32k prompt" [ref=e2452] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1ru17mh/running_qwen3527b_q5_splitt_across_a_4070ti_and/
+                            - generic [ref=e2453]:
+                              - generic: running Qwen3.5-27B Q5 splitt across a 4070ti and an amd rx6800 over LAN @ 13t/s with a 32k prompt
+                          - generic [ref=e2456]:
+                            - generic [ref=e2459]:
+                              - link "r/LocalLLaMA" [ref=e2460] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2464]: r/LocalLLaMA
+                              - generic [ref=e2465]: •
+                              - time [ref=e2467]: 1mo ago
+                            - link "List item post - running Qwen3.5-27B Q5 splitt across a 4070ti and an amd rx..." [ref=e2469] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1ru17mh/running_qwen3527b_q5_splitt_across_a_4070ti_and/
+                              - heading "List item post - running Qwen3.5-27B Q5 splitt across a 4070ti and an amd rx..." [level=3] [ref=e2472]: running Qwen3.5-27B Q5 splitt across a 4070ti and an amd rx6800 over LAN @ 13t/s with a 32k prompt
+                          - generic [ref=e2474]:
+                            - generic [ref=e2475]: "33"
+                            - text: upvotes ·
+                            - generic [ref=e2476]: "25"
+                            - text: comments
+                        - separator [ref=e2477]
+                    - listitem [ref=e2478]:
+                      - generic [ref=e2479]:
+                        - generic [ref=e2481]:
+                          - link "Setup advice. New RTX 5090 32gb ram + 96gb Ddr5 ram." [ref=e2482] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1s6uxsp/setup_advice_new_rtx_5090_32gb_ram_96gb_ddr5_ram/
+                            - generic [ref=e2483]:
+                              - generic: Setup advice. New RTX 5090 32gb ram + 96gb Ddr5 ram.
+                          - generic [ref=e2486]:
+                            - generic [ref=e2489]:
+                              - link "r/LocalLLaMA" [ref=e2490] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2494]: r/LocalLLaMA
+                              - generic [ref=e2495]: •
+                              - time [ref=e2497]: 20d ago
+                            - link "List item post - Setup advice. New RTX 5090 32gb ram + 96gb Ddr5 ram." [ref=e2499] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1s6uxsp/setup_advice_new_rtx_5090_32gb_ram_96gb_ddr5_ram/
+                              - heading "List item post - Setup advice. New RTX 5090 32gb ram + 96gb Ddr5 ram." [level=3] [ref=e2502]: Setup advice. New RTX 5090 32gb ram + 96gb Ddr5 ram.
+                          - generic [ref=e2504]:
+                            - generic [ref=e2505]: "7"
+                            - text: upvotes ·
+                            - generic [ref=e2506]: "45"
+                            - text: comments
+                        - separator [ref=e2507]
+                    - listitem [ref=e2508]:
+                      - generic [ref=e2509]:
+                        - generic [ref=e2511]:
+                          - link "Qwen 3.5 122B A10B running 50tok/s on DGX SPARK / Asus Ascent" [ref=e2512] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1sko0ft/qwen_35_122b_a10b_running_50toks_on_dgx_spark/
+                            - generic [ref=e2513]:
+                              - generic: Qwen 3.5 122B A10B running 50tok/s on DGX SPARK / Asus Ascent
+                          - generic [ref=e2516]:
+                            - generic [ref=e2519]:
+                              - link "r/LocalLLaMA" [ref=e2520] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2524]: r/LocalLLaMA
+                              - generic [ref=e2525]: •
+                              - time [ref=e2527]: 5d ago
+                            - link "List item post - Qwen 3.5 122B A10B running 50tok/s on DGX SPARK / Asus Asce..." [ref=e2529] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1sko0ft/qwen_35_122b_a10b_running_50toks_on_dgx_spark/
+                              - heading "List item post - Qwen 3.5 122B A10B running 50tok/s on DGX SPARK / Asus Asce..." [level=3] [ref=e2532]: Qwen 3.5 122B A10B running 50tok/s on DGX SPARK / Asus Ascent
+                          - generic [ref=e2534]:
+                            - generic [ref=e2535]: "14"
+                            - text: upvotes ·
+                            - generic [ref=e2536]: "24"
+                            - text: comments
+                        - separator [ref=e2537]
+                    - listitem [ref=e2538]:
+                      - generic [ref=e2539]:
+                        - generic [ref=e2541]:
+                          - link "Dual 3090 setup - performance optimization" [ref=e2542] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1sienfj/dual_3090_setup_performance_optimization/
+                            - generic [ref=e2543]:
+                              - generic: Dual 3090 setup - performance optimization
+                          - generic [ref=e2546]:
+                            - generic [ref=e2549]:
+                              - link "r/LocalLLaMA" [ref=e2550] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2554]: r/LocalLLaMA
+                              - generic [ref=e2555]: •
+                              - time [ref=e2557]: 7d ago
+                            - link "List item post - Dual 3090 setup - performance optimization" [ref=e2559] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1sienfj/dual_3090_setup_performance_optimization/
+                              - heading "List item post - Dual 3090 setup - performance optimization" [level=3] [ref=e2562]: Dual 3090 setup - performance optimization
+                          - generic [ref=e2564]:
+                            - generic [ref=e2565]: "3"
+                            - text: upvotes ·
+                            - generic [ref=e2566]: "36"
+                            - text: comments
+                        - separator [ref=e2567]
+                    - listitem [ref=e2568]:
+                      - generic [ref=e2569]:
+                        - generic [ref=e2571]:
+                          - link "Qwen 3.5 9B being very slow in 16gb VRAM (rtx 5060ti)" [ref=e2572] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1shvyfc/qwen_35_9b_being_very_slow_in_16gb_vram_rtx_5060ti/
+                            - generic [ref=e2573]:
+                              - generic: Qwen 3.5 9B being very slow in 16gb VRAM (rtx 5060ti)
+                          - generic [ref=e2576]:
+                            - generic [ref=e2579]:
+                              - link "r/LocalLLaMA" [ref=e2580] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2584]: r/LocalLLaMA
+                              - generic [ref=e2585]: •
+                              - time [ref=e2587]: 8d ago
+                            - link "List item post - Qwen 3.5 9B being very slow in 16gb VRAM (rtx 5060ti)" [ref=e2589] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1shvyfc/qwen_35_9b_being_very_slow_in_16gb_vram_rtx_5060ti/
+                              - heading "List item post - Qwen 3.5 9B being very slow in 16gb VRAM (rtx 5060ti)" [level=3] [ref=e2592]: Qwen 3.5 9B being very slow in 16gb VRAM (rtx 5060ti)
+                          - generic [ref=e2594]:
+                            - generic [ref=e2595]: "2"
+                            - text: upvotes ·
+                            - generic [ref=e2596]: "26"
+                            - text: comments
+                        - separator [ref=e2597]
+                    - listitem [ref=e2598]:
+                      - generic [ref=e2599]:
+                        - generic [ref=e2601]:
+                          - link "Currently which model will run smooth on rtx 3060 ? Situation is so dynamic those days." [ref=e2602] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1sif8g9/currently_which_model_will_run_smooth_on_rtx_3060/
+                            - generic [ref=e2603]:
+                              - generic: Currently which model will run smooth on rtx 3060 ? Situation is so dynamic those days.
+                          - generic [ref=e2606]:
+                            - generic [ref=e2609]:
+                              - link "r/LocalLLaMA" [ref=e2610] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/
+                                - generic [ref=e2614]: r/LocalLLaMA
+                              - generic [ref=e2615]: •
+                              - time [ref=e2617]: 7d ago
+                            - link "List item post - Currently which model will run smooth on rtx 3060 ? Situati..." [ref=e2619] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1sif8g9/currently_which_model_will_run_smooth_on_rtx_3060/
+                              - heading "List item post - Currently which model will run smooth on rtx 3060 ? Situati..." [level=3] [ref=e2622]: Currently which model will run smooth on rtx 3060 ? Situation is so dynamic those days.
+                          - generic [ref=e2624]:
+                            - generic [ref=e2625]: "4"
+                            - text: upvotes ·
+                            - generic [ref=e2626]: "28"
+                            - text: comments
+                        - separator [ref=e2627]
+                    - listitem [ref=e2628]:
+                      - generic [ref=e2629]:
+                        - generic [ref=e2631]:
+                          - link "Performance Benchmark - Qwen3.5 & Gemma4 on dual GPU setup (RTX 4070 + RTX 3060)" [ref=e2632] [cursor=pointer]:
+                            - /url: /r/LocalLLaMA/comments/1skpubf/performance_benchmark_qwen35_gemma4_on_dual_gpu/
+                            - generic [ref=e2633]:
+                              - generic: Performance Benchmark - Qwen3.5 & Gemma4 on dual GPU setup (RTX 4070 + RTX 3060)
+                          - generic [ref=e2635]:
+                            - generic [ref=e2636]:
+                              - generic [ref=e2639]:
+                                - link "r/LocalLLaMA" [ref=e2640] [cursor=pointer]:
+                                  - /url: /r/LocalLLaMA/
+                                  - generic [ref=e2644]: r/LocalLLaMA
+                                - generic [ref=e2645]: •
+                                - time [ref=e2647]: 5d ago
+                              - link "List item post - Performance Benchmark - Qwen3.5 & Gemma4 on dual GPU setup ..." [ref=e2649] [cursor=pointer]:
+                                - /url: /r/LocalLLaMA/comments/1skpubf/performance_benchmark_qwen35_gemma4_on_dual_gpu/
+                                - heading "List item post - Performance Benchmark - Qwen3.5 & Gemma4 on dual GPU setup ..." [level=3] [ref=e2652]: Performance Benchmark - Qwen3.5 & Gemma4 on dual GPU setup (RTX 4070 + RTX 3060)
+                            - link "r/LocalLLaMA - Performance Benchmark - Qwen3.5 & Gemma4 on dual GPU setup (RTX 4070 + RTX 3060)" [ref=e2655] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/comments/1skpubf/performance_benchmark_qwen35_gemma4_on_dual_gpu/
+                              - img "r/LocalLLaMA - Performance Benchmark - Qwen3.5 & Gemma4 on dual GPU setup (RTX 4070 + RTX 3060)" [ref=e2656]
+                          - generic [ref=e2658]:
+                            - generic [ref=e2659]: "22"
+                            - text: upvotes ·
+                            - generic [ref=e2660]: "18"
+                            - text: comments
+                        - separator [ref=e2661]
+                    - listitem [ref=e2662]:
+                      - generic [ref=e2665]:
+                        - 'link "current: 1x 16GB 5060Ti. worth a 2nd for OpenCode?" [ref=e2666] [cursor=pointer]':
+                          - /url: /r/LocalLLaMA/comments/1skn8w9/current_1x_16gb_5060ti_worth_a_2nd_for_opencode/
+                          - generic [ref=e2667]:
+                            - generic: "current: 1x 16GB 5060Ti. worth a 2nd for OpenCode?"
+                        - generic [ref=e2670]:
+                          - generic [ref=e2673]:
+                            - link "r/LocalLLaMA" [ref=e2674] [cursor=pointer]:
+                              - /url: /r/LocalLLaMA/
+                              - generic [ref=e2678]: r/LocalLLaMA
+                            - generic [ref=e2679]: •
+                            - time [ref=e2681]: 5d ago
+                          - 'link "List item post - current: 1x 16GB 5060Ti. worth a 2nd for OpenCode?" [ref=e2683] [cursor=pointer]':
+                            - /url: /r/LocalLLaMA/comments/1skn8w9/current_1x_16gb_5060ti_worth_a_2nd_for_opencode/
+                            - 'heading "List item post - current: 1x 16GB 5060Ti. worth a 2nd for OpenCode?" [level=3] [ref=e2686]': "current: 1x 16GB 5060Ti. worth a 2nd for OpenCode?"
+                        - generic [ref=e2688]:
+                          - generic [ref=e2689]: "3"
+                          - text: upvotes ·
+                          - generic [ref=e2690]: "9"
+                          - text: comments
+                - generic [ref=e2691]:
+                  - heading "View Post in" [level=2] [ref=e2693]:
+                    - generic [ref=e2694]: View Post in
+                  - generic [ref=e2695]:
+                    - link "Français" [ref=e2697] [cursor=pointer]:
+                      - /url: https://www.reddit.com/r/LocalLLaMA/comments/1sor55y/rtx_5070_ti_9800x3d_running_qwen3635ba3b_at_79_ts/?tl=fr
+                    - link "Português (Brasil)" [ref=e2699] [cursor=pointer]:
+                      - /url: https://www.reddit.com/r/LocalLLaMA/comments/1sor55y/rtx_5070_ti_9800x3d_running_qwen3635ba3b_at_79_ts/?tl=pt-br
+                    - group [ref=e2700]:
+                      - generic "See more" [ref=e2701] [cursor=pointer]:
+                        - generic [ref=e2702]: See more
+                        - img [ref=e2704]
+                - complementary "Community information" [ref=e2706]:
+                  - generic [ref=e2708]:
+                    - heading "Community Info Section" [level=1] [ref=e2709]
+                    - generic [ref=e2710]:
+                      - generic [ref=e2711]:
+                        - link "r/LocalLLaMA" [ref=e2712] [cursor=pointer]:
+                          - /url: /r/LocalLLaMA/
+                          - generic [ref=e2713]: r/LocalLLaMA
+                        - 'button "Community status: https://x.com/localllamasub" [ref=e2716] [cursor=pointer]':
+                          - img "Llama" [ref=e2717]
+                      - button "Join" [ref=e2721] [cursor=pointer]
+                    - generic [ref=e2722]:
+                      - generic [ref=e2723]: LocalLlama
+                      - generic [ref=e2724]: Subreddit to discuss locally hostable AI
+                      - generic [ref=e2727]:
+                        - img [ref=e2728]
+                        - text: Public
+              - generic [ref=e2731]:
+                - link "Reddit Rules" [ref=e2734] [cursor=pointer]:
+                  - /url: https://www.redditinc.com/policies/content-policy
+                - link "Privacy Policy" [ref=e2737] [cursor=pointer]:
+                  - /url: https://www.reddit.com/policies/privacy-policy
+                - link "User Agreement" [ref=e2740] [cursor=pointer]:
+                  - /url: https://www.redditinc.com/policies/user-agreement
+                - link "Accessibility" [ref=e2743] [cursor=pointer]:
+                  - /url: https://support.reddithelp.com/hc/sections/38303584022676-Accessibility
+                - link "Reddit, Inc. © 2026. All rights reserved." [ref=e2745] [cursor=pointer]:
+                  - /url: https://redditinc.com
+        - generic [ref=e2747]:
+          - button "Collapse Navigation" [ref=e2750] [cursor=pointer]:
+            - img [ref=e2753]
+            - generic [ref=e2755]:
+              - generic: Collapse Navigation
+          - navigation "Primary" [ref=e2760]:
+            - generic [ref=e2762]:
+              - link "Popular" [ref=e2764] [cursor=pointer]:
+                - /url: /r/popular/
+                - generic [ref=e2765]:
+                  - img [ref=e2767]
+                  - generic [ref=e2770]: Popular
+              - link "News" [ref=e2771] [cursor=pointer]:
+                - /url: /news/
+                - generic [ref=e2772]:
+                  - img [ref=e2774]
+                  - generic [ref=e2778]: News
+              - link "Explore" [ref=e2780] [cursor=pointer]:
+                - /url: /explore/
+                - generic [ref=e2781]:
+                  - img [ref=e2783]
+                  - generic [ref=e2786]: Explore
+            - separator [ref=e2787]
+            - navigation "Reddit resources" [ref=e2788]:
+              - group [ref=e2790]:
+                - generic "RESOURCES" [ref=e2791] [cursor=pointer]:
+                  - generic [ref=e2793]:
+                    - generic [ref=e2796]: RESOURCES
+                    - img [ref=e2799]
+                - generic [ref=e2802]:
+                  - link "About Reddit" [ref=e2804] [cursor=pointer]:
+                    - /url: https://www.redditinc.com
+                    - generic [ref=e2805]:
+                      - img [ref=e2807]
+                      - generic [ref=e2811]: About Reddit
+                  - link "Advertise" [ref=e2813] [cursor=pointer]:
+                    - /url: https://ads.reddit.com/register?utm_source=web3x_consumer&utm_name=left_nav_cta
+                    - generic [ref=e2814]:
+                      - img [ref=e2816]
+                      - generic [ref=e2820]: Advertise
+                  - link "Developer Platform" [ref=e2822] [cursor=pointer]:
+                    - /url: https://developers.reddit.com/?utm_source=reddit&utm_medium=left_nav_resources
+                    - generic [ref=e2823]:
+                      - img [ref=e2825]
+                      - generic [ref=e2829]: Developer Platform
+                  - link "Reddit Pro BETA" [ref=e2831] [cursor=pointer]:
+                    - /url: /reddit-pro?utm_source=reddit&utm_medium=left_nav_resources
+                    - generic [ref=e2832]:
+                      - img [ref=e2834]
+                      - generic [ref=e2838]:
+                        - generic [ref=e2839]: Reddit Pro
+                        - generic [ref=e2840]: BETA
+                  - link "Help" [ref=e2842] [cursor=pointer]:
+                    - /url: https://support.reddithelp.com/hc?utm_source=reddit&utm_medium=footer&utm_campaign=evergreen
+                    - generic [ref=e2843]:
+                      - img [ref=e2845]
+                      - generic [ref=e2849]: Help
+                  - link "Blog" [ref=e2851] [cursor=pointer]:
+                    - /url: https://redditblog.com/
+                    - generic [ref=e2852]:
+                      - img [ref=e2854]
+                      - generic [ref=e2858]: Blog
+                  - link "Careers" [ref=e2860] [cursor=pointer]:
+                    - /url: https://www.redditinc.com/careers
+                    - generic [ref=e2861]:
+                      - img [ref=e2863]
+                      - generic [ref=e2867]: Careers
+                  - link "Press" [ref=e2869] [cursor=pointer]:
+                    - /url: https://www.redditinc.com/press
+                    - generic [ref=e2870]:
+                      - img [ref=e2872]
+                      - generic [ref=e2876]: Press
+                  - separator [ref=e2877]
+                  - link "Best of Reddit" [ref=e2879] [cursor=pointer]:
+                    - /url: https://www.reddit.com/posts/2026/global/
+                    - generic [ref=e2880]:
+                      - img [ref=e2882]
+                      - generic [ref=e2887]: Best of Reddit
+                  - separator [ref=e2888]
+                  - link "Reddit Rules" [ref=e2890] [cursor=pointer]:
+                    - /url: https://www.redditinc.com/policies/content-policy
+                    - generic [ref=e2891]:
+                      - img [ref=e2893]
+                      - generic [ref=e2897]: Reddit Rules
+                  - link "Privacy Policy" [ref=e2899] [cursor=pointer]:
+                    - /url: https://www.reddit.com/policies/privacy-policy
+                    - generic [ref=e2900]:
+                      - img [ref=e2902]
+                      - generic [ref=e2906]: Privacy Policy
+                  - link "User Agreement" [ref=e2908] [cursor=pointer]:
+                    - /url: https://www.redditinc.com/policies/user-agreement
+                    - generic [ref=e2909]:
+                      - img [ref=e2911]
+                      - generic [ref=e2915]: User Agreement
+                  - link "Accessibility" [ref=e2917] [cursor=pointer]:
+                    - /url: https://support.reddithelp.com/hc/sections/38303584022676-Accessibility
+                    - generic [ref=e2918]:
+                      - img [ref=e2920]
+                      - generic [ref=e2925]: Accessibility
+            - link "Reddit, Inc. © 2026. All rights reserved." [ref=e2927] [cursor=pointer]:
+              - /url: https://redditinc.com
+      - dialog "Data Protection Consent" [ref=e2929]:
+        - generic [ref=e2930]:
+          - generic [ref=e2932]:
+            - generic:
+              - button "Close" [ref=e2936] [cursor=pointer]:
+                - img [ref=e2939]
+              - generic [ref=e2941]:
+                - generic [ref=e2943]: Let us know your cookie preferences
+                - generic [ref=e2945]:
+                  - paragraph [ref=e2946]: "Reddit uses cookies and similar technologies to:"
+                  - list [ref=e2947]:
+                    - listitem [ref=e2948]: Keep the website operational and running properly
+                    - listitem [ref=e2949]: Prevent fraud and abuse
+                    - listitem [ref=e2950]: Monitor site usage and performance metrics
+                  - paragraph [ref=e2951]: "If you choose “Accept All” we’ll also use cookies to:"
+                  - list [ref=e2952]:
+                    - listitem [ref=e2953]: Personalize your recommendations and ads
+                    - listitem [ref=e2954]: Measure the performance of ads
+                    - listitem [ref=e2955]: Develop and improve new features and services
+                  - paragraph [ref=e2956]: If you choose “Reject Optional Cookies” we won’t use cookies for these additional uses. You can update your cookie preference from your settings.
+                  - paragraph [ref=e2957]:
+                    - text: Learn more about
+                    - link "how Reddit uses cookies" [ref=e2958] [cursor=pointer]:
+                      - /url: /en-us/policies/cookies
+                    - text: .
+          - generic [ref=e2960]:
+            - button "Reject Optional Cookies" [ref=e2961] [cursor=pointer]:
+              - generic [ref=e2963]: Reject Optional Cookies
+            - button "Accept All" [ref=e2964] [cursor=pointer]:
+              - generic [ref=e2966]: Accept All
