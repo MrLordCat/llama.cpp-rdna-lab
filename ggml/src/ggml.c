@@ -55,8 +55,13 @@
 
 uint64_t ggml_graph_next_uid(void) {
 #ifdef _MSC_VER
+#if defined(_WIN32)
+    static volatile LONG counter = 1;
+    return (uint64_t) InterlockedIncrement(&counter) - 1;
+#else
     static volatile long long counter = 1;
     return (uint64_t) _InterlockedIncrement64(&counter) - 1;
+#endif
 #else
     static uint64_t counter = 1;
     return __atomic_fetch_add(&counter, 1, __ATOMIC_RELAXED);
@@ -6197,7 +6202,8 @@ struct ggml_tensor * ggml_gated_delta_net(
         struct ggml_tensor  * v,
         struct ggml_tensor  * g,
         struct ggml_tensor  * beta,
-        struct ggml_tensor  * state) {
+        struct ggml_tensor  * state,
+        bool                  keep_intermediates) {
     GGML_ASSERT(ggml_is_contiguous_rows(q));
     GGML_ASSERT(ggml_is_contiguous_rows(k));
     GGML_ASSERT(ggml_is_contiguous_rows(v));
@@ -6223,9 +6229,8 @@ struct ggml_tensor * ggml_gated_delta_net(
 
     GGML_ASSERT(ggml_nelements(state) == S_v * S_v * H * n_seqs);
 
-    // concat output and new_state into a single tensor
-    // output: S_v * H * n_tokens * n_seqs, state: S_v * S_v * H * n_seqs
-    const int64_t ne[4] = { S_v * H, n_tokens * n_seqs + S_v * n_seqs, 1, 1 };
+    const int64_t state_rows = keep_intermediates ? n_tokens * S_v * n_seqs : S_v * n_seqs;
+    const int64_t ne[4] = { S_v * H, n_tokens * n_seqs + state_rows, 1, 1 };
     struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
 
     result->op     = GGML_OP_GATED_DELTA_NET;
@@ -6235,6 +6240,9 @@ struct ggml_tensor * ggml_gated_delta_net(
     result->src[3] = g;
     result->src[4] = beta;
     result->src[5] = state;
+
+    int32_t flag = keep_intermediates ? 1 : 0;
+    ggml_set_op_params(result, &flag, sizeof(flag));
 
     return result;
 }
