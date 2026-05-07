@@ -62,7 +62,7 @@ endif()
 option(BUILD_SHARED_LIBS "build shared libraries" ${BUILD_SHARED_LIBS_DEFAULT})
 
 if (WIN32)
-    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS _WIN32_WINNT=0x0A00 WINVER=0x0A00)
 endif()
 
 if (MSVC)
@@ -70,6 +70,11 @@ if (MSVC)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/utf-8>")
     add_compile_options("$<$<COMPILE_LANGUAGE:C>:/bigobj>")
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/bigobj>")
+endif()
+
+if (MINGW)
+    add_compile_options("$<$<COMPILE_LANGUAGE:C>:-Wa,-mbig-obj>")
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-Wa,-mbig-obj>")
 endif()
 
 if (LLAMA_STANDALONE)

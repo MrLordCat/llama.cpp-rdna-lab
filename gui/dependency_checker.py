@@ -4,6 +4,7 @@ Dependency checker and installer for llama.cpp GUI
 
 import sys
 import subprocess
+import shutil
 from pathlib import Path
 from typing import List, Tuple, Optional
 
@@ -35,6 +36,11 @@ class DependencyChecker:
             "install_hint_linux": "sudo apt install cmake  # or: sudo dnf install cmake",
             "description": "CMake build system",
             "required_for": ["all"],
+            "standard_paths": [
+                "C:\\Program Files\\CMake\\bin\\cmake.exe",
+                "C:\\Program Files (x86)\\CMake\\bin\\cmake.exe",
+                "C:\\Strawberry\\c\\bin\\cmake.exe",
+            ],
         },
         "git": {
             "check_cmd": ["git", "--version"],
@@ -42,6 +48,12 @@ class DependencyChecker:
             "install_hint_linux": "sudo apt install git  # or: sudo dnf install git",
             "description": "Git version control",
             "required_for": ["all"],
+            "standard_paths": [
+                "C:\\Program Files\\Git\\cmd\\git.exe",
+                "C:\\Program Files\\Git\\bin\\git.exe",
+                "C:\\Program Files (x86)\\Git\\cmd\\git.exe",
+                "C:\\Strawberry\\c\\bin\\git.exe",
+            ],
         },
         "ninja": {
             "check_cmd": ["ninja", "--version"],
@@ -49,6 +61,13 @@ class DependencyChecker:
             "install_hint_linux": "sudo apt install ninja-build  # or: sudo dnf install ninja-build",
             "description": "Ninja build system (required for ROCm)",
             "required_for": ["rocm"],
+            "standard_paths": [
+                "C:\\Program Files\\Ninja\\ninja.exe",
+                "C:\\Program Files\\CMake\\bin\\ninja.exe",
+                "C:\\ProgramData\\chocolatey\\bin\\ninja.exe",
+                "C:\\Strawberry\\c\\bin\\ninja.exe",
+                "C:\\msys64\\usr\\bin\\ninja.exe",
+            ],
         },
         "perl": {
             "check_cmd": ["perl", "--version"],
@@ -77,30 +96,17 @@ class DependencyChecker:
     @staticmethod
     def check_system_tool(tool_name: str) -> bool:
         """Check if a system tool is installed"""
-        tool_info = DependencyChecker.SYSTEM_TOOLS.get(tool_name)
-        if not tool_info:
-            return False
-        
-        # First try command in PATH
+        return DependencyChecker.get_tool_path(tool_name) is not None
+
+    @staticmethod
+    def _tool_path_works(path: str, tool_info: dict) -> bool:
+        """Return True if the executable responds to its check command."""
         try:
-            result = subprocess.run(
-                tool_info["check_cmd"],
-                capture_output=True,
-                timeout=5
-            )
-            if result.returncode == 0:
-                return True
+            check_cmd = [path] + tool_info["check_cmd"][1:]
+            result = subprocess.run(check_cmd, capture_output=True, timeout=5)
+            return result.returncode == 0
         except:
-            pass
-        
-        # Check standard installation paths
-        from pathlib import Path
-        standard_paths = tool_info.get("standard_paths", [])
-        for path in standard_paths:
-            if Path(path).exists():
-                return True
-        
-        return False
+            return False
     
     @staticmethod
     def get_tool_path(tool_name: str) -> Optional[str]:
@@ -109,19 +115,37 @@ class DependencyChecker:
         if not tool_info:
             return None
         
-        # First try command in PATH
+        candidates = []
+
+        # Prefer known good install locations before PATH. Some bundled tools
+        # (for example Strawberry Perl's CMake) can appear first in PATH but be
+        # the wrong choice for Visual Studio generator detection.
+        standard_paths = tool_info.get("standard_paths", [])
+        for path in standard_paths:
+            if Path(path).exists():
+                candidates.append(str(Path(path)))
+
+        # Then try command in PATH
         try:
-            import shutil
             cmd = tool_info["check_cmd"][0]
             path = shutil.which(cmd)
             if path:
-                return path
+                candidates.append(path)
         except:
             pass
-        
-        # Check standard installation paths
-        from pathlib import Path
-        standard_paths = tool_info.get("standard_paths", [])
+
+        seen = set()
+        for path in candidates:
+            normalized = str(Path(path))
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            if DependencyChecker._tool_path_works(normalized, tool_info):
+                return normalized
+
+        # Last resort: return an existing standard path even if --version failed,
+        # so callers can still report or display the concrete executable path.
         for path in standard_paths:
             if Path(path).exists():
                 return path

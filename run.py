@@ -37,8 +37,16 @@ def main():
     
     # Import and start GUI
     try:
-        from llama_gui import main as gui_main
-        gui_main()
+        from PyQt6.QtWidgets import QApplication
+        from main_window import LlamaCppGUI
+        
+        app = QApplication(sys.argv)
+        app.setStyle("Fusion")  # Modern style
+        
+        window = LlamaCppGUI()
+        window.show()
+        
+        sys.exit(app.exec())
     except Exception as e:
         print(f"❌ Error starting GUI: {e}")
         import traceback

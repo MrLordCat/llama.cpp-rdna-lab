@@ -2,6 +2,13 @@
 
 Фокус: ROCm build на RX 9070 XT, text-only Qwen3.6 сначала, GUI после core validation.
 
+Статус на 2026-05-07:
+
+- core/runtime часть PR `ggml-org/llama.cpp#22673` уже влита в текущий `master`;
+- текущий `build\bin\llama-server.exe --help` показывает `mtp` и `ngram-mod` в `--spec-type`;
+- `ngram-mod` уже проверен benchmark runner и даёт measurable gain на обеих целевых Qwen3.6 моделях;
+- полноценный MTP benchmark ещё не сделан, потому что нужен MTP-enabled GGUF и отдельный text-only smoke test.
+
 ## Phase 1: Baseline
 
 1. Собрать/подтвердить текущий ROCm build:
@@ -11,47 +18,45 @@ cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DGGML_HIP_M
 cmake --build build-rocm --config Release -j 4 --target llama-server llama-cli
 ```
 
-2. Прогнать короткий агентный benchmark:
+1. Прогнать короткий агентный benchmark:
 
 ```powershell
 python scripts\agent_workload_bench.py --label rocm-baseline
 ```
 
-3. Сохранить CSV/JSONL/server log из `build_logs/agent-workload/`.
+1. Сохранить CSV/JSONL/server log из `build_logs/agent-workload/`.
 
 Rollback point: commit baseline benchmark tool and results metadata, not model files.
 
-## Phase 2: MTP Branch
+## Phase 2: Current Integration State
 
-1. Создать отдельную ветку:
+Отдельная ветка больше не требуется: MTP core уже находится в текущем `master`.
 
-```powershell
-git switch -c feature/qwen-mtp
-git fetch upstream pull/22673/head:upstream-pr-22673
-git merge --no-ff upstream-pr-22673
-```
+Что уже считается сделанным:
 
-2. При конфликтах приоритет:
+- speculative runtime знает `mtp` и `ngram-mod`;
+- loader/arch/runtime path для Qwen MTP уже в дереве;
+- protected local docs/GUI слой сохранён поверх merge;
+- baseline и `ngram-mod` benchmark уже сняты.
 
-- сохранить TurboQuant changes;
-- сохранить GUI layer;
-- принять upstream MTP core changes в `common/`, `src/`, `include/`, `ggml/`, `tools/server/`, `convert_hf_to_gguf.py`;
-- не импортировать upstream `.github/**`, `docs/**`, root docs.
+Что ещё не считается завершённым:
 
-3. Не добавлять GUI controls на этом этапе.
-
-Rollback point: если merge слишком грязный, удалить ветку и попробовать cherry-pick только MTP commits после анализа `git show --stat`.
+- MTP-enabled Qwen3.6 GGUF ещё не проверен локально;
+- нет text-only smoke benchmark с `--spec-type mtp`;
+- нет GUI controls и GUI benchmark mode.
 
 ## Phase 3: ROCm Build
 
-1. Собирать отдельно:
+1. Базовый GUI/ROCm configure на текущем `master` уже проходит.
+
+1. Для изолированных MTP smoke tests допустимо собирать отдельно:
 
 ```powershell
 cmake -B build-rocm-mtp -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build-rocm-mtp --config Release -j 4 --target llama-server llama-cli
 ```
 
-2. Проверить capability:
+1. Проверить capability:
 
 ```powershell
 build-rocm-mtp\bin\llama-server.exe --help | Select-String -Pattern "spec-type|mtp"
@@ -62,7 +67,7 @@ Gate: без `mtp` в help дальше не идти.
 ## Phase 4: Text-Only Smoke Test
 
 1. Получить MTP-enabled Qwen3.6 GGUF.
-2. Запустить без GUI и без mmproj:
+1. Запустить без GUI и без mmproj:
 
 ```powershell
 python scripts\agent_workload_bench.py `
@@ -72,7 +77,7 @@ python scripts\agent_workload_bench.py `
   --server-extra "--spec-type mtp --spec-draft-n-max 3"
 ```
 
-3. Сравнить с `rocm-baseline`.
+1. Сравнить с `rocm-baseline`.
 
 Gate:
 
@@ -84,7 +89,14 @@ Gate:
 
 ## Phase 5: ngram-mod Comparison
 
-На текущем или MTP branch проверить:
+Статус: уже проверено на текущем build.
+
+Полученный clean snapshot:
+
+- `Qwen3.6-35B-A3B-UD-IQ3_XXS`: `37.454 -> 41.007` aggregate completion TPS, примерно `+9.5%`;
+- `Qwen3.6-27B-Q3_K_S`: `12.055 -> 13.547` aggregate completion TPS, примерно `+12.4%`.
+
+Команда для повторного прогона:
 
 ```powershell
 python scripts\agent_workload_bench.py `
@@ -92,7 +104,7 @@ python scripts\agent_workload_bench.py `
   --server-extra "--spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-draft-n-min 48 --spec-draft-n-max 64"
 ```
 
-Gate: если agent workload лучше с `ngram-mod`, сделать его отдельным GUI preset для coding tasks.
+Gate: `ngram-mod` уже заслуживает отдельного GUI preset для coding tasks.
 
 ## Phase 6: GUI Integration
 
@@ -103,10 +115,12 @@ GUI изменения:
 - группа `Speculative Decoding`;
 - `none`, `ngram-mod`, `mtp`;
 - MTP draft tokens spinbox, default `3`;
+- `ngram-mod` quick preset для coding-agent workloads;
 - disable/warn MTP when Vision/MMProj enabled;
 - force/warn `parallel=1` for MTP;
 - detect binary support by `llama-server --help`;
 - show warning if selected model filename does not contain `MTP`/`NextN`.
+- отдельный benchmark mode/tab/dialog, чтобы не перегружать основной Launch Server экран.
 
 ## Phase 7: Benchmarked Defaults
 
@@ -116,6 +130,11 @@ GUI изменения:
 - `Qwen3.6 text MTP draft3`;
 - `Qwen3.6 coding ngram-mod`;
 - `Qwen3.6 VLM no-MTP`.
+
+Дополнительно:
+
+- хранить build commit вместе с benchmark metadata;
+- сохранять отдельный md-summary по билдам, чтобы сравнение между будущими ROCm builds было явным.
 
 ## Do Not Do Yet
 

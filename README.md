@@ -12,6 +12,23 @@
 - Защита локальных GUI, документации и агентских инструкций от случайного перетирания при `upstream/master` merge.
 - Подготовка к MTP/Multi-Token Prediction, когда поддержка станет достаточно стабильной для форка.
 
+## Статус спринтов (2026-05-07)
+
+Выполнены три практических спринта с контрольными checkpoint-бенчами и smoke-запуском GUI между этапами.
+
+- Sprint 1 (Launch Server): добавлены и сохранены через QSettings runtime-контролы `Parallel`, `HTTP Threads`, `Flash Attention`, `--no-warmup`, `-fit on/off`; для `--spec-type mtp` теперь принудительно ставится `--parallel 1`.
+- Sprint 2 (ROCm build path): в configure-path усилены ROCm флаги `GGML_HIP`, `GGML_HIP_MMQ_MFMA`, `GGML_HIP_NO_VMM`, `AMDGPU_TARGETS`; после configure добавлена валидация `CMakeCache.txt` с предупреждением в GUI при расхождениях.
+- Sprint 3 (GUI benchmark mode): во вкладку Build добавлена кнопка `Quick ROCm Bench`, которая запускает `scripts/agent_workload_bench.py` и пишет результаты в `build_logs/agent-workload/`.
+
+Контрольные quick-бенчи (одинаковый профиль) показали:
+
+- baseline: `14.72 TPS`
+- после Sprint 1: `13.00 TPS`
+- после Sprint 2: `13.01 TPS`
+- после Sprint 3: `13.02 TPS`
+
+Это короткий smoke-профиль, поэтому значения следует трактовать как контроль стабильности пайплайна, а не как финальный performance verdict.
+
 ## Железо и окружение
 
 Слепок снят 2026-05-07 на рабочей машине:
@@ -48,6 +65,7 @@ python gui\llama_gui.py
 ```
 
 `run.py` добавляет `gui/` в `PYTHONPATH`, проверяет Python-зависимости через `dependency_checker.py` и запускает `gui/llama_gui.py`.
+Текущая точка входа GUI использует модульную структуру и запускает `gui/main_window.py`.
 
 ## Возможности GUI
 
@@ -55,7 +73,7 @@ GUI находится в `gui/` и состоит из шести основн�
 
 | Вкладка | Назначение |
 | --- | --- |
-| Launch Server | Запуск `llama-server`, выбор модели, backend, GPU layers, context, batch, slots, CORS, API key, KV cache, Extra Arguments |
+| Launch Server | Запуск `llama-server`, выбор модели, backend/build, GPU layers, context, batch, `parallel`, `threads-http`, spec-type, KV cache, Extra Arguments |
 | Inference | Запуск `llama-cli` для одиночного prompt/inference |
 | Download Models | Поиск и скачивание GGUF с Hugging Face, сортировка и выбор файлов |
 | Build & Setup | Проверка зависимостей, CMake configure/build, выбор CPU/CUDA/Metal/Vulkan/SYCL/ROCm |
@@ -147,7 +165,9 @@ GUI предупреждает, что TurboQuant KV-типы требуют fla
 | Файл | Что это |
 | --- | --- |
 | `run.py` | Основной launcher GUI |
-| `gui/llama_gui.py` | Главное PyQt6 приложение |
+| `gui/main_window.py` | Главное модульное PyQt6 окно |
+| `gui/server_tab.py` | Launch Server вкладка (runtime-параметры и запуск сервера) |
+| `gui/build_tab.py` | Build/Configure вкладка и quick benchmark |
 | `gui/build_manager.py` | CMake/ROCm/Vulkan orchestration |
 | `gui/hardware_detector.py` | Определение железа |
 | `gui/model_downloader.py` | Hugging Face модели |

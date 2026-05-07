@@ -473,7 +473,7 @@ endforeach()
 
 target_link_libraries(ggml-base PRIVATE Threads::Threads)
 
-if (DEFINED MATH_LIBRARY)
+if (MATH_LIBRARY AND NOT MATH_LIBRARY MATCHES "-NOTFOUND$")
     target_link_libraries(ggml-base PRIVATE ${MATH_LIBRARY})
 elseif (NOT WIN32 AND NOT DEFINED ENV{ONEAPI_ROOT})
     target_link_libraries(ggml-base PRIVATE m)

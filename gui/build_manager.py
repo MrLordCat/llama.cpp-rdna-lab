@@ -5,9 +5,12 @@
 import os
 import subprocess
 import platform
+import shutil
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from PyQt6.QtCore import QThread, pyqtSignal
+
+from dependency_checker import DependencyChecker
 
 
 class ConfigureThread(QThread):
@@ -166,6 +169,10 @@ class BuildManager:
         self.project_root = project_root
         self.build_dir = project_root / "build"
         self.os_type = platform.system()
+
+    def _get_tool_command(self, tool: str) -> str:
+        """Return executable path for tools that may not be visible in PATH."""
+        return DependencyChecker.get_tool_path(tool) or tool
     
     def detect_rocm_version(self) -> Optional[str]:
         """Detect installed ROCm/HIP SDK version
@@ -480,25 +487,78 @@ class BuildManager:
                 else:
                     return None  # Will fail, but user needs to install Ninja
             
-            # For other backends, prefer Visual Studio
-            generators = [
-                "Visual Studio 17 2022",
-                "Visual Studio 16 2019",
-                "Visual Studio 18 2022",
-                "Ninja",
-            ]
-            
-            for gen in generators:
-                if self._check_generator(gen):
-                    return gen
+            # For CPU/other backends, prefer the Visual Studio version actually installed.
+            vs_generator = self._get_visual_studio_generator()
+            if vs_generator and self._check_generator(vs_generator):
+                return vs_generator
+
+            if self._check_generator("Ninja"):
+                return "Ninja"
                     
         return None  # Использовать генератор по умолчанию
+
+    def _get_visual_studio_generator(self) -> Optional[str]:
+        """Return CMake generator for the installed Visual Studio version."""
+        if self.os_type != "Windows":
+            return None
+
+        vswhere_candidates = [
+            shutil.which("vswhere"),
+            "C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe",
+            "C:/Program Files/Microsoft Visual Studio/Installer/vswhere.exe",
+        ]
+        for vswhere in vswhere_candidates:
+            if not vswhere or not Path(vswhere).exists():
+                continue
+            try:
+                result = subprocess.run(
+                    [
+                        vswhere,
+                        "-latest",
+                        "-products",
+                        "*",
+                        "-requires",
+                        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                        "-property",
+                        "installationVersion",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                version = result.stdout.strip()
+                if result.returncode == 0 and version:
+                    if version.startswith("17."):
+                        return "Visual Studio 17 2022"
+                    if version.startswith("16."):
+                        return "Visual Studio 16 2019"
+            except:
+                pass
+
+        visual_studio_paths = [
+            ("Visual Studio 17 2022", Path("C:/Program Files/Microsoft Visual Studio/2022/BuildTools")),
+            ("Visual Studio 17 2022", Path("C:/Program Files/Microsoft Visual Studio/2022/Community")),
+            ("Visual Studio 17 2022", Path("C:/Program Files/Microsoft Visual Studio/2022/Professional")),
+            ("Visual Studio 17 2022", Path("C:/Program Files/Microsoft Visual Studio/2022/Enterprise")),
+            ("Visual Studio 17 2022", Path("C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools")),
+            ("Visual Studio 16 2019", Path("C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools")),
+            ("Visual Studio 16 2019", Path("C:/Program Files (x86)/Microsoft Visual Studio/2019/Community")),
+            ("Visual Studio 16 2019", Path("C:/Program Files/Microsoft Visual Studio/2019/BuildTools")),
+            ("Visual Studio 16 2019", Path("C:/Program Files/Microsoft Visual Studio/2019/Community")),
+        ]
+        for generator, path in visual_studio_paths:
+            vc_tools = path / "VC" / "Tools" / "MSVC"
+            if vc_tools.exists():
+                return generator
+
+        return None
         
     def _check_generator(self, generator: str) -> bool:
         """Проверка доступности генератора CMake"""
         try:
+            cmake_cmd = self._get_tool_command("cmake")
             result = subprocess.run(
-                ["cmake", "-G", generator, "--help"],
+                [cmake_cmd, "-G", generator, "--help"],
                 capture_output=True,
                 timeout=3
             )
@@ -518,12 +578,16 @@ class BuildManager:
             backend: Выбранный backend (CUDA, Metal, Vulkan, и т.д.)
             additional_options: Дополнительные опции CMake
         """
-        command = ["cmake", "-B", str(self.build_dir)]
+        command = [self._get_tool_command("cmake"), "-B", str(self.build_dir)]
         
         # Выбор генератора (backend-aware - ROCm needs Ninja)
         generator = self.get_cmake_generator(backend)
         if generator:
             command.extend(["-G", generator])
+            if generator == "Ninja":
+                ninja_path = DependencyChecker.get_tool_path("ninja")
+                if ninja_path:
+                    command.append(f"-DCMAKE_MAKE_PROGRAM={ninja_path}")
         
         # Отключаем CURL (требует libcurl, не критична для функциональности)
         command.append("-DLLAMA_CURL=OFF")
@@ -543,16 +607,23 @@ class BuildManager:
             elif backend_upper == "ROCM":
                 # Modern llama.cpp uses GGML_HIP instead of GGML_HIPBLAS
                 command.append("-DGGML_HIP=ON")
+                command.append("-DGGML_HIP_MMQ_MFMA=ON")
+                command.append("-DGGML_HIP_NO_VMM=ON")
+
+                # Windows HIP SDK clang can accidentally pick Strawberry/MSYS OpenMP
+                # libraries, which produces unresolved __kmpc_* symbols at link time.
+                if self.os_type == "Windows":
+                    command.append("-DGGML_OPENMP=OFF")
                 
                 # Auto-detect GPU architecture
                 detected_targets = self.detect_amd_gpu_targets()
                 if detected_targets:
-                    command.append(f"-DGPU_TARGETS={detected_targets}")
+                    command.append(f"-DAMDGPU_TARGETS={detected_targets}")
                 else:
                     # Fallback: build for common AMD GPU architectures
                     # gfx1100 = RDNA3 (RX 7900), gfx1101 = RDNA3 (RX 7800/7700)
                     # gfx1200/gfx1201 = RDNA4 (RX 9070 series)
-                    command.append("-DGPU_TARGETS=gfx1100;gfx1101;gfx1200;gfx1201")
+                    command.append("-DAMDGPU_TARGETS=gfx1100;gfx1101;gfx1200;gfx1201")
                 
                 # Set CMAKE_BUILD_TYPE for Ninja (single-config generator)
                 command.append("-DCMAKE_BUILD_TYPE=Release")
@@ -608,6 +679,54 @@ class BuildManager:
                     command.append("-DCMAKE_BUILD_TYPE=Release")
                     
         return command
+
+    def validate_rocm_cache(self, build_dir: Path, expected_target: str = "gfx1201") -> Dict[str, Any]:
+        """Validate key ROCm flags in CMakeCache.txt after configure."""
+        cache_path = build_dir / "CMakeCache.txt"
+        result: Dict[str, Any] = {
+            "ok": False,
+            "missing": [],
+            "mismatch": [],
+            "values": {},
+            "cache_path": str(cache_path),
+        }
+
+        if not cache_path.exists():
+            result["missing"].append("CMakeCache.txt")
+            return result
+
+        values: Dict[str, str] = {}
+        for raw_line in cache_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("//") or line.startswith("#"):
+                continue
+            if ":" not in line or "=" not in line:
+                continue
+            key_with_type, value = line.split("=", 1)
+            key, _, _typ = key_with_type.partition(":")
+            values[key.strip()] = value.strip()
+
+        result["values"] = values
+
+        required_on = ["GGML_HIP", "GGML_HIP_MMQ_MFMA", "GGML_HIP_NO_VMM"]
+        for key in required_on:
+            actual = values.get(key)
+            if actual is None:
+                result["missing"].append(key)
+            elif actual.upper() != "ON":
+                result["mismatch"].append(f"{key}={actual} (expected ON)")
+
+        target_key = "AMDGPU_TARGETS" if "AMDGPU_TARGETS" in values else "GPU_TARGETS"
+        targets = values.get(target_key)
+        if targets is None:
+            result["missing"].append("AMDGPU_TARGETS")
+        elif expected_target and expected_target not in targets:
+            result["mismatch"].append(
+                f"{target_key}={targets} (expected to include {expected_target})"
+            )
+
+        result["ok"] = not result["missing"] and not result["mismatch"]
+        return result
         
     def get_build_command(
         self,
@@ -623,7 +742,7 @@ class BuildManager:
             jobs: Количество параллельных задач
             backend: Backend type (ROCm uses Ninja which ignores --config)
         """
-        command = ["cmake", "--build", str(self.build_dir)]
+        command = [self._get_tool_command("cmake"), "--build", str(self.build_dir)]
         
         # Single-config generators (Ninja, Unix Makefiles) ignore --config flag
         # Multi-config generators (Visual Studio) need --config flag
@@ -716,12 +835,13 @@ class BuildManager:
     def _check_tool(self, tool: str) -> bool:
         """Проверка наличия инструмента"""
         try:
-            subprocess.run(
-                [tool, "--version"],
+            tool_cmd = self._get_tool_command(tool)
+            result = subprocess.run(
+                [tool_cmd, "--version"],
                 capture_output=True,
                 timeout=3
             )
-            return True
+            return result.returncode == 0
         except:
             return False
     
@@ -742,9 +862,12 @@ class BuildManager:
                 capture_output=True,
                 timeout=3
             )
-            return result.returncode == 0
+            if result.returncode == 0:
+                return True
         except:
-            return False
+            pass
+
+        return self._get_visual_studio_generator() is not None
             
     def _check_vulkan_sdk(self) -> bool:
         """Проверка наличия Vulkan SDK"""

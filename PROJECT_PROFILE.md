@@ -79,6 +79,7 @@
 - `CLAUDE.md`
 - `MTP.md`
 - `QWEN_SPEED_RESEARCH.md`
+- `ROCM_ACCELERATION_PLAN.md`
 - `UPSTREAM_SYNC.md`
 - `.github/**`
 - `docs/**`
@@ -125,3 +126,5 @@ backend=ROCm
 --spec-draft-n-min 48
 --spec-draft-n-max 64
 ```
+
+Актуальный roadmap аппаратно-ориентированных ускорений и следующих optimizations вынесен в `ROCM_ACCELERATION_PLAN.md`.

@@ -17,8 +17,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QTextEdit, QLineEdit, QSpinBox, QDoubleSpinBox,
     QComboBox, QFileDialog, QProgressBar, QTabWidget, QGroupBox,
-    QCheckBox, QMessageBox, QListWidget, QSplitter, QTableWidget,
-    QTableWidgetItem, QHeaderView, QRadioButton, QButtonGroup, QSlider
+    QCheckBox, QMessageBox, QListWidget, QSplitter, QScrollArea, QTableWidget,
+    QTableWidgetItem, QHeaderView, QRadioButton, QButtonGroup, QSlider, QFrame
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings, QUrl
 from PyQt6.QtGui import QFont, QTextCursor, QDesktopServices
@@ -29,212 +29,7 @@ from hardware_detector import HardwareDetector
 from build_manager import BuildManager, BuildThread, ConfigureThread
 from dependency_installer import DependencyInstallThread, DependencyManager
 from dependency_checker import init_dependencies
-
-
-class ServerThread(QThread):
-    """Thread for running llama-server in background"""
-    output_ready = pyqtSignal(str)
-    server_ready = pyqtSignal(str)  # Server URL
-    finished_signal = pyqtSignal(int)  # exit code
-    error_signal = pyqtSignal(str)
-    
-    def __init__(self, command: list, working_dir: str, port: int = 8080, env: dict = None):
-        super().__init__()
-        self.command = command
-        self.working_dir = working_dir
-        self.process = None
-        self.port = port
-        self.env = env
-        self.user_stopped = False
-        self._output_line_count = 0
-        
-    def run(self):
-        try:
-            # Build environment
-            process_env = os.environ.copy()
-            if self.env:
-                process_env.update(self.env)
-            
-            # On Linux: lower CPU scheduler priority so desktop stays responsive under GPU load
-            _preexec = (lambda: os.nice(10)) if os.name != 'nt' else None
-
-            self.process = subprocess.Popen(
-                self.command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=self.working_dir,
-                bufsize=1,
-                universal_newlines=True,
-                env=process_env,
-                preexec_fn=_preexec
-            )
-            
-            server_started = False
-            for line in self.process.stdout:
-                self._output_line_count += 1
-                self.output_ready.emit(line)
-                
-                # Detect when server is ready
-                if not server_started and ("HTTP server listening" in line or "server is listening" in line):
-                    self.server_ready.emit(f"http://localhost:{self.port}")
-                    server_started = True
-                
-            self.process.wait()
-            self.finished_signal.emit(self.process.returncode)
-            
-        except Exception as e:
-            self.error_signal.emit(str(e))
-            
-    def stop(self):
-        self.user_stopped = True
-        if self.process:
-            self.process.terminate()
-            self.process.wait()
-
-
-class InferenceThread(QThread):
-    """Thread for running inference in background"""
-    output_ready = pyqtSignal(str)
-    finished_signal = pyqtSignal()
-    error_signal = pyqtSignal(str)
-    
-    def __init__(self, command: list, working_dir: str):
-        super().__init__()
-        self.command = command
-        self.working_dir = working_dir
-        self.process = None
-        
-    def run(self):
-        try:
-            self.process = subprocess.Popen(
-                self.command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=self.working_dir,
-                bufsize=1,
-                universal_newlines=True
-            )
-            
-            for line in self.process.stdout:
-                self.output_ready.emit(line)
-                
-            self.process.wait()
-            self.finished_signal.emit()
-            
-        except Exception as e:
-            self.error_signal.emit(str(e))
-            
-    def stop(self):
-        if self.process:
-            self.process.terminate()
-            self.process.wait()
-
-
-class UpdateForkThread(QThread):
-    """Thread for updating the fork from upstream in background"""
-    output = pyqtSignal(str)
-    finished_signal = pyqtSignal(bool, str)  # success, summary message
-
-    def __init__(self, repo_path: Path):
-        super().__init__()
-        self.repo_path = repo_path
-
-    def _run_git(self, args: list) -> tuple:
-        """Run a git command and return (returncode, stdout, stderr)"""
-        result = subprocess.run(
-            ["git"] + args,
-            cwd=self.repo_path,
-            capture_output=True, text=True, timeout=120
-        )
-        return result.returncode, result.stdout.strip(), result.stderr.strip()
-
-    def run(self):
-        try:
-            # Check upstream remote
-            self.output.emit("🔍 Checking upstream remote...\n")
-            rc, out, err = self._run_git(["remote", "-v"])
-            if "upstream" not in out:
-                self.output.emit("⚙️ Adding upstream remote (ggml-org/llama.cpp)...\n")
-                rc, out, err = self._run_git(["remote", "add", "upstream", "https://github.com/ggml-org/llama.cpp.git"])
-                if rc != 0:
-                    self.finished_signal.emit(False, f"Failed to add upstream: {err}")
-                    return
-
-            # Fetch upstream
-            self.output.emit("📡 Fetching upstream/master...\n")
-            rc, out, err = self._run_git(["fetch", "upstream", "master"])
-            if rc != 0:
-                self.finished_signal.emit(False, f"Fetch failed: {err}")
-                return
-
-            # Check how far behind
-            rc, out, err = self._run_git(["rev-list", "--count", "HEAD..upstream/master"])
-            commits_behind = int(out) if out.isdigit() else 0
-            if commits_behind == 0:
-                self.output.emit("✅ Already up to date!\n")
-                self.finished_signal.emit(True, "Already up to date — no new commits.")
-                return
-
-            self.output.emit(f"📦 {commits_behind} new commits to merge...\n")
-
-            # Merge
-            self.output.emit("🔀 Merging upstream/master...\n")
-            rc, out, err = self._run_git(["merge", "upstream/master", "--no-edit"])
-            merge_output = out + "\n" + err
-            self.output.emit(merge_output + "\n")
-
-            if rc != 0:
-                # Check for conflicts
-                rc2, conflicts, _ = self._run_git(["diff", "--name-only", "--diff-filter=U"])
-                if conflicts:
-                    self.output.emit(f"\n⚠️ Merge conflicts in:\n{conflicts}\n")
-                    self.output.emit("\n🔧 Resolving: removing .github/workflows conflicts...\n")
-                    # Auto-resolve workflow file conflicts (we don't use them in our fork)
-                    conflict_files = conflicts.split("\n")
-                    workflow_conflicts = [f for f in conflict_files if f.startswith(".github/")]
-                    other_conflicts = [f for f in conflict_files if not f.startswith(".github/")]
-
-                    for wf in workflow_conflicts:
-                        self._run_git(["rm", wf])
-                        self.output.emit(f"  🗑️ Removed {wf}\n")
-
-                    if other_conflicts:
-                        self.output.emit(f"\n❌ {len(other_conflicts)} conflict(s) need manual resolution:\n")
-                        for f in other_conflicts:
-                            self.output.emit(f"  ⚠️ {f}\n")
-                        self.output.emit("\nResolve them manually, then run 'git add' and 'git commit'.\n")
-                        self.finished_signal.emit(False,
-                            f"Merged {commits_behind} commits but {len(other_conflicts)} conflict(s) need manual fix.")
-                        return
-
-                    # All conflicts were workflows — commit
-                    self._run_git(["commit", "--no-edit"])
-                    self.output.emit("✅ Auto-resolved workflow conflicts.\n")
-                else:
-                    self.finished_signal.emit(False, f"Merge failed: {err}")
-                    return
-
-            # Push
-            self.output.emit("📤 Pushing to origin...\n")
-            rc, out, err = self._run_git(["push", "origin", "master"])
-            if rc != 0:
-                self.output.emit(f"⚠️ Push failed: {err}\n")
-                self.output.emit("You can push manually later with: git push origin master\n")
-                self.finished_signal.emit(True,
-                    f"Merged {commits_behind} commits but push failed. Push manually.")
-                return
-
-            self.output.emit("✅ Successfully pushed to origin!\n")
-            self.finished_signal.emit(True, f"Updated: {commits_behind} commits merged and pushed.")
-
-        except subprocess.TimeoutExpired:
-            self.finished_signal.emit(False, "Git command timed out. Check your network.")
-        except FileNotFoundError:
-            self.finished_signal.emit(False, "Git not found. Install Git and add it to PATH.")
-        except Exception as e:
-            self.finished_signal.emit(False, f"Error: {str(e)}")
+from threads import ServerThread, InferenceThread, UpdateForkThread
 
 
 class LlamaCppGUI(QMainWindow):
@@ -615,81 +410,110 @@ class LlamaCppGUI(QMainWindow):
         self.statusBar().showMessage("Ready")
         
     def create_server_tab(self) -> QWidget:
-        """Create tab for launching server"""
+        """Create tab for launching server — split layout: settings left, log right."""
         widget = QWidget()
-        layout = QVBoxLayout(widget)
-        
-        # Model selection
-        model_group = QGroupBox("Model Selection")
+        main_layout = QVBoxLayout(widget)
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.setSpacing(0)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+
+        # ── LEFT: scrollable settings ──
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        settings_container = QWidget()
+        s_layout = QVBoxLayout(settings_container)
+        s_layout.setSpacing(4)
+        s_layout.setContentsMargins(4, 4, 4, 4)
+
+        # ── Модель ──
+        model_group = QGroupBox("Модель")
         model_layout = QVBoxLayout()
-        
-        model_select_layout = QHBoxLayout()
+        model_layout.setSpacing(3)
+
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("Файл:"))
         self.server_model_path_edit = QLineEdit()
         self.server_model_path_edit.setPlaceholderText("Path to .gguf model")
-        model_select_layout.addWidget(QLabel("Model:"))
-        model_select_layout.addWidget(self.server_model_path_edit)
-        
-        browse_btn = QPushButton("📁 Browse")
+        self.server_model_path_edit.editingFinished.connect(lambda: self.refresh_server_vision_controls(clear_existing=True))
+        model_row.addWidget(self.server_model_path_edit)
+        browse_btn = QPushButton("📁")
+        browse_btn.setFixedWidth(36)
         browse_btn.clicked.connect(self.browse_server_model)
-        model_select_layout.addWidget(browse_btn)
-        
-        model_layout.addLayout(model_select_layout)
-        
-        # Available models list (will be populated later)
+        model_row.addWidget(browse_btn)
+        model_layout.addLayout(model_row)
+
+        qs_row = QHBoxLayout()
+        qs_row.addWidget(QLabel("Быстрый выбор:"))
         self.server_models_list = QComboBox()
         self.server_models_list.currentTextChanged.connect(self.on_server_model_selected)
-        model_layout.addWidget(QLabel("Quick select:"))
-        model_layout.addWidget(self.server_models_list)
-        
+        qs_row.addWidget(self.server_models_list)
+        model_layout.addLayout(qs_row)
+
         model_group.setLayout(model_layout)
-        layout.addWidget(model_group)
+        s_layout.addWidget(model_group)
         
-        # Server mode
-        mode_group = QGroupBox("Server Mode")
-        mode_layout = QVBoxLayout()
-        
+        # ── Режим и бэкенд ──
+        mode_group = QGroupBox("Режим и бэкенд")
+        mode_g_layout = QGridLayout()
+        mode_g_layout.setSpacing(4)
+
         self.mode_button_group = QButtonGroup()
-        
-        self.mode_web_radio = QRadioButton("🌐 Web Interface (for browser chat)")
+        self.mode_web_radio = QRadioButton("🌐 Web")
         self.mode_web_radio.setChecked(True)
         self.mode_button_group.addButton(self.mode_web_radio)
-        mode_layout.addWidget(self.mode_web_radio)
-        
-        self.mode_api_radio = QRadioButton("🔌 API Mode (for VSCode/agents)")
+        mode_g_layout.addWidget(self.mode_web_radio, 0, 0)
+
+        self.mode_api_radio = QRadioButton("🔌 API")
         self.mode_button_group.addButton(self.mode_api_radio)
-        mode_layout.addWidget(self.mode_api_radio)
-        
-        mode_info = QLabel("💡 In web mode, browser will open for chat.\nIn API mode, server will be available for integration with VSCode and other tools.")
-        mode_info.setWordWrap(True)
-        mode_info.setStyleSheet("color: #666; font-style: italic;")
-        mode_layout.addWidget(mode_info)
-        
-        mode_group.setLayout(mode_layout)
-        layout.addWidget(mode_group)
-        
-        # Server Parameters
-        server_params_group = QGroupBox("Server Parameters")
-        server_params_layout = QVBoxLayout()
-        
-        # Port and parameters in two columns
-        params_grid = QHBoxLayout()
-        
-        # Column 1
-        col1 = QVBoxLayout()
-        
-        port_layout = QHBoxLayout()
-        port_layout.addWidget(QLabel("Port:"))
+        mode_g_layout.addWidget(self.mode_api_radio, 0, 1)
+
+        mode_g_layout.addWidget(QLabel("Бэкенд:"), 0, 2)
+        self.server_backend_combo = QComboBox()
+        self.server_backend_combo.addItems(["CPU only (default)", "CUDA", "Metal", "Vulkan", "ROCm"])
+        mode_g_layout.addWidget(self.server_backend_combo, 0, 3)
+
+        mode_g_layout.addWidget(QLabel("Порт:"), 1, 0)
         self.server_port_spin = QSpinBox()
         self.server_port_spin.setRange(1024, 65535)
         self.server_port_spin.setValue(8080)
-        port_layout.addWidget(self.server_port_spin)
-        col1.addLayout(port_layout)
-        
-        ctx_layout = QHBoxLayout()
-        ctx_layout.addWidget(QLabel("Context Size:"))
+        mode_g_layout.addWidget(self.server_port_spin, 1, 1)
+
+        mode_g_layout.addWidget(QLabel("API Key:"), 1, 2)
+        self.server_api_key_edit = QLineEdit()
+        self.server_api_key_edit.setPlaceholderText("(пусто = открытый)")
+        mode_g_layout.addWidget(self.server_api_key_edit, 1, 3)
+
+        mode_group.setLayout(mode_g_layout)
+        s_layout.addWidget(mode_group)
+
+        # ── Ресурсы ──
+        res_group = QGroupBox("Ресурсы")
+        res_layout = QGridLayout()
+        res_layout.setSpacing(4)
+
+        self.server_gpu_checkbox = QCheckBox("GPU")
+        self.server_gpu_checkbox.setChecked(True)
+        res_layout.addWidget(self.server_gpu_checkbox, 0, 0)
+
+        res_layout.addWidget(QLabel("GPU слои:"), 0, 1)
+        self.server_gpu_layers_slider = QSlider(Qt.Orientation.Horizontal)
+        self.server_gpu_layers_slider.setRange(0, 100)
+        self.server_gpu_layers_slider.setValue(33)
+        self.server_gpu_layers_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.server_gpu_layers_slider.setTickInterval(10)
+        res_layout.addWidget(self.server_gpu_layers_slider, 0, 2, 1, 3)
+        self.server_gpu_layers_label = QLabel("33")
+        self.server_gpu_layers_label.setMinimumWidth(28)
+        res_layout.addWidget(self.server_gpu_layers_label, 0, 5)
+        self.server_gpu_layers_slider.valueChanged.connect(lambda v: self.server_gpu_layers_label.setText(str(v)))
+
+        res_layout.addWidget(QLabel("Контекст:"), 1, 0)
         self.server_ctx_slider = QSlider(Qt.Orientation.Horizontal)
-        self.server_ctx_slider.setRange(1, 32)  # 1-32 steps (8192 * step)
-        self.server_ctx_slider.setValue(1)  # 8192
+        self.server_ctx_slider.setRange(1, 32)
+        self.server_ctx_slider.setValue(1)
         self.server_ctx_slider.setSingleStep(1)
         self.server_ctx_slider.setPageStep(1)
         self.server_ctx_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
@@ -701,154 +525,77 @@ class LlamaCppGUI(QMainWindow):
         self.server_ctx_slider.valueChanged.connect(lambda v: self.server_ctx_label.setText(str(v * 8192)))
         col1.addLayout(ctx_layout)
         
-        params_grid.addLayout(col1)
-        
-        # Column 2
-        col2 = QVBoxLayout()
-        
-        threads_layout = QHBoxLayout()
-        threads_layout.addWidget(QLabel("Threads:"))
-        self.server_threads_spin = QSpinBox()
-        self.server_threads_spin.setRange(1, 64)
-        self.server_threads_spin.setValue(os.cpu_count() or 4)
-        threads_layout.addWidget(self.server_threads_spin)
-        threads_layout.addWidget(QLabel("HTTP:"))
-        self.server_http_threads_spin = QSpinBox()
-        self.server_http_threads_spin.setRange(1, 64)
-        self.server_http_threads_spin.setValue(max(1, (os.cpu_count() or 4) // 2))
-        self.server_http_threads_spin.setToolTip("HTTP threads for request processing (default: cpu/2)")
-        threads_layout.addWidget(self.server_http_threads_spin)
-        col2.addLayout(threads_layout)
-        
-        batch_layout = QHBoxLayout()
-        batch_layout.addWidget(QLabel("Batch Size:"))
+        self.server_ctx_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.server_ctx_slider.setTickInterval(4)
+        res_layout.addWidget(self.server_ctx_slider, 1, 1, 1, 4)
+        self.server_ctx_label = QLabel("8192")
+        self.server_ctx_label.setMinimumWidth(45)
+        res_layout.addWidget(self.server_ctx_label, 1, 5)
+        self.server_ctx_slider.valueChanged.connect(lambda v: self.server_ctx_label.setText(str(v * 8192)))
+
+        res_layout.addWidget(QLabel("Batch:"), 2, 0)
         self.server_batch_slider = QSlider(Qt.Orientation.Horizontal)
-        self.server_batch_slider.setRange(1, 256)  # 1-256 steps (32 * step)
-        self.server_batch_slider.setValue(16)  # 512
+        self.server_batch_slider.setRange(1, 256)
+        self.server_batch_slider.setValue(16)
         self.server_batch_slider.setSingleStep(1)
         self.server_batch_slider.setPageStep(4)
         self.server_batch_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.server_batch_slider.setTickInterval(32)  # Every 1024
-        batch_layout.addWidget(self.server_batch_slider)
+        self.server_batch_slider.setTickInterval(32)
+        res_layout.addWidget(self.server_batch_slider, 2, 1, 1, 4)
         self.server_batch_label = QLabel("512")
-        self.server_batch_label.setMinimumWidth(50)
-        batch_layout.addWidget(self.server_batch_label)
+        self.server_batch_label.setMinimumWidth(45)
+        res_layout.addWidget(self.server_batch_label, 2, 5)
         self.server_batch_slider.valueChanged.connect(lambda v: self.server_batch_label.setText(str(v * 32)))
-        col2.addLayout(batch_layout)
 
-        ubatch_layout = QHBoxLayout()
-        ubatch_layout.addWidget(QLabel("μBatch Size:"))
+        res_layout.addWidget(QLabel("μBatch:"), 3, 0)
         self.server_ubatch_slider = QSlider(Qt.Orientation.Horizontal)
-        self.server_ubatch_slider.setRange(1, 256)  # 1-256 steps (32 * step), max 8192
-        self.server_ubatch_slider.setValue(16)  # 512
+        self.server_ubatch_slider.setRange(1, 256)
+        self.server_ubatch_slider.setValue(16)
         self.server_ubatch_slider.setSingleStep(1)
         self.server_ubatch_slider.setPageStep(4)
         self.server_ubatch_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.server_ubatch_slider.setTickInterval(32)
-        ubatch_layout.addWidget(self.server_ubatch_slider)
+        res_layout.addWidget(self.server_ubatch_slider, 3, 1, 1, 4)
         self.server_ubatch_label = QLabel("512")
-        self.server_ubatch_label.setMinimumWidth(50)
-        ubatch_layout.addWidget(self.server_ubatch_label)
+        self.server_ubatch_label.setMinimumWidth(45)
+        res_layout.addWidget(self.server_ubatch_label, 3, 5)
         self.server_ubatch_slider.valueChanged.connect(lambda v: self.server_ubatch_label.setText(str(v * 32)))
-        col2.addLayout(ubatch_layout)
-        
-        params_grid.addLayout(col2)
-        
-        server_params_layout.addLayout(params_grid)
-        
-        # GPU parameters
-        self.server_gpu_checkbox = QCheckBox("Use GPU")
-        self.server_gpu_checkbox.setChecked(True)
-        server_params_layout.addWidget(self.server_gpu_checkbox)
-        
-        # GPU Layers with VRAM estimation
-        gpu_layers_group = QVBoxLayout()
-        
-        # VRAM estimation labels
-        vram_hints_layout = QHBoxLayout()
-        vram_hints_layout.addWidget(QLabel("VRAM estimate (7B/13B/34B/70B):"))
-        vram_hints_layout.addStretch()
-        gpu_layers_group.addLayout(vram_hints_layout)
-        
-        vram_scale_layout = QHBoxLayout()
-        vram_scale_layout.addWidget(QLabel("30"))
-        vram_scale_layout.addWidget(QLabel("~4/6/10/18GB"))
-        vram_scale_layout.addStretch()
-        vram_scale_layout.addWidget(QLabel("~5/8/14/24GB"))
-        vram_scale_layout.addStretch()
-        vram_scale_layout.addWidget(QLabel("~6/10/18/32GB"))
-        vram_scale_layout.addStretch()
-        vram_scale_layout.addWidget(QLabel("~8/12/24/48GB"))
-        vram_scale_layout.addWidget(QLabel("100"))
-        gpu_layers_group.addLayout(vram_scale_layout)
-        
-        gpu_layers_layout = QHBoxLayout()
-        gpu_layers_layout.addWidget(QLabel("GPU Layers:"))
-        self.server_gpu_layers_slider = QSlider(Qt.Orientation.Horizontal)
-        self.server_gpu_layers_slider.setRange(0, 100)
-        self.server_gpu_layers_slider.setValue(33)
-        self.server_gpu_layers_slider.setSingleStep(1)
-        self.server_gpu_layers_slider.setPageStep(10)
-        self.server_gpu_layers_slider.setTickPosition(QSlider.TickPosition.TicksAbove)
-        self.server_gpu_layers_slider.setTickInterval(10)
-        gpu_layers_layout.addWidget(self.server_gpu_layers_slider)
-        self.server_gpu_layers_label = QLabel("33")
-        self.server_gpu_layers_label.setMinimumWidth(30)
-        gpu_layers_layout.addWidget(self.server_gpu_layers_label)
-        self.server_gpu_layers_slider.valueChanged.connect(lambda v: self.server_gpu_layers_label.setText(str(v)))
-        gpu_layers_group.addLayout(gpu_layers_layout)
-        
-        server_params_layout.addLayout(gpu_layers_group)
-        
-        # CORS and API key
-        self.server_cors_checkbox = QCheckBox("Enable CORS (for web access)")
-        self.server_cors_checkbox.setChecked(True)
-        server_params_layout.addWidget(self.server_cors_checkbox)
-        
-        api_key_layout = QHBoxLayout()
-        api_key_layout.addWidget(QLabel("API Key (optional):"))
-        self.server_api_key_edit = QLineEdit()
-        self.server_api_key_edit.setPlaceholderText("Leave empty for open access")
-        api_key_layout.addWidget(self.server_api_key_edit)
-        server_params_layout.addLayout(api_key_layout)
-        
-        # Backend selection for server
-        backend_layout = QHBoxLayout()
-        backend_layout.addWidget(QLabel("Inference Backend:"))
-        self.server_backend_combo = QComboBox()
-        self.server_backend_combo.addItems([
-            "CPU only (default)",
-            "CUDA",
-            "Metal",
-            "Vulkan",
-            "ROCm"
-        ])
-        backend_layout.addWidget(self.server_backend_combo)
-        backend_layout.addStretch()
-        server_params_layout.addLayout(backend_layout)
 
-        # Skip warmup (recommended on Linux/ROCm to avoid OOM during warmup)
-        self.server_no_warmup_checkbox = QCheckBox("Skip warmup (--no-warmup) — recommended on Linux/ROCm")
-        self.server_no_warmup_checkbox.setChecked(os.name != 'nt')  # ON by default on Linux/Mac
-        server_params_layout.addWidget(self.server_no_warmup_checkbox)
+        res_layout.addWidget(QLabel("CPU потоки:"), 4, 0)
+        self.server_threads_spin = QSpinBox()
+        self.server_threads_spin.setRange(1, 64)
+        self.server_threads_spin.setValue(os.cpu_count() or 4)
+        res_layout.addWidget(self.server_threads_spin, 4, 1)
 
-        # KV Cache Type (TurboQuant support)
-        kv_cache_layout = QHBoxLayout()
-        kv_cache_layout.addWidget(QLabel("KV Cache Type:"))
+        res_layout.addWidget(QLabel("HTTP:"), 4, 2)
+        self.server_http_threads_spin = QSpinBox()
+        self.server_http_threads_spin.setRange(1, 64)
+        self.server_http_threads_spin.setValue(max(1, (os.cpu_count() or 4) // 2))
+        self.server_http_threads_spin.setToolTip("HTTP threads for request processing (default: cpu/2)")
+        res_layout.addWidget(self.server_http_threads_spin, 4, 3)
+
+        res_layout.addWidget(QLabel("Параллельно:"), 4, 4)
+        self.server_parallel_spin = QSpinBox()
+        self.server_parallel_spin.setRange(1, 32)
+        self.server_parallel_spin.setValue(1)
+        self.server_parallel_spin.setToolTip("Concurrent request slots. Each slot reserves KV cache memory.")
+        res_layout.addWidget(self.server_parallel_spin, 4, 5)
+
+        res_layout.addWidget(QLabel("KV Cache:"), 5, 0)
         self.server_kv_cache_combo = QComboBox()
         self.server_kv_cache_combo.addItems([
-            "f16 (default)",          # 0
-            "bf16 (bfloat16)",         # 1
-            "f32 (float32)",           # 2
-            "q8_0 (8-bit)",            # 3
-            "q5_1 (5-bit)",            # 4
-            "q5_0 (5-bit)",            # 5
-            "q4_1 (4-bit)",            # 6
-            "q4_0 (4-bit)",            # 7
-            "iq4_nl (4-bit iQuant)",   # 8
-            "tbq4_0 (TurboQ 4-bit — CPU only)",  # 9
-            "tbq3_0 (TurboQ 3-bit — CPU only)",  # 10
-            "tq3_0 (TurboQ 3-bit — GPU)",         # 11
+            "f16 (default)",
+            "bf16 (bfloat16)",
+            "f32 (float32)",
+            "q8_0 (8-bit)",
+            "q5_1 (5-bit)",
+            "q5_0 (5-bit)",
+            "q4_1 (4-bit)",
+            "q4_0 (4-bit)",
+            "iq4_nl (4-bit iQuant)",
+            "tbq4_0 (TurboQ 4-bit — CPU only)",
+            "tbq3_0 (TurboQ 3-bit — CPU only)",
+            "tq3_0 (TurboQ 3-bit — GPU)",
         ])
         self.server_kv_cache_combo.setToolTip(
             "KV cache quantization types:\n"
@@ -859,174 +606,271 @@ class LlamaCppGUI(QMainWindow):
             "tq3_0: TurboQuant GPU (CUDA/ROCm), 3.5 bpw\n"
             "All TurboQuant types require flash_attn=on."
         )
-        kv_cache_layout.addWidget(self.server_kv_cache_combo)
-        kv_cache_layout.addStretch()
-        server_params_layout.addLayout(kv_cache_layout)
+        res_layout.addWidget(self.server_kv_cache_combo, 5, 1, 1, 5)
 
-        # Flash Attention
-        self.server_flash_attn_checkbox = QCheckBox("Flash Attention (--flash-attn) — saves VRAM, faster for long context")
+        cb_row = QHBoxLayout()
+        self.server_flash_attn_checkbox = QCheckBox("Flash Attn")
         self.server_flash_attn_checkbox.setChecked(False)
-        server_params_layout.addWidget(self.server_flash_attn_checkbox)
+        self.server_flash_attn_checkbox.setToolTip("--flash-attn: saves VRAM, faster for long context")
+        cb_row.addWidget(self.server_flash_attn_checkbox)
 
-        # No mmap (eager loading)
-        self.server_no_mmap_checkbox = QCheckBox("No mmap (--no-mmap) — load model into RAM at startup, faster first prompt")
+        self.server_no_mmap_checkbox = QCheckBox("No mmap")
         self.server_no_mmap_checkbox.setChecked(False)
-        self.server_no_mmap_checkbox.setToolTip(
-            "Without this, model is memory-mapped from disk.\n"
-            "First prompt triggers disk I/O which slows prefill.\n"
-            "With --no-mmap, the model is loaded eagerly at startup.\n"
-            "Costs ~12 GB RAM but eliminates disk-related stalls."
+        self.server_no_mmap_checkbox.setToolTip("--no-mmap: load model fully into RAM at startup")
+        cb_row.addWidget(self.server_no_mmap_checkbox)
+
+        self.server_no_warmup_checkbox = QCheckBox("No warmup")
+        self.server_no_warmup_checkbox.setChecked(os.name != 'nt')
+        self.server_no_warmup_checkbox.setToolTip("--no-warmup: recommended on Linux/ROCm")
+        cb_row.addWidget(self.server_no_warmup_checkbox)
+
+        self.server_cors_checkbox = QCheckBox("CORS")
+        self.server_cors_checkbox.setChecked(True)
+        cb_row.addWidget(self.server_cors_checkbox)
+        cb_row.addStretch()
+        res_layout.addLayout(cb_row, 6, 0, 1, 6)
+
+        res_group.setLayout(res_layout)
+        s_layout.addWidget(res_group)
+
+        # ── Vision / Multimodal ──
+        vision_group = QGroupBox("Vision / Multimodal")
+        vision_layout = QVBoxLayout()
+        vision_layout.setSpacing(3)
+
+        self.server_vision_checkbox = QCheckBox("Включить vision / multimodal")
+        self.server_vision_checkbox.setToolTip("Adds --mmproj and image token limits for local multimodal GGUF models.")
+        self.server_vision_checkbox.toggled.connect(self._set_server_vision_controls_enabled)
+        vision_layout.addWidget(self.server_vision_checkbox)
+
+        mmproj_layout = QHBoxLayout()
+        mmproj_layout.addWidget(QLabel("MMProj:"))
+        self.server_mmproj_path_edit = QLineEdit()
+        self.server_mmproj_path_edit.setPlaceholderText("Path to mmproj*.gguf")
+        mmproj_layout.addWidget(self.server_mmproj_path_edit)
+
+        self.server_mmproj_browse_btn = QPushButton("📁 Browse")
+        self.server_mmproj_browse_btn.clicked.connect(self.browse_server_mmproj)
+        mmproj_layout.addWidget(self.server_mmproj_browse_btn)
+        vision_layout.addLayout(mmproj_layout)
+
+        image_tokens_layout = QHBoxLayout()
+        image_tokens_layout.addWidget(QLabel("Image Max Tokens:"))
+        self.server_image_max_tokens_spin = QSpinBox()
+        self.server_image_max_tokens_spin.setRange(0, 16384)
+        self.server_image_max_tokens_spin.setSingleStep(128)
+        self.server_image_max_tokens_spin.setValue(1024)
+        self.server_image_max_tokens_spin.setSpecialValueText("Model default")
+        self.server_image_max_tokens_spin.setToolTip("--image-max-tokens. 1024 is a good starting point for faster VLM image processing.")
+        image_tokens_layout.addWidget(self.server_image_max_tokens_spin)
+
+        self.server_mmproj_offload_checkbox = QCheckBox("Offload projector to GPU")
+        self.server_mmproj_offload_checkbox.setChecked(True)
+        self.server_mmproj_offload_checkbox.setToolTip("Enabled by default in llama-server. Uncheck to add --no-mmproj-offload.")
+        image_tokens_layout.addWidget(self.server_mmproj_offload_checkbox)
+        image_tokens_layout.addStretch()
+        vision_layout.addLayout(image_tokens_layout)
+
+        self.server_vision_status_label = QLabel("No local mmproj detected.")
+        self.server_vision_status_label.setWordWrap(True)
+        self.server_vision_status_label.setStyleSheet("color: #888; font-style: italic; padding: 2px 0px;")
+        vision_layout.addWidget(self.server_vision_status_label)
+
+        vision_group.setLayout(vision_layout)
+        s_layout.addWidget(vision_group)
+        self._set_server_vision_controls_enabled(False)
+
+        # ── Спекулятивное декодирование ──
+        speculative_group = QGroupBox("Спекулятивное декодирование")
+        speculative_layout = QGridLayout()
+        speculative_layout.setSpacing(4)
+
+        speculative_layout.addWidget(QLabel("Режим:"), 0, 0)
+        self.server_spec_type_combo = QComboBox()
+        self.server_spec_type_combo.addItems([
+            "None (default)",
+            "ngram-mod",
+            "MTP (experimental)",
+        ])
+        self.server_spec_type_combo.setToolTip(
+            "Structured speculative decoding controls for llama-server.\n"
+            "Use MTP only with an MTP/NextN-enabled GGUF."
         )
-        server_params_layout.addWidget(self.server_no_mmap_checkbox)
+        self.server_spec_type_combo.currentIndexChanged.connect(self._set_server_speculative_controls_enabled)
+        speculative_layout.addWidget(self.server_spec_type_combo, 0, 1, 1, 3)
 
-        # Parallel slots
-        parallel_layout = QHBoxLayout()
-        parallel_layout.addWidget(QLabel("Parallel Slots:"))
-        self.server_parallel_spin = QSpinBox()
-        self.server_parallel_spin.setRange(1, 32)
-        self.server_parallel_spin.setValue(1)
-        self.server_parallel_spin.setToolTip("Number of concurrent request slots. Each slot reserves KV cache memory.\nReduce to save VRAM or increase context size.")
-        parallel_layout.addWidget(self.server_parallel_spin)
-        parallel_layout.addStretch()
-        server_params_layout.addLayout(parallel_layout)
+        speculative_layout.addWidget(QLabel("Draft N Max:"), 1, 0)
+        self.server_spec_draft_n_max_spin = QSpinBox()
+        self.server_spec_draft_n_max_spin.setRange(1, 32)
+        self.server_spec_draft_n_max_spin.setValue(3)
+        self.server_spec_draft_n_max_spin.setToolTip("Used for MTP via --spec-draft-n-max. Recommended start for Qwen MTP: 3.")
+        speculative_layout.addWidget(self.server_spec_draft_n_max_spin, 1, 1)
 
-        # Model Preset button and info
-        preset_layout = QHBoxLayout()
-        self.server_preset_btn = QPushButton("⚡ Apply Recommended Preset")
-        self.server_preset_btn.setToolTip("Auto-detect model family and apply recommended parameters from model_presets.json")
-        self.server_preset_btn.clicked.connect(self.apply_model_preset)
-        self.server_preset_btn.setStyleSheet("QPushButton { padding: 6px 12px; background-color: #FF9800; color: white; font-weight: bold; }")
-        preset_layout.addWidget(self.server_preset_btn)
+        speculative_layout.addWidget(QLabel("n-match:"), 1, 2)
+        self.server_spec_ngram_match_spin = QSpinBox()
+        self.server_spec_ngram_match_spin.setRange(1, 256)
+        self.server_spec_ngram_match_spin.setValue(24)
+        self.server_spec_ngram_match_spin.setToolTip("Used for ngram-mod via --spec-ngram-mod-n-match.")
+        speculative_layout.addWidget(self.server_spec_ngram_match_spin, 1, 3)
 
-        self.server_edit_presets_btn = QPushButton("📝 Edit Presets")
-        self.server_edit_presets_btn.setToolTip("Open model_presets.json for editing")
-        self.server_edit_presets_btn.clicked.connect(self.open_presets_file)
-        preset_layout.addWidget(self.server_edit_presets_btn)
+        speculative_layout.addWidget(QLabel("n-min:"), 2, 0)
+        self.server_spec_ngram_n_min_spin = QSpinBox()
+        self.server_spec_ngram_n_min_spin.setRange(1, 256)
+        self.server_spec_ngram_n_min_spin.setValue(48)
+        self.server_spec_ngram_n_min_spin.setToolTip("Used for ngram-mod via --spec-ngram-mod-n-min.")
+        speculative_layout.addWidget(self.server_spec_ngram_n_min_spin, 2, 1)
 
-        preset_layout.addStretch()
-        server_params_layout.addLayout(preset_layout)
+        speculative_layout.addWidget(QLabel("n-max:"), 2, 2)
+        self.server_spec_ngram_n_max_spin = QSpinBox()
+        self.server_spec_ngram_n_max_spin.setRange(1, 256)
+        self.server_spec_ngram_n_max_spin.setValue(64)
+        self.server_spec_ngram_n_max_spin.setToolTip("Used for ngram-mod via --spec-ngram-mod-n-max.")
+        speculative_layout.addWidget(self.server_spec_ngram_n_max_spin, 2, 3)
 
-        self.server_preset_info_label = QLabel("")
-        self.server_preset_info_label.setWordWrap(True)
-        self.server_preset_info_label.setStyleSheet("color: #888; font-style: italic; padding: 2px 0px;")
-        server_params_layout.addWidget(self.server_preset_info_label)
+        self.server_spec_status_label = QLabel("Speculative decoding disabled.")
+        self.server_spec_status_label.setWordWrap(True)
+        self.server_spec_status_label.setStyleSheet("color: #888; font-style: italic; padding: 2px 0px;")
+        speculative_layout.addWidget(self.server_spec_status_label, 3, 0, 1, 4)
 
-        # --- Sampling Defaults (server-level defaults, clients can override per-request) ---
-        sampling_group = QGroupBox("Sampling Defaults (server-level, override per request)")
+        speculative_group.setLayout(speculative_layout)
+        s_layout.addWidget(speculative_group)
+        self._set_server_speculative_controls_enabled(0)
+
+        # ── Sampling ──
+        sampling_group = QGroupBox("Sampling Defaults (server-level)")
         sampling_layout = QGridLayout()
+        sampling_layout.setSpacing(4)
 
-        # Temperature
         sampling_layout.addWidget(QLabel("Temperature:"), 0, 0)
         self.server_temp_spin = QDoubleSpinBox()
         self.server_temp_spin.setRange(0.0, 2.0)
         self.server_temp_spin.setSingleStep(0.05)
         self.server_temp_spin.setDecimals(2)
         self.server_temp_spin.setValue(0.80)
-        self.server_temp_spin.setToolTip("Sampling temperature. 0 = greedy, 0.7-1.0 = creative.")
+        self.server_temp_spin.setToolTip("0 = greedy, 0.7-1.0 = creative.")
         sampling_layout.addWidget(self.server_temp_spin, 0, 1)
 
-        # Top-P
         sampling_layout.addWidget(QLabel("Top-P:"), 0, 2)
         self.server_top_p_spin = QDoubleSpinBox()
         self.server_top_p_spin.setRange(0.0, 1.0)
         self.server_top_p_spin.setSingleStep(0.05)
         self.server_top_p_spin.setDecimals(2)
         self.server_top_p_spin.setValue(0.95)
-        self.server_top_p_spin.setToolTip("Nucleus sampling. 0.95 = consider top 95% probability mass.")
         sampling_layout.addWidget(self.server_top_p_spin, 0, 3)
 
-        # Top-K
         sampling_layout.addWidget(QLabel("Top-K:"), 0, 4)
         self.server_top_k_spin = QSpinBox()
         self.server_top_k_spin.setRange(0, 200)
         self.server_top_k_spin.setValue(40)
-        self.server_top_k_spin.setToolTip("Top-K sampling. 0 = disabled, 20-40 = typical.")
+        self.server_top_k_spin.setToolTip("0 = disabled, 20-40 = typical.")
         sampling_layout.addWidget(self.server_top_k_spin, 0, 5)
 
-        # Min-P
         sampling_layout.addWidget(QLabel("Min-P:"), 1, 0)
         self.server_min_p_spin = QDoubleSpinBox()
         self.server_min_p_spin.setRange(0.0, 1.0)
         self.server_min_p_spin.setSingleStep(0.01)
         self.server_min_p_spin.setDecimals(2)
         self.server_min_p_spin.setValue(0.05)
-        self.server_min_p_spin.setToolTip("Min-P sampling. Filters tokens below this fraction of top token probability.")
         sampling_layout.addWidget(self.server_min_p_spin, 1, 1)
 
-        # Presence Penalty
-        sampling_layout.addWidget(QLabel("Presence Penalty:"), 1, 2)
+        sampling_layout.addWidget(QLabel("Presence:"), 1, 2)
         self.server_presence_penalty_spin = QDoubleSpinBox()
         self.server_presence_penalty_spin.setRange(-2.0, 2.0)
         self.server_presence_penalty_spin.setSingleStep(0.1)
         self.server_presence_penalty_spin.setDecimals(1)
         self.server_presence_penalty_spin.setValue(0.0)
-        self.server_presence_penalty_spin.setToolTip("Presence penalty. 1.0-1.5 reduces repetition. Qwen3 thinking mode recommends 1.5.")
+        self.server_presence_penalty_spin.setToolTip("Qwen3 thinking: 1.5 recommended.")
         sampling_layout.addWidget(self.server_presence_penalty_spin, 1, 3)
 
-        # Repeat Penalty
-        sampling_layout.addWidget(QLabel("Repeat Penalty:"), 1, 4)
+        sampling_layout.addWidget(QLabel("Repeat:"), 1, 4)
         self.server_repeat_penalty_spin = QDoubleSpinBox()
         self.server_repeat_penalty_spin.setRange(0.0, 3.0)
         self.server_repeat_penalty_spin.setSingleStep(0.05)
         self.server_repeat_penalty_spin.setDecimals(2)
         self.server_repeat_penalty_spin.setValue(1.00)
-        self.server_repeat_penalty_spin.setToolTip("Repetition penalty. 1.0 = disabled, 1.1 = light, 1.3 = strong.")
+        self.server_repeat_penalty_spin.setToolTip("1.0 = disabled, 1.1 = light, 1.3 = strong.")
         sampling_layout.addWidget(self.server_repeat_penalty_spin, 1, 5)
 
         sampling_group.setLayout(sampling_layout)
-        server_params_layout.addWidget(sampling_group)
+        s_layout.addWidget(sampling_group)
 
-        # Extra arguments
-        extra_args_layout = QHBoxLayout()
-        extra_args_layout.addWidget(QLabel("Extra Arguments:"))
+        # ── Preset + Extra args ──
+        preset_row = QHBoxLayout()
+        self.server_preset_btn = QPushButton("⚡ Пресет")
+        self.server_preset_btn.setToolTip("Auto-detect model family and apply recommended parameters from model_presets.json")
+        self.server_preset_btn.clicked.connect(self.apply_model_preset)
+        self.server_preset_btn.setStyleSheet("QPushButton { padding: 4px 10px; background-color: #FF9800; color: white; font-weight: bold; }")
+        preset_row.addWidget(self.server_preset_btn)
+
+        self.server_edit_presets_btn = QPushButton("📝 Пресеты")
+        self.server_edit_presets_btn.setToolTip("Open model_presets.json for editing")
+        self.server_edit_presets_btn.clicked.connect(self.open_presets_file)
+        preset_row.addWidget(self.server_edit_presets_btn)
+        preset_row.addStretch()
+        s_layout.addLayout(preset_row)
+
+        self.server_preset_info_label = QLabel("")
+        self.server_preset_info_label.setWordWrap(True)
+        self.server_preset_info_label.setStyleSheet("color: #888; font-style: italic; padding: 2px 0px;")
+        s_layout.addWidget(self.server_preset_info_label)
+
+        extra_row = QHBoxLayout()
+        extra_row.addWidget(QLabel("Доп. аргументы:"))
         self.server_extra_args_edit = QLineEdit()
         self.server_extra_args_edit.setPlaceholderText("e.g. --mlock  (space separated)")
-        extra_args_layout.addWidget(self.server_extra_args_edit)
-        server_params_layout.addLayout(extra_args_layout)
+        extra_row.addWidget(self.server_extra_args_edit)
+        s_layout.addLayout(extra_row)
 
-        server_params_group.setLayout(server_params_layout)
-        layout.addWidget(server_params_group)
-        
-        # Control buttons
+        s_layout.addStretch()
+        settings_scroll.setWidget(settings_container)
+        splitter.addWidget(settings_scroll)
+
+        # ── RIGHT: buttons + status + log ──
+        log_widget = QWidget()
+        log_layout = QVBoxLayout(log_widget)
+        log_layout.setSpacing(4)
+        log_layout.setContentsMargins(4, 4, 4, 4)
+
         buttons_layout = QHBoxLayout()
-        
-        self.server_start_btn = QPushButton("▶️ Start Server")
+        self.server_start_btn = QPushButton("▶️ Старт")
         self.server_start_btn.clicked.connect(self.start_server)
-        self.server_start_btn.setStyleSheet("QPushButton { font-size: 14px; padding: 8px; background-color: #4CAF50; color: white; }")
+        self.server_start_btn.setStyleSheet("QPushButton { font-size: 13px; padding: 6px 14px; background-color: #4CAF50; color: white; font-weight: bold; }")
         buttons_layout.addWidget(self.server_start_btn)
-        
-        self.server_stop_btn = QPushButton("⏹️ Stop Server")
+
+        self.server_stop_btn = QPushButton("⏹️ Стоп")
         self.server_stop_btn.clicked.connect(self.stop_server)
         self.server_stop_btn.setEnabled(False)
-        self.server_stop_btn.setStyleSheet("QPushButton { font-size: 14px; padding: 8px; }")
+        self.server_stop_btn.setStyleSheet("QPushButton { font-size: 13px; padding: 6px 14px; }")
         buttons_layout.addWidget(self.server_stop_btn)
-        
-        self.server_open_web_btn = QPushButton("🌐 Open Web Interface")
+
+        self.server_open_web_btn = QPushButton("🌐 Web")
         self.server_open_web_btn.clicked.connect(self.open_web_interface)
         self.server_open_web_btn.setEnabled(False)
-        self.server_open_web_btn.setStyleSheet("QPushButton { font-size: 14px; padding: 8px; }")
+        self.server_open_web_btn.setStyleSheet("QPushButton { font-size: 13px; padding: 6px 10px; }")
         buttons_layout.addWidget(self.server_open_web_btn)
-        
-        self.server_clear_btn = QPushButton("🗑️ Clear Log")
+
+        self.server_clear_btn = QPushButton("🗑️")
+        self.server_clear_btn.setFixedWidth(36)
+        self.server_clear_btn.setToolTip("Очистить лог")
         self.server_clear_btn.clicked.connect(lambda: self.server_output_text.clear())
         buttons_layout.addWidget(self.server_clear_btn)
-        
-        layout.addLayout(buttons_layout)
-        
-        # Server status
+        log_layout.addLayout(buttons_layout)
+
         self.server_status_label = QLabel("⚪ Server stopped")
-        self.server_status_label.setStyleSheet("font-size: 12px; font-weight: bold; padding: 5px;")
-        layout.addWidget(self.server_status_label)
-        
-        # Server output
-        layout.addWidget(QLabel("Server Log:"))
+        self.server_status_label.setStyleSheet("font-size: 12px; font-weight: bold; padding: 4px;")
+        log_layout.addWidget(self.server_status_label)
+
         self.server_output_text = QTextEdit()
         self.server_output_text.setReadOnly(True)
         self.server_output_text.setFont(QFont("Consolas", 9))
-        layout.addWidget(self.server_output_text)
-        
+        log_layout.addWidget(self.server_output_text, 1)
+
+        splitter.addWidget(log_widget)
+        splitter.setSizes([540, 460])
+
+        main_layout.addWidget(splitter)
         return widget
-        
+
     def create_inference_tab(self) -> QWidget:
         """Create tab for running inference"""
         widget = QWidget()
@@ -1439,6 +1283,11 @@ class LlamaCppGUI(QMainWindow):
         self.install_deps_btn = QPushButton("📦 Install Dependencies")
         self.install_deps_btn.clicked.connect(self.install_dependencies)
         buttons_layout.addWidget(self.install_deps_btn)
+
+        self.export_build_log_btn = QPushButton("💾 Export Build Log")
+        self.export_build_log_btn.clicked.connect(self.export_build_log)
+        self.export_build_log_btn.setToolTip("Save the full Build Log to a text file for sharing/debugging")
+        buttons_layout.addWidget(self.export_build_log_btn)
         
         buttons_layout.addStretch()
         layout.addLayout(buttons_layout)
@@ -1864,12 +1713,213 @@ class LlamaCppGUI(QMainWindow):
         )
         if file_path:
             self.server_model_path_edit.setText(file_path)
+            self.refresh_server_vision_controls(clear_existing=True)
+
+    def browse_server_mmproj(self):
+        """Select multimodal projector file for server"""
+        model_path = Path(self.server_model_path_edit.text().strip())
+        start_dir = model_path.parent if model_path.exists() else self.models_dir
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите multimodal projector (mmproj)",
+            str(start_dir),
+            "GGUF Files (*.gguf);;All Files (*.*)"
+        )
+        if file_path:
+            self.server_mmproj_path_edit.setText(file_path)
+            self.server_vision_checkbox.setChecked(True)
+            self.server_vision_status_label.setText(f"✅ Vision projector selected: {Path(file_path).name}")
+            self.server_vision_status_label.setStyleSheet("color: #4CAF50; font-style: italic; padding: 2px 0px;")
             
     def on_server_model_selected(self, model_name: str):
         """Handle model selection from list for server"""
-        if model_name and model_name != "-- Выберите модель --":
+        if model_name and model_name not in ("-- Выберите модель --", "-- Select Model --"):
             model_path = self.models_dir / model_name
             self.server_model_path_edit.setText(str(model_path))
+
+            self.refresh_server_vision_controls(clear_existing=True)
+
+    def _set_server_vision_controls_enabled(self, enabled: bool):
+        """Enable or disable controls that only apply to multimodal models."""
+        for attr in (
+            "server_mmproj_path_edit",
+            "server_mmproj_browse_btn",
+            "server_image_max_tokens_spin",
+            "server_mmproj_offload_checkbox",
+        ):
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                widget.setEnabled(enabled)
+
+    def _get_server_speculative_type(self) -> str:
+        """Return the selected speculative decoding type."""
+        if not hasattr(self, "server_spec_type_combo"):
+            return "none"
+
+        return {
+            1: "ngram-mod",
+            2: "mtp",
+        }.get(self.server_spec_type_combo.currentIndex(), "none")
+
+    def _set_server_speculative_controls_enabled(self, _: int):
+        """Enable controls relevant to the selected speculative decoding mode."""
+        spec_type = self._get_server_speculative_type()
+        mtp_enabled = spec_type == "mtp"
+        ngram_enabled = spec_type == "ngram-mod"
+
+        for attr in ("server_spec_draft_n_max_spin",):
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                widget.setEnabled(mtp_enabled)
+
+        for attr in (
+            "server_spec_ngram_match_spin",
+            "server_spec_ngram_n_min_spin",
+            "server_spec_ngram_n_max_spin",
+        ):
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                widget.setEnabled(ngram_enabled)
+
+        if not hasattr(self, "server_spec_status_label"):
+            return
+
+        if spec_type == "mtp":
+            self.server_spec_status_label.setText(
+                "MTP is experimental. Use only with an MTP/NextN-enabled GGUF, text-only mode, and parallel=1."
+            )
+            self.server_spec_status_label.setStyleSheet("color: #FF9800; font-style: italic; padding: 2px 0px;")
+        elif spec_type == "ngram-mod":
+            self.server_spec_status_label.setText(
+                "ngram-mod is already benchmarked on this hardware and uses --spec-ngram-mod-* flags."
+            )
+            self.server_spec_status_label.setStyleSheet("color: #4CAF50; font-style: italic; padding: 2px 0px;")
+        else:
+            self.server_spec_status_label.setText("Speculative decoding disabled.")
+            self.server_spec_status_label.setStyleSheet("color: #888; font-style: italic; padding: 2px 0px;")
+
+    def _looks_like_mtp_model(self, model_path: Path) -> bool:
+        """Detect common MTP/NextN markers in model filenames."""
+        normalized = model_path.name.lower().replace("_", "-").replace(".", "-")
+        return "mtp" in normalized or "nextn" in normalized
+
+    def _looks_like_vision_model(self, model_path: Path) -> bool:
+        """Detect common local VLM filenames when no mmproj is present yet."""
+        name = model_path.name.lower()
+        if name.startswith("mmproj"):
+            return False
+
+        vision_markers = (
+            "vision", "visual", "llava", "bakllava", "mobilevlm", "minicpm-v",
+            "minicpmv", "minicpm-o", "qwen2-vl", "qwen2.5-vl", "qwen2_5_vl",
+            "qwen3-vl", "qwen3vl", "gemma-3", "gemma3", "pixtral",
+            "internvl", "glm-4v", "glm-4.1v", "glmedge", "granite-vision",
+            "paligemma", "smolvlm", "idefics", "moondream", "deepseek-vl",
+        )
+        if any(marker in name for marker in vision_markers):
+            return True
+
+        normalized = name.replace("_", "-").replace(".", "-")
+        return any(marker in normalized for marker in ("-vl-", "-vl.", "-vl_", "vl-chat"))
+
+    def _find_mmproj_for_model(self, model_path: Path) -> Optional[Path]:
+        """Find a likely mmproj GGUF beside the selected local model."""
+        if not model_path.exists() or model_path.name.lower().startswith("mmproj"):
+            return None
+
+        search_dirs = []
+        if model_path.parent.exists():
+            search_dirs.append(model_path.parent)
+        if self.models_dir.exists() and self.models_dir not in search_dirs:
+            search_dirs.append(self.models_dir)
+
+        candidates = []
+        for directory in search_dirs:
+            try:
+                candidates.extend(directory.glob("mmproj*.gguf"))
+                candidates.extend(directory.glob("*mmproj*.gguf"))
+            except OSError:
+                continue
+
+        unique_candidates = []
+        seen = set()
+        for candidate in candidates:
+            if candidate == model_path or not candidate.is_file():
+                continue
+            key = str(candidate.resolve())
+            if key not in seen:
+                seen.add(key)
+                unique_candidates.append(candidate)
+
+        if not unique_candidates:
+            return None
+
+        import re
+        ignored_tokens = {
+            "gguf", "ggml", "model", "mmproj", "f16", "bf16", "fp16", "q2", "q3", "q4", "q5",
+            "q6", "q8", "k", "m", "s", "xs", "xxs", "xl", "it", "chat", "instruct",
+        }
+        model_tokens = set(re.findall(r"[a-z0-9]+", model_path.stem.lower())) - ignored_tokens
+
+        def candidate_score(path: Path):
+            candidate_tokens = set(re.findall(r"[a-z0-9]+", path.stem.lower())) - ignored_tokens
+            shared_tokens = len(model_tokens & candidate_tokens)
+            return (
+                path.parent != model_path.parent,
+                -shared_tokens,
+                not path.name.lower().startswith("mmproj"),
+                path.name.lower(),
+            )
+
+        return sorted(
+            unique_candidates,
+            key=candidate_score
+        )[0]
+
+    def refresh_server_vision_controls(self, clear_existing: bool = False):
+        """Update vision controls after selecting or typing a server model path."""
+        if not hasattr(self, "server_vision_checkbox"):
+            return
+
+        model_text = self.server_model_path_edit.text().strip()
+        model_path = Path(model_text) if model_text else None
+
+        if clear_existing:
+            self.server_mmproj_path_edit.clear()
+
+        if not model_path or not model_path.exists():
+            self.server_vision_checkbox.setChecked(False)
+            self.server_vision_status_label.setText("No local mmproj detected.")
+            self.server_vision_status_label.setStyleSheet("color: #888; font-style: italic; padding: 2px 0px;")
+            return
+
+        if model_path.name.lower().startswith("mmproj"):
+            self.server_vision_checkbox.setChecked(False)
+            self.server_vision_status_label.setText("⚠️ Selected file looks like an mmproj projector, not the text model GGUF.")
+            self.server_vision_status_label.setStyleSheet("color: #FF9800; font-style: italic; padding: 2px 0px;")
+            return
+
+        manual_mmproj = Path(self.server_mmproj_path_edit.text().strip()) if self.server_mmproj_path_edit.text().strip() else None
+        if manual_mmproj and manual_mmproj.exists() and not clear_existing:
+            self.server_vision_checkbox.setChecked(True)
+            self.server_vision_status_label.setText(f"✅ Vision projector selected: {manual_mmproj.name}")
+            self.server_vision_status_label.setStyleSheet("color: #4CAF50; font-style: italic; padding: 2px 0px;")
+            return
+
+        mmproj_path = self._find_mmproj_for_model(model_path)
+        if mmproj_path:
+            self.server_mmproj_path_edit.setText(str(mmproj_path))
+            self.server_vision_checkbox.setChecked(True)
+            self.server_vision_status_label.setText(f"✅ Auto-detected vision projector: {mmproj_path.name}")
+            self.server_vision_status_label.setStyleSheet("color: #4CAF50; font-style: italic; padding: 2px 0px;")
+        elif self._looks_like_vision_model(model_path):
+            self.server_vision_checkbox.setChecked(True)
+            self.server_vision_status_label.setText("⚠️ Looks like a vision model, but mmproj*.gguf was not found nearby.")
+            self.server_vision_status_label.setStyleSheet("color: #FF9800; font-style: italic; padding: 2px 0px;")
+        else:
+            self.server_vision_checkbox.setChecked(False)
+            self.server_vision_status_label.setText("No local mmproj detected.")
+            self.server_vision_status_label.setStyleSheet("color: #888; font-style: italic; padding: 2px 0px;")
 
     def _load_model_presets(self) -> list:
         """Load model presets from JSON file"""
@@ -2073,8 +2123,34 @@ class LlamaCppGUI(QMainWindow):
             "--ubatch-size", str(self.server_ubatch_slider.value() * 32),
         ]
 
+        spec_type = self._get_server_speculative_type()
+        if spec_type == "mtp":
+            if self.server_vision_checkbox.isChecked():
+                QMessageBox.warning(
+                    self,
+                    "MTP Requires Text-Only Mode",
+                    "MTP launch is currently intended only for text-only models.\n\n"
+                    "Disable Vision / Multimodal before starting the server with MTP."
+                )
+                return
+
+            if not self._looks_like_mtp_model(Path(model_path)):
+                reply = QMessageBox.question(
+                    self,
+                    "Model Does Not Look Like MTP",
+                    "The selected filename does not contain obvious MTP/NextN markers.\n\n"
+                    "Continue launching with --spec-type mtp anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+
         # Parallel slots (always send to prevent auto-detection choosing too many)
         parallel_val = self.server_parallel_spin.value()
+        if spec_type == "mtp" and parallel_val != 1:
+            self.server_output_text.append("⚠️ MTP selected: forcing --parallel 1 for stability and predictable KV usage.\n")
+            parallel_val = 1
         command.extend(["--parallel", str(parallel_val)])
 
         # Flash attention (explicit flag if checked)
@@ -2083,6 +2159,27 @@ class LlamaCppGUI(QMainWindow):
         # No mmap (eager loading for faster first prompt)
         if self.server_no_mmap_checkbox.isChecked():
             command.append("--no-mmap")
+
+        # Vision / multimodal local models need a separate projector file.
+        if self.server_vision_checkbox.isChecked():
+            mmproj_text = self.server_mmproj_path_edit.text().strip()
+            if not mmproj_text or not Path(mmproj_text).exists():
+                QMessageBox.warning(
+                    self,
+                    "Vision Projector Missing",
+                    "Vision / multimodal mode is enabled, but the mmproj GGUF file was not found.\n\n"
+                    "Select the matching mmproj*.gguf file or disable Vision / Multimodal."
+                )
+                return
+
+            command.extend(["--mmproj", mmproj_text])
+
+            image_max_tokens = self.server_image_max_tokens_spin.value()
+            if image_max_tokens > 0:
+                command.extend(["--image-max-tokens", str(image_max_tokens)])
+
+            if not self.server_mmproj_offload_checkbox.isChecked():
+                command.append("--no-mmproj-offload")
         
         # Add backend-specific arguments if GPU is enabled
         if self.server_gpu_checkbox.isChecked():
@@ -2094,6 +2191,29 @@ class LlamaCppGUI(QMainWindow):
         # Skip warmup if checkbox is set (avoids OOM crash during warmup on ROCm/Linux)
         if self.server_no_warmup_checkbox.isChecked():
             command.append("--no-warmup")
+
+        if spec_type == "mtp":
+            command.extend([
+                "--spec-type", "mtp",
+                "--spec-draft-n-max", str(self.server_spec_draft_n_max_spin.value()),
+            ])
+        elif spec_type == "ngram-mod":
+            ngram_n_min = self.server_spec_ngram_n_min_spin.value()
+            ngram_n_max = self.server_spec_ngram_n_max_spin.value()
+            if ngram_n_min > ngram_n_max:
+                QMessageBox.warning(
+                    self,
+                    "Invalid ngram-mod Range",
+                    "n-min must be less than or equal to n-max for ngram-mod."
+                )
+                return
+
+            command.extend([
+                "--spec-type", "ngram-mod",
+                "--spec-ngram-mod-n-match", str(self.server_spec_ngram_match_spin.value()),
+                "--spec-ngram-mod-n-min", str(ngram_n_min),
+                "--spec-ngram-mod-n-max", str(ngram_n_max),
+            ])
 
         # KV cache type (TurboQuant support)
         kv_cache_types = ["f16", "bf16", "f32", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl", "tbq4_0", "tbq3_0", "tq3_0"]
@@ -2134,6 +2254,14 @@ class LlamaCppGUI(QMainWindow):
 
         # Extra user-defined arguments
         extra_args_text = self.server_extra_args_edit.text().strip()
+        if spec_type != "none" and "--spec-" in extra_args_text:
+            QMessageBox.warning(
+                self,
+                "Duplicate Speculative Arguments",
+                "Speculative Decoding is already configured via the GUI controls.\n\n"
+                "Remove manual --spec-* flags from Extra Arguments to avoid conflicts."
+            )
+            return
         if extra_args_text:
             import shlex
             try:
@@ -2733,6 +2861,9 @@ class LlamaCppGUI(QMainWindow):
         
         backend = backend_map.get(backend_idx)
         
+        # Update build_dir to match selected backend
+        self.build_dir = self.get_build_dir_for_backend(backend)
+        
         self.build_log.clear()
         self.build_log.append(f"⚙️ Starting CMake configuration for backend: {backend or 'CPU only'}\n")
         
@@ -2943,11 +3074,92 @@ class LlamaCppGUI(QMainWindow):
         """Handle configure thread completion"""
         self.configure_btn.setEnabled(True)
         if success:
+            # Ensure build_dir is updated to the correct backend-specific directory
+            backend_idx = self.backend_combo.currentIndex()
+            backend_map = {
+                0: None,  # CPU only
+                1: "CUDA",
+                2: "Metal",
+                3: "Vulkan",
+                4: "SYCL",
+                5: "ROCm",
+            }
+            backend = backend_map.get(backend_idx)
+            self.build_dir = self.get_build_dir_for_backend(backend)
             self.build_btn.setEnabled(True)
+
+    def export_build_log(self):
+        """Export the current build log to a text file."""
+        log_text = self.build_log.toPlainText() if hasattr(self, "build_log") else ""
+        if not log_text.strip():
+            QMessageBox.information(self, "No Build Log", "There is no build log to export yet.")
+            return
+
+        project_root = self.project_root or Path.cwd()
+        build_dir = self.build_dir if getattr(self, "build_dir", None) else project_root / "build"
+        logs_dir = project_root / "build_logs"
+        try:
+            logs_dir.mkdir(exist_ok=True)
+        except Exception:
+            logs_dir = project_root
+
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        backend = self.backend_combo.currentText() if hasattr(self, "backend_combo") else "Unknown"
+        default_path = logs_dir / f"llama-build-{timestamp}.txt"
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Build Log",
+            str(default_path),
+            "Text Files (*.txt);;Log Files (*.log);;All Files (*)"
+        )
+        if not file_path:
+            return
+
+        output_path = Path(file_path)
+        if not output_path.suffix:
+            output_path = output_path.with_suffix(".txt")
+
+        progress = self.build_progress_bar.value() if hasattr(self, "build_progress_bar") else 0
+        current_file = self.build_current_file_label.text() if hasattr(self, "build_current_file_label") else "N/A"
+        header = (
+            "llama.cpp GUI Build Log\n"
+            f"Exported: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"Project: {project_root}\n"
+            f"Build dir: {build_dir}\n"
+            f"Backend: {backend}\n"
+            f"Progress: {progress}%\n"
+            f"Current step: {current_file}\n"
+            "=" * 80 + "\n\n"
+        )
+
+        try:
+            output_path.write_text(header + log_text, encoding="utf-8", newline="\n")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Failed", f"Failed to export build log:\n{e}")
+            return
+
+        status_bar = self.statusBar()
+        if status_bar:
+            status_bar.showMessage(f"Build log exported: {output_path}")
+        QMessageBox.information(self, "Build Log Exported", f"Build log saved to:\n{output_path}")
         
         
     def build_project(self):
         """Build llama.cpp project in background"""
+        # Get selected backend and update build_dir accordingly
+        backend_idx = self.backend_combo.currentIndex()
+        backend_map = {
+            0: None,  # CPU only
+            1: "CUDA",
+            2: "Metal",
+            3: "Vulkan",
+            4: "SYCL",
+            5: "ROCm",
+        }
+        backend = backend_map.get(backend_idx)
+        self.build_dir = self.get_build_dir_for_backend(backend)
+        
         # Check if build directory exists
         if not self.build_dir.exists():
             self.build_log.clear()
@@ -2987,10 +3199,26 @@ class LlamaCppGUI(QMainWindow):
         jobs = os.cpu_count() or 4
         
         self.build_log.clear()
-        
-        # Get selected backend
-        backend_idx = self.backend_combo.currentIndex()
-        backend = {0: None, 1: "CUDA", 2: "Metal", 3: "Vulkan", 4: "SYCL", 5: "ROCm"}.get(backend_idx)
+
+        if backend and backend.upper() == "ROCM":
+            cmake_cache = self.build_dir / "CMakeCache.txt"
+            if cmake_cache.exists():
+                try:
+                    cache_content = cmake_cache.read_text(errors='ignore')
+                    if "GGML_OPENMP:BOOL=ON" in cache_content:
+                        self.build_log.append("❌ ROCm build cache has GGML_OPENMP=ON.\n")
+                        self.build_log.append("   This can cause lld-link errors with unresolved __kmpc_* OpenMP symbols.\n")
+                        self.build_log.append("   Click Configure first to update the cache with GGML_OPENMP=OFF, then run Build again.\n")
+                        QMessageBox.warning(
+                            self,
+                            "ROCm Configure Required",
+                            "The current ROCm build cache still has GGML_OPENMP=ON.\n\n"
+                            "That can cause unresolved __kmpc_* linker errors with HIP SDK clang.\n\n"
+                            "Click Configure first, then run Build again."
+                        )
+                        return
+                except Exception as e:
+                    self.build_log.append(f"⚠️ Could not check ROCm CMakeCache: {e}\n")
         
         # ROCm builds are limited to 4 parallel jobs due to high memory usage
         if backend and backend.upper() == "ROCM":
@@ -3407,6 +3635,28 @@ class LlamaCppGUI(QMainWindow):
             self.server_kv_cache_combo.setCurrentIndex(self.settings.value("server_kv_cache", 0, type=int))
         if hasattr(self, 'server_no_warmup_checkbox'):
             self.server_no_warmup_checkbox.setChecked(self.settings.value("server_no_warmup", os.name != 'nt', type=bool))
+        if hasattr(self, 'server_spec_type_combo'):
+            self.server_spec_type_combo.setCurrentIndex(self.settings.value("server_spec_type", 0, type=int))
+        if hasattr(self, 'server_spec_draft_n_max_spin'):
+            self.server_spec_draft_n_max_spin.setValue(self.settings.value("server_spec_draft_n_max", 3, type=int))
+        if hasattr(self, 'server_spec_ngram_match_spin'):
+            self.server_spec_ngram_match_spin.setValue(self.settings.value("server_spec_ngram_match", 24, type=int))
+        if hasattr(self, 'server_spec_ngram_n_min_spin'):
+            self.server_spec_ngram_n_min_spin.setValue(self.settings.value("server_spec_ngram_n_min", 48, type=int))
+        if hasattr(self, 'server_spec_ngram_n_max_spin'):
+            self.server_spec_ngram_n_max_spin.setValue(self.settings.value("server_spec_ngram_n_max", 64, type=int))
+        if hasattr(self, 'server_vision_checkbox'):
+            self.server_vision_checkbox.setChecked(self.settings.value("server_vision", False, type=bool))
+        if hasattr(self, 'server_mmproj_path_edit'):
+            self.server_mmproj_path_edit.setText(self.settings.value("server_mmproj_path", ""))
+        if hasattr(self, 'server_image_max_tokens_spin'):
+            self.server_image_max_tokens_spin.setValue(self.settings.value("server_image_max_tokens", 1024, type=int))
+        if hasattr(self, 'server_mmproj_offload_checkbox'):
+            self.server_mmproj_offload_checkbox.setChecked(self.settings.value("server_mmproj_offload", True, type=bool))
+        if hasattr(self, 'server_spec_type_combo'):
+            self._set_server_speculative_controls_enabled(self.server_spec_type_combo.currentIndex())
+        if hasattr(self, 'server_model_path_edit') and hasattr(self, 'server_vision_checkbox'):
+            self.refresh_server_vision_controls(clear_existing=False)
         # Sampling defaults
         if hasattr(self, 'server_temp_spin'):
             self.server_temp_spin.setValue(self.settings.value("server_temp", 0.8, type=float))
@@ -3644,6 +3894,24 @@ class LlamaCppGUI(QMainWindow):
             self.settings.setValue("server_kv_cache", self.server_kv_cache_combo.currentIndex())
         if hasattr(self, 'server_no_warmup_checkbox'):
             self.settings.setValue("server_no_warmup", self.server_no_warmup_checkbox.isChecked())
+        if hasattr(self, 'server_spec_type_combo'):
+            self.settings.setValue("server_spec_type", self.server_spec_type_combo.currentIndex())
+        if hasattr(self, 'server_spec_draft_n_max_spin'):
+            self.settings.setValue("server_spec_draft_n_max", self.server_spec_draft_n_max_spin.value())
+        if hasattr(self, 'server_spec_ngram_match_spin'):
+            self.settings.setValue("server_spec_ngram_match", self.server_spec_ngram_match_spin.value())
+        if hasattr(self, 'server_spec_ngram_n_min_spin'):
+            self.settings.setValue("server_spec_ngram_n_min", self.server_spec_ngram_n_min_spin.value())
+        if hasattr(self, 'server_spec_ngram_n_max_spin'):
+            self.settings.setValue("server_spec_ngram_n_max", self.server_spec_ngram_n_max_spin.value())
+        if hasattr(self, 'server_vision_checkbox'):
+            self.settings.setValue("server_vision", self.server_vision_checkbox.isChecked())
+        if hasattr(self, 'server_mmproj_path_edit'):
+            self.settings.setValue("server_mmproj_path", self.server_mmproj_path_edit.text())
+        if hasattr(self, 'server_image_max_tokens_spin'):
+            self.settings.setValue("server_image_max_tokens", self.server_image_max_tokens_spin.value())
+        if hasattr(self, 'server_mmproj_offload_checkbox'):
+            self.settings.setValue("server_mmproj_offload", self.server_mmproj_offload_checkbox.isChecked())
         # Save sampling defaults
         if hasattr(self, 'server_temp_spin'):
             self.settings.setValue("server_temp", self.server_temp_spin.value())
