@@ -23,7 +23,7 @@
 - Сохранять TurboQuant типы и GUI-интеграцию KV cache.
 - Догонять upstream по core/runtime, но не импортировать upstream docs/actions/instructions поверх локальных.
 - Готовить MTP поддержку только после проверки конкретного upstream PR/commit и совместимого MTP GGUF.
-- Для Qwen performance work сначала читать `PROJECT_PROFILE.md`, `MTP.md` и `QWEN_SPEED_RESEARCH.md`.
+- Для Qwen performance work сначала читать `PROJECT_PROFILE.md`, `BENCHMARKS.md`, `MTP.md`, `MTP_IMPLEMENTATION_PLAN.md` и `QWEN_SPEED_RESEARCH.md`.
 
 ## Защищённые файлы и директории
 
@@ -35,8 +35,10 @@
 - `AGENTS.md`
 - `CLAUDE.md`
 - `MTP.md`
+- `MTP_IMPLEMENTATION_PLAN.md`
 - `PROJECT_PROFILE.md`
 - `QWEN_SPEED_RESEARCH.md`
+- `BENCHMARKS.md`
 - `UPSTREAM_SYNC.md`
 - `gui/README.md`
 - `gui/QUICKSTART.md`

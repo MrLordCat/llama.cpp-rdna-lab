@@ -139,6 +139,8 @@ GUI предупреждает, что TurboQuant KV-типы требуют fla
 
 - [PROJECT_PROFILE.md](PROJECT_PROFILE.md) — железо, окружение, модели, remotes и локальные defaults.
 - [QWEN_SPEED_RESEARCH.md](QWEN_SPEED_RESEARCH.md) — исследование MTP, speculative decoding, KV cache и ROCm/Vulkan tuning для Qwen.
+- [BENCHMARKS.md](BENCHMARKS.md) — короткий agent-workload benchmark для baseline/progression.
+- [MTP_IMPLEMENTATION_PLAN.md](MTP_IMPLEMENTATION_PLAN.md) — пошаговый план внедрения MTP.
 
 ## Полезные файлы
 
@@ -154,6 +156,8 @@ GUI предупреждает, что TurboQuant KV-типы требуют fla
 | `MSVC_FIX.md` | Заметки по MSVC detection |
 | `PROJECT_PROFILE.md` | Персональный профиль форка |
 | `MTP.md` | Исследование и план внедрения MTP |
+| `MTP_IMPLEMENTATION_PLAN.md` | Детальный план работ по MTP |
 | `QWEN_SPEED_RESEARCH.md` | План ускорений Qwen |
+| `BENCHMARKS.md` | Как мерить baseline и прогресс |
 | `UPSTREAM_SYNC.md` | Как догонять upstream без импорта лишнего |
 | `AGENTS.md` | Инструкции для AI-агентов |
