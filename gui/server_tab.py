@@ -158,14 +158,14 @@ class ServerTabWidget(QWidget):
         thread_layout.addWidget(QLabel("Batch:"))
         self.server_batch_spinbox = QSpinBox()
         self.server_batch_spinbox.setMinimum(1)
-        self.server_batch_spinbox.setMaximum(2048)
+        self.server_batch_spinbox.setMaximum(8192)
         self.server_batch_spinbox.setValue(2048)
         thread_layout.addWidget(self.server_batch_spinbox)
 
         thread_layout.addWidget(QLabel("UBatch:"))
         self.server_ubatch_spinbox = QSpinBox()
         self.server_ubatch_spinbox.setMinimum(1)
-        self.server_ubatch_spinbox.setMaximum(2048)
+        self.server_ubatch_spinbox.setMaximum(8192)
         self.server_ubatch_spinbox.setValue(512)
         thread_layout.addWidget(self.server_ubatch_spinbox)
 

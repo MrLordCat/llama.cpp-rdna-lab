@@ -688,6 +688,11 @@ class BuildTabWidget(QWidget):
                 QMessageBox.warning(self, "Auto-tune", "Missing build-rocm/bin/llama-server.exe")
             return False
 
+        spec_values = ["none", "ngram-mod"]
+        model_name = resolved_model.name.lower()
+        if ("mtp" in model_name or "nextn" in model_name) and self._server_supports_mtp(server_bin):
+            spec_values.append("mtp")
+
         command = [
             sys.executable,
             "scripts/agent_workload_bench.py",
@@ -708,7 +713,7 @@ class BuildTabWidget(QWidget):
             "--autotune-batch-values", "1024,2048,4096",
             "--autotune-ubatch-values", "1024,2048,4096",
             "--autotune-kv-values", "q8_0,q4_0",
-            "--autotune-spec-values", "none,ngram-mod",
+            "--autotune-spec-values", ",".join(spec_values),
             "--autotune-update-preset",
             "--autotune-preset-file", "gui/model_presets.json",
         ]
@@ -719,7 +724,7 @@ class BuildTabWidget(QWidget):
                 "--autotune-batch-values", "1024",
                 "--autotune-ubatch-values", "1024",
                 "--autotune-kv-values", "q8_0",
-                "--autotune-spec-values", "none,ngram-mod",
+                "--autotune-spec-values", ",".join(spec_values),
                 "--autotune-max-configs", "4",
             ])
 
@@ -758,6 +763,22 @@ class BuildTabWidget(QWidget):
         model_files = sorted((Path(self.parent.models_dir)).rglob("*.gguf"))
         filtered = [p for p in model_files if "mmproj" not in p.name.lower()]
         return filtered[0] if filtered else None
+
+    @staticmethod
+    def _server_supports_mtp(server_bin: Path) -> bool:
+        """Best-effort capability probe for --spec-type mtp support in llama-server."""
+        try:
+            result = subprocess.run(
+                [str(server_bin), "--help"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            output = (result.stdout or "") + "\n" + (result.stderr or "")
+            return "mtp" in output.lower()
+        except Exception:
+            return False
 
     def _on_quick_bench_output(self, line: str):
         if "Aggregate completion TPS by wall time" in line:

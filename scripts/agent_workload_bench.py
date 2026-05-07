@@ -499,6 +499,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--autotune-ngram-min", type=int, default=48)
     parser.add_argument("--autotune-ngram-match", type=int, default=24)
     parser.add_argument("--autotune-ngram-max", type=int, default=64)
+    parser.add_argument("--autotune-mtp-draft-n-max", type=int, default=3)
     parser.add_argument("--autotune-max-configs", type=int, default=48, help="safety cap for sweep size")
     parser.add_argument("--autotune-update-preset", action="store_true", help="write best config into model presets file")
     parser.add_argument(
@@ -597,6 +598,9 @@ def main() -> int:
             extra_bits.append(f"--spec-ngram-mod-n-min {args.autotune_ngram_min}")
             extra_bits.append(f"--spec-ngram-mod-n-match {args.autotune_ngram_match}")
             extra_bits.append(f"--spec-ngram-mod-n-max {args.autotune_ngram_max}")
+        elif spec_mode == "mtp":
+            extra_bits.append("--spec-type mtp")
+            extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")
         run_args.server_extra = " ".join(extra_bits)
 
         print(
