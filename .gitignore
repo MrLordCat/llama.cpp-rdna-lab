@@ -105,8 +105,7 @@
 /.venv
 __pycache__/
 
-# Upstream AI instructions (этот форк использует свой CLAUDE.md)
-AGENTS.md
+# Agent instructions are tracked in this fork.
 */poetry.lock
 poetry.toml
 
@@ -163,8 +162,10 @@ gui/*.pyc
 *.ini
 *.conf
 .DS_Store
+/log*.txt
+/log*.text
 
-# AGENTS
+# Local-only agent/runtime overrides
 
 AGENTS.local.md
 .pi/SYSTEM.md

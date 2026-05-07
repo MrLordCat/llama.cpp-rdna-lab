@@ -6,3 +6,16 @@ tools/server/public/index.html -diff
 # При merge из upstream: всегда сохранять нашу версию этих файлов
 AGENTS.md merge=ours
 CLAUDE.md merge=ours
+README.md merge=ours
+MTP.md merge=ours
+PROJECT_PROFILE.md merge=ours
+QWEN_SPEED_RESEARCH.md merge=ours
+UPSTREAM_SYNC.md merge=ours
+gui/README.md merge=ours
+gui/QUICKSTART.md merge=ours
+
+# Этот форк не импортирует upstream automation/docs/instructions автоматически.
+.github/** merge=ours
+docs/** merge=ours
+.gemini/** merge=ours
+.devops/** merge=ours
