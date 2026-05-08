@@ -10,12 +10,14 @@ from PyQt6.QtCore import QSettings, QSize
 
 # Import utility modules
 from project_utils import ProjectManager
+from build_registry import BuildVersionRegistry
 
 # Import tab widgets
 from server_tab import ServerTabWidget
 from inference_tab import InferenceTabWidget
 from download_tab import DownloadTabWidget
 from build_tab import BuildTabWidget
+from benchmark_tab import BenchmarkTabWidget
 from builds_info_tab import BuildsInfoTabWidget
 from hardware_tab import HardwareTabWidget
 
@@ -54,6 +56,8 @@ class LlamaCppGUI(QMainWindow):
         self.build_manager = BuildManager(self.project_root)
         self.model_downloader = ModelDownloader(self.models_dir)
         self.hardware_detector = HardwareDetector()
+        self.build_registry = BuildVersionRegistry(self.project_root)
+        self.build_registry.sync_with_existing_builds()
         
         # Create UI
         self.create_ui()
@@ -86,7 +90,7 @@ class LlamaCppGUI(QMainWindow):
                     pass
     
     def create_ui(self):
-        """Create main UI with 6 tabs"""
+        """Create main UI with tabs"""
         # Create central widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -104,6 +108,7 @@ class LlamaCppGUI(QMainWindow):
         self.inference_tab = InferenceTabWidget(self)
         self.download_tab = DownloadTabWidget(self)
         self.build_tab = BuildTabWidget(self)
+        self.benchmark_tab = BenchmarkTabWidget(self)
         self.builds_info_tab = BuildsInfoTabWidget(self)
         self.hardware_tab = HardwareTabWidget(self)
         
@@ -112,6 +117,7 @@ class LlamaCppGUI(QMainWindow):
         self.tabs.addTab(self.inference_tab, "⚡ Inference")
         self.tabs.addTab(self.download_tab, "📥 Download Models")
         self.tabs.addTab(self.build_tab, "🔧 Build & Setup")
+        self.tabs.addTab(self.benchmark_tab, "📈 Bench & Autotune")
         self.tabs.addTab(self.builds_info_tab, "📋 Installed Builds")
         self.tabs.addTab(self.hardware_tab, "💻 System Info")
         self.tabs.currentChanged.connect(self.on_tab_changed)
@@ -135,6 +141,20 @@ class LlamaCppGUI(QMainWindow):
         }
         normalized = backend_map.get(backend, backend)
         return str(self.project_manager.get_build_dir_for_backend(normalized))
+
+    def get_registered_builds(self) -> list[dict]:
+        """Expose persistent build registry records for tabs/widgets."""
+        if not hasattr(self, "build_registry"):
+            return []
+        return self.build_registry.list_builds()
+
+    def refresh_build_registry(self) -> int:
+        """Rescan filesystem and sync build registry with existing build directories."""
+        if not hasattr(self, "build_registry"):
+            return 0
+        imported = self.build_registry.sync_with_existing_builds()
+        self.build_registry.update_benchmark_stats_from_history()
+        return imported
     
     def refresh_models_list(self):
         """Refresh models list in tabs"""
@@ -147,9 +167,15 @@ class LlamaCppGUI(QMainWindow):
         """Refresh dynamic tab data when user switches tabs"""
         if index == 0 and hasattr(self.server_tab, "refresh_server_models_list"):
             self.server_tab.refresh_server_models_list()
+            if hasattr(self.server_tab, "refresh_server_build_choices"):
+                self.server_tab.refresh_server_build_choices()
         elif index == 1 and hasattr(self.inference_tab, "refresh_models_list"):
             self.inference_tab.refresh_models_list()
-        elif index == 4 and hasattr(self.builds_info_tab, "refresh_builds_info"):
+        elif index == 4 and hasattr(self.benchmark_tab, "refresh_models_list"):
+            self.benchmark_tab.refresh_models_list()
+            self.benchmark_tab.refresh_build_choices()
+            self.benchmark_tab.refresh_saved_presets_table()
+        elif index == 5 and hasattr(self.builds_info_tab, "refresh_builds_info"):
             self.builds_info_tab.refresh_builds_info()
     
     def closeEvent(self, event):

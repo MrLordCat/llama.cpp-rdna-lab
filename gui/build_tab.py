@@ -2,10 +2,13 @@
 
 import subprocess
 import sys
+import re
+import datetime as dt
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton, QCheckBox,
-    QSpinBox, QComboBox, QLineEdit, QTextEdit, QFileDialog, QMessageBox, QProgressBar, QScrollArea
+    QSpinBox, QComboBox, QLineEdit, QTextEdit, QFileDialog, QMessageBox, QProgressBar, QScrollArea,
+    QInputDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 
@@ -79,6 +82,9 @@ class BuildTabWidget(QWidget):
         self._autotune_callbacks = []
         self._autotune_result = {}
         self.build_dir = "build"
+        self._active_build_record_id = ""
+        self._active_build_backend = ""
+        self._custom_build_dir_active = False
         self.cmake_preset = "default"
         self.create_ui()
 
@@ -183,6 +189,11 @@ class BuildTabWidget(QWidget):
         self.build_dir_input.setText("build")
         self.build_dir_input.setReadOnly(True)
         build_dir_row.addWidget(self.build_dir_input)
+
+        self.create_build_version_btn = QPushButton("🆕 Create Build Version")
+        self.create_build_version_btn.clicked.connect(self.create_build_version)
+        build_dir_row.addWidget(self.create_build_version_btn)
+
         build_dir_row.addStretch()
         cmake_layout.addLayout(build_dir_row)
 
@@ -272,15 +283,10 @@ class BuildTabWidget(QWidget):
         self.clean_btn.setStyleSheet("QPushButton { font-size: 12px; padding: 8px; }")
         buttons_layout.addWidget(self.clean_btn)
 
-        self.quick_bench_btn = QPushButton("⚡ Quick ROCm Bench")
-        self.quick_bench_btn.clicked.connect(self.run_quick_benchmark)
-        self.quick_bench_btn.setStyleSheet("QPushButton { font-size: 12px; padding: 8px; }")
-        buttons_layout.addWidget(self.quick_bench_btn)
-
-        self.autotune_btn = QPushButton("🎯 Auto-tune 32K+")
-        self.autotune_btn.clicked.connect(self.run_large_context_autotune)
-        self.autotune_btn.setStyleSheet("QPushButton { font-size: 12px; padding: 8px; }")
-        buttons_layout.addWidget(self.autotune_btn)
+        self.prepare_upstream_btn = QPushButton("🌐 Prepare Upstream Source")
+        self.prepare_upstream_btn.clicked.connect(self.prepare_upstream_source)
+        self.prepare_upstream_btn.setStyleSheet("QPushButton { font-size: 12px; padding: 8px; }")
+        buttons_layout.addWidget(self.prepare_upstream_btn)
 
         self.cancel_build_btn = QPushButton("❌ Cancel")
         self.cancel_build_btn.setEnabled(False)
@@ -290,11 +296,24 @@ class BuildTabWidget(QWidget):
         buttons_layout.addStretch()
         layout.addLayout(buttons_layout)
 
+        moved_label = QLabel("Benchmark and autotune controls moved to '📈 Bench & Autotune' tab.")
+        moved_label.setStyleSheet("color: #666;")
+        layout.addWidget(moved_label)
+
     def on_backend_changed(self, backend: str):
         """Handle backend change"""
         is_rocm = backend == "ROCm/HIP"
         self.rocm_amdgpu_label.setVisible(is_rocm)
         self.rocm_amdgpu_input.setVisible(is_rocm)
+
+        # Keep explicit build version selection unless backend changed away from it.
+        if self._custom_build_dir_active:
+            if self._active_build_backend and backend == self._active_build_backend:
+                self.build_dir_input.setText(self.build_dir)
+                return
+            self._custom_build_dir_active = False
+            self._active_build_record_id = ""
+            self._active_build_backend = ""
 
         if backend == "ROCm/HIP":
             self.generator_combo.setCurrentText("Ninja")
@@ -311,6 +330,283 @@ class BuildTabWidget(QWidget):
             self.build_dir = "build"
 
         self.build_dir_input.setText(self.build_dir)
+
+    @staticmethod
+    def _slugify_build_name(name: str) -> str:
+        slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", name.strip()).strip("-").lower()
+        return slug or "build-version"
+
+    @staticmethod
+    def _normalize_backend_key(backend: str) -> str:
+        mapping = {
+            "ROCm/HIP": "rocm",
+            "CPU": "cpu",
+            "CUDA": "cuda",
+            "Vulkan": "vulkan",
+            "Metal": "metal",
+            "SYCL": "sycl",
+            "OpenCL": "opencl",
+        }
+        return mapping.get(backend, backend.lower())
+
+    @staticmethod
+    def _display_backend_from_key(key: str) -> str:
+        mapping = {
+            "rocm": "ROCm/HIP",
+            "cpu": "CPU",
+            "cuda": "CUDA",
+            "vulkan": "Vulkan",
+            "metal": "Metal",
+            "sycl": "SYCL",
+            "opencl": "OpenCL",
+        }
+        return mapping.get(key.lower(), key)
+
+    def _apply_active_build_record(self, record: dict):
+        """Apply selected build record fields to Build tab controls."""
+        backend_key = str(record.get("backend", "cpu"))
+        backend_display = self._display_backend_from_key(backend_key)
+        idx = self.backend_combo.findText(backend_display)
+        if idx >= 0:
+            self.backend_combo.setCurrentIndex(idx)
+
+        self._active_build_record_id = str(record.get("id", ""))
+        self._active_build_backend = backend_display
+        self._custom_build_dir_active = True
+
+        build_dir = str(record.get("build_dir", "")).strip()
+        if build_dir:
+            self.build_dir = build_dir
+            self.build_dir_input.setText(build_dir)
+
+        toolchain = record.get("toolchain", {}) if isinstance(record.get("toolchain"), dict) else {}
+        rocm_targets = str(toolchain.get("rocm_targets", "")).strip()
+        if rocm_targets:
+            self.rocm_amdgpu_input.setText(rocm_targets)
+
+        custom_flags = toolchain.get("custom_cmake_flags", [])
+        if isinstance(custom_flags, list) and custom_flags:
+            self.extra_cmake_flags.setPlainText("\n".join(str(f) for f in custom_flags if str(f).strip()))
+
+        generator = str(toolchain.get("generator", "")).strip()
+        if generator:
+            gidx = self.generator_combo.findText(generator)
+            if gidx >= 0:
+                self.generator_combo.setCurrentIndex(gidx)
+
+    def create_build_version(self):
+        """Create a new build version entry and switch Build tab to it."""
+        backend = self.backend_combo.currentText()
+
+        default_name = f"{self._normalize_backend_key(backend)}-{dt.datetime.now().strftime('%Y%m%d-%H%M')}"
+        name, ok = QInputDialog.getText(
+            self,
+            "Create Build Version",
+            "Build version name:",
+            text=default_name,
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+
+        source_type, ok = QInputDialog.getItem(
+            self,
+            "Build Source",
+            "Source type:",
+            ["fork", "upstream-stock"],
+            0,
+            False,
+        )
+        if not ok:
+            return
+
+        source_ref_default = "upstream/master" if source_type == "upstream-stock" else "HEAD"
+        source_ref, ok = QInputDialog.getText(
+            self,
+            "Source Ref",
+            "Source ref (branch/tag/commit):",
+            text=source_ref_default,
+        )
+        if not ok:
+            return
+        source_ref = source_ref.strip() or source_ref_default
+
+        default_dir = f"build-{self._slugify_build_name(name)}"
+        build_dir_text, ok = QInputDialog.getText(
+            self,
+            "Build Directory",
+            "Build directory (relative to project root):",
+            text=default_dir,
+        )
+        if not ok or not build_dir_text.strip():
+            return
+
+        build_dir_text = build_dir_text.strip().replace("\\", "/")
+        build_dir = Path(self.parent.project_root) / build_dir_text
+        if build_dir.exists() and any(build_dir.iterdir()):
+            reply = QMessageBox.question(
+                self,
+                "Build Directory Exists",
+                f"Directory '{build_dir_text}' already exists and is not empty.\n\nUse it for this build version?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        backend_key = self._normalize_backend_key(backend)
+
+        rocm_targets = ""
+        if backend == "ROCm/HIP":
+            rocm_targets_default = self.rocm_amdgpu_input.text().strip() or "gfx1201"
+            rocm_targets, ok = QInputDialog.getText(
+                self,
+                "ROCm Targets",
+                "AMDGPU targets (semicolon separated):",
+                text=rocm_targets_default,
+            )
+            if not ok:
+                return
+            rocm_targets = rocm_targets.strip() or rocm_targets_default
+
+        custom_flags_text, ok = QInputDialog.getMultiLineText(
+            self,
+            "Custom CMake Flags",
+            "Additional CMake flags (one per line, optional):",
+            self.extra_cmake_flags.toPlainText().strip(),
+        )
+        if not ok:
+            return
+        custom_flags = [line.strip() for line in custom_flags_text.splitlines() if line.strip()]
+
+        gen_default = self.generator_combo.currentText()
+        generator_choice, ok = QInputDialog.getItem(
+            self,
+            "Generator",
+            "Preferred generator for this build version:",
+            ["Auto", "Ninja", "Visual Studio 17 2022"],
+            ["Auto", "Ninja", "Visual Studio 17 2022"].index(gen_default if gen_default in ["Auto", "Ninja", "Visual Studio 17 2022"] else "Auto"),
+            False,
+        )
+        if not ok:
+            return
+
+        record = {
+            "name": name,
+            "backend": backend_key,
+            "source_type": source_type,
+            "source_ref": source_ref,
+            "build_dir": str(build_dir),
+            "server_bin": "",
+            "status": "ready" if build_dir.exists() else "building",
+            "notes": "Created from Build tab",
+            "toolchain": {
+                "generator": generator_choice,
+                "rocm_targets": rocm_targets,
+                "custom_cmake_flags": custom_flags,
+            },
+        }
+
+        registry = getattr(self.parent, "build_registry", None)
+        if registry is not None:
+            stored = registry.upsert(record)
+            self._active_build_record_id = str(stored.get("id", ""))
+        else:
+            self._active_build_record_id = ""
+
+        self._active_build_backend = backend
+        self._custom_build_dir_active = True
+        self.build_dir = str(build_dir)
+        self.build_dir_input.setText(self.build_dir)
+
+        if source_type == "upstream-stock":
+            upstream_src_default = f"external/upstream-src-{self._slugify_build_name(name)}"
+            upstream_src, ok = QInputDialog.getText(
+                self,
+                "Upstream Source Directory",
+                "Isolated source directory for upstream stock build (relative):",
+                text=upstream_src_default,
+            )
+            if ok and upstream_src.strip() and registry is not None and self._active_build_record_id:
+                rec = registry.get_by_id(self._active_build_record_id)
+                if rec:
+                    toolchain = dict(rec.get("toolchain", {}))
+                    toolchain["source_dir"] = str((Path(self.parent.project_root) / upstream_src.strip()).resolve())
+                    registry.upsert({**rec, "toolchain": toolchain})
+
+        if registry is not None and self._active_build_record_id:
+            rec = registry.get_by_id(self._active_build_record_id)
+            if rec:
+                self._apply_active_build_record(rec)
+
+        if hasattr(self.parent, "server_tab") and hasattr(self.parent.server_tab, "refresh_server_build_choices"):
+            self.parent.server_tab.refresh_server_build_choices()
+        if hasattr(self.parent, "builds_info_tab") and hasattr(self.parent.builds_info_tab, "refresh_builds_info"):
+            self.parent.builds_info_tab.refresh_builds_info()
+
+        self.build_status_label.setText(
+            f"Created build version '{name}' in {build_dir_text} ({source_type}, ref={source_ref})"
+        )
+
+    def _get_active_registry_record(self) -> dict | None:
+        registry = getattr(self.parent, "build_registry", None)
+        if registry is None or not self._active_build_record_id:
+            return None
+        return registry.get_by_id(self._active_build_record_id)
+
+    def prepare_upstream_source(self):
+        """Prepare isolated upstream source tree for active upstream-stock build."""
+        record = self._get_active_registry_record()
+        if record is None:
+            QMessageBox.warning(self, "Upstream Source", "Create/select an upstream-stock build version first.")
+            return
+
+        if str(record.get("source_type", "")) != "upstream-stock":
+            QMessageBox.warning(self, "Upstream Source", "Active build version is not marked as upstream-stock.")
+            return
+
+        source_ref = str(record.get("source_ref", "")).strip() or "master"
+        source_ref = source_ref.replace("upstream/", "")
+        toolchain = record.get("toolchain", {}) if isinstance(record.get("toolchain"), dict) else {}
+        source_dir_text = str(toolchain.get("source_dir", "")).strip()
+        if not source_dir_text:
+            source_dir_text = str((Path(self.parent.project_root) / f"external/upstream-src-{self._slugify_build_name(record.get('name', 'stock'))}").resolve())
+
+        source_dir = Path(source_dir_text)
+        source_dir.parent.mkdir(parents=True, exist_ok=True)
+
+        self.build_status_label.setText(f"Preparing upstream source in {source_dir}...")
+
+        try:
+            if (source_dir / ".git").exists():
+                subprocess.run(["git", "-C", str(source_dir), "fetch", "origin"], check=True, timeout=180)
+            else:
+                subprocess.run(
+                    ["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/llama.cpp.git", str(source_dir)],
+                    check=True,
+                    timeout=600,
+                )
+
+            subprocess.run(["git", "-C", str(source_dir), "checkout", source_ref], check=True, timeout=120)
+
+            registry = getattr(self.parent, "build_registry", None)
+            if registry is not None:
+                toolchain = dict(record.get("toolchain", {}))
+                toolchain["source_dir"] = str(source_dir)
+                registry.upsert({
+                    **record,
+                    "toolchain": toolchain,
+                    "status": "ready",
+                    "notes": f"Upstream source prepared at {source_ref}",
+                })
+
+            self.build_status_label.setText(f"✓ Upstream source ready: {source_dir} @ {source_ref}")
+            QMessageBox.information(self, "Upstream Source", f"Upstream source is ready:\n{source_dir}\nref: {source_ref}")
+        except subprocess.CalledProcessError as exc:
+            self.build_status_label.setText("✗ Failed to prepare upstream source")
+            QMessageBox.critical(self, "Upstream Source", f"Failed to prepare upstream source:\n{exc}")
+        except Exception as exc:
+            self.build_status_label.setText("✗ Failed to prepare upstream source")
+            QMessageBox.critical(self, "Upstream Source", f"Unexpected error:\n{exc}")
 
     def check_dependencies(self):
         """Check if all dependencies are installed"""
@@ -374,12 +670,17 @@ class BuildTabWidget(QWidget):
 
         backend = self.backend_combo.currentText()
         generator = self.generator_combo.currentText()
+
+        registry = getattr(self.parent, "build_registry", None)
+        active_record = registry.get_by_id(self._active_build_record_id) if registry is not None and self._active_build_record_id else None
+        active_toolchain = active_record.get("toolchain", {}) if isinstance(active_record, dict) else {}
         
         # Update build_dir based on backend
-        if hasattr(self.parent, "get_build_dir_for_backend"):
-            self.build_dir = self.parent.get_build_dir_for_backend(backend)
-        else:
-            self.build_dir = self._get_backend_build_dir(backend)
+        if not self._custom_build_dir_active:
+            if hasattr(self.parent, "get_build_dir_for_backend"):
+                self.build_dir = self.parent.get_build_dir_for_backend(backend)
+            else:
+                self.build_dir = self._get_backend_build_dir(backend)
         
         self.build_dir_input.setText(self.build_dir)
 
@@ -394,15 +695,26 @@ class BuildTabWidget(QWidget):
         # Get extra flags
         extra_flags_text = self.extra_cmake_flags.toPlainText()
         extra_flags = [line.strip() for line in extra_flags_text.split('\n') if line.strip()]
+        stored_extra = active_toolchain.get("custom_cmake_flags", []) if isinstance(active_toolchain, dict) else []
+        if isinstance(stored_extra, list):
+            for flag in stored_extra:
+                text = str(flag).strip()
+                if text and text not in extra_flags:
+                    extra_flags.append(text)
 
         additional_options = {}
         backend_key = backend.upper()
         if backend == "ROCm/HIP":
             backend_key = "ROCM"
-            rocm_targets = self.rocm_amdgpu_input.text().strip() or "gfx1201"
+            rocm_targets = (
+                str(active_toolchain.get("rocm_targets", "")).strip()
+                or self.rocm_amdgpu_input.text().strip()
+                or "gfx1201"
+            )
             additional_options["AMDGPU_TARGETS"] = rocm_targets
             additional_options["GGML_HIP_MMQ_MFMA"] = True
             additional_options["GGML_HIP_NO_VMM"] = True
+            self.rocm_amdgpu_input.setText(rocm_targets)
 
         if self.enable_lto_check.isChecked():
             additional_options["CMAKE_INTERPROCEDURAL_OPTIMIZATION"] = True
@@ -416,13 +728,35 @@ class BuildTabWidget(QWidget):
             additional_options=additional_options,
         )
 
-        if generator != "Auto" and "-G" not in command:
-            command.extend(["-G", generator])
+        effective_generator = str(active_toolchain.get("generator", "")).strip() or generator
+        if effective_generator != "Auto" and "-G" not in command:
+            command.extend(["-G", effective_generator])
 
         command.extend(extra_flags)
 
         env = self.build_manager.get_rocm_env() if backend == "ROCm/HIP" else None
         working_dir = Path(self.parent.project_root)
+
+        if isinstance(active_record, dict) and str(active_record.get("source_type", "")) == "upstream-stock":
+            source_dir = str(active_toolchain.get("source_dir", "")).strip()
+            if source_dir:
+                source_path = Path(source_dir)
+                if source_path.exists() and (source_path / "CMakeLists.txt").exists():
+                    if "-S" not in command:
+                        command.extend(["-S", str(source_path)])
+                else:
+                    QMessageBox.warning(
+                        self,
+                        "Upstream Source Missing",
+                        "Configured source_dir for upstream-stock build is missing.\n"
+                        "Run 'Prepare Upstream Source' first.",
+                    )
+                    self.configure_btn.setEnabled(True)
+                    self.build_btn.setEnabled(False)
+                    self.rebuild_btn.setEnabled(False)
+                    self.clean_btn.setEnabled(False)
+                    self.build_progress.setVisible(False)
+                    return
 
         self.configure_thread = ConfigureThread(
             command=command,
@@ -462,6 +796,28 @@ class BuildTabWidget(QWidget):
         else:
             self.build_status_label.setText("✗ CMake configuration failed")
             QMessageBox.critical(self, "Configure Error", "CMake configuration failed. Check log output.")
+
+        registry = getattr(self.parent, "build_registry", None)
+        if registry is not None:
+            record = registry.get_by_id(self._active_build_record_id) if self._active_build_record_id else None
+            if record:
+                toolchain = dict(record.get("toolchain", {}))
+                toolchain.update(
+                    {
+                        "generator": self.generator_combo.currentText(),
+                        "build_type": self.build_type_combo.currentText(),
+                        "jobs": int(self.jobs_spinbox.value()),
+                    }
+                )
+                registry.upsert(
+                    {
+                        **record,
+                        "build_dir": str(Path(self.build_dir)),
+                        "toolchain": toolchain,
+                        "status": "ready" if success else "failed",
+                        "notes": "Configured via Build tab",
+                    }
+                )
 
         self.configure_btn.setEnabled(True)
         self.build_btn.setEnabled(success)
@@ -551,6 +907,34 @@ class BuildTabWidget(QWidget):
             self.build_status_label.setText("✗ Build failed")
             QMessageBox.critical(self, "Build Error", "Build failed. Check output log.")
 
+        registry = getattr(self.parent, "build_registry", None)
+        if registry is not None:
+            record = registry.get_by_id(self._active_build_record_id) if self._active_build_record_id else None
+            if record:
+                toolchain = dict(record.get("toolchain", {}))
+                toolchain.update(
+                    {
+                        "generator": self.generator_combo.currentText(),
+                        "build_type": self.build_type_combo.currentText(),
+                        "jobs": int(self.jobs_spinbox.value()),
+                    }
+                )
+                registry.upsert(
+                    {
+                        **record,
+                        "build_dir": str(Path(self.build_dir)),
+                        "toolchain": toolchain,
+                        "status": "ready" if success else "failed",
+                        "notes": "Build tab run",
+                    }
+                )
+                if hasattr(self.parent, "refresh_build_registry"):
+                    self.parent.refresh_build_registry()
+                if hasattr(self.parent, "builds_info_tab") and hasattr(self.parent.builds_info_tab, "refresh_builds_info"):
+                    self.parent.builds_info_tab.refresh_builds_info()
+                if hasattr(self.parent, "server_tab") and hasattr(self.parent.server_tab, "refresh_server_build_choices"):
+                    self.parent.server_tab.refresh_server_build_choices()
+
         self.build_btn.setEnabled(True)
         self.configure_btn.setEnabled(True)
         self.rebuild_btn.setEnabled(True)
@@ -627,9 +1011,9 @@ class BuildTabWidget(QWidget):
             QMessageBox.warning(self, "Benchmark", "No GGUF model found in models/")
             return
 
-        server_bin = Path("build-rocm/bin/llama-server.exe")
-        if not server_bin.exists():
-            QMessageBox.warning(self, "Benchmark", "Missing build-rocm/bin/llama-server.exe")
+        server_bin = self._resolve_benchmark_server_bin()
+        if not server_bin:
+            QMessageBox.warning(self, "Benchmark", "Missing llama-server binary for selected/active build")
             return
 
         model_path = model_files[0]
@@ -641,6 +1025,8 @@ class BuildTabWidget(QWidget):
             "--runs", "1",
             "--server-bin", str(server_bin),
             "--model", str(model_path),
+            "--build-id", self._active_build_record_id,
+            "--artifact-mode", "unified",
             "--ctx-size", "32768",
             "--batch-size", "1024",
             "--ubatch-size", "1024",
@@ -653,7 +1039,8 @@ class BuildTabWidget(QWidget):
             "--request-timeout", "120",
         ]
 
-        self.quick_bench_btn.setEnabled(False)
+        if hasattr(self, "quick_bench_btn"):
+            self.quick_bench_btn.setEnabled(False)
         self.build_status_label.setText(f"Running quick benchmark with {model_path.name}...")
         self.bench_thread = QuickBenchmarkThread(command=command, working_dir=Path(self.parent.project_root))
         self.bench_thread.output.connect(self._on_quick_bench_output)
@@ -682,10 +1069,10 @@ class BuildTabWidget(QWidget):
                 QMessageBox.warning(self, "Auto-tune", "No GGUF model found or selected")
             return False
 
-        server_bin = Path("build-rocm/bin/llama-server.exe")
-        if not server_bin.exists():
+        server_bin = self._resolve_benchmark_server_bin()
+        if not server_bin:
             if not silent:
-                QMessageBox.warning(self, "Auto-tune", "Missing build-rocm/bin/llama-server.exe")
+                QMessageBox.warning(self, "Auto-tune", "Missing llama-server binary for selected/active build")
             return False
 
         spec_values = ["none", "ngram-mod"]
@@ -702,6 +1089,8 @@ class BuildTabWidget(QWidget):
             "--runs", "1",
             "--server-bin", str(server_bin),
             "--model", str(resolved_model),
+            "--build-id", self._active_build_record_id,
+            "--artifact-mode", "unified",
             "--gpu-layers", "99",
             "--parallel", "1",
             "--max-tokens", "160",
@@ -714,6 +1103,7 @@ class BuildTabWidget(QWidget):
             "--autotune-ubatch-values", "1024,2048,4096",
             "--autotune-kv-values", "q8_0,q4_0",
             "--autotune-spec-values", ",".join(spec_values),
+            "--autotune-max-configs", "256",
             "--autotune-update-preset",
             "--autotune-preset-file", "gui/model_presets.json",
         ]
@@ -739,14 +1129,40 @@ class BuildTabWidget(QWidget):
         if completion_callback is not None:
             self._autotune_callbacks.append(completion_callback)
 
-        self.autotune_btn.setEnabled(False)
-        self.quick_bench_btn.setEnabled(False)
+        if hasattr(self, "autotune_btn"):
+            self.autotune_btn.setEnabled(False)
+        if hasattr(self, "quick_bench_btn"):
+            self.quick_bench_btn.setEnabled(False)
         self.build_status_label.setText(f"Running 32K+ autotune for {resolved_model.name}...")
         self.bench_thread = QuickBenchmarkThread(command=command, working_dir=Path(self.parent.project_root))
         self.bench_thread.output.connect(self._on_autotune_output)
         self.bench_thread.finished_signal.connect(self._on_autotune_finished)
         self.bench_thread.start()
         return True
+
+    def _resolve_benchmark_server_bin(self) -> Path | None:
+        """Resolve llama-server binary for benchmark from active build record first."""
+        record = self._get_active_registry_record()
+        if record:
+            server_bin = str(record.get("server_bin", "")).strip()
+            if server_bin and Path(server_bin).exists():
+                return Path(server_bin)
+            build_dir = str(record.get("build_dir", "")).strip()
+            if build_dir:
+                candidates = [
+                    Path(build_dir) / "bin" / "llama-server.exe",
+                    Path(build_dir) / "bin" / "Release" / "llama-server.exe",
+                    Path(build_dir) / "bin" / "Debug" / "llama-server.exe",
+                    Path(build_dir) / "bin" / "llama-server",
+                ]
+                for candidate in candidates:
+                    if candidate.exists():
+                        return candidate
+
+        fallback = Path("build-rocm/bin/llama-server.exe")
+        if fallback.exists():
+            return fallback
+        return None
 
     def _resolve_benchmark_model(self, preferred_model_path: str | None = None) -> Path | None:
         """Pick model for benchmark/autotune, preferring selected server model."""
@@ -787,7 +1203,12 @@ class BuildTabWidget(QWidget):
             self.build_status_label.setText(line)
 
     def _on_quick_bench_finished(self, success: bool):
-        self.quick_bench_btn.setEnabled(True)
+        if hasattr(self, "quick_bench_btn"):
+            self.quick_bench_btn.setEnabled(True)
+        if hasattr(self.parent, "refresh_build_registry"):
+            self.parent.refresh_build_registry()
+        if hasattr(self.parent, "builds_info_tab") and hasattr(self.parent.builds_info_tab, "refresh_builds_info"):
+            self.parent.builds_info_tab.refresh_builds_info()
         if success:
             QMessageBox.information(
                 self,
@@ -811,8 +1232,14 @@ class BuildTabWidget(QWidget):
             self.build_status_label.setText(line)
 
     def _on_autotune_finished(self, success: bool):
-        self.autotune_btn.setEnabled(True)
-        self.quick_bench_btn.setEnabled(True)
+        if hasattr(self, "autotune_btn"):
+            self.autotune_btn.setEnabled(True)
+        if hasattr(self, "quick_bench_btn"):
+            self.quick_bench_btn.setEnabled(True)
+        if hasattr(self.parent, "refresh_build_registry"):
+            self.parent.refresh_build_registry()
+        if hasattr(self.parent, "builds_info_tab") and hasattr(self.parent.builds_info_tab, "refresh_builds_info"):
+            self.parent.builds_info_tab.refresh_builds_info()
         payload = dict(self._autotune_result)
         payload["success"] = success
         self.autotune_completed.emit(success, payload)

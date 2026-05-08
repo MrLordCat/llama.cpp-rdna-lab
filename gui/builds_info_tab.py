@@ -15,6 +15,7 @@ class BuildsInfoTabWidget(QWidget):
         super().__init__()
         self.parent = parent
         self.project_root = parent.project_root if hasattr(parent, "project_root") else Path.cwd()
+        self._row_by_build_id: dict[int, str] = {}
         self.create_ui()
         self.refresh_builds_info()
 
@@ -31,12 +32,18 @@ class BuildsInfoTabWidget(QWidget):
         list_layout = QVBoxLayout()
 
         self.builds_table = QTableWidget()
-        self.builds_table.setColumnCount(5)
+        self.builds_table.setColumnCount(11)
         self.builds_table.setHorizontalHeaderLabels([
-            "Build Name", "Backend", "Git Commit", "Size", "Modified"
+            "Name", "Backend", "Source", "Status", "Build ID", "Best Non-MTP", "Best MTP", "Last Bench", "Git Commit", "Size", "Modified"
         ])
         self.builds_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.builds_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.builds_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.builds_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.builds_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.builds_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self.builds_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        self.builds_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
         self.builds_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.builds_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.builds_table.setAlternatingRowColors(True)
@@ -104,6 +111,48 @@ class BuildsInfoTabWidget(QWidget):
         self.builds_table.setRowCount(0)
         self.executables_table.setRowCount(0)
         self.build_details_label.setText("Select a build to view details")
+        self._row_by_build_id = {}
+
+        registry = getattr(self.parent, "build_registry", None)
+        if registry is not None and hasattr(self.parent, "refresh_build_registry"):
+            self.parent.refresh_build_registry()
+            registry.update_benchmark_stats_from_history()
+            records = sorted(
+                registry.list_builds(),
+                key=lambda r: (str(r.get("status", "")) != "ready", str(r.get("name", "")).lower()),
+            )
+
+            for record in records:
+                build_path = Path(record.get("build_dir", "")) if record.get("build_dir") else self.project_root
+                backend = str(record.get("backend", "unknown")).upper()
+                source = str(record.get("source_type", "fork"))
+                status = str(record.get("status", "unknown"))
+                build_id = str(record.get("id", ""))
+                best_non = str(record.get("bench_best_non_mtp_tps", "") or "-")
+                best_mtp = str(record.get("bench_best_mtp_tps", "") or "-")
+                last_bench = str(record.get("bench_last_run_at", "") or "-")
+                commit = str(record.get("source_ref", "")) or self._get_git_commit(self.project_root)
+                size = self._get_directory_size(build_path) if build_path.exists() else 0
+                size_str = self._format_size(size)
+                modified = self._get_last_modified(build_path)
+
+                row = self.builds_table.rowCount()
+                self.builds_table.insertRow(row)
+
+                self.builds_table.setItem(row, 0, QTableWidgetItem(str(record.get("name", build_path.name))))
+                self.builds_table.setItem(row, 1, QTableWidgetItem(backend))
+                self.builds_table.setItem(row, 2, QTableWidgetItem(source))
+                self.builds_table.setItem(row, 3, QTableWidgetItem(status))
+                self.builds_table.setItem(row, 4, QTableWidgetItem(build_id))
+                self.builds_table.setItem(row, 5, QTableWidgetItem(best_non))
+                self.builds_table.setItem(row, 6, QTableWidgetItem(best_mtp))
+                self.builds_table.setItem(row, 7, QTableWidgetItem(last_bench))
+                self.builds_table.setItem(row, 8, QTableWidgetItem(commit))
+                self.builds_table.setItem(row, 9, QTableWidgetItem(size_str))
+                self.builds_table.setItem(row, 10, QTableWidgetItem(modified))
+
+                self._row_by_build_id[row] = build_id
+            return
 
         # Find all build-* directories
         build_dirs = []
@@ -126,9 +175,15 @@ class BuildsInfoTabWidget(QWidget):
 
             self.builds_table.setItem(row, 0, QTableWidgetItem(build_dir.name))
             self.builds_table.setItem(row, 1, QTableWidgetItem(backend))
-            self.builds_table.setItem(row, 2, QTableWidgetItem(commit))
-            self.builds_table.setItem(row, 3, QTableWidgetItem(size_str))
-            self.builds_table.setItem(row, 4, QTableWidgetItem(modified))
+            self.builds_table.setItem(row, 2, QTableWidgetItem("fork"))
+            self.builds_table.setItem(row, 3, QTableWidgetItem("ready"))
+            self.builds_table.setItem(row, 4, QTableWidgetItem("—"))
+            self.builds_table.setItem(row, 5, QTableWidgetItem("-"))
+            self.builds_table.setItem(row, 6, QTableWidgetItem("-"))
+            self.builds_table.setItem(row, 7, QTableWidgetItem("-"))
+            self.builds_table.setItem(row, 8, QTableWidgetItem(commit))
+            self.builds_table.setItem(row, 9, QTableWidgetItem(size_str))
+            self.builds_table.setItem(row, 10, QTableWidgetItem(modified))
 
     def on_build_selected(self):
         """Handle build selection"""
@@ -139,9 +194,12 @@ class BuildsInfoTabWidget(QWidget):
             return
 
         row = self.builds_table.row(selected[0])
-        build_name = self.builds_table.item(row, 0).text()
+        build_path = self._selected_build_path_from_row(row)
+        if build_path is None:
+            self.executables_table.setRowCount(0)
+            self.build_details_label.setText("Selected build path is not available")
+            return
 
-        build_path = self.project_root / build_name
         self.display_build_executables(build_path)
         self.display_build_details(build_path)
 
@@ -174,8 +232,17 @@ class BuildsInfoTabWidget(QWidget):
         """Display build details"""
         details = []
 
+        registry = getattr(self.parent, "build_registry", None)
+        reg_record = registry.get_by_dir(build_path) if registry is not None else None
+
         backend = self._detect_backend(build_path)
         details.append(f"Backend: {backend}")
+        if reg_record:
+            details.append(f"Build ID: {reg_record.get('id', '-')}")
+            details.append(f"Source: {reg_record.get('source_type', '-')}")
+            details.append(f"Best Non-MTP TPS: {reg_record.get('bench_best_non_mtp_tps', '-') or '-'}")
+            details.append(f"Best MTP TPS: {reg_record.get('bench_best_mtp_tps', '-') or '-'}")
+            details.append(f"Last benchmark: {reg_record.get('bench_last_run_at', '-') or '-'}")
 
         cmake_cache = build_path / "CMakeCache.txt"
         if cmake_cache.exists():
@@ -207,8 +274,10 @@ class BuildsInfoTabWidget(QWidget):
             return
 
         row = self.builds_table.row(selected[0])
-        build_name = self.builds_table.item(row, 0).text()
-        build_path = self.project_root / build_name
+        build_path = self._selected_build_path_from_row(row)
+        if build_path is None:
+            QMessageBox.warning(self, "Error", "Build path not found in registry")
+            return
 
         if build_path.exists():
             import subprocess
@@ -229,12 +298,15 @@ class BuildsInfoTabWidget(QWidget):
 
         row = self.builds_table.row(selected[0])
         old_name = self.builds_table.item(row, 0).text()
+        old_path = self._selected_build_path_from_row(row)
+        if old_path is None:
+            QMessageBox.warning(self, "Error", "Build path not found in registry")
+            return
 
         new_name, ok = self._ask_for_new_name(old_name)
         if not ok or not new_name:
             return
 
-        old_path = self.project_root / old_name
         new_path = self.project_root / new_name
 
         if new_path.exists():
@@ -243,6 +315,10 @@ class BuildsInfoTabWidget(QWidget):
 
         try:
             old_path.rename(new_path)
+            build_id = self._row_by_build_id.get(row, "")
+            registry = getattr(self.parent, "build_registry", None)
+            if registry is not None and build_id:
+                registry.rename_build(build_id, new_name, new_path)
             QMessageBox.information(self, "Success", f"Renamed '{old_name}' → '{new_name}'")
             self.refresh_builds_info()
         except Exception as e:
@@ -257,6 +333,10 @@ class BuildsInfoTabWidget(QWidget):
 
         row = self.builds_table.row(selected[0])
         build_name = self.builds_table.item(row, 0).text()
+        build_path = self._selected_build_path_from_row(row)
+        if build_path is None:
+            QMessageBox.warning(self, "Error", "Build path not found in registry")
+            return
 
         reply = QMessageBox.question(
             self,
@@ -266,11 +346,13 @@ class BuildsInfoTabWidget(QWidget):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            build_path = self.project_root / build_name
-
             try:
                 import shutil
                 shutil.rmtree(build_path)
+                build_id = self._row_by_build_id.get(row, "")
+                registry = getattr(self.parent, "build_registry", None)
+                if registry is not None and build_id:
+                    registry.remove_by_id(build_id)
                 QMessageBox.information(self, "Success", f"Deleted '{build_name}'")
                 self.refresh_builds_info()
             except Exception as e:
@@ -382,3 +464,17 @@ class BuildsInfoTabWidget(QWidget):
         )
 
         return new_name, ok
+
+    def _selected_build_path_from_row(self, row: int) -> Path | None:
+        build_id = self._row_by_build_id.get(row, "")
+        registry = getattr(self.parent, "build_registry", None)
+        if registry is not None and build_id:
+            record = registry.get_by_id(build_id)
+            if record and record.get("build_dir"):
+                return Path(record["build_dir"])
+
+        # Legacy fallback when registry is not available.
+        item = self.builds_table.item(row, 0)
+        if item is None:
+            return None
+        return self.project_root / item.text()

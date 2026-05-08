@@ -25,8 +25,10 @@ class ServerTabWidget(QWidget):
         self.server_thread = None
         self.server_process = None
         self._memory_fit_warning_shown = False
+        self._registered_build_map: dict[str, dict[str, object]] = {}
         self._model_presets = self._load_model_presets()
         self.create_ui()
+        self.refresh_server_build_choices()
         self.refresh_server_models_list()
         self.load_settings()
 
@@ -138,11 +140,14 @@ class ServerTabWidget(QWidget):
         server_layout.addLayout(backend_layout)
 
         build_layout = QHBoxLayout()
-        build_layout.addWidget(QLabel("Build:"))
-        self.server_build_combo = QComboBox()
-        self.server_build_combo.addItems(["Auto", "ROCm/HIP", "CPU", "CUDA", "Vulkan", "Metal", "SYCL"])
-        self.server_build_combo.setCurrentText("Auto")
-        build_layout.addWidget(self.server_build_combo)
+        build_layout.addWidget(QLabel("Build Backend:"))
+        self.server_build_backend_combo = QComboBox()
+        self.server_build_backend_combo.currentTextChanged.connect(self._on_build_backend_changed)
+        build_layout.addWidget(self.server_build_backend_combo)
+
+        build_layout.addWidget(QLabel("Build Version:"))
+        self.server_build_version_combo = QComboBox()
+        build_layout.addWidget(self.server_build_version_combo)
         build_layout.addStretch()
         server_layout.addLayout(build_layout)
 
@@ -157,16 +162,18 @@ class ServerTabWidget(QWidget):
 
         thread_layout.addWidget(QLabel("Batch:"))
         self.server_batch_spinbox = QSpinBox()
-        self.server_batch_spinbox.setMinimum(1)
+        self.server_batch_spinbox.setMinimum(32)
         self.server_batch_spinbox.setMaximum(8192)
         self.server_batch_spinbox.setValue(2048)
+        self.server_batch_spinbox.setSingleStep(32)
         thread_layout.addWidget(self.server_batch_spinbox)
 
         thread_layout.addWidget(QLabel("UBatch:"))
         self.server_ubatch_spinbox = QSpinBox()
-        self.server_ubatch_spinbox.setMinimum(1)
+        self.server_ubatch_spinbox.setMinimum(32)
         self.server_ubatch_spinbox.setMaximum(8192)
         self.server_ubatch_spinbox.setValue(512)
+        self.server_ubatch_spinbox.setSingleStep(32)
         thread_layout.addWidget(self.server_ubatch_spinbox)
 
         thread_layout.addWidget(QLabel("HTTP Threads:"))
@@ -206,10 +213,10 @@ class ServerTabWidget(QWidget):
 
         gpu_layout.addWidget(QLabel("Context:"))
         self.server_context_spinbox = QSpinBox()
-        self.server_context_spinbox.setMinimum(128)
+        self.server_context_spinbox.setMinimum(8192)
         self.server_context_spinbox.setMaximum(131072)
         self.server_context_spinbox.setValue(32768)
-        self.server_context_spinbox.setSingleStep(256)
+        self.server_context_spinbox.setSingleStep(8192)
         gpu_layout.addWidget(self.server_context_spinbox)
         gpu_layout.addStretch()
         resources_layout.addLayout(gpu_layout)
@@ -692,9 +699,16 @@ class ServerTabWidget(QWidget):
 
     def _resolve_selected_build_dir(self) -> Path:
         """Resolve build directory based on selected build mode"""
-        selected = self.server_build_combo.currentText()
-        if selected != "Auto" and hasattr(self.parent, "get_build_dir_for_backend"):
-            return Path(self.parent.get_build_dir_for_backend(selected))
+        selected_version = self.server_build_version_combo.currentText().strip()
+        payload = self._registered_build_map.get(selected_version)
+        if isinstance(payload, dict):
+            candidate = payload.get("build_dir")
+            if isinstance(candidate, Path) and candidate.exists():
+                return candidate
+
+        selected_backend = self.server_build_backend_combo.currentText().strip()
+        if selected_backend != "Auto" and hasattr(self.parent, "get_build_dir_for_backend"):
+            return Path(self.parent.get_build_dir_for_backend(selected_backend))
 
         candidates = [
             self.parent.project_root / "build-rocm",
@@ -707,6 +721,120 @@ class ServerTabWidget(QWidget):
             if self._find_llama_server_binary(candidate):
                 return candidate
         return self.parent.project_root / "build"
+
+    @staticmethod
+    def _display_backend_from_key(key: str) -> str:
+        mapping = {
+            "rocm": "ROCm/HIP",
+            "cpu": "CPU",
+            "cuda": "CUDA",
+            "vulkan": "Vulkan",
+            "metal": "Metal",
+            "sycl": "SYCL",
+            "opencl": "OpenCL",
+        }
+        return mapping.get(key.lower(), key)
+
+    @staticmethod
+    def _backend_key_from_display(display: str) -> str:
+        mapping = {
+            "ROCm/HIP": "rocm",
+            "CPU": "cpu",
+            "CUDA": "cuda",
+            "Vulkan": "vulkan",
+            "Metal": "metal",
+            "SYCL": "sycl",
+            "OpenCL": "opencl",
+        }
+        return mapping.get(display, display.lower())
+
+    def _on_build_backend_changed(self, *_args):
+        self.refresh_server_build_versions_for_backend(select_latest=True)
+
+    def refresh_server_build_versions_for_backend(self, select_latest: bool):
+        selected_backend_display = self.server_build_backend_combo.currentText().strip() if self.server_build_backend_combo.count() else "Auto"
+        selected_backend_key = self._backend_key_from_display(selected_backend_display) if selected_backend_display != "Auto" else ""
+        previous_version_id = ""
+        prev_payload = self._registered_build_map.get(self.server_build_version_combo.currentText().strip())
+        if isinstance(prev_payload, dict):
+            previous_version_id = str(prev_payload.get("build_id", ""))
+
+        self.server_build_version_combo.clear()
+        self._registered_build_map = {}
+
+        records = []
+        if hasattr(self.parent, "get_registered_builds"):
+            records = self.parent.get_registered_builds()
+
+        usable = [
+            r for r in records
+            if str(r.get("status", "")) == "ready"
+            and str(r.get("build_dir", ""))
+            and Path(str(r.get("build_dir", ""))).exists()
+            and (not selected_backend_key or str(r.get("backend", "")).lower() == selected_backend_key)
+        ]
+
+        # Newest first by updated_at/created_at for automatic latest selection.
+        usable.sort(key=lambda r: (str(r.get("updated_at", "")), str(r.get("created_at", ""))), reverse=True)
+        for rec in usable:
+            build_dir = Path(str(rec.get("build_dir")))
+            source = str(rec.get("source_type", "fork"))
+            source_ref = str(rec.get("source_ref", ""))
+            short_ref = source_ref[:10] if source_ref else "-"
+            name = str(rec.get("name", build_dir.name))
+            build_id = str(rec.get("id", ""))
+            short_id = build_id[-8:] if len(build_id) >= 8 else (build_id or "-")
+            build_date = str(rec.get("created_at", "")).strip() or str(rec.get("updated_at", "")).strip() or "-"
+            label = f"{name} [{source}/{short_ref}] | id:{short_id} | date:{build_date}"
+            self.server_build_version_combo.addItem(label)
+            self._registered_build_map[label] = {
+                "build_dir": build_dir,
+                "build_id": str(rec.get("id", "")),
+            }
+
+        if self.server_build_version_combo.count() == 0:
+            self.server_build_version_combo.addItem("Auto")
+            return
+
+        if select_latest:
+            self.server_build_version_combo.setCurrentIndex(0)
+            return
+
+        # Try preserving previous selected build id.
+        if previous_version_id:
+            for idx in range(self.server_build_version_combo.count()):
+                label = self.server_build_version_combo.itemText(idx)
+                payload = self._registered_build_map.get(label)
+                if isinstance(payload, dict) and str(payload.get("build_id", "")) == previous_version_id:
+                    self.server_build_version_combo.setCurrentIndex(idx)
+                    return
+
+        self.server_build_version_combo.setCurrentIndex(0)
+
+    def refresh_server_build_choices(self):
+        """Populate backend selector and version selector from registry with latest version default."""
+        previous_backend = self.server_build_backend_combo.currentText() if hasattr(self, "server_build_backend_combo") else "Auto"
+        self.server_build_backend_combo.blockSignals(True)
+        self.server_build_backend_combo.clear()
+        self.server_build_backend_combo.addItem("Auto")
+
+        records = []
+        if hasattr(self.parent, "get_registered_builds"):
+            records = self.parent.get_registered_builds()
+
+        backend_keys = sorted({str(r.get("backend", "")).lower() for r in records if str(r.get("backend", "")).strip()})
+        for key in backend_keys:
+            self.server_build_backend_combo.addItem(self._display_backend_from_key(key))
+
+        # Keep legacy backend quick-select options.
+        for legacy in ["ROCm/HIP", "CPU", "CUDA", "Vulkan", "Metal", "SYCL", "OpenCL"]:
+            if self.server_build_backend_combo.findText(legacy) < 0:
+                self.server_build_backend_combo.addItem(legacy)
+
+        idx = self.server_build_backend_combo.findText(previous_backend)
+        self.server_build_backend_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.server_build_backend_combo.blockSignals(False)
+        self.refresh_server_build_versions_for_backend(select_latest=True)
 
     @staticmethod
     def _find_llama_server_binary(build_dir: Path) -> Path | None:
@@ -820,7 +948,18 @@ class ServerTabWidget(QWidget):
         self.server_port_spinbox.setValue(int(settings.value("server/port", 8000)))
         self.server_backend_combo.setCurrentText(settings.value("server/backend", "GPU"))
         self.server_mode_combo.setCurrentText(settings.value("server/mode", "Inference"))
-        self.server_build_combo.setCurrentText(settings.value("server/build", "Auto"))
+        saved_backend = settings.value("server/build_backend", settings.value("server/build", "Auto"))
+        saved_version_id = settings.value("server/build_version_id", "")
+        idx = self.server_build_backend_combo.findText(saved_backend)
+        self.server_build_backend_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.refresh_server_build_versions_for_backend(select_latest=False)
+        if saved_version_id:
+            for i in range(self.server_build_version_combo.count()):
+                label = self.server_build_version_combo.itemText(i)
+                payload = self._registered_build_map.get(label)
+                if isinstance(payload, dict) and str(payload.get("build_id", "")) == str(saved_version_id):
+                    self.server_build_version_combo.setCurrentIndex(i)
+                    break
 
         self.server_gpu_layers_spinbox.setValue(int(settings.value("server/gpu_layers", 99)))
         self.server_context_spinbox.setValue(int(settings.value("server/context", 32768)))
@@ -872,7 +1011,11 @@ class ServerTabWidget(QWidget):
         settings.setValue("server/port", self.server_port_spinbox.value())
         settings.setValue("server/backend", self.server_backend_combo.currentText())
         settings.setValue("server/mode", self.server_mode_combo.currentText())
-        settings.setValue("server/build", self.server_build_combo.currentText())
+        settings.setValue("server/build_backend", self.server_build_backend_combo.currentText())
+        settings.setValue("server/build", self.server_build_backend_combo.currentText())
+        selected_label = self.server_build_version_combo.currentText().strip()
+        payload = self._registered_build_map.get(selected_label)
+        settings.setValue("server/build_version_id", str(payload.get("build_id", "")) if isinstance(payload, dict) else "")
 
         settings.setValue("server/gpu_layers", self.server_gpu_layers_spinbox.value())
         settings.setValue("server/context", self.server_context_spinbox.value())
