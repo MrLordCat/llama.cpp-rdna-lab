@@ -39,6 +39,8 @@ HISTORY_FIELDS = [
     "timestamp",
     "run_id",
     "build_id",
+    "build_name",
+    "build_backend",
     "mode",
     "label",
     "model",
@@ -469,6 +471,72 @@ def _to_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _load_build_registry_records() -> list[dict[str, str]]:
+    registry_path = ROOT / "gui" / "build_versions.json"
+    if not registry_path.exists():
+        return []
+    try:
+        payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    raw_records = payload.get("builds") if isinstance(payload, dict) else None
+    if not isinstance(raw_records, list):
+        return []
+
+    records: list[dict[str, str]] = []
+    for item in raw_records:
+        if not isinstance(item, dict):
+            continue
+        build_dir = str(item.get("build_dir", "")).strip()
+        records.append(
+            {
+                "id": str(item.get("id", "")).strip(),
+                "name": str(item.get("name", "")).strip(),
+                "backend": str(item.get("backend", "")).strip(),
+                "build_dir": str(Path(build_dir)) if build_dir else "",
+            }
+        )
+    return records
+
+
+def resolve_build_metadata(build_id: str, server_bin: str | None) -> dict[str, str]:
+    records = _load_build_registry_records()
+    selected: dict[str, str] | None = None
+
+    wanted_id = str(build_id or "").strip()
+    if wanted_id:
+        selected = next((r for r in records if r.get("id", "") == wanted_id), None)
+
+    if selected is None and server_bin:
+        server_path = Path(server_bin).resolve()
+        for record in records:
+            build_dir = str(record.get("build_dir", "")).strip()
+            if not build_dir:
+                continue
+            try:
+                if server_path.is_relative_to(Path(build_dir).resolve()):
+                    selected = record
+                    break
+            except Exception:
+                if str(server_path).lower().startswith(str(Path(build_dir).resolve()).lower()):
+                    selected = record
+                    break
+
+    if selected is None:
+        return {
+            "build_id": wanted_id,
+            "build_name": "",
+            "build_backend": "",
+        }
+
+    return {
+        "build_id": str(selected.get("id", wanted_id)).strip(),
+        "build_name": str(selected.get("name", "")).strip(),
+        "build_backend": str(selected.get("backend", "")).strip(),
+    }
+
+
 def _best_rows_by_group(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
     best: dict[str, dict[str, str]] = {}
     for row in rows:
@@ -496,6 +564,26 @@ def _best_rows_by_model(rows: list[dict[str, str]]) -> dict[tuple[str, str], dic
             continue
         if _to_float(row.get("aggregate_tps", 0.0)) > _to_float(best[key].get("aggregate_tps", 0.0)):
             best[key] = row
+    return best
+
+
+def _best_rows_by_build(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    best: dict[str, dict[str, str]] = {}
+    for row in rows:
+        if _to_int(row.get("errors", 0)) != 0:
+            continue
+
+        build_id = str(row.get("build_id", "")).strip()
+        build_name = str(row.get("build_name", "")).strip()
+        build_backend = str(row.get("build_backend", "")).strip()
+        if not build_id and not build_name:
+            continue
+
+        key = build_id or f"name:{build_name.lower()}::{build_backend.lower()}"
+        current_best = best.get(key)
+        if current_best is None or _to_float(row.get("aggregate_tps", 0.0)) > _to_float(current_best.get("aggregate_tps", 0.0)):
+            best[key] = row
+
     return best
 
 
@@ -527,9 +615,21 @@ def _render_model_best_row(group: str, model_name: str, row: dict[str, str]) -> 
     )
 
 
+def _render_build_best_row(row: dict[str, str]) -> str:
+    build_id = str(row.get("build_id", "")).strip() or "-"
+    build_name = str(row.get("build_name", "")).strip() or "-"
+    build_backend = str(row.get("build_backend", "")).strip() or "-"
+    return (
+        f"| {build_id} | {build_name} | {build_backend} | {row.get('run_id', '-')} | {row.get('aggregate_tps', '-')} | {row.get('label', '-')} | "
+        f"{row.get('timestamp', '-')} | {row.get('mode', '-')} | {_model_display_name(row.get('model', '-'))} | "
+        f"{row.get('spec_mode', '-')} | {row.get('ctx', '-')} | {row.get('batch', '-')}/{row.get('ubatch', '-')} |"
+    )
+
+
 def write_history_md(history_md: Path, rows: list[dict[str, str]]) -> None:
     best = _best_rows_by_group(rows)
     best_by_model = _best_rows_by_model(rows)
+    best_by_build = _best_rows_by_build(rows)
     lines: list[str] = [
         "# Agent Workload Benchmark History",
         "",
@@ -553,10 +653,28 @@ def write_history_md(history_md: Path, rows: list[dict[str, str]]) -> None:
 
     lines += [
         "",
+        "## Locked Best Per Build",
+        "",
+        "| Build ID | Build Name | Backend | Run ID | Aggregate TPS | Label | Timestamp | Mode | Model | Spec | Ctx | Batch/UBatch |",
+        "|---|---|---|---|---:|---|---|---|---|---|---:|---:|",
+    ]
+
+    for row in sorted(
+        best_by_build.values(),
+        key=lambda item: (
+            str(item.get("build_backend", "")).lower(),
+            str(item.get("build_name", "")).lower(),
+            str(item.get("build_id", "")).lower(),
+        ),
+    ):
+        lines.append(_render_build_best_row(row))
+
+    lines += [
+        "",
         "## Full History",
         "",
-        "| Timestamp | Run ID | Build ID | Label | Mode | Model | Spec | Ctx | Batch/UBatch | TPS | Errors | Artifacts |",
-        "|---|---|---|---|---|---|---|---:|---:|---:|---:|---|",
+        "| Timestamp | Run ID | Build ID | Build Name | Backend | Label | Mode | Model | Spec | Ctx | Batch/UBatch | TPS | Errors | Artifacts |",
+        "|---|---|---|---|---|---|---|---|---|---:|---:|---:|---:|---|",
     ]
 
     for row in sorted(rows, key=lambda r: r.get("timestamp", ""), reverse=True):
@@ -566,7 +684,8 @@ def write_history_md(history_md: Path, rows: list[dict[str, str]]) -> None:
             if p
         )
         lines.append(
-            f"| {row.get('timestamp', '-')} | {row.get('run_id', '-')} | {row.get('build_id', '-')} | {row.get('label', '-')} | {row.get('mode', '-')} | "
+            f"| {row.get('timestamp', '-')} | {row.get('run_id', '-')} | {row.get('build_id', '-')} | "
+            f"{row.get('build_name', '-') or '-'} | {row.get('build_backend', '-') or '-'} | {row.get('label', '-')} | {row.get('mode', '-')} | "
             f"{model_name} | {row.get('spec_mode', '-')} | {row.get('ctx', '-')} | "
             f"{row.get('batch', '-')}/{row.get('ubatch', '-')} | {row.get('aggregate_tps', '-')} | "
             f"{row.get('errors', '-')} | {artifacts or '-'} |"
@@ -769,8 +888,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-type-v", default="q8_0")
     parser.add_argument("--flash-attn", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--no-warmup", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--disable-thinking", action=argparse.BooleanOptionalAction, default=True,
-                        help="add chat-template kwargs to keep Qwen thinking off for short benchmark answers")
+    parser.add_argument("--disable-thinking", action=argparse.BooleanOptionalAction, default=False,
+                        help="disable model thinking by forcing chat-template kwargs; default keeps thinking enabled")
 
     parser.add_argument("--max-tokens", type=int, default=160)
     parser.add_argument("--temperature", type=float, default=0.2)
@@ -866,6 +985,8 @@ def run_suite(args: argparse.Namespace, tasks: list[dict[str, str]]) -> list[dic
 def main() -> int:
     args = parse_args()
     out_dir = Path(args.out_dir)
+    build_meta = resolve_build_metadata(args.build_id, args.server_bin)
+    args.build_id = build_meta["build_id"]
 
     if args.cleanup_legacy_artifacts:
         count, items = cleanup_legacy_artifacts(out_dir, apply=args.cleanup_apply, keep_pattern_expr=args.cleanup_keep_patterns)
@@ -894,6 +1015,8 @@ def main() -> int:
                 "timestamp": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "run_id": "",
                 "build_id": args.build_id,
+                "build_name": build_meta["build_name"],
+                "build_backend": build_meta["build_backend"],
                 "mode": "single-run",
                 "label": args.label,
                 "model": model_path,
@@ -1106,6 +1229,8 @@ def main() -> int:
             "timestamp": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "run_id": "",
             "build_id": args.build_id,
+            "build_name": build_meta["build_name"],
+            "build_backend": build_meta["build_backend"],
             "mode": "autotune",
             "label": args.label,
             "model": model_path,

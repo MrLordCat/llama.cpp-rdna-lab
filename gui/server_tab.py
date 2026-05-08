@@ -207,7 +207,7 @@ class ServerTabWidget(QWidget):
         gpu_layout.addWidget(QLabel("GPU Layers:"))
         self.server_gpu_layers_spinbox = QSpinBox()
         self.server_gpu_layers_spinbox.setMinimum(0)
-        self.server_gpu_layers_spinbox.setMaximum(100)
+        self.server_gpu_layers_spinbox.setMaximum(999)
         self.server_gpu_layers_spinbox.setValue(99)
         gpu_layout.addWidget(self.server_gpu_layers_spinbox)
 
@@ -274,21 +274,21 @@ class ServerTabWidget(QWidget):
         ngram_layout.addWidget(QLabel("NGram Min:"))
         self.server_ngram_min = QSpinBox()
         self.server_ngram_min.setMinimum(1)
-        self.server_ngram_min.setMaximum(20)
+        self.server_ngram_min.setMaximum(512)
         self.server_ngram_min.setValue(1)
         ngram_layout.addWidget(self.server_ngram_min)
 
         ngram_layout.addWidget(QLabel("Match:"))
         self.server_ngram_match = QSpinBox()
         self.server_ngram_match.setMinimum(1)
-        self.server_ngram_match.setMaximum(100)
+        self.server_ngram_match.setMaximum(512)
         self.server_ngram_match.setValue(80)
         ngram_layout.addWidget(self.server_ngram_match)
 
         ngram_layout.addWidget(QLabel("Max:"))
         self.server_ngram_max = QSpinBox()
         self.server_ngram_max.setMinimum(1)
-        self.server_ngram_max.setMaximum(100)
+        self.server_ngram_max.setMaximum(512)
         self.server_ngram_max.setValue(128)
         ngram_layout.addWidget(self.server_ngram_max)
         ngram_layout.addStretch()
@@ -343,6 +343,12 @@ class ServerTabWidget(QWidget):
         self.server_no_warmup_check = QCheckBox("Skip warmup (--no-warmup)")
         self.server_no_warmup_check.setChecked(True)
         perf_layout.addWidget(self.server_no_warmup_check)
+
+        self.server_disable_thinking_check = QCheckBox(
+            "Disable thinking for benchmark-like throughput (--chat-template-kwargs)"
+        )
+        self.server_disable_thinking_check.setChecked(True)
+        perf_layout.addWidget(self.server_disable_thinking_check)
 
         self.server_auto_fit_check = QCheckBox("Auto-fit params to free memory (-fit on)")
         self.server_auto_fit_check.setChecked(True)
@@ -521,6 +527,7 @@ class ServerTabWidget(QWidget):
             self.server_flash_attn_check.setChecked(bool(match["flash_attn"]))
         if "extra_args" in match:
             self.server_extra_args.setPlainText(str(match["extra_args"]).strip())
+            self._apply_spec_controls_from_extra_args(str(match["extra_args"]).strip())
 
         kv_map = {
             0: "f32",
@@ -575,6 +582,80 @@ class ServerTabWidget(QWidget):
             return
 
         self.server_models_combo.addItems(model_files)
+
+    def _apply_spec_controls_from_extra_args(self, extra_args: str):
+        """Parse known speculative flags from preset extra args and sync visible controls."""
+        if not extra_args:
+            return
+
+        try:
+            tokens = shlex.split(extra_args, posix=(os.name != "nt"))
+        except ValueError:
+            tokens = extra_args.split()
+
+        spec_type = None
+        ngram_min = None
+        ngram_max = None
+        ngram_match = None
+        mtp_draft_n_max = None
+
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+            if tok == "--spec-type" and nxt is not None:
+                spec_type = nxt.strip().lower()
+                i += 2
+                continue
+            if tok == "--spec-ngram-mod-n-min" and nxt is not None:
+                ngram_min = nxt
+                i += 2
+                continue
+            if tok == "--spec-ngram-mod-n-max" and nxt is not None:
+                ngram_max = nxt
+                i += 2
+                continue
+            if tok == "--spec-ngram-mod-n-match" and nxt is not None:
+                ngram_match = nxt
+                i += 2
+                continue
+            if tok == "--spec-draft-n-max" and nxt is not None:
+                mtp_draft_n_max = nxt
+                i += 2
+                continue
+            i += 1
+
+        if spec_type == "ngram-mod":
+            self.server_spec_type_combo.setCurrentText("ngram-mod")
+        elif spec_type == "mtp":
+            self.server_spec_type_combo.setCurrentText("mtp")
+        elif spec_type == "draft":
+            self.server_spec_type_combo.setCurrentText("draft")
+        elif spec_type == "none":
+            self.server_spec_type_combo.setCurrentText("None")
+
+        if ngram_min is not None:
+            try:
+                self.server_ngram_min.setValue(max(1, min(512, int(ngram_min))))
+            except ValueError:
+                pass
+        if ngram_max is not None:
+            try:
+                self.server_ngram_max.setValue(max(1, min(512, int(ngram_max))))
+            except ValueError:
+                pass
+        if ngram_match is not None:
+            try:
+                self.server_ngram_match.setValue(max(1, min(512, int(ngram_match))))
+            except ValueError:
+                pass
+        if mtp_draft_n_max is not None:
+            try:
+                self.server_spec_draft_n_max.setValue(max(1, min(20, int(mtp_draft_n_max))))
+            except ValueError:
+                pass
+
+        self.on_spec_type_changed()
 
     def apply_server_preset(self):
         """Apply preset configuration"""
@@ -660,6 +741,12 @@ class ServerTabWidget(QWidget):
 
         if self.server_no_warmup_check.isChecked():
             command.append("--no-warmup")
+
+        if self.server_disable_thinking_check.isChecked():
+            command.extend([
+                "--chat-template-kwargs",
+                '{"enable_thinking":false,"preserve_thinking":false}',
+            ])
 
         if not self.server_auto_fit_check.isChecked():
             command.extend(["-fit", "off"])
@@ -986,6 +1073,7 @@ class ServerTabWidget(QWidget):
 
         self.server_flash_attn_check.setChecked(settings.value("server/flash_attn", True, type=bool))
         self.server_no_warmup_check.setChecked(settings.value("server/no_warmup", True, type=bool))
+        self.server_disable_thinking_check.setChecked(settings.value("server/disable_thinking", True, type=bool))
         self.server_auto_fit_check.setChecked(settings.value("server/auto_fit", True, type=bool))
 
         self.server_cors_check.setChecked(settings.value("server/cors", True, type=bool))
@@ -1042,6 +1130,7 @@ class ServerTabWidget(QWidget):
 
         settings.setValue("server/flash_attn", self.server_flash_attn_check.isChecked())
         settings.setValue("server/no_warmup", self.server_no_warmup_check.isChecked())
+        settings.setValue("server/disable_thinking", self.server_disable_thinking_check.isChecked())
         settings.setValue("server/auto_fit", self.server_auto_fit_check.isChecked())
 
         settings.setValue("server/cors", self.server_cors_check.isChecked())
