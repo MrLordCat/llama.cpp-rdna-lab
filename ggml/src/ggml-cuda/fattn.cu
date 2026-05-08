@@ -495,7 +495,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
                 }
             }
         }
-        if (Q->ne[1] * gqa_ratio_eff <= 8) {
+        if (Q->ne[1] * gqa_ratio_eff <= 4) {
             return BEST_FATTN_KERNEL_TILE; // AMD WMMA is only faster if the full tile width of 16 can be utilized.
         }
         return BEST_FATTN_KERNEL_MMA_F16;

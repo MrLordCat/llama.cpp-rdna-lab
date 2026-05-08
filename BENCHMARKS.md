@@ -246,6 +246,50 @@ const int64_t chunk_size = (n_tokens > 256) ? 128 : 96;
 | типичный TPS (ub=256) | ~29 TPS | ~31-33 TPS |
 | типичный TPS (ub=512) | ~20 TPS | ~31-34 TPS |
 
+## RDNA4 FATTN Routing Tuning (2026-05-08, Sprint7)
+
+Цель: проверить, можно ли получить стабильный выигрыш на фокусном профиле `ub=512` за счёт более раннего перехода из `TILE` в `MMA_F16` для RDNA4 в quantized KV path.
+
+Изменение в `ggml/src/ggml-cuda/fattn.cu` (ветка `amd_wmma_available && RDNA4`):
+
+```cpp
+// было
+if (Q->ne[1] * gqa_ratio_eff <= 8) return BEST_FATTN_KERNEL_TILE;
+
+// стало
+if (Q->ne[1] * gqa_ratio_eff <= 4) return BEST_FATTN_KERNEL_TILE;
+```
+
+Идея: сдвинуть crossover в сторону `MMA_F16` для более широкого диапазона эффективных батчей.
+
+Профиль сравнения (одинаковый для всех запусков):
+
+- `Qwen3.6-27B-Q3_K_S.gguf`
+- `-c 65536 -b 4096 -ub 512 -np 1 --flash-attn on`
+- `--cache-type-k q4_0 --cache-type-v q4_0`
+- `--spec-type ngram-mod --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-max 64`
+- `build-rocm-vec/bin/llama-server.exe`
+
+| Label | Variant | Runs | Aggregate TPS | Mean TPS | Median TPS | Stdev |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `sprint7-baseline5-ub512-ngram` | baseline (`tile<=8`) | `5` | `33.25` | `34.68` | `32.80` | `7.36` |
+| `sprint7-tile4-5run-ub512-ngram` | patched (`tile<=4`) | `5` | `35.68` | `37.49` | `37.31` | `8.16` |
+| `sprint7-tile4-5run-ub512-ngram-r2` | patched confirm | `5` | `33.96` | `36.12` | `33.00` | `9.55` |
+
+Вывод:
+
+- Патч показывает устойчивое преимущество над baseline в обоих 5-run замерах.
+- Прирост по aggregate TPS:
+  - run1: `35.68 - 33.25 = +2.43` TPS (`+7.3%`)
+  - run2: `33.96 - 33.25 = +0.71` TPS (`+2.1%`)
+- Порог `>32 TPS` устойчиво выполнен, а лучший подтверждённый результат цикла — `35.68 TPS`.
+
+Артефакты:
+
+- `build_logs/agent-workload/sprint7-baseline5-ub512-ngram.{csv,jsonl,server.log}`
+- `build_logs/agent-workload/sprint7-tile4-5run-ub512-ngram.{csv,jsonl,server.log}`
+- `build_logs/agent-workload/sprint7-tile4-5run-ub512-ngram-r2.{csv,jsonl,server.log}`
+
 ## Baseline ROCm
 
 ```powershell
