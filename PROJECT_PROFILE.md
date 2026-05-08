@@ -86,18 +86,22 @@
 
 ## Практичные defaults для RX 9070 XT
 
-Для Qwen3.6 text:
+Для Qwen3.6 text (rocWMMA enabled, 2026-05-08):
 
 ```text
-backend=ROCm
+backend=ROCm (HIP SDK 7.1 + rocWMMA 2.0.0 + RDNA4 MMA configs)
 -ngl 999
 --flash-attn on
 -np 1
--c 32768
--b 2048 или 4096
--ub 2048 или 4096
---cache-type-k q8_0
---cache-type-v q8_0
+-c 65536 (long context optimized)
+-b 4096
+-ub 128 (autotune: ubatch >= 256 regresses to ~20 TPS due to kernel switch)
+--cache-type-k q4_0 (slightly better than q8_0)
+--cache-type-v q4_0
+--spec-type ngram-mod --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-max 64 (26.52 TPS)
+
+Optional experimental:
+--spec-type mtp --spec-draft-n-max 3 (MTP support already in codebase, awaiting MTP-enabled GGUF)
 ```
 
 Если не хватает VRAM:

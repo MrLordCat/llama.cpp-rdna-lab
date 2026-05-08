@@ -2,6 +2,27 @@
 
 Дата среза: 2026-05-07.
 
+## ОБНОВЛЕНИЕ 2026-05-08: MTP УЖЕ РЕАЛИЗОВАНА
+
+Полный поиск кодовой базы показал, что `common_speculative_state_mtp` уже реализована в `common/speculative.cpp` (строка 604+) и `llama_set_mtp()` существует в `src/llama-context.cpp`. Текущий `llama-server --help` показывает `--spec-type mtp` как доступный вариант.
+
+**Что работает**:
+- MTP enum (`COMMON_SPECULATIVE_TYPE_MTP`) + string mapping
+- Draft token generation из MTP контекста
+- Recurrent state rollback для rejected tokens
+- Server integration (loading MTP head, slot management)
+
+**Что нужно**:
+- MTP-enabled GGUF для Qwen3.6 (HuggingFace или self-convert)
+- Бенчмарк на RX 9070 XT для baseline (сравнить с ngram-mod 26.52 TPS)
+- Профилирование memory overhead (MTP может требовать больше VRAM)
+
+**Практический план**:
+1. Найти или сконвертировать Qwen3.6-27B-MTP GGUF
+2. Запустить: `llama-server -m ...mtp.gguf --spec-type mtp --spec-draft-n-max 3`
+3. Сравнить TG (token generation) с baseline
+4. Если стабильно выше на 50%+ → сделать experimental profile в GUI
+
 ## Вывод
 
 Да, MTP можно внедрять в этот форк самостоятельно, примерно как раньше добавлялся TurboQuant, но это крупнее и рискованнее, чем просто добавить новый quant type. MTP затрагивает model loader, model architecture registry, graph builder, context hooks, recurrent-state rollback, server batching и converter. Самый быстрый путь — не писать с нуля, а портировать PR `ggml-org/llama.cpp#22673` в отдельную ветку и затем локально стабилизировать под RX 9070 XT / ROCm.

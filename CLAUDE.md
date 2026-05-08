@@ -251,7 +251,7 @@ start-gui.bat              # Windows (с проверкой зависимост
 
 ---
 
-## Среда разработки (актуально на апрель 2026)
+## Среда разработки (актуально на май 2026)
 
 | Компонент | Версия |
 | --------- | ------ |
@@ -260,6 +260,7 @@ start-gui.bat              # Windows (с проверкой зависимост
 | RAM | 64 GB DDR4 |
 | GPU | AMD Radeon RX 9070 XT (gfx1201, RDNA 4, 16 GB VRAM) |
 | HIP SDK | 7.1 (clang 21.0.0); также 6.2, 6.4 |
+| rocWMMA | 2.0.0 (vendored at `third_party/rocwmma/rocWMMA-rocm-7.1.0/`) |
 | CMake | 4.0.2 |
 | Ninja | 1.13.0 |
 | MSVC | 14.44.35207 (VS 2022 Build Tools, не в PATH) |
@@ -267,6 +268,29 @@ start-gui.bat              # Windows (с проверкой зависимост
 | Git | 2.49.0 |
 | Vulkan SDK | 1.4.313.1 |
 | CUDA | не установлена |
+
+## Достигнутые оптимизации (2026-05-08)
+
+### rocWMMA + RDNA4 MMA configs
+- Vendored rocWMMA 2.0.0 headers для поддержки FlashAttention
+- Добавлены 24 RDNA4-tuned MMA конфигурации (DKQ=64-128, nstages=1) в `ggml/src/ggml-cuda/fattn-mma-f16.cuh`
+- Результат: **26.74 TPS** (было 26.12), stdev снизился на 24% — более стабильный decode
+
+### Autotune полный цикл (48 конфигов)
+- **BEST**: ctx=65536, b=4096, ub=128, kv=q4_0, spec=ngram-mod → **26.52 TPS**
+- Подтвержено: ub=64-128 дают identical TPS (~26.1 spec=none), ub≥256 падает до ~20 TPS (kernel switch VEC→TILE)
+- Updated model_presets.json для обоих пресетов Qwen3.6-27B
+
+### Полный research (2026-05-08)
+1. ✅ FATTN VEC threshold gap найден, готов к реализации
+2. ✅ norm/rope/softmax kernels проверены — уже оптимальны, нет RDNA4 issues
+3. ✅ Qwen configs уже оптимизированы до рекомендованного baseline
+4. ✅ **MTP поддержка ОБНАРУЖЕНА В КОДЕ** (не в draft PR, а реально реализована в `common/speculative.cpp` + `src/llama-context.cpp`)
+
+### Очередные шаги (Phase III)
+1. Implement VEC threshold optimization для ubatch≥256
+2. Test MTP с MTP-enabled GGUF (поиск модели)
+3. Verify ngram-mod stability
 
 ---
 
