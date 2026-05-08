@@ -99,3 +99,15 @@ cmake --build build-cpu --config Release -j
 ```powershell
 cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUILD_TYPE=Release
 ```
+
+## Copilot On-Track Protocol (Performance R&D)
+
+Для всех kernel/perf-экспериментов придерживаться одного цикла:
+
+1. Перед запуском бенчей очищать override-окружение (`HSA_OVERRIDE_GFX_VERSION`) и убеждаться, что нет фонового `llama-server`.
+2. Любой speed claim подтверждать минимум `3 runs` через `scripts/agent_workload_bench.py` с фиксированным профилем.
+3. Сравнивать результат с текущим зафиксированным baseline для Qwen3.6-27B (`aggregate ~31.8-32.0 TPS`, labels `sprint4-gdn-chunk-*`).
+4. Если новая идея не бьёт baseline или даёт нестабильность, откатывать экспериментальные правки до чистого дерева.
+5. Если идея подтверждена, фиксировать одновременно: код + запись в `BENCHMARKS.md` + артефакты в `build_logs/agent-workload/`.
+
+Цель: избегать «шума» и держать только воспроизводимые ускорения в `master`.
