@@ -134,6 +134,35 @@ PY
 
 Старые baseline CSV (`rocm-baseline-qwen36-*.csv`) стоит считать noisy, потому что часть прошлых замеров выполнялась при параллельной игровой нагрузке.
 
+## RDNA4 Gated Delta Net Chunked Prefill (2026-05-08)
+
+Экспериментальная kernel-ветка для `gated_delta_net` (chunked prefill на RDNA4) была проверена по строгому протоколу `3 runs` на quick-agent workload.
+
+Параметры прогона:
+
+- `build-rocm-vec/bin/llama-server.exe`
+- `Qwen3.6-27B-Q3_K_S.gguf`
+- `--spec-type ngram-mod`
+- `-c 65536 -b 4096 -np 1 --flash-attn on`
+- `--cache-type-k q4_0 --cache-type-v q4_0`
+
+| Label | UBatch | Runs | Aggregate completion TPS | Mean task TPS | Median task TPS | Stdev |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `sprint4-gdn-chunk-ub256` | `256` | `3` | `31.7809` | `33.86` | `30.73` | `10.2471` |
+| `sprint4-gdn-chunk-ub128` | `128` | `3` | `31.9844` | `33.39` | `36.37` | `6.6477` |
+
+Вывод:
+
+- Оба 3-проходных прогона выше ранее используемого ориентира `~29 TPS`.
+- Зафиксирован новый практический коридор aggregate throughput: `~31.8-32.0 TPS` для этой модели и профиля.
+
+Артефакты:
+
+- `build_logs/agent-workload/sprint4-gdn-chunk-ub256.csv`
+- `build_logs/agent-workload/sprint4-gdn-chunk-ub256.jsonl`
+- `build_logs/agent-workload/sprint4-gdn-chunk-ub128.csv`
+- `build_logs/agent-workload/sprint4-gdn-chunk-ub128.jsonl`
+
 ## Baseline ROCm
 
 ```powershell

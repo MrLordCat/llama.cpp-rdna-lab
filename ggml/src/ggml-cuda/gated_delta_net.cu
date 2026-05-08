@@ -10,7 +10,9 @@ gated_delta_net_cuda(const float * q,
                                      const float * curr_state,
                                      float *       dst,
                                      int64_t       H,
-                                     int64_t       n_tokens,
+                                     int64_t       n_tokens_chunk,
+                                     int64_t       n_tokens_total,
+                                     int64_t       token_offset,
                                      int64_t       n_seqs,
                                      int64_t       sq1,
                                      int64_t       sq2,
@@ -33,7 +35,7 @@ gated_delta_net_cuda(const float * q,
     const uint32_t iq1 = fastmodulo(h_idx, neqk1_magic);
     const uint32_t iq3 = fastdiv(sequence, rq3_magic);
 
-    const int64_t attn_score_elems = S_v * H * n_tokens * n_seqs;
+    const int64_t attn_score_elems = S_v * H * n_tokens_total * n_seqs;
     float *       attn_data        = dst;
     float *       state            = dst + attn_score_elems;
 
@@ -41,7 +43,7 @@ gated_delta_net_cuda(const float * q,
     const int64_t state_size_per_token = S_v * S_v * H * n_seqs; // keep_intermediates_t only
     state += state_offset;
     curr_state += state_offset + col * S_v;
-    attn_data += (sequence * n_tokens * H + h_idx) * S_v;
+    attn_data += (sequence * n_tokens_total * H + token_offset * H + h_idx) * S_v;
 
     constexpr int warp_size = ggml_cuda_get_physical_warp_size() < S_v ? ggml_cuda_get_physical_warp_size() : S_v;
     static_assert(S_v % warp_size == 0, "S_v must be a multiple of warp_size");
@@ -55,7 +57,7 @@ gated_delta_net_cuda(const float * q,
         s_shard[r]  = curr_state[i];
     }
 
-    for (int t = 0; t < n_tokens; t++) {
+    for (int t = 0; t < n_tokens_chunk; t++) {
         const float * q_t = q + iq3 * sq3 + t * sq2 + iq1 * sq1;
         const float * k_t = k + iq3 * sq3 + t * sq2 + iq1 * sq1;
         const float * v_t = v + sequence * sv3 + t * sv2 + h_idx * sv1;
@@ -138,7 +140,7 @@ gated_delta_net_cuda(const float * q,
         attn_data += S_v * H;
 
         if constexpr (keep_intermediates_t) {
-            float * curr_state = (dst + attn_score_elems) + t * state_size_per_token + state_offset;
+            float * curr_state = (dst + attn_score_elems) + (token_offset + t) * state_size_per_token + state_offset;
 #pragma unroll
             for (int r = 0; r < rows_per_lane; r++) {
                 const int i = r * warp_size + lane;
@@ -167,7 +169,8 @@ static void launch_gated_delta_net(
         int64_t sb1,   int64_t sb2, int64_t sb3,
         int64_t neqk1, int64_t rq3,
         float scale, cudaStream_t stream) {
-    //TODO: Add chunked kernel for even faster pre-fill
+    // RDNA4 prefill can benefit from shorter token loops in this kernel; keep_intermediates path
+    // stays unchunked because it writes per-token state snapshots.
     const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
     const int num_warps = 4;
     dim3      grid_dims(H, n_seqs, (S_v + num_warps - 1) / num_warps);
@@ -178,30 +181,88 @@ static void launch_gated_delta_net(
 
     int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
 
+    const bool use_chunked_prefill = !keep_intermediates_t && GGML_CUDA_CC_IS_RDNA4(cc) && n_tokens >= 128;
+    const int64_t chunk_size = 64;
+
+    auto launch_once = [&](const float * q_ptr, const float * k_ptr, const float * v_ptr,
+                           const float * g_ptr, const float * b_ptr, const float * state_ptr,
+                           int64_t n_tokens_chunk, int64_t token_offset) {
+        switch (S_v) {
+            case 16:
+                gated_delta_net_cuda<16, KDA, keep_intermediates_t><<<grid_dims, block_dims, 0, stream>>>(
+                    q_ptr, k_ptr, v_ptr, g_ptr, b_ptr, state_ptr, dst_d, H,
+                    n_tokens_chunk, n_tokens, token_offset, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                    sb1, sb2, sb3, neqk1_magic, rq3_magic, scale);
+                break;
+            case 32:
+                gated_delta_net_cuda<32, KDA, keep_intermediates_t><<<grid_dims, block_dims, 0, stream>>>(
+                    q_ptr, k_ptr, v_ptr, g_ptr, b_ptr, state_ptr, dst_d, H,
+                    n_tokens_chunk, n_tokens, token_offset, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                    sb1, sb2, sb3, neqk1_magic, rq3_magic, scale);
+                break;
+            case 64:
+                gated_delta_net_cuda<64, KDA, keep_intermediates_t><<<grid_dims, block_dims, 0, stream>>>(
+                    q_ptr, k_ptr, v_ptr, g_ptr, b_ptr, state_ptr, dst_d, H,
+                    n_tokens_chunk, n_tokens, token_offset, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                    sb1, sb2, sb3, neqk1_magic, rq3_magic, scale);
+                break;
+            case 128:
+                gated_delta_net_cuda<128, KDA, keep_intermediates_t><<<grid_dims, block_dims, 0, stream>>>(
+                    q_ptr, k_ptr, v_ptr, g_ptr, b_ptr, state_ptr, dst_d, H,
+                    n_tokens_chunk, n_tokens, token_offset, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                    sb1, sb2, sb3, neqk1_magic, rq3_magic, scale);
+                break;
+            default:
+                GGML_ABORT("fatal error");
+                break;
+        }
+    };
+
+    if (use_chunked_prefill) {
+        float * state_base = dst_d + S_v * H * n_tokens * n_seqs;
+        const float * state_src = s_d;
+
+        for (int64_t token_offset = 0; token_offset < n_tokens; token_offset += chunk_size) {
+            const int64_t n_tokens_chunk = (n_tokens - token_offset < chunk_size) ? (n_tokens - token_offset) : chunk_size;
+            launch_once(
+                q_d + token_offset * sq2,
+                k_d + token_offset * sq2,
+                v_d + token_offset * sv2,
+                g_d + token_offset * sb2,
+                b_d + token_offset * sb2,
+                state_src,
+                n_tokens_chunk,
+                token_offset);
+            CUDA_CHECK(cudaGetLastError());
+            state_src = state_base;
+        }
+        return;
+    }
+
     switch (S_v) {
         case 16:
             gated_delta_net_cuda<16, KDA, keep_intermediates_t><<<grid_dims, block_dims, 0, stream>>>(
                 q_d, k_d, v_d, g_d, b_d, s_d, dst_d, H,
-                n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                n_tokens, n_tokens, 0, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
                 sb1, sb2, sb3, neqk1_magic, rq3_magic, scale);
             break;
         case 32:
             gated_delta_net_cuda<32, KDA, keep_intermediates_t><<<grid_dims, block_dims, 0, stream>>>(
                 q_d, k_d, v_d, g_d, b_d, s_d, dst_d, H,
-                n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                n_tokens, n_tokens, 0, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
                 sb1, sb2, sb3, neqk1_magic, rq3_magic, scale);
             break;
         case 64: {
             gated_delta_net_cuda<64, KDA, keep_intermediates_t><<<grid_dims, block_dims, 0, stream>>>(
                 q_d, k_d, v_d, g_d, b_d, s_d, dst_d, H,
-                n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                n_tokens, n_tokens, 0, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
                 sb1, sb2, sb3, neqk1_magic, rq3_magic, scale);
             break;
         }
         case 128: {
             gated_delta_net_cuda<128, KDA, keep_intermediates_t><<<grid_dims, block_dims, 0, stream>>>(
                 q_d, k_d, v_d, g_d, b_d, s_d, dst_d, H,
-                n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                n_tokens, n_tokens, 0, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
                 sb1, sb2, sb3, neqk1_magic, rq3_magic, scale);
             break;
         }
