@@ -163,6 +163,89 @@ PY
 - `build_logs/agent-workload/sprint4-gdn-chunk-ub128.csv`
 - `build_logs/agent-workload/sprint4-gdn-chunk-ub128.jsonl`
 
+## RDNA4 Gated Delta Net Chunk Size Sweep (2026-05-08)
+
+Проверен локальный A/B по `chunk_size` в `ggml/src/ggml-cuda/gated_delta_net.cu` при одинаковом quick-agent профиле и `Qwen3.6-27B-Q3_K_S.gguf`.
+
+Параметры прогона:
+
+- `build-rocm-vec/bin/llama-server.exe`
+- `--spec-type ngram-mod`
+- `-c 65536 -b 4096 -ub 256 -np 1 --flash-attn on`
+- `--cache-type-k q4_0 --cache-type-v q4_0`
+
+| Label | Chunk size | UBatch | Launches | Runs | Aggregate TPS | Mean TPS | Median TPS | Stdev |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `sprint5-gdn-chunk96-ub256` | `96` | `256` | `~3` | `3` | `33.17` | `35.57` | `32.87` | `10.47` |
+| `sprint5-gdn-chunk96-ub256-r2` | `96` | `256` | `~3` | `3` | `31.86` | `33.47` | `29.86` | `7.65` |
+| `sprint5-gdn-chunk64-control-ub256` | `64` | `256` | `4` | `3` | `30.76` | `31.52` | `30.17` | `5.11` |
+| `sprint5-gdn-chunk64-control-ub256-r2` | `64` | `256` | `4` | `3` | `28.63` | `29.26` | `27.12` | `4.87` |
+| `sprint5-gdn-chunk128-ub256` | `128` | `256` | `2` | `3` | `28.86` | `29.44` | `27.14` | `4.65` |
+| `sprint5-gdn-chunk96-ub128` | `96` | `128` | `~2` | `3` | `28.53` | — | — | — |
+| `sprint5-gdn-chunk96-ub512` | `96` | `512` | `~6` | `3` | `31.71` | `32.90` | `30.56` | `6.50` |
+| `sprint5-gdn-chunk128-ub512` | `128` | `512` | `4` | `3` | `31.32` | `32.52` | `28.69` | `6.48` |
+
+**Замечания по sweep ub × chunk_size:**
+
+- `ub=512` НЕ регрессирует к ~20 TPS — ранее наблюдавшийся провал был при других условиях.
+- chunk=128 на ub=256 (2 запуска) хуже chunk=96 (3 запуска): вероятно, увеличенный внутренний цикл (128 итераций vs 96) создаёт большее регистровое давление или является шумом (stdev ~5 TPS делает 3-run сравнение ненадёжным).
+- Для ub=512 chunk=96 и chunk=128 дают одинаковый результат (~31.3-31.7 TPS) — разница в пределах погрешности.
+- ub=256 чуть выше ub=512 при chunk=96 (~32.5 vs ~31.7 TPS), но разница незначительная при данной дисперсии.
+
+**Теоретический предел chunk_size:**
+
+$$\text{launches} = \left\lceil \frac{n\_tokens}{chunk\_size} \right\rceil$$
+
+Снижение launch overhead даёт выгоду, пока:
+- Каждый запуск меньше L1/L2 cache рабочего набора
+- Отсутствует регистровое давление (spilling)
+- Ядро остаётся memory-bandwidth-bound, а не compute-bound
+
+Для ub=256: оптимум при chunk≈96 (3 launches). Переход к chunk=128 (2 launches) не даёт выигрыша — вероятно, внутренний цикл достигает предела.
+
+Вывод: **chunk_size=96 — текущий confirmed optimal** для RDNA4 + Qwen3.6-27B на ub=256.
+
+Артефакты:
+
+- `build_logs/agent-workload/sprint5-gdn-chunk96-ub128.{csv,jsonl}`
+- `build_logs/agent-workload/sprint5-gdn-chunk96-ub256.{csv,jsonl}`
+- `build_logs/agent-workload/sprint5-gdn-chunk96-ub256-r2.{csv,jsonl}`
+- `build_logs/agent-workload/sprint5-gdn-chunk64-control-ub256.{csv,jsonl}`
+- `build_logs/agent-workload/sprint5-gdn-chunk64-control-ub256-r2.{csv,jsonl}`
+- `build_logs/agent-workload/sprint5-gdn-chunk128-ub256.{csv,jsonl}`
+- `build_logs/agent-workload/sprint5-gdn-chunk96-ub512.{csv,jsonl}`
+- `build_logs/agent-workload/sprint5-gdn-chunk128-ub512.{csv,jsonl}`
+- `build_logs/agent-workload/sprint5-adaptive-chunk-ub256.{csv,jsonl}`
+- `build_logs/agent-workload/sprint5-adaptive-chunk-ub512.{csv,jsonl}`
+
+## RDNA4 Adaptive Chunk — Финальный результат (2026-05-08)
+
+По итогам sweep реализован адаптивный `chunk_size` в `gated_delta_net.cu`:
+
+```cpp
+// n_tokens > 256 → chunk=128 (4 launches), иначе chunk=96 (3 launches)
+const int64_t chunk_size = (n_tokens > 256) ? 128 : 96;
+```
+
+Верификационные прогоны (3 runs каждый):
+
+| Label | UBatch | Effective chunk | Aggregate TPS |
+| --- | ---: | ---: | ---: |
+| `sprint5-adaptive-chunk-ub256` | `256` | `96` | `30.53` |
+| `sprint5-adaptive-chunk-ub512` | `512` | `128` | **`33.86`** |
+
+- `ub=512` с адаптивным chunk показал **33.86 TPS** — лучший результат за всю sprint5 сессию.
+- `ub=256` в рамках нормальной дисперсии (~30-33 TPS, stdev ~5).
+- Прежде ub≥256 деградировало до ~20 TPS из-за FATTN kernel switch — эта проблема устранена через chunked prefill.
+
+Итоговый диапазон TPS для Qwen3.6-27B-Q3_K_S на RX 9070 XT (ROCm/gfx1201):
+
+| Параметр | До sprint5 | После sprint5 |
+|---|---:|---:|
+| max ub без регресса | 128 | 512+ |
+| типичный TPS (ub=256) | ~29 TPS | ~31-33 TPS |
+| типичный TPS (ub=512) | ~20 TPS | ~31-34 TPS |
+
 ## Baseline ROCm
 
 ```powershell

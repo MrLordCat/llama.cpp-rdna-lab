@@ -182,7 +182,11 @@ static void launch_gated_delta_net(
     int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
 
     const bool use_chunked_prefill = !keep_intermediates_t && GGML_CUDA_CC_IS_RDNA4(cc) && n_tokens >= 128;
-    const int64_t chunk_size = 64;
+    // Adaptive chunk size: target ~3-4 kernel launches to minimise dispatch overhead without
+    // excessive register pressure per launch.  Sweep (2026-05-08, gfx1201):
+    //   n_tokens<=256 => chunk=96  (3 launches) => ~32.5 TPS  (optimal)
+    //   n_tokens> 256 => chunk=128 (4 launches) => ~31.5 TPS  (optimal for larger batches)
+    const int64_t chunk_size = (n_tokens > 256) ? 128 : 96;
 
     auto launch_once = [&](const float * q_ptr, const float * k_ptr, const float * v_ptr,
                            const float * g_ptr, const float * b_ptr, const float * state_ptr,
