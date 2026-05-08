@@ -87,6 +87,32 @@ ggml_add_backend_library(ggml-hip
                          ${GGML_SOURCES_ROCM}
                         )
 
+set(GGML_HIP_ROCWMMA_ENABLED OFF)
+if (GGML_HIP_ROCWMMA_FATTN)
+    set(_rocwmma_candidates "")
+    if (GGML_HIP_ROCWMMA_INCLUDE_DIR)
+        list(APPEND _rocwmma_candidates "${GGML_HIP_ROCWMMA_INCLUDE_DIR}")
+    endif()
+    list(APPEND _rocwmma_candidates "${ROCM_PATH}/include")
+
+    foreach(_candidate IN LISTS _rocwmma_candidates)
+        if (EXISTS "${_candidate}/rocwmma/rocwmma.hpp" AND EXISTS "${_candidate}/rocwmma/rocwmma-version.hpp")
+            set(GGML_HIP_ROCWMMA_ENABLED ON)
+            set(GGML_HIP_ROCWMMA_INCLUDE_DIR_RESOLVED "${_candidate}")
+            break()
+        endif()
+    endforeach()
+
+    if (GGML_HIP_ROCWMMA_ENABLED)
+        message(STATUS "rocWMMA FlashAttention enabled: ${GGML_HIP_ROCWMMA_INCLUDE_DIR_RESOLVED}")
+        target_include_directories(ggml-hip PRIVATE "${GGML_HIP_ROCWMMA_INCLUDE_DIR_RESOLVED}")
+    else()
+        message(WARNING
+            "GGML_HIP_ROCWMMA_FATTN=ON but rocWMMA headers were not found; falling back to non-rocWMMA path. "
+            "Set GGML_HIP_ROCWMMA_INCLUDE_DIR to the directory containing rocwmma/ to enable it.")
+    endif()
+endif()
+
 # TODO: do not use CUDA definitions for HIP
 if (NOT GGML_BACKEND_DL)
     target_compile_definitions(ggml PUBLIC GGML_USE_CUDA)
@@ -114,7 +140,7 @@ if (GGML_HIP_NO_VMM)
     add_compile_definitions(GGML_HIP_NO_VMM)
 endif()
 
-if (GGML_HIP_ROCWMMA_FATTN)
+if (GGML_HIP_ROCWMMA_ENABLED)
     add_compile_definitions(GGML_HIP_ROCWMMA_FATTN)
 endif()
 
