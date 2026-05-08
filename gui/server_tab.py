@@ -519,6 +519,8 @@ class ServerTabWidget(QWidget):
             self.server_parallel_spinbox.setValue(int(match["parallel"]))
         if "flash_attn" in match:
             self.server_flash_attn_check.setChecked(bool(match["flash_attn"]))
+        if "extra_args" in match:
+            self.server_extra_args.setPlainText(str(match["extra_args"]).strip())
 
         kv_map = {
             0: "f32",
@@ -547,6 +549,7 @@ class ServerTabWidget(QWidget):
             "parallel": self.server_parallel_spinbox.value(),
             "kv": self.server_kv_type_combo.currentText(),
             "flash_attn": self.server_flash_attn_check.isChecked(),
+            "extra_args": self.server_extra_args.toPlainText().strip(),
         }
 
     def refresh_server_models_list(self):

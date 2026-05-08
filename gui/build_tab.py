@@ -210,6 +210,14 @@ class BuildTabWidget(QWidget):
         self.rocm_amdgpu_label.setVisible(False)
         self.rocm_amdgpu_input.setVisible(False)
 
+        self.rocm_hip_graphs_check = QCheckBox("ROCm: Enable HIP Graphs (experimental)")
+        self.rocm_hip_graphs_check.setVisible(False)
+        cmake_layout.addWidget(self.rocm_hip_graphs_check)
+
+        self.rocm_rocwmma_fattn_check = QCheckBox("ROCm: Enable rocWMMA FlashAttention (experimental)")
+        self.rocm_rocwmma_fattn_check.setVisible(False)
+        cmake_layout.addWidget(self.rocm_rocwmma_fattn_check)
+
         # Checkboxes for options
         self.use_ccache_check = QCheckBox("Use ccache (if available)")
         cmake_layout.addWidget(self.use_ccache_check)
@@ -305,6 +313,8 @@ class BuildTabWidget(QWidget):
         is_rocm = backend == "ROCm/HIP"
         self.rocm_amdgpu_label.setVisible(is_rocm)
         self.rocm_amdgpu_input.setVisible(is_rocm)
+        self.rocm_hip_graphs_check.setVisible(is_rocm)
+        self.rocm_rocwmma_fattn_check.setVisible(is_rocm)
 
         # Keep explicit build version selection unless backend changed away from it.
         if self._custom_build_dir_active:
@@ -383,6 +393,8 @@ class BuildTabWidget(QWidget):
         rocm_targets = str(toolchain.get("rocm_targets", "")).strip()
         if rocm_targets:
             self.rocm_amdgpu_input.setText(rocm_targets)
+        self.rocm_hip_graphs_check.setChecked(bool(toolchain.get("rocm_hip_graphs", False)))
+        self.rocm_rocwmma_fattn_check.setChecked(bool(toolchain.get("rocm_rocwmma_fattn", False)))
 
         custom_flags = toolchain.get("custom_cmake_flags", [])
         if isinstance(custom_flags, list) and custom_flags:
@@ -502,6 +514,8 @@ class BuildTabWidget(QWidget):
             "toolchain": {
                 "generator": generator_choice,
                 "rocm_targets": rocm_targets,
+                "rocm_hip_graphs": self.rocm_hip_graphs_check.isChecked() if backend == "ROCm/HIP" else False,
+                "rocm_rocwmma_fattn": self.rocm_rocwmma_fattn_check.isChecked() if backend == "ROCm/HIP" else False,
                 "custom_cmake_flags": custom_flags,
             },
         }
@@ -711,10 +725,16 @@ class BuildTabWidget(QWidget):
                 or self.rocm_amdgpu_input.text().strip()
                 or "gfx1201"
             )
+            hip_graphs_enabled = bool(active_toolchain.get("rocm_hip_graphs", self.rocm_hip_graphs_check.isChecked()))
+            rocwmma_fattn_enabled = bool(active_toolchain.get("rocm_rocwmma_fattn", self.rocm_rocwmma_fattn_check.isChecked()))
             additional_options["AMDGPU_TARGETS"] = rocm_targets
             additional_options["GGML_HIP_MMQ_MFMA"] = True
             additional_options["GGML_HIP_NO_VMM"] = True
+            additional_options["GGML_HIP_GRAPHS"] = hip_graphs_enabled
+            additional_options["GGML_HIP_ROCWMMA_FATTN"] = rocwmma_fattn_enabled
             self.rocm_amdgpu_input.setText(rocm_targets)
+            self.rocm_hip_graphs_check.setChecked(hip_graphs_enabled)
+            self.rocm_rocwmma_fattn_check.setChecked(rocwmma_fattn_enabled)
 
         if self.enable_lto_check.isChecked():
             additional_options["CMAKE_INTERPROCEDURAL_OPTIMIZATION"] = True
@@ -807,6 +827,9 @@ class BuildTabWidget(QWidget):
                         "generator": self.generator_combo.currentText(),
                         "build_type": self.build_type_combo.currentText(),
                         "jobs": int(self.jobs_spinbox.value()),
+                        "rocm_targets": self.rocm_amdgpu_input.text().strip(),
+                        "rocm_hip_graphs": self.rocm_hip_graphs_check.isChecked(),
+                        "rocm_rocwmma_fattn": self.rocm_rocwmma_fattn_check.isChecked(),
                     }
                 )
                 registry.upsert(
@@ -917,6 +940,9 @@ class BuildTabWidget(QWidget):
                         "generator": self.generator_combo.currentText(),
                         "build_type": self.build_type_combo.currentText(),
                         "jobs": int(self.jobs_spinbox.value()),
+                        "rocm_targets": self.rocm_amdgpu_input.text().strip(),
+                        "rocm_hip_graphs": self.rocm_hip_graphs_check.isChecked(),
+                        "rocm_rocwmma_fattn": self.rocm_rocwmma_fattn_check.isChecked(),
                     }
                 )
                 registry.upsert(

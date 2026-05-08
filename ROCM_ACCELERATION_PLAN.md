@@ -333,3 +333,81 @@
 3. Построить bottleneck summary table (PP/TG/acceptance).
 4. Выбрать 1-2 production presets на модель.
 5. Только потом переходить к MTP ветке как к более рискованной оптимизации.
+
+## External Findings Review (2026-05-08)
+
+Ниже только те наблюдения из Reddit/комьюнити, которые либо уже совпадают с нашими замерами, либо легко проверить в локальной среде.
+
+### Strong signals worth testing
+
+1. Для RDNA4 (RX 9070/9070 XT) часто наблюдается паттерн: ROCm лучше в prompt processing, Vulkan может быть лучше в generation на части MoE workloads.
+2. Включенный Flash Attention является обязательным базовым условием для честного сравнения; профили без `-fa on` часто дают деградированные и нерепрезентативные результаты.
+3. Для ROCm профилей более крупный `ubatch` обычно лучше для PP, а слишком маленький `ubatch` часто ухудшает throughput.
+4. Есть кейсы, где `ngram-mod` дает значимый рост только на повторяющихся coding-паттернах и почти нулевой эффект на "нерепетитивных" запросах.
+5. Для длинного контекста (64K+) на AMD встречается разделение: ROCm выигрывает по суммарному wall-time, Vulkan может иметь более стабильный TG на отдельных моделях/драйверах.
+
+### Negative signals (do not prioritize)
+
+1. `HSA_OVERRIDE_GFX_VERSION` для `gfx1201` часто дает нулевой эффект или нестабильность; для ROCm 7.1+ на RDNA4 не является recommended path.
+2. Случайные переменные окружения уровня `HIP_FORCE_DEV_KERNELS`, `GPU_MAX_WAVESPERCU` без bottleneck-анализа не показывают стабильного профита.
+3. Агрессивные speculative настройки (`draft max` слишком большой) часто повышают риск low-acceptance streak без выигрыша по wall-time.
+
+## Immediate Experiment Queue (Next 1-2 Sessions)
+
+Цель: быстро закрыть практичный вопрос "что по умолчанию быстрее на этой машине" без расползания в десятки вариантов.
+
+### Queue A: ROCm vs Vulkan parity test (same runtime profile)
+
+1. Модели: `Qwen3.6-27B-Q3_K_S.gguf`, `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`.
+2. Профиль: `ctx=65536`, `b=4096`, `ub=2048`, `kv=q4_0`, `np=1`, `fa=on`.
+3. Сравнить 2 backend-профиля: ROCm и Vulkan.
+4. Для каждого backend сделать `runs=3`, затем сравнить median aggregate TPS и wall-time.
+
+Решение:
+
+- если разница <3%, оставить ROCm default и не усложнять GUI;
+- если Vulkan стабильно лучше на 27B/MoE TG, добавить отдельный preset "Vulkan TG-biased".
+
+### Queue B: UBatch sensitivity around current optimum
+
+Для лучшего backend из Queue A прогнать:
+
+1. `b=4096/ub=1024`
+2. `b=4096/ub=2048`
+3. `b=4096/ub=4096`
+
+Решение:
+
+- выбрать вариант с лучшим median wall-time, а не только по пиковому TG.
+
+### Queue C: ngram-mod realism check
+
+1. Для каждого workload хранить acceptance из server logs.
+2. Считать `ngram-mod` полезным только если одновременно:
+   - прирост aggregate TPS >3%;
+   - acceptance не сваливается в частые resets;
+   - нет роста ошибок/нестабильности.
+
+### Queue D: MTP gate check (text-only)
+
+1. Проверить доступность валидного MTP-enabled GGUF под Qwen3.6.
+2. Если есть, запускать только text-only с `--spec-type mtp --spec-draft-n-max 3 --parallel 1`.
+3. Сравнивать против best non-MTP профиля из Queue A/B.
+
+Решение:
+
+- при выраженном PP regression без выигрыша по wall-time MTP оставить experimental-only и не включать в default presets.
+
+## Preset Policy Update
+
+Пока не завершены Queue A/B/C, зафиксировать conservative defaults для Qwen3.6-27B:
+
+1. `ctx=65536`
+2. `batch=4096`
+3. `ubatch=2048`
+4. `kv=q4_0`
+5. `parallel=1`
+6. `flash-attn=on`
+7. `spec=none` как production baseline, `ngram-mod` как optional speed mode.
+
+Это минимизирует риск регрессий и сохраняет простую модель поддержки в GUI.

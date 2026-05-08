@@ -448,6 +448,13 @@ def is_mtp_model_name(model_path: str) -> bool:
     return "-mtp" in name or name.endswith("mtp.gguf")
 
 
+def _model_display_name(model_path: str) -> str:
+    normalized = str(model_path).replace("\\", "/").rstrip("/")
+    if not normalized:
+        return "-"
+    return normalized.rsplit("/", 1)[-1]
+
+
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -476,6 +483,22 @@ def _best_rows_by_group(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]
     return best
 
 
+def _best_rows_by_model(rows: list[dict[str, str]]) -> dict[tuple[str, str], dict[str, str]]:
+    best: dict[tuple[str, str], dict[str, str]] = {}
+    for row in rows:
+        if _to_int(row.get("errors", 0)) != 0:
+            continue
+        model_name = _model_display_name(row.get("model", "-"))
+        group = "MTP" if str(row.get("is_mtp_model", "0")) == "1" else "Non-MTP"
+        key = (group, model_name)
+        if key not in best:
+            best[key] = row
+            continue
+        if _to_float(row.get("aggregate_tps", 0.0)) > _to_float(best[key].get("aggregate_tps", 0.0)):
+            best[key] = row
+    return best
+
+
 def _make_run_id(row: dict[str, str]) -> str:
     ts = str(row.get("timestamp", "")).strip()
     label = str(row.get("label", "")).strip()
@@ -491,24 +514,44 @@ def _render_best_row(group: str, row: dict[str, str] | None) -> str:
         return f"| {group} | - | - | - | - | - | - | - | - | - | - |"
     return (
         f"| {group} | {row.get('run_id', '-')} | {row.get('build_id', '-')} | {row.get('aggregate_tps', '-')} | {row.get('label', '-')} | "
-        f"{row.get('timestamp', '-')} | {row.get('mode', '-')} | {Path(row.get('model', '-')).name} | "
+        f"{row.get('timestamp', '-')} | {row.get('mode', '-')} | {_model_display_name(row.get('model', '-'))} | "
         f"{row.get('spec_mode', '-')} | {row.get('ctx', '-')} | {row.get('batch', '-')}/{row.get('ubatch', '-')} |"
+    )
+
+
+def _render_model_best_row(group: str, model_name: str, row: dict[str, str]) -> str:
+    return (
+        f"| {group} | {model_name} | {row.get('run_id', '-')} | {row.get('build_id', '-') or '-'} | {row.get('aggregate_tps', '-')} | "
+        f"{row.get('label', '-')} | {row.get('timestamp', '-')} | {row.get('mode', '-')} | {row.get('spec_mode', '-')} | "
+        f"{row.get('ctx', '-')} | {row.get('batch', '-')}/{row.get('ubatch', '-')} |"
     )
 
 
 def write_history_md(history_md: Path, rows: list[dict[str, str]]) -> None:
     best = _best_rows_by_group(rows)
+    best_by_model = _best_rows_by_model(rows)
     lines: list[str] = [
         "# Agent Workload Benchmark History",
         "",
         "Автоматически обновляется скриптом scripts/agent_workload_bench.py.",
         "",
-        "## Locked Best Results",
+        "## Locked Best Overall Results",
         "",
         "| Group | Run ID | Build ID | Aggregate TPS | Label | Timestamp | Mode | Model | Spec | Ctx | Batch/UBatch |",
         "|---|---|---|---:|---|---|---|---|---|---:|---:|",
         _render_best_row("MTP", best.get("MTP")),
         _render_best_row("Non-MTP", best.get("Non-MTP")),
+        "",
+        "## Locked Best Per Model",
+        "",
+        "| Group | Model | Run ID | Build ID | Aggregate TPS | Label | Timestamp | Mode | Spec | Ctx | Batch/UBatch |",
+        "|---|---|---|---|---:|---|---|---|---|---:|---:|",
+    ]
+
+    for (group, model_name), row in sorted(best_by_model.items(), key=lambda item: (item[0][0], item[0][1].lower())):
+        lines.append(_render_model_best_row(group, model_name, row))
+
+    lines += [
         "",
         "## Full History",
         "",
@@ -517,7 +560,7 @@ def write_history_md(history_md: Path, rows: list[dict[str, str]]) -> None:
     ]
 
     for row in sorted(rows, key=lambda r: r.get("timestamp", ""), reverse=True):
-        model_name = Path(row.get("model", "-")).name
+        model_name = _model_display_name(row.get("model", "-"))
         artifacts = ", ".join(
             p for p in [row.get("jsonl_file", ""), row.get("csv_file", ""), row.get("summary_file", ""), row.get("server_log_file", "")]
             if p
@@ -562,10 +605,11 @@ def append_history_entry(entry: dict[str, Any], out_dir: Path) -> None:
         normalized_entry["run_id"] = _make_run_id(normalized_entry)
     rows.append(normalized_entry)
 
-    best = _best_rows_by_group(rows)
+    best = _best_rows_by_model(rows)
     for row in rows:
+        model_name = _model_display_name(row.get("model", "-"))
         group = "MTP" if str(row.get("is_mtp_model", "0")) == "1" else "Non-MTP"
-        row["is_group_best"] = "1" if best.get(group) is row else "0"
+        row["is_group_best"] = "1" if best.get((group, model_name)) is row else "0"
 
     history_dir.mkdir(parents=True, exist_ok=True)
     with history_csv.open("w", encoding="utf-8", newline="") as f:
