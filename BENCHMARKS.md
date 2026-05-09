@@ -290,6 +290,49 @@ if (Q->ne[1] * gqa_ratio_eff <= 4) return BEST_FATTN_KERNEL_TILE;
 - `build_logs/agent-workload/sprint7-tile4-5run-ub512-ngram.{csv,jsonl,server.log}`
 - `build_logs/agent-workload/sprint7-tile4-5run-ub512-ngram-r2.{csv,jsonl,server.log}`
 
+## Batch 4096 / UBatch 512 Repro Check (2026-05-09)
+
+Запрос: подтвердить целевой уровень `>=35 TPS` именно на профиле `b=4096, ub=512` для long-context agent workflow.
+
+Условия прогона:
+
+- `Qwen3.6-27B-Q3_K_S.gguf`
+- `-c 65536 -b 4096 -ub 512 -np 1 --flash-attn on`
+- `--cache-type-k q4_0 --cache-type-v q4_0`
+- `--spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64`
+- `build-rocm-wmma/bin/llama-server.exe`
+- `scripts/agent_workload_bench.py --runs 5 --background-server-policy fail`
+
+Результаты sprint14 (сегодня):
+
+| Label | Aggregate TPS | Mean task TPS | Median task TPS | Stdev |
+| --- | ---: | ---: | ---: | ---: |
+| `sprint14-b512-target35-5run` | `30.25` | `31.15` | `29.34` | `5.55` |
+| `sprint14-b512-target35-5run-r2` | `34.98` | `36.53` | `35.18` | `7.58` |
+| `sprint14-b512-target35-5run-r3` | `32.90` | `34.34` | `32.55` | `7.25` |
+| `sprint14-b512-target35-5run-r4` | `31.39` | `32.18` | `30.81` | `5.28` |
+
+Ранее подтвержденные попадания `>=35 TPS` на том же профиле:
+
+| Label | Build | Aggregate TPS |
+| --- | --- | ---: |
+| `sprint13-wmma-5run-r2` | `build-rocm-wmma` | `36.53` |
+| `sprint7-tile4-5run-ub512-ngram` | `build-rocm-vec` | `35.68` |
+| `sprint9-tile4-warmup-ub512-5run` | `build-rocm-vec` | `35.15` |
+
+Вывод:
+
+- Цель `35+ TPS` для `b=4096/ub=512` **достижима**, но имеет заметную run-to-run вариативность.
+- Для стабильного daily-профиля на `build-rocm-clean` сейчас практичнее `ub=256` (средний 5-run `35.69 TPS`).
+- Для приоритета именно `ub=512` нужно продолжать работу над снижением дисперсии (warmup discipline, thermal/load control, kernel-path stability).
+
+Артефакты sprint14:
+
+- `build_logs/agent-workload/sprint14-b512-target35-5run.{csv,jsonl,server.log}`
+- `build_logs/agent-workload/sprint14-b512-target35-5run-r2.{csv,jsonl,server.log}`
+- `build_logs/agent-workload/sprint14-b512-target35-5run-r3.{csv,jsonl,server.log}`
+- `build_logs/agent-workload/sprint14-b512-target35-5run-r4.{csv,jsonl,server.log}`
+
 ## UBatch=256 Optimization Discovery (2026-05-09)
 
 **Critical finding**: При систематическом тестировании разных ubatch размеров выявлено, что **ubatch=256 даёт значительное преимущество** на этом профиле и GPU.
