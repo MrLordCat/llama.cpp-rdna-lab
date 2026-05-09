@@ -333,6 +333,40 @@ if (Q->ne[1] * gqa_ratio_eff <= 4) return BEST_FATTN_KERNEL_TILE;
 - `build_logs/agent-workload/sprint14-b512-target35-5run-r3.{csv,jsonl,server.log}`
 - `build_logs/agent-workload/sprint14-b512-target35-5run-r4.{csv,jsonl,server.log}`
 
+### Stdev Investigation (2026-05-09)
+
+Цель: выяснить, почему на `b=4096/ub=512` выросла дисперсия (`stdev`).
+
+Ключевые наблюдения:
+
+- В server log для нестабильных прогонов сильно гуляет `draft acceptance rate` и число speculative draft tokens.
+- Пример:
+  - низкий прогон `sprint14-b512-target35-5run`: итог `#gen tokens = 954`, `#acc tokens = 461`;
+  - более быстрый прогон `sprint14-b512-target35-5run-r2`: итог `#gen tokens = 1500`, `#acc tokens = 918`.
+- Это указывает, что заметная часть дисперсии идёт из speculative path (`ngram-mod`), а не из prompt prefill.
+
+Контрольный тест без speculative (`--spec-type none`) на том же профиле:
+
+| Label | Aggregate TPS | Mean task TPS | Median task TPS | Stdev |
+| --- | ---: | ---: | ---: | ---: |
+| `sprint14-b512-specnone-5run` | `27.54` | `27.54` | `27.66` | **`0.28`** |
+
+Вывод: без speculative дисперсия почти исчезает, но throughput заметно ниже.
+
+Быстрый стабилизационный A/B (3-run, warmup on) не дал снижения stdev:
+
+| Label | Config | Aggregate TPS | Stdev |
+| --- | --- | ---: | ---: |
+| `sprint14-stab-warmup-default-3run` | ngram 24/48/64 | `31.77` | `5.99` |
+| `sprint14-stab-warmup-n32-3run` | ngram 32/48/64 | `32.65` | `6.76` |
+| `sprint14-stab-warmup-min32max48-3run` | ngram 24/32/48 | `32.79` | `9.18` |
+
+Практический итог:
+
+- Высокий stdev на `ub=512` в первую очередь связан с нестабильным speculative acceptance.
+- Для стабильного daily-профиля приоритет остаётся у `ub=256`.
+- Для `ub=512` следующая работа должна быть направлена на стабилизацию speculative acceptance, а не только на peak TPS.
+
 ## UBatch=256 Optimization Discovery (2026-05-09)
 
 **Critical finding**: При систематическом тестировании разных ubatch размеров выявлено, что **ubatch=256 даёт значительное преимущество** на этом профиле и GPU.
