@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-08 11:43:21",
+  "updated_at": "2026-05-09 10:24:53",
   "builds": [
     {
       "id": "bld-20260508073132-4d3cb594",
@@ -63,12 +63,12 @@
       "server_bin": "C:\\Users\\Chris\\Documents\\GitHub\\llama.cpp-with-GUI\\build-rocm-clean\\bin\\llama-server.exe",
       "toolchain": {},
       "created_at": "2026-05-08 07:31:32",
-      "updated_at": "2026-05-08 11:43:21",
+      "updated_at": "2026-05-09 10:24:53",
       "status": "ready",
       "notes": "Imported from existing build directory",
-      "bench_best_non_mtp_tps": "10.7478",
+      "bench_best_non_mtp_tps": "35.9282",
       "bench_best_mtp_tps": null,
-      "bench_last_run_at": "2026-05-08 07:38:30"
+      "bench_last_run_at": "2026-05-09 09:44:27"
     },
     {
       "id": "bld-20260508073132-c532ea46",
@@ -114,12 +114,12 @@
       "server_bin": "C:\\Users\\Chris\\Documents\\GitHub\\llama.cpp-with-GUI\\build-rocm-exp\\bin\\llama-server.exe",
       "toolchain": {},
       "created_at": "2026-05-08 09:40:29",
-      "updated_at": "2026-05-08 11:43:21",
+      "updated_at": "2026-05-09 10:24:53",
       "status": "ready",
       "notes": "Imported from existing build directory",
-      "bench_best_non_mtp_tps": null,
+      "bench_best_non_mtp_tps": "26.2629",
       "bench_best_mtp_tps": null,
-      "bench_last_run_at": ""
+      "bench_last_run_at": "2026-05-09 00:32:57"
     },
     {
       "id": "bld-20260508094029-72a53607",
@@ -165,12 +165,12 @@
       "server_bin": "C:\\Users\\Chris\\Documents\\GitHub\\llama.cpp-with-GUI\\build-rocm-a-check\\bin\\llama-server.exe",
       "toolchain": {},
       "created_at": "2026-05-08 10:49:25",
-      "updated_at": "2026-05-08 11:43:21",
+      "updated_at": "2026-05-09 10:24:53",
       "status": "ready",
       "notes": "Imported from existing build directory",
-      "bench_best_non_mtp_tps": null,
+      "bench_best_non_mtp_tps": "28.9631",
       "bench_best_mtp_tps": null,
-      "bench_last_run_at": ""
+      "bench_last_run_at": "2026-05-08 11:56:36"
     },
     {
       "id": "bld-20260508104925-23f8d9c8",
@@ -182,12 +182,12 @@
       "server_bin": "C:\\Users\\Chris\\Documents\\GitHub\\llama.cpp-with-GUI\\build-rocm-wmma\\bin\\llama-server.exe",
       "toolchain": {},
       "created_at": "2026-05-08 10:49:25",
-      "updated_at": "2026-05-08 11:43:21",
+      "updated_at": "2026-05-09 10:24:53",
       "status": "ready",
       "notes": "Imported from existing build directory",
-      "bench_best_non_mtp_tps": null,
+      "bench_best_non_mtp_tps": "37.5657",
       "bench_best_mtp_tps": null,
-      "bench_last_run_at": ""
+      "bench_last_run_at": "2026-05-09 10:20:11"
     },
     {
       "id": "bld-20260508113803-2d592989",
@@ -199,7 +199,41 @@
       "server_bin": "C:\\Users\\Chris\\Documents\\GitHub\\llama.cpp-with-GUI\\build-rocm-vec\\bin\\llama-server.exe",
       "toolchain": {},
       "created_at": "2026-05-08 11:38:03",
-      "updated_at": "2026-05-08 11:43:21",
+      "updated_at": "2026-05-09 10:24:53",
+      "status": "ready",
+      "notes": "Imported from existing build directory",
+      "bench_best_non_mtp_tps": "35.6786",
+      "bench_best_mtp_tps": "17.9904",
+      "bench_last_run_at": "2026-05-09 00:48:55"
+    },
+    {
+      "id": "bld-20260509102452-a1201ba7",
+      "name": "build-rocm-combo",
+      "backend": "cpu",
+      "source_type": "fork",
+      "source_ref": "4b006c6e1",
+      "build_dir": "C:\\Users\\Chris\\Documents\\GitHub\\llama.cpp-with-GUI\\build-rocm-combo",
+      "server_bin": "",
+      "toolchain": {},
+      "created_at": "2026-05-09 10:24:52",
+      "updated_at": "2026-05-09 10:24:52",
+      "status": "ready",
+      "notes": "Imported from existing build directory",
+      "bench_best_non_mtp_tps": null,
+      "bench_best_mtp_tps": null,
+      "bench_last_run_at": ""
+    },
+    {
+      "id": "bld-20260509102452-d29e923b",
+      "name": "build-rocm-vec-opt",
+      "backend": "rocm",
+      "source_type": "fork",
+      "source_ref": "4b006c6e1",
+      "build_dir": "C:\\Users\\Chris\\Documents\\GitHub\\llama.cpp-with-GUI\\build-rocm-vec-opt",
+      "server_bin": "",
+      "toolchain": {},
+      "created_at": "2026-05-09 10:24:52",
+      "updated_at": "2026-05-09 10:24:52",
       "status": "ready",
       "notes": "Imported from existing build directory",
       "bench_best_non_mtp_tps": null,
