@@ -78,6 +78,31 @@ python scripts\agent_workload_bench.py `
 
 Итог: цель `>=35 TPS` для `b=4096/ub=512` подтверждена на обновлённой методике, при этом warm-only дисперсия существенно ниже.
 
+## V2-mini simple workflow (27B only, 2026-05-09)
+
+Цикл выполнен строго на `Qwen3.6-27B-Q3_K_S.gguf` с коротким набором задач:
+
+- `--tasks v2-mini` (`v2_code_review` + `v2_write_function`)
+- `--runs 1`
+- `-c 65536 -b 4096 -ub 512 -np 1 --flash-attn on`
+- `--cache-type-k q4_0 --cache-type-v q4_0`
+- `--spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64`
+- `--background-server-policy fail`
+
+Команды запускались через `build-rocm-exp/bin/llama-server.exe`.
+
+Результаты по шагам:
+
+| Label | Изменение | Aggregate TPS | Действие |
+|---|---|---:|---|
+| `wf-27b-baseline-exp-r1` | baseline | `25.98` | baseline |
+| `wf-27b-varA-fattn-vec2-r1` | RDNA4 FATTN: quantized VEC порог `<=4 -> <=2` | `25.87` | **rollback (regress)** |
+| `wf-27b-varB-mmq-routing-r1` | RDNA4 MMQ routing: убрать always-MMQ, ввести `ne11/type` эвристику | `26.58` | **keep (profit)** |
+| `wf-27b-varC-streamk-r1` | MMQ stream-k: enable for RDNA4 при `ne11 >= 256` | `26.90` | **keep (profit)** |
+| `wf-27b-varD-mmq-q45-384-r1` | RDNA4 MMQ routing: расширить окно Q4/Q5 `ne11 <= 256 -> <= 384` | `26.79` | **rollback (regress)** |
+
+Итог по циклу: финальная комбинация (B + C) дала `+0.92 TPS` к baseline v2-mini на 27B в этой сессии.
+
 ## Large Context Autotune (32K+)
 
 Новый режим автоподбора параметров для длинного контекста:
@@ -568,6 +593,13 @@ python scripts\agent_workload_bench.py `
 
 ### V2 Task Set (`--tasks v2`)
 
+По умолчанию v2 теперь запускает компактный набор для быстрых итераций:
+- включены: `v2_code_review`, `v2_write_function`;
+- отключены: `v2_debug_trace`, `v2_refactor_plan`, `v2_perf_analysis`.
+
+Полный набор включается только для ретеста после заметного speed breakthrough:
+- добавить флаг `--v2-include-heavy`.
+
 | ID | Название | Целевая длина ответа |
 |----|----------|---------------------|
 | `v2_code_review` | Полный code review модуля build_manager | ~400–500 токенов |
@@ -606,6 +638,28 @@ python scripts\agent_workload_bench.py `
   --server-extra "--spec-type ngram-mod --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64 --spec-ngram-mod-n-match 24"
 ```
 
+Для полного ретеста с тяжёлыми задачами:
+
+```powershell
+python scripts\agent_workload_bench.py `
+  --label v2-baseline-rocm-ub512-heavy `
+  --tasks v2 `
+  --v2-include-heavy `
+  --runs 3 `
+  --server-seed 42 `
+  --no-disable-thinking `
+  --stats-ignore-first-run `
+  --server-bin build-rocm-vec\bin\llama-server.exe `
+  --model models\Qwen3.6-27B-Q3_K_S.gguf `
+  --ctx-size 65536 `
+  --batch-size 4096 `
+  --ubatch-size 512 `
+  --cache-type-k q4_0 `
+  --cache-type-v q4_0 `
+  --flash-attn `
+  --server-extra "--spec-type ngram-mod --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64 --spec-ngram-mod-n-match 24"
+```
+
 История результатов хранится отдельно: `build_logs/agent-workload/BENCH_HISTORY_V2.csv` и `BENCH_HISTORY_V2.md`.
 
 ### V2 Baseline Results
@@ -615,3 +669,273 @@ python scripts\agent_workload_bench.py `
 | v2-baseline-rocm-ub512 | build-rocm-vec | 3×5 | 27.77 | 27.78 | 27.97 | 0.47 | 28.07 | 0.19 | 500 |
 
 **Вывод:** v2 baseline = **~28 TPS** при 500-токенных ответах — это точно совпадает с тем, что наблюдается в ручном чате (28–30 TPS). Очень низкий stdev (0.47) показывает, что при длинных ответах генерация устойчива. V1 (~33-37 TPS) был оптимистичен из-за многократных коротких burst (160 токенов).
+
+### V2 A/B: `build-rocm-clean` vs `build-rocm-vec` (ub=512, ngram-mod)
+
+| Label | Build | Runs | Aggregate TPS | Mean TPS | Median TPS | Stdev | Warm-only TPS | Warm stdev |
+|-------|-------|------|--------------|----------|------------|-------|--------------|------------|
+| `v2-baseline-rocm-ub512` | `build-rocm-vec` | 3x5 | `27.77` | `27.78` | `27.97` | `0.47` | `28.07` | `0.19` |
+| `v2-clean-ub512` | `build-rocm-clean` | 3x5 | `27.72` | `27.72` | `27.80` | `0.35` | `27.92` | `0.17` |
+
+Разница по aggregate: `+0.06 TPS` в пользу `build-rocm-vec` (меньше порога `0.5 TPS`).
+
+**Вывод:** на реалистичной v2 нагрузке патчи `tile<=4 + chunk=96` не дают значимого выигрыша по throughput.
+
+### V2 A/B: `spec-type none` vs `ngram-mod` (ub=512, build-rocm-vec)
+
+| Label | Spec mode | Runs | Aggregate TPS | Mean TPS | Median TPS | Stdev | Warm-only TPS | Warm stdev |
+|-------|-----------|------|--------------|----------|------------|-------|--------------|------------|
+| `v2-baseline-rocm-ub512` | `ngram-mod 48/64/24` | 3x5 | `27.77` | `27.78` | `27.97` | `0.47` | `28.07` | `0.19` |
+| `v2-rocm-vec-specnone-ub512` | `none` | 3x5 | `27.78` | `27.78` | `27.92` | `0.33` | `27.99` | `0.06` |
+
+Разница по aggregate: `~0.00 TPS` (в пределах шума).
+
+**Вывод:** для v2-кодовых промптов `ngram-mod` практически не ускоряет, но и не штрафует throughput; заметный эффект в основном на variance (без speculative stdev ниже).
+
+### V2 A/B: `ubatch 256` vs `ubatch 512` (build-rocm-vec, ngram-mod)
+
+| Label | ubatch | Runs | Aggregate TPS | Mean TPS | Median TPS | Stdev |
+|-------|--------|------|--------------|----------|------------|-------|
+| `v2-baseline-rocm-ub512` | `512` | 3x5 | `27.77` | `27.78` | `27.97` | `0.47` |
+| `v2-rocm-vec-ub256-ngram-r1` | `256` | 1x5 | `27.52` | `27.52` | `27.35` | `0.32` |
+
+Разница по aggregate: `-0.25 TPS` при переходе на `ub=256`.
+
+**Вывод:** на текущем профиле длинных ответов `ub=512` остаётся предпочтительным.
+
+### Политика прогонов для V2 (обновлено)
+
+- Для быстрых итераций/скрининга использовать `--runs 1` (экономия времени, stdev на v2 обычно низкий).
+- Повторять `--runs 3` только для финального подтверждения спорных/пограничных изменений (например, дельта в диапазоне `0.2-0.5 TPS`).
+
+### Research Phase R35-01 (2026-05-09): старт long-run к цели 35 TPS
+
+Цель фазы: найти конфиг/билд, который сможет вывести v2-профиль к `35 TPS`.
+
+#### Скрининг готовых ROCm билдов (`runs=1`, v2, `b=4096`, `ub=512`, `ngram-mod`)
+
+| Label | Build | Aggregate TPS |
+|-------|-------|--------------|
+| `v2-scan-rocm-exp-ub512-r1` | `build-rocm-exp` | `27.37` |
+| `v2-scan-rocm-wmma-ub512-r1` | `build-rocm-wmma` | `27.34` |
+| `v2-scan-build-bin-ub512-r1` | `build` | `27.33` |
+| `v2-scan-rocm-clean-ub512-r1` | `build-rocm-clean` | `27.26` |
+| `v2-scan-rocm-vec-ub512-r1` | `build-rocm-vec` | `27.26` |
+| `v2-scan-rocm-a-check-ub512-r1` | `build-rocm-a-check` | `27.20` |
+
+Промежуточный лидер: `build-rocm-exp` (`27.37 TPS`).
+
+#### Свип параметров на лидере `build-rocm-exp` (`runs=1`)
+
+| Label | Конфиг | Aggregate TPS |
+|-------|--------|--------------|
+| `v2-scan-exp-b4096-ub512-p1-specnone-r1` | `b=4096, ub=512, p=1, spec=none` | `27.24` |
+| `v2-scan-exp-b8192-ub512-p1-specngram-r1` | `b=8192, ub=512, p=1, spec=ngram` | `27.21` |
+| `v2-scan-exp-b4096-ub512-p1-specngram-r1` | `b=4096, ub=512, p=1, spec=ngram` | `27.20` |
+| `v2-scan-exp-b4096-ub512-p2-specngram-r1` | `b=4096, ub=512, p=2, spec=ngram` | `25.70` |
+| `v2-scan-exp-b8192-ub1024-p1-specngram-r1` | `b=8192, ub=1024, p=1, spec=ngram` | `20.18` |
+
+Вывод по свипу:
+- `ub=1024` и `parallel=2` в этом профиле явно вредят throughput.
+- `spec none` и `ngram-mod` дают почти одинаковую скорость на v2-кодовых задачах.
+- На текущем железе/модели v2-профиль упирается в ~`27.2-27.4 TPS`.
+
+#### Статус чекпоинта
+
+- Целевой чекпоинт `35 TPS` на v2-профиле **не достигнут** (текущий максимум в этой фазе: `27.37 TPS`).
+- Для дальнейшего роста нужен следующий виток: новые кодовые kernel-правки + свежая ROCm сборка с корректной toolchain-настройкой.
+
+#### Новый ROCm контур `build-rocm-r35-c` (`GGML_CUDA_FA_ALL_QUANTS=ON`, `GGML_OPENMP=OFF`)
+
+| Label | Spec mode | Aggregate TPS |
+|-------|-----------|--------------|
+| `v2-scan-rocm-r35-c-ub512-r1` | `ngram-mod 48/64/24` | `26.83` |
+| `v2-scan-rocm-r35-c-specnone-r1` | `none` | `27.30` |
+
+Вывод:
+- `GGML_CUDA_FA_ALL_QUANTS=ON` сам по себе не помог на текущем v2 профиле.
+- Без speculative новый контур близок к обычному уровню, но всё равно не обгоняет `build-rocm-exp`.
+- Этот билд не выглядит перспективным для дальнейшего разгона к `35 TPS`.
+
+### Research Phase R35-02 (2026-05-09): kernel micro-optimizations (ROCm, runs=1)
+
+Цель фазы: проверить быстрые low-risk правки в ядрах без смены модели/режима и оценить, дают ли они выход за потолок `~27.4 TPS` на v2.
+
+#### Эксперимент A: `ggml/src/ggml-cuda/gated_delta_net.cu`
+
+Гипотеза:
+- уменьшить стоимость `expf` в fused GDN (замена на fast intrinsic + кэширование `exp(g)` в `KDA` ветке) может ускорить decode/prefill.
+
+Результаты (`build-rocm-exp`, `b=4096`, `ub=512`, `np=1`):
+
+| Label | Spec mode | Aggregate TPS |
+|-------|-----------|--------------|
+| `v2-r35-gdn-expfast-ub512-r1` | `ngram-mod 48/64/24` | `27.42` |
+| `v2-r35-gdn-expfast-specnone-ub512-r1` | `none` | `27.29` |
+
+Промежуточный вывод:
+- метрики остались в шумовом коридоре относительно текущего потолка `27.2-27.4`;
+- устойчивого прироста не подтверждено.
+
+#### Эксперимент B: `ggml/src/ggml-cuda/fattn.cu` (RDNA4 selector threshold)
+
+Гипотеза:
+- расширить окно выбора VEC/TILE (`<=8` вместо `<=4`) в RDNA4 ветке и ускорить decode на малом эффективном батче.
+
+Результаты:
+
+| Label | Spec mode | Aggregate TPS |
+|-------|-----------|--------------|
+| `v2-r35-fattn8-gdnexp-ub512-r1` | `ngram-mod 48/64/24` | `27.36` |
+| `v2-r35-fattn8-gdnexp-specnone-ub512-r1` | `none` | `27.06` |
+
+Вывод:
+- изменение порога ухудшило non-spec профиль и не дало выигрыша с `ngram-mod`.
+- правка откатана.
+
+#### Rollback-check после отката обеих правок
+
+| Label | Spec mode | Aggregate TPS |
+|-------|-----------|--------------|
+| `v2-r35-rollback-check-ub512-r1` | `ngram-mod 48/64/24` | `27.42` |
+
+Финал фазы R35-02:
+- обе kernel-гипотезы не дали подтверждённого роста TPS;
+- дерево возвращено к baseline-поведению;
+- целевой чекпоинт `35 TPS` для v2 остаётся недостигнутым.
+
+### Research Phase R35-03 (2026-05-09): draft-model path + kernel pass
+
+Цель фазы: проверить «дорогой» путь ускорения через draft model (non-MTP), затем сделать kernel/runtime pass по самому слабому месту из логов.
+
+#### Что использовалось как draft model path
+
+- target model: `models/Qwen3.6-27B-Q3_K_S.gguf`;
+- draft model: `models/Qwen3.5-9B-Q6_K.gguf`;
+- режим: `--model-draft ... --spec-draft-n-max 12 --spec-draft-n-min 0 --spec-draft-p-min 0.75`.
+
+#### Сравнение baseline режимов на compact v2 (`runs=1`, 2 задачи)
+
+| Label | Spec mode | Aggregate TPS |
+|-------|-----------|--------------|
+| `v2-r35-combo-draft-sweep-r1-cfg01` | `none` | `27.44` |
+| `v2-r35-combo-draft-sweep-r1-cfg02` | `ngram-mod 48/64/24` | `27.41` |
+
+#### Draft-model результат
+
+По `v2-r35-combo-draft-only-r1b-cfg01.server.log`:
+- `prompt eval`: ~`1.22-1.28 ms/token` (нормально);
+- `eval`: ~`308-321 ms/token` (`~3.11-3.24 tok/s`) — критический провал;
+- `draft acceptance rate`: высокий (`~0.79-0.86`), но это не помогает;
+- `statistics draft ... dur(g)`: `~140-288 s` — узкое место именно генерация draft model.
+
+Вывод:
+- на текущем локальном draft (`Qwen3.5-9B-Q6_K`) speculative через draft model радикально медленнее baseline (`~3.2 tok/s` vs `~27.4 TPS`);
+- bottleneck не в acceptance, а в стоимости самого draft decode.
+
+#### Kernel/runtime pass по узкому месту
+
+Была проверена runtime-гипотеза снижения стоимости draft-контекста (batch sizing в `tools/server/server-context.cpp`), но воспроизводимого ускорения не получено.
+
+Итог:
+- runtime-патч откатан;
+- кодовая база возвращена к baseline-поведению;
+- для продолжения draft-ветки нужен существенно более лёгкий draft GGUF (уровня ~0.5B-1.5B), иначе этот путь не конкурентен.
+
+### Research Phase R35-04 (2026-05-09): kernel-only возврат (без draft-model)
+
+Цель: вернуться к чистой kernel-only ветке и проверить более агрессивный selector-твик в RDNA4 FlashAttention.
+
+Изменение:
+- файл: `ggml/src/ggml-cuda/fattn.cu`;
+- ветка `amd_wmma_available && RDNA4`;
+- для non-quantized single-query decode (`Q->ne[1] == 1`) добавлен ранний выбор `BEST_FATTN_KERNEL_VEC` при `gqa_ratio_eff <= 2`.
+
+#### Результаты compact v2 (`runs=1`, 2 задачи)
+
+| Label | Spec mode | Aggregate TPS |
+|-------|-----------|--------------|
+| `v2-konly-baseline-r1` | `ngram-mod 48/64/24` | `27.04` |
+| `v2-konly-fattnvec-r1-ngram` | `ngram-mod 48/64/24` | `27.47` |
+| `v2-konly-fattnvec-r2-ngram` | `ngram-mod 48/64/24` | `27.50` |
+| `v2-konly-fattnvec-r1-none` | `none` | `27.40` |
+
+Вывод фазы:
+- патч не даёт прорыва, но показывает небольшой стабильный плюс относительно локального baseline-прогона;
+- целевой порог `35 TPS` всё ещё далеко, нужен следующий цикл более глубоких kernel-изменений (не только selector tuning).
+
+### Research Phase R35-05 (2026-05-09): deep FATTN softmax/fixup exp-path (kernel-only)
+
+Цель: сделать более глубокий pass по вычислительным блокам FATTN (не selector), сфокусированный на softmax/fixup hot-path.
+
+Изменение (экспериментальное, затем откат):
+- `ggml/src/ggml-cuda/fattn-vec.cuh`: замена `expf` -> `__expf` в softmax-обновлении `KQ_max_scale`, `KQ_reg`, sink-path и финальном merge-scale;
+- `ggml/src/ggml-cuda/fattn-tile.cuh`: замена `expf` -> `__expf` в KQ softmax (`KQ_max_scale`, `val`);
+- `ggml/src/ggml-cuda/fattn-common.cuh`: замена `expf` -> `__expf` в stream-k fixup/combine scaling.
+
+#### Результаты compact v2 (`runs=1`, 2 задачи)
+
+| Label | Spec mode | Aggregate TPS |
+|-------|-----------|--------------|
+| `v2-konly-fattnvec-r2-ngram` | `ngram-mod 48/64/24` | `27.50` |
+| `v2-konly-deepfattnexp-r1-ngram` | `ngram-mod 48/64/24` | `27.46` |
+| `v2-konly-deepfattnexp-r1-none` | `none` | `26.74` |
+
+Вывод фазы:
+- deep exp-path замена не дала прироста в `ngram-mod` и дала заметный регресс в `spec none`;
+- патч признан неуспешным и полностью откатан;
+- рабочее состояние оставлено на kernel-only ветке с сохранённым улучшением из R35-04.
+
+### Research Phase R35-06 (2026-05-09): serving-param exhaustive screen (no rebuild)
+
+Цель: проверить 3 serving-level гипотезы из deep research документа, не требующие пересборки.
+Базовый уровень в этой фазе: `build-rocm-exp`, `ctx=65536`, `b=4096`, `ub=512`, `kv=q4_0/q4_0`, `ngram-mod 48/24/64`, `np=1` → **~27.4–27.5 TPS**.
+
+| Label | Гипотеза | ctx | ub | kv_k | kv_v | Aggregate TPS | Δ vs baseline |
+|-------|----------|-----|-----|------|------|--------------|--------------|
+| `v2-h1-ctx32k-ub512-r1` | Меньше KV IO: ctx=32K | 32768 | 512 | q4_0 | q4_0 | **27.55** | +0.1 (нейтр.) |
+| `v2-h2-ctx65k-ub128-r1` | VEC path: ub=128 | 65536 | 128 | q4_0 | q4_0 | **25.61** | -1.9 (регрессия) |
+| `v2-h3-kv-q8-ub512-r1` | Qwen KV qual: q8_0/q8_0 | 65536 | 512 | q8_0 | q8_0 | **26.74** | -0.7 (регрессия) |
+
+#### Выводы фазы
+
+- **H1 (ctx=32K)**: нейтрально. v2-задачи укладываются в 32K, реальный использованный KV-размер не меняется — bandwidth не является ограничивающим фактором для данной нагрузки.
+- **H2 (ub=128)**: регрессия −1.9 TPS. «Гарантированный VEC path» хуже ub=512: при ngram-mod verification batches часто >128 токенов, что создаёт overhead из дополнительных kernel launches; меньший batching снижает GPU utilization.
+- **H3 (q8_0 KV)**: регрессия −0.7 TPS. Удвоенная KV bandwidth → чуть медленнее, несмотря на более высокое качество кэша. Вывод противоположен гипотезе: q4_0 KV предпочтительнее на данной нагрузке.
+
+#### Общий вывод по serving-param exploration
+
+Пространство serving-параметров в текущем v2-профиле исчерпано:
+- `ub`: 128 → регрессия; 256 → -0.25; **512 → оптимум**; 1024 → обрыв (-7 TPS TILE switch)
+- `ctx`: 32K ≈ 65K → оба одинаковы (нагрузка не использует полный ctx)
+- `kv type`: **q4_0 оптимум**; q8_0 → -0.7 TPS
+- `parallel`: **p=1 оптимум**; p=2 → -1.7 TPS
+- `spec`: ngram-mod ≈ none (для v2 кодовых задач acceptance rate низкий)
+
+Потолок ~27.5 TPS является compute-bound ограничением линейных слоёв модели (weight loading / MMQ), не KV bandwidth и не selector kernel.
+Для прорыва требуется: более лёгкая модель (IQ2/IQ3_XS), более быстрый MMQ kernel (RDNA4 MFMA tuning), или MTP с подходящей GGUF.
+
+### Research Phase R35-07 (2026-05-09): MMQ RDNA4 cap (`x_max=96`) + rebuild
+
+Цель: проверить RDNA4-специфичный MMQ тюнинг после полного rebuild ROCm контура.
+
+Изменение:
+- файл: `ggml/src/ggml-cuda/mmq.cuh`;
+- функция: `get_mmq_x_max_host(const int cc)`;
+- для `GGML_CUDA_CC_IS_RDNA4(cc)` установлен экспериментальный cap: `return 96` (вместо общего пути до `128`).
+
+Сборка:
+- после зависания терминала были обнаружены «осиротевшие» процессы `cmake/ninja/clang++`; они остановлены принудительно;
+- rebuild выполнен командой `cmake --build build-rocm-exp --target llama-server -j 4`;
+- новый бинарь: `build-rocm-exp/bin/llama-server.exe`.
+
+#### Результат A/B (`runs=1`, compact v2, ngram-mod 48/24/64)
+
+| Label | Конфиг | Aggregate TPS |
+|-------|--------|--------------|
+| baseline corridor | `ctx=65536, b=4096, ub=512, q4_0/q4_0` | `~27.4-27.5` |
+| `v2-r35-mmqx96-r1` | `MMQ RDNA4 x_max=96` | **`25.77`** |
+
+Вывод:
+- текущий MMQ cap `x_max=96` для RDNA4 даёт **существенную регрессию** (`~ -1.7 TPS`);
+- гипотеза не подтверждена, вариант не подходит для дальнейшего использования в baseline.

@@ -1075,8 +1075,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Short coding-agent benchmark for llama-server")
     parser.add_argument("--label", default=f"rocm-baseline-{timestamp}", help="result file label")
     parser.add_argument("--out-dir", default=str(ROOT / "build_logs" / "agent-workload"), help="output directory")
-    parser.add_argument("--tasks", choices=["quick", "full", "v2"], default="quick",
-                        help="prompt set: quick (v1 short tasks), full (v1 extended), v2 (realistic agentic-flow tasks)")
+    parser.add_argument("--tasks", choices=["quick", "full", "v2", "v2-mini"], default="quick",
+                        help="prompt set: quick (v1 short tasks), full (v1 extended), v2 (realistic agentic-flow tasks), v2-mini (v2_code_review + v2_write_function)")
     parser.add_argument("--runs", type=int, default=1, help="repeat each task N times")
 
     parser.add_argument("--no-start", action="store_true", help="use an already running server")
@@ -1233,8 +1233,11 @@ def main() -> int:
             print(f"  ... and {count - 200} more")
         return 0
 
-    if args.tasks == "v2":
+    if args.tasks in ("v2", "v2-mini"):
         tasks = TASKS_V2
+        if args.tasks == "v2-mini":
+            selected_ids = {"v2_code_review", "v2_write_function"}
+            tasks = [task for task in TASKS_V2 if task["id"] in selected_ids]
         # v2 tasks produce longer responses; bump max_tokens unless user set it explicitly
         if args.max_tokens == 160:
             args.max_tokens = 500

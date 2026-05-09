@@ -250,7 +250,8 @@ void ggml_cuda_op_mul_mat_q(
     // Also its fixup needs to allocate a temporary buffer in the memory pool.
     // There are multiple parallel CUDA streams for src1_ncols != ne11 which would introduce a race condition for this buffer.
     const bool use_stream_k = ((GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA)
-                            || GGML_CUDA_CC_IS_CDNA(cc))
+                            || GGML_CUDA_CC_IS_CDNA(cc)
+                            || (GGML_CUDA_CC_IS_RDNA4(cc) && ne11 >= 256))
                             && src1_ncols == ne11;
     const mmq_args args = {
         src0_dd_i, src0->type, (const int *) src1_ddq_i, nullptr, nullptr, dst_dd_i,
@@ -360,6 +361,28 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
                     return GGML_CUDA_CC_IS_RDNA3_5(cc) || ne11 <= 128;
                 default:
                     return true;
+            }
+        }
+
+        if (GGML_CUDA_CC_IS_RDNA4(cc)) {
+            if (n_experts >= 64) {
+                return true;
+            }
+
+            switch (type) {
+                case GGML_TYPE_Q4_0:
+                case GGML_TYPE_Q4_1:
+                case GGML_TYPE_Q5_0:
+                case GGML_TYPE_Q5_1:
+                    return ne11 <= 256;
+                case GGML_TYPE_Q2_K:
+                case GGML_TYPE_Q3_K:
+                case GGML_TYPE_Q4_K:
+                case GGML_TYPE_Q5_K:
+                case GGML_TYPE_Q6_K:
+                    return ne11 <= 192;
+                default:
+                    return ne11 <= 128;
             }
         }
 
