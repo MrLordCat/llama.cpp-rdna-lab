@@ -858,16 +858,31 @@ class ServerTabWidget(QWidget):
         if hasattr(self.parent, "get_registered_builds"):
             records = self.parent.get_registered_builds()
 
-        usable = [
-            r for r in records
-            if str(r.get("status", "")) == "ready"
-            and str(r.get("build_dir", ""))
-            and Path(str(r.get("build_dir", ""))).exists()
-            and (not selected_backend_key or str(r.get("backend", "")).lower() == selected_backend_key)
-        ]
+        usable = []
+        for rec in records:
+            if str(rec.get("status", "")) != "ready":
+                continue
+            build_dir_text = str(rec.get("build_dir", "")).strip()
+            if not build_dir_text:
+                continue
+            build_dir = Path(build_dir_text)
+            if not build_dir.exists():
+                continue
+            if selected_backend_key and str(rec.get("backend", "")).lower() != selected_backend_key:
+                continue
+            # Only show versions that are actually runnable from this tab.
+            if not self._find_llama_server_binary(build_dir):
+                continue
+            usable.append(rec)
 
-        # Newest first by updated_at/created_at for automatic latest selection.
-        usable.sort(key=lambda r: (str(r.get("updated_at", "")), str(r.get("created_at", ""))), reverse=True)
+        # Newest first by updated_at (fallback created_at), then by name.
+        usable.sort(
+            key=lambda r: (
+                str(r.get("updated_at", "") or r.get("created_at", "")),
+                str(r.get("name", "")).lower(),
+            ),
+            reverse=True,
+        )
         for rec in usable:
             build_dir = Path(str(rec.get("build_dir")))
             source = str(rec.get("source_type", "fork"))

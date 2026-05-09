@@ -119,7 +119,11 @@ class BuildsInfoTabWidget(QWidget):
             registry.update_benchmark_stats_from_history()
             records = sorted(
                 registry.list_builds(),
-                key=lambda r: (str(r.get("status", "")) != "ready", str(r.get("name", "")).lower()),
+                key=lambda r: (
+                    str(r.get("status", "")) != "ready",
+                    -(int(str(r.get("updated_at", "")).replace("-", "").replace(":", "").replace(" ", "") or "0")),
+                    str(r.get("name", "")).lower(),
+                ),
             )
 
             for record in records:
