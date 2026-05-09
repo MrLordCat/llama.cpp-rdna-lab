@@ -290,6 +290,65 @@ if (Q->ne[1] * gqa_ratio_eff <= 4) return BEST_FATTN_KERNEL_TILE;
 - `build_logs/agent-workload/sprint7-tile4-5run-ub512-ngram.{csv,jsonl,server.log}`
 - `build_logs/agent-workload/sprint7-tile4-5run-ub512-ngram-r2.{csv,jsonl,server.log}`
 
+## UBatch=256 Optimization Discovery (2026-05-09)
+
+**Critical finding**: При систематическом тестировании разных ubatch размеров выявлено, что **ubatch=256 даёт значительное преимущество** на этом профиле и GPU.
+
+### Methodology
+
+Compared 5-run baseline warm-cache runs с одинаковыми параметрами:
+
+- `Qwen3.6-27B-Q3_K_S.gguf`
+- `-c 65536 -b 4096 -np 1 --flash-attn on`
+- `--cache-type-k q4_0 --cache-type-v q4_0`
+- `--spec-type ngram-mod --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-max 64`
+- `build-rocm-clean/bin/llama-server.exe` (master commit 8c7db71f1)
+
+| UBatch | Runs | Aggregate TPS | Mean task TPS | Median task TPS | Stdev |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `256` | `5` | **`35.45`** | `37.20` | `39.37` | `7.95` |
+| `256` (r2) | `5` | **`35.93`** | `37.76` | `37.67` | `8.40` |
+| `224` | `5` | `33.80` | `35.24` | `34.82` | `7.18` |
+| `512` | `5` | `31.05` | `32.08` | `27.84` | `6.23` |
+
+**Average ub=256**: `(35.45 + 35.93) / 2 = **35.69 TPS**` — **+14.7% vs ub=512 baseline**
+
+### Why ub=256?
+
+Гипотезы:
+
+1. **Memory hierarchy alignment**: ub=256 (32 KB uBatch state per thread block) может оптимально вписываться в GPU L1/L2 cache на gfx1201.
+2. **GDN chunking**: Адаптивный chunk_size=96 (from sprint5-adaptive-chunk) работает наилучше именно с ub=256 как базовой единицей.
+3. **FATTN kernel dispatch**: VEC/TILE/MMA crossover точки оптимальны для ub=256 при данной длине контекста.
+
+### Single-run cold-cache behavior
+
+Интересно, что на single-run (cold cache) нет заметного преимущества:
+
+| UBatch | Single-run TPS |
+| --- | ---: |
+| `256` | `27.00` |
+| `192` | `27.10` |
+| `224` | `25.88` |
+| `320` | `26.81` |
+| `384` | `26.97` |
+| `512` | `25.14` |
+| `768` | `19.84` |
+
+**Вывод**: Преимущество ub=256 проявляется только при **прогреве кэша** в серии запусков. Single-run benchmarks **не отражают реальной производительности** для этого профиля.
+
+### Artifacts
+
+- `build_logs/agent-workload/baseline-clean-5run-ub256.{csv,jsonl,server.log}`
+- `build_logs/agent-workload/baseline-clean-5run-ub256-r2.{csv,jsonl,server.log}`
+- `build_logs/agent-workload/baseline-clean-5run-ub512.{csv,jsonl,server.log}` (для сравнения)
+
+### Recommendation
+
+**Обновить все Qwen3.6-27B профили** в `gui/model_presets.json` с `ubatch: 512` → `ubatch: 256`.
+
+Цель: **Стабильно достичь 35+ TPS** на RX 9070 XT при агентной рабочей нагрузке.
+
 ## Baseline ROCm
 
 ```powershell
