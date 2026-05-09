@@ -32,7 +32,11 @@ class BuildVersionRegistry:
                 if isinstance(records, list):
                     self._records = [self._normalize_record(r) for r in records if isinstance(r, dict)]
             except Exception:
+                # Do not overwrite a potentially valid registry on transient read/parse errors.
                 self._records = []
+            return
+
+        # Initialize registry file on first run only.
         self._save()
 
     def _save(self) -> None:
@@ -192,6 +196,7 @@ class BuildVersionRegistry:
 
     def sync_with_existing_builds(self) -> int:
         imported = 0
+        changed = False
         source_ref = self._get_repo_short_ref()
 
         for item in sorted(self.project_root.iterdir()):
@@ -228,6 +233,7 @@ class BuildVersionRegistry:
                 )
             )
             imported += 1
+            changed = True
 
         # Refresh server binary/status for existing records.
         for record in self._records:
@@ -235,17 +241,24 @@ class BuildVersionRegistry:
             if not build_dir_text:
                 continue
             build_dir = Path(build_dir_text)
-            if build_dir.exists():
-                record["server_bin"] = self._find_server_bin(build_dir)
-                if record.get("status") == "archived":
-                    pass
-                else:
-                    record["status"] = "ready"
-            else:
-                record["status"] = "archived"
-            record["updated_at"] = self._now()
+            old_server_bin = str(record.get("server_bin", ""))
+            old_status = str(record.get("status", ""))
 
-        self._save()
+            if build_dir.exists():
+                new_server_bin = self._find_server_bin(build_dir)
+                new_status = "archived" if record.get("status") == "archived" else "ready"
+            else:
+                new_server_bin = ""
+                new_status = "archived"
+
+            if old_server_bin != new_server_bin or old_status != new_status:
+                record["server_bin"] = new_server_bin
+                record["status"] = new_status
+                record["updated_at"] = self._now()
+                changed = True
+
+        if changed:
+            self._save()
         return imported
 
     def update_benchmark_stats_from_history(self) -> int:

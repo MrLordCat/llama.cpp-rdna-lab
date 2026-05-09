@@ -16,6 +16,7 @@
         "min_p": "Min-P sampling (0.0-1.0, default 0.05)",
         "presence_penalty": "Presence penalty (-2.0 to 2.0, default 0.0)",
         "repeat_penalty": "Repetition penalty (0.0-3.0, default 1.0)",
+        "disable_thinking": "If true, GUI adds chat-template kwargs to disable thinking mode",
         "notes": "User-visible tips"
     },
     "presets": [
@@ -48,6 +49,7 @@
             "min_p": 0.0,
             "presence_penalty": 0.0,
             "repeat_penalty": 1.0,
+            "disable_thinking": false,
             "extra_args": "--spec-type ngram-mod\n--spec-ngram-mod-n-min 48\n--spec-ngram-mod-n-match 24\n--spec-ngram-mod-n-max 64",
             "notes": "2026-05-09: ubatch=256 warmcache baseline 5-run → 35.45-35.93 TPS (avg 35.69 TPS). ubatch tuning: ub=256 > ub=224 (33.8 TPS) > ub=512 (31.05 TPS). Cold-cache single-run does NOT correlate with warm-cache 5-run performance. NOTE: warm-cache methodology essential. q4_0 KV is optimal."
         },
