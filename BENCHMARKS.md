@@ -49,11 +49,34 @@ python scripts\agent_workload_bench.py --background-server-policy fail
 python scripts\agent_workload_bench.py `
   --background-server-policy fail `
   --server-seed 42 `
+  --no-disable-thinking `
   --stats-ignore-first-run
 ```
 
 - `--server-seed 42` фиксирует seed на стороне `llama-server` и уменьшает run-to-run случайность sampling path;
+- `--no-disable-thinking` принудительно оставляет thinking включённым (обязательный режим для performance benchmark в этом форке);
 - `--stats-ignore-first-run` печатает отдельные warm-only метрики (без run #1), чтобы не смешивать cold старт и рабочую фазу.
+
+### Batch 4096 / UBatch 512 with stabilized method (2026-05-09)
+
+Новый контрольный 5-run с фиксированным seed, thinking ON и warm-only статистикой:
+
+- `build-rocm-wmma/bin/llama-server.exe`
+- `Qwen3.6-27B-Q3_K_S.gguf`
+- `-c 65536 -b 4096 -ub 512 -np 1 --flash-attn on`
+- `--cache-type-k q4_0 --cache-type-v q4_0`
+- `--spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64`
+- `--server-seed 42 --no-disable-thinking --stats-ignore-first-run`
+
+Результат (`sprint14-b512-newmethod-thinkon-5run`):
+
+- Aggregate completion TPS: `37.57`
+- Mean task TPS: `38.90`
+- Task TPS stdev: `6.5194`
+- Warm-only aggregate TPS: `41.61`
+- Warm-only task TPS stdev: `3.0439`
+
+Итог: цель `>=35 TPS` для `b=4096/ub=512` подтверждена на обновлённой методике, при этом warm-only дисперсия существенно ниже.
 
 ## Large Context Autotune (32K+)
 
