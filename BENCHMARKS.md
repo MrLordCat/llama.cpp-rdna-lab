@@ -43,6 +43,18 @@ python scripts\agent_workload_bench.py --background-server-policy fail
 
 Если процесс уже занят, runner завершится с ошибкой и покажет PID.
 
+Для снижения методологического шума и анализа cold-vs-warm поведения:
+
+```powershell
+python scripts\agent_workload_bench.py `
+  --background-server-policy fail `
+  --server-seed 42 `
+  --stats-ignore-first-run
+```
+
+- `--server-seed 42` фиксирует seed на стороне `llama-server` и уменьшает run-to-run случайность sampling path;
+- `--stats-ignore-first-run` печатает отдельные warm-only метрики (без run #1), чтобы не смешивать cold старт и рабочую фазу.
+
 ## Large Context Autotune (32K+)
 
 Новый режим автоподбора параметров для длинного контекста:

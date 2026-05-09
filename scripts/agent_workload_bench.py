@@ -298,6 +298,8 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
         "--cache-type-k", args.cache_type_k,
         "--cache-type-v", args.cache_type_v,
     ]
+    if args.server_seed is not None:
+        cmd.extend(["--seed", str(args.server_seed)])
     if args.no_warmup:
         cmd.append("--no-warmup")
     if args.disable_thinking and "--chat-template-kwargs" not in args.server_extra:
@@ -378,7 +380,13 @@ def run_task(base_url: str, task: dict[str, str], args: argparse.Namespace) -> d
     }
 
 
-def write_results(rows: list[dict[str, Any]], out_dir: Path, label: str, artifact_mode: str) -> dict[str, str]:
+def write_results(
+    rows: list[dict[str, Any]],
+    out_dir: Path,
+    label: str,
+    artifact_mode: str,
+    stats_ignore_first_run: bool = False,
+) -> dict[str, str]:
     out_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = out_dir / f"{label}.jsonl"
     csv_path = out_dir / f"{label}.csv"
@@ -419,6 +427,22 @@ def write_results(rows: list[dict[str, Any]], out_dir: Path, label: str, artifac
         print(f"Median task TPS: {statistics.median(tps_values):.2f}")
         if len(tps_values) > 1:
             print(f"Task TPS stdev: {statistics.pstdev(tps_values):.4f}")
+
+    if stats_ignore_first_run:
+        warm_rows = [row for row in rows if int(row.get("run") or 0) > 1]
+        if warm_rows:
+            warm_completion = sum(row.get("completion_tokens") or 0 for row in warm_rows)
+            warm_wall = sum(row.get("wall_s") or 0.0 for row in warm_rows)
+            warm_tps_values = [float(row["completion_tps_wall"]) for row in warm_rows if row.get("completion_tps_wall") is not None]
+
+            print("Warm-only stats (excluding run #1):")
+            if warm_wall > 0 and warm_completion > 0:
+                print(f"Warm-only aggregate completion TPS: {warm_completion / warm_wall:.2f}")
+            if warm_tps_values:
+                print(f"Warm-only mean task TPS: {statistics.mean(warm_tps_values):.2f}")
+                print(f"Warm-only median task TPS: {statistics.median(warm_tps_values):.2f}")
+                if len(warm_tps_values) > 1:
+                    print(f"Warm-only task TPS stdev: {statistics.pstdev(warm_tps_values):.4f}")
     return artifacts
 
 
@@ -896,6 +920,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-p", type=float, default=0.9)
     parser.add_argument("--startup-timeout", type=float, default=300.0)
     parser.add_argument("--request-timeout", type=float, default=240.0)
+    parser.add_argument("--server-seed", type=int, default=42,
+                        help="llama-server seed for deterministic decoding; set to -1 to disable fixed seed")
+    parser.add_argument("--stats-ignore-first-run", action=argparse.BooleanOptionalAction, default=False,
+                        help="print additional warm-only metrics that exclude run #1 (cold/probing phase)")
     parser.add_argument("--keep-server", action="store_true", help="do not stop server started by this script")
     parser.add_argument(
         "--background-server-policy",
@@ -984,6 +1012,8 @@ def run_suite(args: argparse.Namespace, tasks: list[dict[str, str]]) -> list[dic
 
 def main() -> int:
     args = parse_args()
+    if args.server_seed is not None and args.server_seed < 0:
+        args.server_seed = None
     out_dir = Path(args.out_dir)
     build_meta = resolve_build_metadata(args.build_id, args.server_bin)
     args.build_id = build_meta["build_id"]
@@ -1006,7 +1036,13 @@ def main() -> int:
             print(f"ERROR: {exc}")
             print("Stop background server(s) or rerun with --background-server-policy warn/ignore")
             return 3
-        artifacts = write_results(rows, out_dir, args.label, args.artifact_mode)
+        artifacts = write_results(
+            rows,
+            out_dir,
+            args.label,
+            args.artifact_mode,
+            stats_ignore_first_run=args.stats_ignore_first_run,
+        )
         aggregate_tps = aggregate_completion_tps(rows)
         tps_values = [float(r["completion_tps_wall"]) for r in rows if r.get("completion_tps_wall") is not None]
         model_path = str(Path(args.model) if args.model else default_model() or "")
@@ -1128,7 +1164,13 @@ def main() -> int:
                             return 3
 
                         executed += 1
-                        write_results(rows, out_dir, run_args.label, args.artifact_mode)
+                        write_results(
+                            rows,
+                            out_dir,
+                            run_args.label,
+                            args.artifact_mode,
+                            stats_ignore_first_run=args.stats_ignore_first_run,
+                        )
                         agg_tps = aggregate_completion_tps(rows)
                         has_error = any(row.get("error") for row in rows)
                         summary = {
