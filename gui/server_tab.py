@@ -723,20 +723,32 @@ class ServerTabWidget(QWidget):
         if kv_type and kv_type != "f16":
             command.extend(["--cache-type-k", kv_type, "--cache-type-v", kv_type])
 
+        extra_args = self.server_extra_args.toPlainText().strip()
+        extra_tokens = []
+        if extra_args:
+            try:
+                extra_tokens = shlex.split(extra_args, posix=(os.name != "nt"))
+            except ValueError:
+                extra_tokens = extra_args.split()
+
+        # Avoid duplicate speculative flags when preset already supplies them via Extra Arguments.
+        has_spec_in_extra = any(tok.startswith("--spec-") or tok == "--spec-type" for tok in extra_tokens)
+
         spec_type = self.server_spec_type_combo.currentText().strip().lower()
-        if spec_type == "mtp":
-            command.extend(["--spec-type", "mtp", "--spec-draft-n-max", str(self.server_spec_draft_n_max.value())])
-            # MTP currently requires single parallel sequence in llama-server.
-            if self.server_parallel_spinbox.value() != 1:
-                self.server_log.append("[INFO] MTP requires --parallel 1, overriding selected value")
-                command.extend(["--parallel", "1"])
-        elif spec_type == "ngram-mod":
-            command.extend([
-                "--spec-type", "ngram-mod",
-                "--spec-ngram-mod-n-match", str(self.server_ngram_match.value()),
-                "--spec-ngram-mod-n-min", str(self.server_ngram_min.value()),
-                "--spec-ngram-mod-n-max", str(self.server_ngram_max.value()),
-            ])
+        if not has_spec_in_extra:
+            if spec_type == "mtp":
+                command.extend(["--spec-type", "mtp", "--spec-draft-n-max", str(self.server_spec_draft_n_max.value())])
+                # MTP currently requires single parallel sequence in llama-server.
+                if self.server_parallel_spinbox.value() != 1:
+                    self.server_log.append("[INFO] MTP requires --parallel 1, overriding selected value")
+                    command.extend(["--parallel", "1"])
+            elif spec_type == "ngram-mod":
+                command.extend([
+                    "--spec-type", "ngram-mod",
+                    "--spec-ngram-mod-n-match", str(self.server_ngram_match.value()),
+                    "--spec-ngram-mod-n-min", str(self.server_ngram_min.value()),
+                    "--spec-ngram-mod-n-max", str(self.server_ngram_max.value()),
+                ])
 
         if self.server_flash_attn_check.isChecked():
             command.extend(["--flash-attn", "on"])
@@ -753,12 +765,8 @@ class ServerTabWidget(QWidget):
         if not self.server_auto_fit_check.isChecked():
             command.extend(["-fit", "off"])
 
-        extra_args = self.server_extra_args.toPlainText().strip()
-        if extra_args:
-            try:
-                command.extend(shlex.split(extra_args, posix=(os.name != "nt")))
-            except ValueError:
-                command.extend(extra_args.split())
+        if extra_tokens:
+            command.extend(extra_tokens)
 
         api_key = self.server_api_key_input.text().strip()
         if api_key:
