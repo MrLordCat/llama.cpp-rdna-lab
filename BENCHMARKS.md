@@ -557,3 +557,61 @@ python scripts\agent_workload_bench.py `
 Для нашего workflow важен не только TG. Если MTP ускоряет generation, но сильно режет prompt processing, агентная задача может стать медленнее.
 
 Смежный roadmap по следующим аппаратно-ориентированным оптимизациям вынесен в `ROCM_ACCELERATION_PLAN.md`.
+
+---
+
+## Методика V2 — Реалистичный Agentic-Flow Benchmark (2026-05-09)
+
+### Мотивация
+
+Задачи `TASKS_QUICK/FULL` (v1) специально коротки (`max_tokens=160`, "keep it brief"), что создаёт искусственно высокий TPS (многократные короткие burst генерации с частым ngram accept). Реальный агентный флоу — длинные ответы (400–600 токенов), разнообразные промпты с низким ngram acceptance. Поэтому v1 и ручной чат показывают разные числа.
+
+### V2 Task Set (`--tasks v2`)
+
+| ID | Название | Целевая длина ответа |
+|----|----------|---------------------|
+| `v2_code_review` | Полный code review модуля build_manager | ~400–500 токенов |
+| `v2_write_function` | Написать класс BuildRegistry | ~450–550 токенов |
+| `v2_debug_trace` | Диагностика crash-лога ROCm сервера | ~350–450 токенов |
+| `v2_refactor_plan` | План рефакторинга монолитного GUI | ~400–500 токенов |
+| `v2_perf_analysis` | Анализ performance bottleneck | ~400–500 токенов |
+
+### Ключевые отличия от V1
+
+| Параметр | V1 (quick) | V2 |
+|----------|------------|-----|
+| `--max-tokens` | 160 | 500 (автоматически) |
+| Формулировка задач | "keep it brief / under 140 words" | Развёрнутые, без ограничений длины |
+| `--history-version` | v1 → `BENCH_HISTORY.csv` | v2 → `BENCH_HISTORY_V2.csv` |
+| Соответствие реальному чату | Оптимистичная оценка | Репрезентативная оценка |
+
+### Команда V2 Baseline
+
+```powershell
+python scripts\agent_workload_bench.py `
+  --label v2-baseline-rocm-ub512 `
+  --tasks v2 `
+  --runs 3 `
+  --server-seed 42 `
+  --no-disable-thinking `
+  --stats-ignore-first-run `
+  --server-bin build-rocm-vec\bin\llama-server.exe `
+  --model models\Qwen3.6-27B-Q3_K_S.gguf `
+  --ctx-size 65536 `
+  --batch-size 4096 `
+  --ubatch-size 512 `
+  --cache-type-k q4_0 `
+  --cache-type-v q4_0 `
+  --flash-attn `
+  --server-extra "--spec-type ngram-mod --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64 --spec-ngram-mod-n-match 24"
+```
+
+История результатов хранится отдельно: `build_logs/agent-workload/BENCH_HISTORY_V2.csv` и `BENCH_HISTORY_V2.md`.
+
+### V2 Baseline Results
+
+| Label | Build | Runs | Aggregate TPS | Mean TPS | Median TPS | Stdev | Warm-only TPS | Warm stdev | max_tokens |
+|-------|-------|------|--------------|----------|------------|-------|--------------|------------|------------|
+| v2-baseline-rocm-ub512 | build-rocm-vec | 3×5 | 27.77 | 27.78 | 27.97 | 0.47 | 28.07 | 0.19 | 500 |
+
+**Вывод:** v2 baseline = **~28 TPS** при 500-токенных ответах — это точно совпадает с тем, что наблюдается в ручном чате (28–30 TPS). Очень низкий stdev (0.47) показывает, что при длинных ответах генерация устойчива. V1 (~33-37 TPS) был оптимистичен из-за многократных коротких burst (160 токенов).

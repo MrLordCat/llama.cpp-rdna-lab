@@ -159,6 +159,183 @@ Task: say which is safer for baseline measurement and why. Keep it brief.""",
     },
 ]
 
+# ---------------------------------------------------------------------------
+# V2 task set — more realistic agentic-flow prompts.
+# Designed to produce longer, varied responses (target ~300-600 output tokens)
+# so benchmark TPS is comparable to real assistant usage rather than
+# micro-bursts of <=160 tokens.
+# ---------------------------------------------------------------------------
+TASKS_V2 = [
+    {
+        "id": "v2_code_review",
+        "title": "Full code review of a build manager module",
+        "prompt": """You are a senior engineer reviewing a pull request for a PyQt6 GUI application that manages
+CMake builds of llama.cpp on Windows with ROCm/CUDA/Vulkan backends.
+
+Here is a simplified extract from build_manager.py:
+
+```python
+class BuildManager(QObject):
+    build_started = pyqtSignal(str)
+    build_finished = pyqtSignal(int, str)
+    build_log = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.process = None
+        self.build_dir = None
+
+    def start_build(self, backend, extra_cmake_args=None):
+        if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
+            self.build_log.emit("Build already running")
+            return
+        self.build_dir = Path("build-" + backend.lower())
+        cmake_args = [
+            "cmake", "-B", str(self.build_dir),
+            "-G", "Ninja",
+            "-DCMAKE_BUILD_TYPE=Release",
+        ]
+        if extra_cmake_args:
+            cmake_args.extend(extra_cmake_args)
+        self.process = QProcess(self)
+        self.process.readyReadStandardOutput.connect(self._on_stdout)
+        self.process.finished.connect(self._on_finished)
+        self.process.start(cmake_args[0], cmake_args[1:])
+        self.build_started.emit(backend)
+
+    def _on_stdout(self):
+        data = self.process.readAllStandardOutput().data().decode("utf-8", errors="replace")
+        self.build_log.emit(data)
+
+    def _on_finished(self, exit_code, _exit_status):
+        self.build_finished.emit(exit_code, str(self.build_dir))
+
+    def cancel(self):
+        if self.process:
+            self.process.kill()
+```
+
+Review this code. Cover:
+1. Correctness issues (race conditions, missing error handling, resource leaks)
+2. Windows-specific concerns for ROCm builds (paths, process environment, Ninja availability)
+3. Qt signal/slot lifecycle pitfalls
+4. At least two concrete improvement suggestions with code examples
+
+Be thorough but focused.""",
+    },
+    {
+        "id": "v2_write_function",
+        "title": "Write a build version registry helper",
+        "prompt": """You are implementing a build registry for a PyQt6 GUI that tracks multiple llama.cpp builds
+(ROCm, CUDA, Vulkan, CPU). The registry is stored in a JSON file: build_versions.json.
+
+Each entry looks like:
+{
+  "id": "bld-20260508-abc123",
+  "label": "ROCm gfx1201",
+  "backend": "rocm",
+  "bin_dir": "C:/repos/llama.cpp-with-GUI/build-rocm/bin",
+  "created_at": "2026-05-08T11:38:03",
+  "updated_at": "2026-05-08T11:38:03",
+  "runnable": true,
+  "notes": ""
+}
+
+Write a Python class `BuildRegistry` with these methods:
+- `__init__(registry_path: Path)` — loads JSON from disk, validates, handles missing file
+- `all_builds() -> list[dict]` — returns all entries sorted newest-first by updated_at
+- `runnable_builds(backend: str | None = None) -> list[dict]` — only entries where runnable=True, optionally filtered by backend
+- `register(entry: dict) -> str` — upserts by id (generates one if missing), saves, returns id
+- `mark_runnable(build_id: str, runnable: bool) -> None` — updates flag and updated_at, saves
+- `_save()` — atomic write (write to temp, rename) so partial writes don't corrupt registry
+
+Include type hints and basic docstrings. Handle edge cases: corrupt JSON, missing keys, concurrent read/write on Windows.""",
+    },
+    {
+        "id": "v2_debug_trace",
+        "title": "Diagnose ROCm server crash from log",
+        "prompt": """Analyze this llama-server crash log from a Windows ROCm build targeting gfx1201 (RX 9070 XT).
+Identify the root cause and propose a fix or workaround:
+
+```
+[2026-05-08 14:21:03] INFO: llama_new_context_with_model: n_ctx = 65536
+[2026-05-08 14:21:03] INFO: llama_new_context_with_model: flash_attn = 1
+[2026-05-08 14:21:03] INFO: ggml_cuda_init: GGML_CUDA_FORCE_MMQ = 0
+[2026-05-08 14:21:03] INFO: ggml_cuda_init: GGML_CUDA_FORCE_CUBLAS = 0
+[2026-05-08 14:21:03] INFO: ggml_cuda_init: found 1 ROCm device(s):
+[2026-05-08 14:21:03] INFO:   Device 0: AMD Radeon RX 9070 XT, compute capability 12.0, VMM: no
+[2026-05-08 14:21:03] INFO: llama_kv_cache_unified_init: kv_size = 3600, type_k = q4_0, type_v = q4_0
+[2026-05-08 14:21:04] ERROR: HIP error: out of memory at ggml-cuda.cu:1847
+[2026-05-08 14:21:04] FATAL: ggml_cuda_op_mul_mat: src1->extra == NULL
+Aborted (core dumped)
+
+Build flags: GGML_HIP=ON AMDGPU_TARGETS=gfx1201 GGML_HIP_NO_VMM=ON
+Model: Qwen3.6-27B-Q3_K_S.gguf (~18 GB)
+GPU VRAM: 16 GB
+Server args: --n-gpu-layers 999 --flash-attn --ctx-size 65536 --cache-type-k q4_0 --cache-type-v q4_0 -np 1
+```
+
+Provide:
+1. Root cause analysis (what ran out, why)
+2. Quick fix: minimal server arg changes to fit within 16 GB
+3. Formula or estimation to calculate safe ctx-size for this model/VRAM
+4. Long-term suggestion for the GUI (auto-detect safe context)""",
+    },
+    {
+        "id": "v2_refactor_plan",
+        "title": "Refactor plan for monolithic GUI file",
+        "prompt": """A PyQt6 GUI application lives in a single 2150-line file `gui/llama_gui.py` with 6 tabs:
+Launch Server, Inference, Download Models, Build & Setup, Installed Builds, System Info.
+
+The team wants to modularize it. Current structure:
+- LlamaCppGUI(QMainWindow) — all 6 tabs inline as methods
+- ServerThread(QThread), InferenceThread(QThread), UpdateForkThread(QThread) — nested inside main module
+- QSettings persistence scattered across 40+ methods
+- ~300 lines of build detection logic duplicated between Build tab and Launch tab
+
+The modularization must:
+1. Keep backward compatibility with existing QSettings keys (no user setting loss)
+2. Not break ROCm build detection on Windows (path parsing is Windows-specific)
+3. Allow incremental migration (can't rewrite everything at once)
+4. Make it easy to write unit tests for server command generation
+
+Provide a concrete refactoring plan:
+- Target file/class structure (show the module tree)
+- Migration order (which tabs/classes to extract first and why)
+- How to handle QSettings backward compat
+- One example of how ServerThread should be decoupled from the main window
+- Risk areas to be careful about""",
+    },
+    {
+        "id": "v2_perf_analysis",
+        "title": "Analyze inference performance bottleneck",
+        "prompt": """You are analyzing performance of a Qwen3.6-27B model running on AMD Radeon RX 9070 XT (gfx1201, 16 GB VRAM)
+via llama.cpp ROCm build. The model is Q3_K_S quantized (~18 GB file, ~12 GB loaded).
+
+Benchmark results across configs (all with flash-attn, ctx=65536, q4_0 KV cache, seed=42):
+
+| ubatch | spec       | runs | agg TPS | mean TPS | stdev |
+|--------|------------|------|---------|----------|-------|
+| 128    | none       | 5    | 22.1    | 21.8     | 1.2   |
+| 256    | none       | 5    | 26.3    | 26.1     | 1.8   |
+| 512    | none       | 5    | 28.5    | 28.0     | 3.4   |
+| 512    | ngram-mod  | 5    | 33.8    | 33.2     | 4.1   |
+| 512    | ngram-mod  | 1    | 37.6    | 37.6     | 0.0   |
+| 1024   | ngram-mod  | 5    | 23.6    | 23.1     | 2.9   |
+
+Observations from profiling:
+- ubatch=512 has FATTN switching between VEC and TILE kernels depending on sequence length
+- ngram acceptance rate varies 0.08–0.45 per request depending on prompt pattern
+- stdev increases with ubatch, especially with spec active
+
+Analyze:
+1. Why does ubatch=512 single-run show 37.6 TPS but 5-run average drops to 33.8?
+2. What causes the sharp performance cliff at ubatch=1024?
+3. Why does speculative decoding help more with some prompts than others, and what does 0.08 acceptance rate mean for throughput?
+4. What would you investigate next to push stable 5-run average above 35 TPS?""",
+    },
+]
+
 
 def default_server_bin() -> Path | None:
     candidates = [
@@ -718,10 +895,15 @@ def write_history_md(history_md: Path, rows: list[dict[str, str]]) -> None:
     history_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def append_history_entry(entry: dict[str, Any], out_dir: Path) -> None:
+def append_history_entry(
+    entry: dict[str, Any],
+    out_dir: Path,
+    history_csv_name: str = HISTORY_CSV_NAME,
+    history_md_name: str = HISTORY_MD_NAME,
+) -> None:
     history_dir = out_dir
-    history_csv = history_dir / HISTORY_CSV_NAME
-    history_md = history_dir / HISTORY_MD_NAME
+    history_csv = history_dir / history_csv_name
+    history_md = history_dir / history_md_name
 
     rows: list[dict[str, str]] = []
     if history_csv.exists():
@@ -766,14 +948,14 @@ def append_history_entry(entry: dict[str, Any], out_dir: Path) -> None:
     print(f"Wrote {history_md}")
 
 
-def cleanup_legacy_artifacts(out_dir: Path, apply: bool, keep_pattern_expr: str) -> tuple[int, list[str]]:
+def cleanup_legacy_artifacts(
+    out_dir: Path,
+    apply: bool,
+    keep_pattern_expr: str,
+    protected_names: set[str],
+) -> tuple[int, list[str]]:
     """Delete legacy per-run benchmark artifacts while preserving unified history and protected files."""
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    protected_names = {
-        HISTORY_CSV_NAME,
-        HISTORY_MD_NAME,
-    }
     candidates: list[Path] = []
     for path in sorted(out_dir.iterdir()):
         if not path.is_file():
@@ -875,12 +1057,26 @@ def update_model_preset_file(
     print(f"Updated preset: {name} in {preset_file}")
 
 
+def resolve_history_names(version: str) -> tuple[str, str]:
+    ver = (version or "").strip().lower()
+    if ver in ("", "v1", "1", "legacy"):
+        return HISTORY_CSV_NAME, HISTORY_MD_NAME
+
+    safe = re.sub(r"[^a-z0-9_\-]", "_", ver, flags=re.IGNORECASE).strip("_")
+    if not safe:
+        return HISTORY_CSV_NAME, HISTORY_MD_NAME
+
+    suffix = safe.upper()
+    return f"BENCH_HISTORY_{suffix}.csv", f"BENCH_HISTORY_{suffix}.md"
+
+
 def parse_args() -> argparse.Namespace:
     timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     parser = argparse.ArgumentParser(description="Short coding-agent benchmark for llama-server")
     parser.add_argument("--label", default=f"rocm-baseline-{timestamp}", help="result file label")
     parser.add_argument("--out-dir", default=str(ROOT / "build_logs" / "agent-workload"), help="output directory")
-    parser.add_argument("--tasks", choices=["quick", "full"], default="quick", help="prompt set")
+    parser.add_argument("--tasks", choices=["quick", "full", "v2"], default="quick",
+                        help="prompt set: quick (v1 short tasks), full (v1 extended), v2 (realistic agentic-flow tasks)")
     parser.add_argument("--runs", type=int, default=1, help="repeat each task N times")
 
     parser.add_argument("--no-start", action="store_true", help="use an already running server")
@@ -893,6 +1089,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--build-id", default="", help="build registry ID linked to this benchmark run")
     parser.add_argument("--artifact-mode", choices=["full", "unified"], default="full",
                         help="artifact mode: full writes per-run CSV/JSONL, unified writes only history")
+    parser.add_argument("--history-version", default="v1",
+                        help="history namespace/version, e.g. v1 (default), v2 -> BENCH_HISTORY_V2.csv/.md")
     parser.add_argument("--cleanup-legacy-artifacts", action="store_true",
                         help="cleanup old per-run benchmark artifacts in out-dir")
     parser.add_argument("--cleanup-apply", action="store_true",
@@ -1015,11 +1213,18 @@ def main() -> int:
     if args.server_seed is not None and args.server_seed < 0:
         args.server_seed = None
     out_dir = Path(args.out_dir)
+    history_csv_name, history_md_name = resolve_history_names(args.history_version)
     build_meta = resolve_build_metadata(args.build_id, args.server_bin)
     args.build_id = build_meta["build_id"]
 
     if args.cleanup_legacy_artifacts:
-        count, items = cleanup_legacy_artifacts(out_dir, apply=args.cleanup_apply, keep_pattern_expr=args.cleanup_keep_patterns)
+        protected_history = {HISTORY_CSV_NAME, HISTORY_MD_NAME, history_csv_name, history_md_name}
+        count, items = cleanup_legacy_artifacts(
+            out_dir,
+            apply=args.cleanup_apply,
+            keep_pattern_expr=args.cleanup_keep_patterns,
+            protected_names=protected_history,
+        )
         mode = "APPLY" if args.cleanup_apply else "DRY-RUN"
         print(f"Legacy artifact cleanup ({mode}): {count} file(s)")
         for name in items[:200]:
@@ -1028,7 +1233,19 @@ def main() -> int:
             print(f"  ... and {count - 200} more")
         return 0
 
-    tasks = TASKS_QUICK if args.tasks == "quick" else TASKS_FULL
+    if args.tasks == "v2":
+        tasks = TASKS_V2
+        # v2 tasks produce longer responses; bump max_tokens unless user set it explicitly
+        if args.max_tokens == 160:
+            args.max_tokens = 500
+        # auto-select v2 history unless caller overrode to something other than v1
+        if args.history_version in ("v1", "1", "legacy", ""):
+            args.history_version = "v2"
+            history_csv_name, history_md_name = resolve_history_names(args.history_version)
+    elif args.tasks == "full":
+        tasks = TASKS_FULL
+    else:
+        tasks = TASKS_QUICK
     if not args.autotune:
         try:
             rows = run_suite(args, tasks)
@@ -1081,6 +1298,8 @@ def main() -> int:
                 "server_log_file": f"{args.label}.server.log",
             },
             out_dir,
+            history_csv_name=history_csv_name,
+            history_md_name=history_md_name,
         )
         return 0 if not any(row["error"] for row in rows) else 2
 
@@ -1301,6 +1520,8 @@ def main() -> int:
             "server_log_file": "",
         },
         out_dir,
+        history_csv_name=history_csv_name,
+        history_md_name=history_md_name,
     )
 
     if best:
