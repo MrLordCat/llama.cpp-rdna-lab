@@ -13,6 +13,12 @@
 - `ngram-mod` поддерживается текущим `llama-server` и уже даёт прирост на Qwen3.6.
 - MTP core/runtime уже присутствует в дереве, но локальный MTP benchmark ещё не завершён из-за отсутствия проверенного MTP-enabled GGUF.
 
+Дополнение 2026-05-10:
+
+- long-context 128k и 64k больше не считаются активной performance целью;
+- новый prompt-heavy benchmark показал, что bottleneck проявляется уже ниже `16k`;
+- активная фаза: поднять стартовую точку (`ctx=12288` reference) до `25-27 TPS`.
+
 ## Measured Baseline On Current Build
 
 Текущий build commit: `5facfaea9`.
@@ -24,7 +30,22 @@
 
 Практический вывод: для coding-agent сценариев `ngram-mod` уже стоит считать рабочим ускорением, а не только экспериментом.
 
-## Priority 1: Finish MTP Validation
+## Priority 1: Improve Start-Point (<16K) Prompt-Heavy Performance
+
+Цель: поднимать wall throughput на стартовой prompt-heavy точке (`ctx=12288` reference) для `Qwen3.6-27B-Q3_K_S` до `25-27 TPS`.
+
+Критерий пользы:
+
+- улучшение видно на prompt-heavy benchmark с большим входящим контекстом и no-reuse режиме;
+- идея не опирается на synthetic short tasks как основной источник правды.
+
+Быстрый screening уже показал, что server-level тюнинг недостаточен:
+
+- стартовый prompt-heavy lane ниже 16k уже падает с ростом ctx (`~9.24 TPS` на 12k, `~6.87` на 16k, `~4.20` на 24k, `~2.89` на 32k).
+
+Практический смысл: следующий этап должен идти в кодовую базу llama.cpp/ggml (prefill runtime path / kernel behavior), а не в новый перебор server flags.
+
+## Priority 2: Finish MTP Validation
 
 Цель: понять, даёт ли `--spec-type mtp --spec-draft-n-max 3` выигрыш именно на этой машине для text-only Qwen3.6 workloads.
 
@@ -42,7 +63,7 @@
 - measurable gain по aggregate completion TPS или total wall time;
 - приемлемый PP regression.
 
-## Priority 2: Promote ngram-mod To First-Class GUI Feature
+## Priority 3: Promote ngram-mod To First-Class GUI Feature
 
 Это уже не исследование, а продуктовая интеграция.
 
@@ -59,7 +80,7 @@
 - это снижает порог использования ускорения;
 - это не требует MTP GGUF и не зависит от мультимодальности.
 
-## Priority 3: Add GUI Benchmark Mode
+## Priority 4: Add GUI Benchmark Mode
 
 Основная вкладка запуска уже перегружена, поэтому benchmark mode лучше не впихивать в тот же form-block.
 
@@ -83,7 +104,7 @@
 - пользователь из GUI запускает бенч без ручного терминала;
 - можно сравнить `baseline vs ngram-mod vs mtp` в одном месте.
 
-## Priority 4: KV Cache Strategy Matrix
+## Priority 5: KV Cache Strategy Matrix
 
 На 16 GB VRAM стоит оформить не один default, а несколько режимов.
 

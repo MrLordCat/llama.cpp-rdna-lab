@@ -36,7 +36,7 @@
         {
             "pattern": "Qwen3\\.6\\-27B\\-Q3_K_S\\.gguf",
             "name": "AutoTune Speed Qwen3.6-27B-Q3_K_S.gguf",
-            "ctx": 65536,
+            "ctx": 131072,
             "batch_size": 4096,
             "ubatch_size": 512,
             "gpu_layers": 999,
@@ -51,7 +51,7 @@
             "repeat_penalty": 1.0,
             "disable_thinking": false,
             "extra_args": "--spec-type ngram-mod\n--spec-ngram-mod-n-min 48\n--spec-ngram-mod-n-match 24\n--spec-ngram-mod-n-max 64",
-            "notes": "2026-05-09 current iteration for GUI validation: b4096/ub512 with ngram-mod and thinking ON. Stabilized benchmark method reached 37.57 aggregate TPS (warm-only aggregate 41.61 TPS, warm-only stdev 3.0439) on build-rocm-wmma."
+            "notes": "2026-05-10 long-context GUI preset for 120k+ targets: b4096/ub512, q4_0 KV, spec=ngram-mod, thinking ON. Realctx 128k benchmark reached 31.90/32.68 TPS aggregate on build-rocm-exp."
         },
         {
             "pattern": "Qwen3\\.5\\-9B\\-Q6_K\\.gguf",

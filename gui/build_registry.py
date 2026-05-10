@@ -53,6 +53,10 @@ class BuildVersionRegistry:
         return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     @staticmethod
+    def _timestamp_from_mtime(timestamp: float) -> str:
+        return dt.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
     def _make_id(build_dir: Path) -> str:
         stamp = dt.datetime.now().strftime("%Y%m%d%H%M%S")
         digest = hashlib.sha1(str(build_dir).encode("utf-8", errors="replace")).hexdigest()[:8]
@@ -142,6 +146,38 @@ class BuildVersionRegistry:
 
     def list_builds(self) -> list[dict[str, Any]]:
         return list(self._records)
+
+    def get_effective_build_timestamp(self, record: dict[str, Any]) -> str:
+        server_bin_text = str(record.get("server_bin", "")).strip()
+        if server_bin_text:
+            server_bin = Path(server_bin_text)
+            if server_bin.exists():
+                try:
+                    return self._timestamp_from_mtime(server_bin.stat().st_mtime)
+                except OSError:
+                    pass
+
+        build_dir_text = str(record.get("build_dir", "")).strip()
+        if build_dir_text:
+            build_dir = Path(build_dir_text)
+            if build_dir.exists():
+                candidate = self._find_server_bin(build_dir)
+                if candidate:
+                    candidate_path = Path(candidate)
+                    if candidate_path.exists():
+                        try:
+                            return self._timestamp_from_mtime(candidate_path.stat().st_mtime)
+                        except OSError:
+                            pass
+
+                cache = build_dir / "CMakeCache.txt"
+                if cache.exists():
+                    try:
+                        return self._timestamp_from_mtime(cache.stat().st_mtime)
+                    except OSError:
+                        pass
+
+        return str(record.get("created_at", "")).strip() or str(record.get("updated_at", "")).strip()
 
     def detect_build_id_from_server_bin(self, server_bin: str) -> str:
         server_bin_path = Path(server_bin).resolve()
@@ -312,7 +348,6 @@ class BuildVersionRegistry:
                 record["bench_best_non_mtp_tps"] = new_non
                 record["bench_best_mtp_tps"] = new_mtp
                 record["bench_last_run_at"] = last_ts
-                record["updated_at"] = self._now()
                 updated += 1
 
         if updated:

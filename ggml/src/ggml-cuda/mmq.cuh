@@ -271,8 +271,11 @@ static constexpr __host__ __device__ int mmq_get_mma_tile_x_k(ggml_type type) {
 #define MMQ_TILE_Y_FP4_K MMQ_TILE_Y_K
 
 static int mmq_get_granularity_host(const int mmq_x, const int cc) {
-    if (amd_mfma_available(cc) || amd_wmma_available(cc)) {
+    if (amd_mfma_available(cc)) {
         return mmq_x >= 128 ? 32 : 16;
+    } else if (amd_wmma_available(cc)) {
+        // On RDNA4 the coarser 32-row path tends to add register pressure on Q3_K-heavy decode.
+        return GGML_CUDA_CC_IS_RDNA4(cc) ? 16 : (mmq_x >= 128 ? 32 : 16);
     } else if (turing_mma_available(cc) && mmq_x >= 48) {
         return 16;
     } else {
@@ -282,7 +285,12 @@ static int mmq_get_granularity_host(const int mmq_x, const int cc) {
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
 static constexpr __device__ int mmq_get_granularity_device(const int mmq_x) {
+#if defined(RDNA4)
+    GGML_UNUSED(mmq_x);
+    return 16;
+#else
     return mmq_x >= 128 ? 32 : 16;
+#endif
 }
 #elif defined(TURING_MMA_AVAILABLE)
 static constexpr __device__ int mmq_get_granularity_device(const int mmq_x) {

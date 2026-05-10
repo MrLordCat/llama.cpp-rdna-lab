@@ -209,6 +209,12 @@ run.sh                     # Linux/macOS
 start-gui.bat              # Windows (с проверкой зависимостей)
 ```
 
+### Правила shell для агента
+
+- Не оборачивай длинные команды в `cmd.exe /C` или `cmd /c`.
+- Для build/test/benchmark сценариев используй прямой запуск через `bash` или PowerShell.
+- Если нужна последовательность шагов, собирай её в одну нормальную команду или отдельные вызовы `run_in_terminal`, а не через cmd-цепочки.
+
 ---
 
 ## ROCm — Специфика
@@ -288,9 +294,9 @@ start-gui.bat              # Windows (с проверкой зависимост
 4. ✅ **MTP поддержка ОБНАРУЖЕНА В КОДЕ** (не в draft PR, а реально реализована в `common/speculative.cpp` + `src/llama-context.cpp`)
 
 ### Очередные шаги (Phase III)
-1. Implement VEC threshold optimization для ubatch≥256
-2. Test MTP с MTP-enabled GGUF (поиск модели)
-3. Verify ngram-mod stability
+1. Считать главным performance target prompt-heavy стартовую точку ниже `16k` (текущий reference `ctx=12288`) с целью `25-27 TPS`.
+2. Использовать `agent_workload_bench.py --real-context-mode repo-snapshot` как основной iterative benchmark; 64k/128k оставить только reference lane.
+3. Продолжать исследования только через кодовые изменения в llama.cpp/ggml prefill/runtime path, если они улучшают стартовую prompt-heavy точку.
 
 ---
 

@@ -20,6 +20,7 @@
 
 - Сохранять работоспособный GUI в `gui/`.
 - Не ломать ROCm/RDNA4 workflow.
+- Для performance work считать текущей практической целью ускорение `Qwen3.6-27B` на стартовой prompt-heavy точке ниже `16k` (текущий reference `ctx=12288`) до `25-27 TPS`.
 - Сохранять TurboQuant типы и GUI-интеграцию KV cache.
 - Догонять upstream по core/runtime, но не импортировать upstream docs/actions/instructions поверх локальных.
 - Готовить MTP поддержку только после проверки конкретного upstream PR/commit и совместимого MTP GGUF.
@@ -54,6 +55,7 @@
 - Не используй `git reset --hard`, `git checkout -- <path>` или массовое удаление без прямого запроса пользователя.
 - Для ручных правок используй `apply_patch`.
 - Перед merge/cherry-pick проверь, какие локальные файлы уже изменены.
+- Не используй `cmd.exe`/`cmd` для длинных build/benchmark/run сценариев: в этом репозитории они склонны зависать. Предпочитай прямой запуск из `bash`/PowerShell через `run_in_terminal` и избегай лишней cmd-обвязки.
 
 ## Upstream sync policy
 
@@ -105,10 +107,12 @@ cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUIL
 Для всех kernel/perf-экспериментов придерживаться одного цикла:
 
 1. Перед запуском бенчей очищать override-окружение (`HSA_OVERRIDE_GFX_VERSION`) и убеждаться, что нет фонового `llama-server`.
-2. Любой speed claim подтверждать минимум `3 runs` через `scripts/agent_workload_bench.py` с фиксированным профилем.
-3. Сравнивать результат с текущим зафиксированным baseline для Qwen3.6-27B (`aggregate ~31.8-32.0 TPS`, labels `sprint4-gdn-chunk-*`).
-4. Если новая идея не бьёт baseline или даёт нестабильность, откатывать экспериментальные правки до чистого дерева.
-5. Если идея подтверждена, фиксировать одновременно: код + запись в `BENCHMARKS.md` + артефакты в `build_logs/agent-workload/`.
-6. Для benchmark-режима всегда держать thinking включённым (использовать `--no-disable-thinking`), чтобы результаты были сопоставимы между сессиями.
+2. Для быстрых итераций по prompt-heavy lane по умолчанию использовать `--runs 1`; до `3 runs` повышать только финальное подтверждение пограничных или реально promising дельт.
+3. Любой speed claim соотносить с текущей стартовой точкой `ctx=12288` (или ближайшей <16k) в `scripts/agent_workload_bench.py --real-context-mode repo-snapshot`, а не со старыми 64k/128k headline.
+4. Для измерений «чистой» стартовой точки отключать reuse (`--cache-ram 0 --ctx-checkpoints 0`) и фиксировать этот факт в label.
+5. Если новая идея не бьёт baseline или даёт нестабильность, откатывать экспериментальные правки до чистого дерева.
+6. Если идея подтверждена, фиксировать одновременно: код + запись в `BENCHMARKS.md` + артефакты в `build_logs/agent-workload/`.
+7. Главный трек поиска ускорений: кодовые изменения в llama.cpp/ggml prefill/runtime path (`ggml/src`, `src`, `common`), а не только перебор server flags.
+8. Для benchmark-режима всегда держать thinking включённым (использовать `--no-disable-thinking`), чтобы результаты были сопоставимы между сессиями.
 
 Цель: избегать «шума» и держать только воспроизводимые ускорения в `master`.

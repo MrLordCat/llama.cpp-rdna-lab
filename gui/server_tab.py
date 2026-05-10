@@ -883,10 +883,12 @@ class ServerTabWidget(QWidget):
                 continue
             usable.append(rec)
 
-        # Newest first by updated_at (fallback created_at), then by name.
+        registry = getattr(self.parent, "build_registry", None)
+
+        # Newest real binary build first, then by name.
         usable.sort(
             key=lambda r: (
-                str(r.get("updated_at", "") or r.get("created_at", "")),
+                registry.get_effective_build_timestamp(r) if registry is not None else str(r.get("created_at", "") or r.get("updated_at", "")),
                 str(r.get("name", "")).lower(),
             ),
             reverse=True,
@@ -899,8 +901,8 @@ class ServerTabWidget(QWidget):
             name = str(rec.get("name", build_dir.name))
             build_id = str(rec.get("id", ""))
             short_id = build_id[-8:] if len(build_id) >= 8 else (build_id or "-")
-            build_date = str(rec.get("updated_at", "")).strip() or str(rec.get("created_at", "")).strip() or "-"
-            label = f"{name} [{source}/{short_ref}] | id:{short_id} | updated:{build_date}"
+            build_date = registry.get_effective_build_timestamp(rec) if registry is not None else (str(rec.get("created_at", "")).strip() or str(rec.get("updated_at", "")).strip() or "-")
+            label = f"{name} [{source}/{short_ref}] | id:{short_id} | built:{build_date}"
             self.server_build_version_combo.addItem(label)
             self._registered_build_map[label] = {
                 "build_dir": build_dir,

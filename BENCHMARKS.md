@@ -35,6 +35,34 @@ build_logs\agent-workload\<label>.server.log
 
 ## Надёжность замеров
 
+### Активная политика контекста (2026-05-10)
+
+- Для текущего performance-трека запускать benchmark только при `ctx <= 16384`.
+- Запуски выше 16k считаются архивными/исследовательскими и не используются для текущих KPI.
+- В `scripts/agent_workload_bench.py` и `scripts/repo_snapshot_context_bench.py` это ограничение включено по умолчанию; обход только явным флагом `--allow-ctx-above-16k`.
+
+### Новый автономный чекпоинт (2026-05-10, lane <16k)
+
+Профиль:
+
+- `tasks=v2-mini`, `runs=1`, `ctx=12288`
+- incoming prompt: `--real-context-mode repo-snapshot --real-context-chars 21872`
+- no-reuse: `--cache-ram 0 --ctx-checkpoints 0`
+- `q4_0/q4_0`, `spec=none`
+
+Подтверждённый baseline после пересборки `build-rocm-vec`:
+
+| Label | Build | Batch | UBatch | Aggregate TPS |
+| --- | --- | ---: | ---: | ---: |
+| `postrebuild-vec-b6144-ub512-none` | `build-rocm-vec` | `6144` | `512` | `9.85` |
+| `postrebuild-vec-b6144-ub512-none-r2` | `build-rocm-vec` | `6144` | `512` | `9.84` |
+
+Наблюдения из этого цикла:
+
+- `ub=640` даёт резкий cliff на `build-rocm-wmma` (примерно `3.67-3.69 TPS`), поэтому активный safe corridor остаётся `ub=512`.
+- `spec=ngram-mod` без prime (`--no-v2-prime-pass`) почти равен `spec=none`; всплеск при включённом prime не считать cold-first прогрессом.
+- KV-типы `f16/bf16` на этом lane дают сильную регрессию (`~3.7-3.8 TPS`), `q4_0` остаётся лучшим.
+
 Чтобы исключить искажения от фонового `llama-server`, запускать benchmark с жёсткой проверкой:
 
 ```powershell
@@ -56,6 +84,26 @@ python scripts\agent_workload_bench.py `
 - `--server-seed 42` фиксирует seed на стороне `llama-server` и уменьшает run-to-run случайность sampling path;
 - `--no-disable-thinking` принудительно оставляет thinking включённым (обязательный режим для performance benchmark в этом форке);
 - `--stats-ignore-first-run` печатает отдельные warm-only метрики (без run #1), чтобы не смешивать cold старт и рабочую фазу.
+
+### Политика метрик (cold-first, 2026-05-09)
+
+Для v2/v2-mini в этой ветке основной KPI фиксируется как **cold-first throughput**:
+
+- измерение: первый измеряемый проход при `--runs 1`;
+- для cold-замера отключать priming pass: `--no-v2-prime-pass`;
+- warm/prime метрики считать диагностическими и публиковать отдельно, без подмены headline-числа.
+
+Почему так:
+
+- в агентном использовании с большим и меняющимся контекстом cold-фаза сильно влияет на реальный UX;
+- warm-only числа показывают потенциал steady-state, но могут завышать ожидаемую скорость для «первого ответа»;
+- ускорение cold-path почти автоматически улучшает и последующую warm-фазу.
+
+Рекомендуемый формат отчёта:
+
+- `Cold first-turn TPS` (headline);
+- `Warm steady-state TPS` (secondary);
+- `Session aggregate TPS` (смешанный показатель для серии запросов).
 
 ### Batch 4096 / UBatch 512 with stabilized method (2026-05-09)
 
@@ -100,6 +148,7 @@ python scripts\agent_workload_bench.py `
 | `wf-27b-varB-mmq-routing-r1` | RDNA4 MMQ routing: убрать always-MMQ, ввести `ne11/type` эвристику | `26.58` | **keep (profit)** |
 | `wf-27b-varC-streamk-r1` | MMQ stream-k: enable for RDNA4 при `ne11 >= 256` | `26.90` | **keep (profit)** |
 | `wf-27b-varD-mmq-q45-384-r1` | RDNA4 MMQ routing: расширить окно Q4/Q5 `ne11 <= 256 -> <= 384` | `26.79` | **rollback (regress)** |
+| `wf-27b-varE-mmq-k224-r1` | RDNA4 MMQ routing: расширить окно QK `ne11 <= 192 -> <= 224` | `26.72` | **rollback (regress)** |
 
 Итог по циклу: финальная комбинация (B + C) дала `+0.92 TPS` к baseline v2-mini на 27B в этой сессии.
 
@@ -131,6 +180,208 @@ python scripts\agent_workload_bench.py `
 - пишет summary: `<label>-autotune-summary.csv` и `.json`;
 - печатает `BEST: ...` по aggregate completion TPS;
 - при `--autotune-update-preset` обновляет `gui/model_presets.json` для выбранной модели.
+
+## Large Context Reality Check (2026-05-10)
+
+Статус изменён: активная long-context оптимизация временно остановлена как primary lane.
+
+Почему:
+
+- `sentinel128` дал ложное ощущение, что `128k` почти не хуже `64k`, потому что там prompt был всего `489/410` токенов.
+- новый repo-snapshot workload загрузил действительно длинный prompt и показал, что проблема начинается уже на `64k`.
+
+Зафиксированный reference:
+
+| Workload | ctx64k | ctx128k | Комментарий |
+| --- | ---: | ---: | --- |
+| `sentinel128-qwen36q3` | `26.5825 TPS` | `26.0672 TPS` | Короткий sentinel, не годится как главный real-world сигнал |
+| `repo-real-64k128k` | `2.3128 TPS` | `0.8167 TPS` | Реальный repo snapshot prompt, корректный long-prefill сигнал |
+
+Текущий вывод:
+
+- не делать новые 128k прогоны по умолчанию;
+- не использовать 64k как стартовую «главную» точку оптимизации;
+- активный performance lane: prompt-heavy стартовая точка ниже `16k`.
+
+### New Primary Goal (2026-05-10)
+
+- Текущая стартовая точка: `ctx=12288` в prompt-heavy no-reuse режиме.
+- Текущий уровень: `~9.24 TPS`.
+- Цель: `25-27 TPS` на стартовой точке.
+- Способ достижения: поиск и верификация изменений в кодовой базе llama.cpp/ggml (prefill/runtime path), не только параметрический тюнинг запуска.
+
+### Agent Workload: prompt-heavy mode (incoming context fix)
+
+Проблема: стандартный `scripts/agent_workload_bench.py` в `v2-mini` режиме часто оставался decode-heavy и имел слишком маленький входящий prompt для real-scenario выводов.
+
+Решение:
+
+- добавлен режим `--real-context-mode repo-snapshot`;
+- в каждый task prompt инжектится большой `repo snapshot` префикс;
+- добавлен ctx-aware safe cap, чтобы избегать `HTTP 400` от переполнения контекста:
+  - `--real-context-safe-fill` (default `0.70`),
+  - `--real-context-reserve-tokens` (default `2048`),
+  - `--real-context-chars-per-token` (default `3.4`).
+
+Рекомендуемый запуск для реального входящего контекста без prompt-cache reuse:
+
+```powershell
+python scripts\agent_workload_bench.py `
+  --label ctxwall-real-noreuse-c32768 `
+  --server-bin build-rocm-compare\bin\llama-server.exe `
+  --model models\Qwen3.6-27B-Q3_K_S.gguf `
+  --tasks v2-mini --runs 1 `
+  --ctx-size 32768 -b 2048 -ub 512 `
+  --cache-type-k q4_0 --cache-type-v q4_0 `
+  --server-extra "--spec-type none --cache-ram 0 --ctx-checkpoints 0" `
+  --max-tokens 120 `
+  --real-context-mode repo-snapshot --real-context-chars 180000
+```
+
+Первые точки нового ctx sweep (prompt-heavy, no-reuse):
+
+| Label | ctx | Avg prompt tokens | Aggregate TPS |
+| --- | ---: | ---: | ---: |
+| `ctxwall-real-noreuse-c12288` | `12288` | `~8050` | `9.2389` |
+| `ctxwall-real-noreuse-c16384` | `16384` | `~11550` | `6.8685` |
+| `ctxwall-real-noreuse-c24576` | `24576` | `~19382` | `4.1962` |
+| `ctxwall-real-noreuse-c32768` | `32768` | `~26860` | `2.8934` |
+
+Вывод: на реалистичном большом входящем prompt'е стена начинается намного раньше, чем показывал старый decode-heavy режим.
+
+Это теперь главный reference-коридор для всех новых speed claims.
+
+### Archived: 64K real-scenario single-ctx sanity (`repo_snapshot_context_bench.py`)
+
+Эта секция сохранена как исторический reference. Активные speed claims теперь принимаются только по prompt-heavy стартовому lane `<16k`.
+
+Скрипт `scripts/repo_snapshot_context_bench.py` обновлён для нового workflow и теперь принимает одиночный `--ctx-values 65536`, без обязательного парного `128k` прогона.
+
+Первый 64k-only A/B на `build-rocm-compare`, `b=2048`, `ub=512`, `q4_0/q4_0`, prompt `62610` токенов, completion `120` токенов:
+
+| Label | Spec | Wall TPS | Prompt eval | Decode eval | Вывод |
+| --- | --- | ---: | ---: | ---: | --- |
+| `repo-64k-single-none-ctx64k` | `none` | `0.9101` | `514.72 tok/s` | `11.89 tok/s` | текущий 64k baseline для real-scenario single-ctx |
+| `repo-64k-single-ngram-ctx64k` | `ngram-mod` | `0.8955` | `506.02 tok/s` | `11.83 tok/s` | немного хуже baseline |
+
+Практический вывод:
+
+- для prompt-heavy `64k` repo snapshot workload `ngram-mod` пока не окупает свой overhead;
+- ближайший safe baseline для новых 64k real-scenario исследований - `spec=none`;
+- если возвращаться к speculative на этом lane, то только после новой гипотезы или kernel-level улучшения, а не по инерции от коротких decode-heavy benchmark'ов.
+
+Дополнительный 64k-only check по `ubatch` на том же workload:
+
+| Label | Batch | UBatch | Spec | Wall TPS | Prompt eval | Decode eval | Вывод |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | --- |
+| `repo-64k-single-none-ctx64k` | `2048` | `512` | `none` | `0.9101` | `514.72 tok/s` | `11.89 tok/s` | текущий baseline |
+| `repo-64k-single-none-ub256-ctx64k` | `2048` | `256` | `none` | `0.7263` | `405.13 tok/s` | `11.86 tok/s` | сильная регрессия по prefill |
+
+Это означает, что для реального `64k` bottleneck сейчас чувствителен прежде всего к prompt processing throughput, и уменьшение `ubatch` до `256` здесь вредно, даже если в отдельных synthetic рассуждениях такой шаг казался безопасным.
+
+Ещё три быстрых 64k-only проверки на том же repo snapshot lane:
+
+| Label | Build | Batch | UBatch | Extra | Wall TPS | Prompt eval | Decode eval | Вывод |
+| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | --- |
+| `repo-64k-single-none-ctx64k` | `build-rocm-compare` | `2048` | `512` | none | `0.9101` | `514.72 tok/s` | `11.89 tok/s` | текущий local baseline |
+| `repo-64k-single-none-b4096-ctx64k` | `build-rocm-compare` | `4096` | `512` | none | `0.8834` | `501.10 tok/s` | `11.79 tok/s` | `b=4096` не помогает, слегка хуже baseline |
+| `repo-64k-single-none-nocache-ctx64k` | `build-rocm-compare` | `2048` | `512` | `--cache-ram 0 --ctx-checkpoints 0` | `0.8671` | `490.85 tok/s` | `11.86 tok/s` | отключение prompt cache/checkpoints не помогло |
+| `repo-64k-exp-none-ctx64k` | `build-rocm-exp` | `2048` | `512` | none | `0.8985` | `510.48 tok/s` | `11.77 tok/s` | соседний ROCm build тоже не даёт прорыва |
+
+Вывод по этому micro-screen:
+
+- быстрые server-level рычаги на новом `64k` real-scenario lane почти исчерпаны;
+- bottleneck остаётся в prefill/prompt path, а не в speculative или decode-path настройках;
+- следующий полезный уровень исследования: kernel/path selection и runtime поведение на длинном prompt, а не новые перестановки `spec/cache/batch` вокруг того же бинаря.
+
+Отдельно была проверена kernel-level probe в `ggml/src/ggml-cuda/gated_delta_net.cu`: принудительный `chunk_size=96` для RDNA4 chunked prefill вместо текущего adaptive `96/128`.
+
+| Label | Variant | Wall TPS | Prompt eval | Decode eval | Решение |
+| --- | --- | ---: | ---: | ---: | --- |
+| `repo-64k-single-none-ctx64k` | baseline adaptive chunk | `0.9101` | `514.72 tok/s` | `11.89 tok/s` | baseline |
+| `repo-64k-chunk96-none-ctx64k` | forced `chunk_size=96` | `0.8791` | `499.60 tok/s` | `11.81 tok/s` | rollback |
+| `repo-64k-revert-check-none-ctx64k` | baseline rebuilt after rollback | `0.8957` | `510.31 tok/s` | `11.70 tok/s` | corridor restored |
+
+Вывод: старая идея из quick-agent sweep не переносится напрямую на реальный repo-snapshot `64k` lane; фиксированный `chunk_size=96` ухудшает prefill и не подходит как следующий шаг.
+
+## Archived: Separate Real-World Large Context Bench (120K + 160K)
+
+Для регулярной оценки ожидаемой скорости в реальных агентных сценариях добавлен отдельный сценарный раннер:
+
+- `scripts/large_context_realworld_bench.py`
+- запускает одинаковый workload в двух практичных точках контекста: `122880` (120K) и `163840` (160K);
+- строит итоговую сводку сравнения, чтобы быстро видеть деградацию скорости на растущем контексте;
+- использует текущий `scripts/agent_workload_bench.py` как движок, поэтому метрики и формат логов полностью совместимы.
+
+### Почему 120K/160K?
+
+- **120K**: минимум для реальных длинных агентных диалогов + документы + контекст из других чатов.
+- **160K**: расширенный сценарий, где важно видеть point-of-no-return по скорости.
+- Диапазон позволяет оценить насколько критична масштабируемость и где находятся узкие места.
+
+Рекомендуемый запуск:
+
+```powershell
+python scripts\large_context_realworld_bench.py `
+  --label-prefix realctx-120k-qwen27b `
+  --server-bin build-rocm-exp\bin\llama-server.exe `
+  --model models\Qwen3.6-27B-Q3_K_S.gguf `
+  --tasks v2-mini `
+  --runs 1 `
+  --batch-size 4096 `
+  --ubatch-size 512 `
+  --cache-type-k q4_0 `
+  --cache-type-v q4_0 `
+  --spec-profile ngram-mod `
+  --background-server-policy fail
+```
+
+Что получаем после запуска:
+
+- `build_logs/agent-workload/<label-prefix>-ctx120k.csv`
+- `build_logs/agent-workload/<label-prefix>-ctx160k.csv`
+- `build_logs/agent-workload/<label-prefix>-largectx-summary.csv` (TPS decay от 120K к 160K)
+- `build_logs/agent-workload/<label-prefix>-largectx-summary.md`
+
+Где смотреть итог:
+
+- headline метрика: `aggregate_tps` из `*-largectx-summary.*`;
+- сравнение `160K vs 120K` уже посчитано (ratio % показывает потерю скорости);
+- если нужна стабильность вместо быстрых итераций, повышай `--runs` до `3`.
+
+### Archived Research Target: 120K Large Context Optimization
+
+Текущий baseline на `ctx=131072, ubatch=512, q4_0 KV, ngram-mod`:
+- **Prefix (PP)**: ~215 TPS
+- **Generation (TG)**: ~8.5 TPS ← **узкое место**
+- **Spec acceptance rate**: ~18% (низко)
+
+Гипотезы для исследования:
+
+1. **MMQ/FATTN kernel threshold** — может быть на большом контексте срабатывает неоптимальный path (VEC vs TILE).
+2. **Speculative decoding overshoot** — ngram-mod с large ctx может генерировать слишком много draft токенов, замедляя verification.
+3. **KV cache bandwidth** — даже q4_0 может быть узким местом при 120K+ tokens × 24 heads × 256 dims.
+4. **ROCm kernel occupancy** — RDNA4 может недополучать work при малых batch/ubatch на большом контексте.
+
+Архивный research workflow:
+
+```bash
+# Step 1: historical baseline на 120K
+python scripts/large_context_realworld_bench.py --label-prefix baseline-120k ...
+
+# Step 2: попробовать более консервативный speculative (ngram-simple или none)
+python scripts/large_context_realworld_bench.py --label-prefix nostep-120k --spec-profile none ...
+
+# Step 3: попробовать меньший ubatch (256 вместо 512)
+python scripts/large_context_realworld_bench.py --label-prefix ub256-120k --ubatch-size 256 ...
+
+# Step 4: попробовать больший batch (6144 вместо 4096)
+python scripts/large_context_realworld_bench.py --label-prefix b6144-120k --batch-size 6144 ...
+
+# Сравнить результаты и выбрать best по aggregate_tps
+```
+
+Примечание 2026-05-10: этот workflow сохранён только как исторический след. Новые performance-итерации вести на `ctx=65536`.
 
 ## GUI Automation API (E2E)
 
@@ -939,3 +1190,291 @@ python scripts\agent_workload_bench.py `
 Вывод:
 - текущий MMQ cap `x_max=96` для RDNA4 даёт **существенную регрессию** (`~ -1.7 TPS`);
 - гипотеза не подтверждена, вариант не подходит для дальнейшего использования в baseline.
+
+## Пост-мортем: почему патчи не пробили потолок ~27 TPS (cold-first)
+
+Ниже сводный анализ по фазам R35-01..R35-07 для v2/v2-mini профиля.
+
+1. Упор в compute-bound линейных слоёв (MMQ/weight loading), а не в KV/selector мелочи.
+
+- Это подтверждено serving-перебором: `ctx 32K ~= 65K`, `q8_0 KV` даёт регрессию, `ub=512` остаётся лучшим для cold-first.
+- Следствие: параметры, которые в основном двигают KV bandwidth, почти не меняют потолок.
+
+2. Спекулятивный путь (`ngram-mod`) в cold-first v2 не даёт стабильного ускорения.
+
+- В v2-кодовых задачах `spec none ~= ngram-mod` по aggregate.
+- Большие warm-числа возникают на повторном проходе одинаковых задач (прогретый speculative context), но это другой режим, не cold-first headline.
+
+3. Большинство проверенных патчей были «локально-микро», а не в главном bottleneck.
+
+- GDN fast-exp, FATTN threshold widening, deep `expf -> __expf` не дали устойчивого выигрыша и/или дали регрессию в non-spec.
+- Логика: даже если локально ускоряется отдельный участок, вклад в общий wall-time decode недостаточен для заметного роста aggregate TPS.
+
+4. Часть направлений уже исчерпана и показала регресс заранее.
+
+- `parallel=2`, `ub=1024`, RDNA4 MMQ `x_max=96`, расширения отдельных MMQ окон и draft-path с 9B draft-моделью — все дали отрицательный результат.
+- Это указывает на структурный потолок текущей пары: модель 27B Q3_K_S + текущие kernel policies на RX 9070 XT.
+
+5. Draft-model ветка упёрлась в стоимость самого draft decode.
+
+- При высоком acceptance итоговый TPS всё равно резко падает из-за дорогой генерации draft-моделью.
+- Значит bottleneck был не в acceptance, а в latency draft model per token.
+
+Практический вывод:
+
+- текущая ветка оптимизаций упёрлась в устойчивый cold-first коридор около `27.2-27.5 TPS`;
+- для реального прорыва выше потолка нужны не микро-твики selector/exp, а более крупные изменения: новый MMQ/MFMA путь под RDNA4, более лёгкая target/draft модель, либо полноценный MTP-путь с совместимым MTP GGUF.
+
+## Аудит окружения: что уже проверено вне build-патчей (2026-05-09)
+
+Цель этого блока: зафиксировать, какие внешние ограничения уже видны по хосту и runtime, чтобы не переоценивать очередные kernel-правки.
+
+### 1. Ключевые ROCm билды собраны почти в одинаковом базовом контуре
+
+Проверенные CMakeCache для `build-rocm-exp`, `build-rocm-wmma`, `build-rocm-r35-c` показывают общий фундамент:
+
+- `ROCm 7.1` (`clang/clang++` из `C:/Program Files/AMD/ROCm/7.1/bin`);
+- `AMDGPU_TARGETS=gfx1201`;
+- `Release` + `Ninja`;
+- `GGML_HIP=ON`, `GGML_HIP_MMQ_MFMA=ON`, `GGML_HIP_NO_VMM=ON`.
+
+Вывод: cold-first потолок нельзя объяснить тем, что один из основных билдов случайно собран «не под ту архитектуру» или на другом toolchain.
+
+### 2. Runtime-путь у разных билдов почти одинаков
+
+По server logs для `build-rocm-exp`, `build-rocm-wmma`, `build`:
+
+- везде `offloaded 65/65 layers to GPU`;
+- везде `graph nodes = 3849`, `graph splits = 2`;
+- везде decode для cold-first задач держится около `~28.2-28.6 tok/s` на уровне отдельных задач;
+- включение `rocWMMA FATTN` не дало отдельного качественного скачка.
+
+Вывод: разные локальные бинарники в текущем workload в основном проходят через одинаковый практический runtime-контур.
+
+### 3. На хосте уже видны платформенные ограничения Windows ROCm
+
+Проверено на машине:
+
+- Windows power plan: `Balanced`;
+- GPU driver: `AMD Radeon RX 9070 XT`, driver `32.0.23033.1002` от `2026-03-09`;
+- активная HIP runtime DLL: `C:/Windows/System32/amdhip64_7.dll`;
+- `amdhip64_7.dll` из `System32` и из `C:/Program Files/AMD/ROCm/7.1/bin` имеют одинаковую version string `10.0.3665.0`, но разные размеры и разные SHA256;
+- рядом с `llama-server.exe` в локальных `build*/bin` нет копий ROCm DLL, а текущие launcher paths в основном только prepend'ят `PATH`/`HIP_PATH`;
+- `hipInfo`: `gfx1201`, `32 CU`, `clockRate 2460 MHz`, `memoryClockRate 1259 MHz`;
+- `hipInfo`: `isLargeBar = 0`, `concurrentKernels = 1`, `cooperativeLaunch = 0`;
+- server logs: `VMM: no`, `ROCm : NO_VMM = 1`.
+
+Интерпретация:
+
+- build менялся, но платформа исполнения оставалась одной и той же;
+- на Windows это делает загрузку HIP runtime из `System32` фактическим default-path для текущих билдов, поэтому простой prepend `PATH` не гарантирует использование DLL из ROCm SDK;
+- это делает рассинхрон `compiler/toolchain` vs `runtime DLL` правдоподобным кандидатом на скрытый performance ceiling;
+- отсутствие VMM и Large BAR не доказывает текущий bottleneck само по себе, но указывает на менее гибкий runtime-контур, чем хотелось бы для агрессивного разгона;
+- по коду backend `NO_VMM` в первую очередь отключает VMM memory pool / virtual-memory allocation path, а не переписывает основные MMQ/FATTN kernels; поэтому сам по себе `NO_VMM` скорее объясняет ограничения среды/allocator path, чем весь `~27 TPS` потолок;
+- свойства `concurrentKernels = 1` и `cooperativeLaunch = 0` пока не выглядят главной причиной: в коде проекта нет явной логики, которая бы строила текущий decode hot path вокруг этих capability flags;
+- `Balanced` power plan и Windows ROCm stack остаются валидными внешними кандидатами для A/B, прежде чем делать ещё 10 микро-патчей в kernel-слое.
+
+### 4. Что это значит для цели `35 TPS cold-first`
+
+На текущем наборе фактов наиболее вероятна такая картина:
+
+- главный потолок формируется сочетанием `model size + quant format + RX 9070 XT + Windows ROCm runtime`;
+- многие kernel-патчи не попадают в основной wall-time, потому что runtime и workload остаются почти неизменными;
+- дальнейший поиск нужно вести не только в коде, а в платформенных A/B:
+  - power plan `Balanced` vs `High performance`;
+  - BIOS/driver проверка ReBAR / Smart Access Memory;
+  - чистый runtime A/B Windows vs Linux на том же железе;
+  - проверка, не вносит ли заметный штраф системная HIP DLL/driver pair.
+
+Текущий рабочий вывод: до смены хотя бы одного существенного внешнего фактора вероятность получить `35 TPS cold-first` только build-патчами выглядит низкой.
+
+### 5. Быстрый A/B: app-local `amdhip64_7.dll` рядом с `llama-server.exe`
+
+Был проверен прямой эксперимент: принудительно положить `amdhip64_7.dll` из `C:/Program Files/AMD/ROCm/7.1/bin` рядом с `build-rocm-exp/bin/llama-server.exe`, чтобы уйти от implicit загрузки HIP runtime из `System32`.
+
+Результат:
+
+- `v2mini-local-hipdll-r1` (`v2-mini`, cold-first, `ctx=65536`, `b=4096`, `ub=512`, `q4_0/q4_0`, `ngram-mod`) дал **`26.21 TPS`**;
+- это хуже обычного cold-first коридора `~27.4-27.5 TPS`.
+
+Вывод:
+
+- простая подкладка только `amdhip64_7.dll` рядом с бинарём **не является выигрышным путём**;
+- более того, такой частичный override может создавать смешанный runtime-контур, поэтому он не подтверждает гипотезу «локальная DLL = автоматически быстрее»;
+- практическое решение: этот путь считать **проверенным и регрессивным**, не держать его как активную оптимизацию.
+
+## Продолжение cold-first цикла (2026-05-09, вечер)
+
+Профиль для всех сравнений ниже:
+
+- `--tasks v2-mini --runs 1 --no-v2-prime-pass`
+- `-c 65536 -b 4096`
+- `--cache-type-k q4_0 --cache-type-v q4_0`
+- `--spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64`
+
+### 1. Бинарный A/B (build-rocm-exp vs свежий build-rocm-compare)
+
+Для честного сравнения был поднят отдельный каталог `build-rocm-compare` с ROCm clang 7.1 и Ninja.
+
+Ключевой технический момент:
+
+- при первом configure OpenMP подцепил `C:/Strawberry/c/lib/libgomp.dll.a` и ломал линковку (`__kmpc_*`);
+- после выравнивания с рабочим профилем (`-DGGML_OPENMP=OFF`) сборка прошла и тест стал валидным.
+
+Результат:
+
+- `v2mini-buildrocmcompare-r1`: **`26.65 TPS`**
+- против `v2mini-postrollback-streamk-r1`: **`26.72 TPS`**
+- дополнительная проверка `build-rocm-vec`: `v2mini-buildrocmvec-r1` = **`25.45 TPS`**
+
+Вывод: отдельный свежий ROCm-билд не дал прироста; код/ядро остаются в том же практическом коридоре.
+
+### 2. Runtime sweep по `ubatch`
+
+На `build-rocm-exp`:
+
+| Label | UBatch | Aggregate TPS | Вывод |
+| --- | ---: | ---: | --- |
+| `v2mini-ub256-r1` | `256` | `25.50` | regress |
+| `v2mini-ub384-r1` | `384` | `25.63` | regress |
+| `v2mini-ub640-r1` | `640` | `26.65` | около baseline, без выигрыша |
+
+Вывод: для текущего cold-first профиля `ub=512` остаётся практическим опорным значением.
+
+### 3. Runtime sweep по потокам (host feeder)
+
+Проверка `--threads 16 --threads-batch 16`:
+
+| Label | UBatch | Aggregate TPS | Вывод |
+| --- | ---: | ---: | --- |
+| `v2mini-threads16-r1` | `512` | `26.78` | небольшой плюс в шуме |
+| `v2mini-threads16-ub512-r1` | `512` | `26.67` | без подтверждения плюса |
+| `v2mini-threads16-ub640-r1` | `640` | `26.62` | без выигрыша |
+
+Итог: устойчивого выигрыша от 16/16 потоков не подтверждено.
+
+### 4. MTP-путь с локальным MTP GGUF
+
+Проверен запуск:
+
+- модель: `models/Qwen3.6-27B-IQ3_M-mtp.gguf`
+- `--spec-type mtp`
+
+Результат:
+
+- `v2mini-mtp-main-r1`: **`4.00 TPS`** (сильный regress)
+
+Диагностика по server log:
+
+- MTP действительно активирован (`set_mtp: MTP draft head registered`);
+- acceptance высокий (`#acc drafts` высокий), но `dur(g)` (generation stage) огромный;
+- wall-time уходит в MTP generation path, поэтому общая скорость резко ниже базового ngram-mod.
+
+Практический вывод:
+
+- в текущем локальном сочетании модель/квант/железо MTP-путь **непригоден** как ускорение;
+- держим его как проверенный тупик до появления более лёгкого/лучше совместимого MTP-конфига.
+
+### 5. Альтернативные ngram-режимы (без изменений кода)
+
+Проверены на том же профиле:
+
+| Label | Spec type | Aggregate TPS | Наблюдение |
+| --- | --- | ---: | --- |
+| `v2mini-ngramsimple-r1` | `ngram-simple` | `26.67` | около baseline |
+| `v2mini-ngramk4v-r1` | `ngram-map-k4v` | `26.56` | небольшой regress |
+
+По server logs:
+
+- `ngram-simple`: drafts есть, но мало (`#gen drafts = 5`, `#acc tokens = 30` суммарно);
+- `ngram-map-k4v`: drafts почти не активируются (`#gen drafts = 1`, `#acc tokens = 6`);
+- основная decode-скорость остаётся близкой к `~27.7-27.9 tok/s` на задачу, поэтому общий aggregate почти не меняется.
+
+Итог: переключение между ngram-режимами само по себе не даёт прорыва для текущего cold-first workload.
+
+### 6. MMQ host-policy pass для Q3_K-heavy decode
+
+Текущая модель `Qwen3.6-27B-Q3_K_S.gguf` по server log почти целиком упирается в `q3_K` тензоры (`353` tensors), поэтому следующим шагом был проверен более структурный MMQ-тюнинг в `ggml/src/ggml-cuda/mmq.cuh`.
+
+#### A. RDNA4 `granularity=16`
+
+Изменение:
+
+- для RDNA4 в MMQ зафиксирован более мелкий `granularity=16` вместо перехода на `32` при `mmq_x >= 128`.
+
+Результаты:
+
+| Label | Spec mode | Aggregate TPS |
+| --- | --- | ---: |
+| `v2mini-mmq-gran16-r1` | `ngram-mod 48/64/24` | `26.89` |
+| `v2mini-mmq-gran16-r2` | `ngram-mod 48/64/24` | `26.94` |
+| `v2mini-mmq-gran16-r3` | `ngram-mod 48/64/24` | `26.88` |
+| `v2mini-mmq-gran16-specnone-r1` | `none` | `26.89` |
+| `v2mini-mmq-gran16-specnone-r2` | `none` | `26.94` |
+| `v2mini-mmq-gran16-specnone-r3` | `none` | `26.92` |
+
+Интерпретация:
+
+- прирост небольшой, но воспроизвёлся и с `ngram-mod`, и с `spec none`;
+- три независимых cold-first прогона с `ngram-mod` дали combined aggregate `26.9053 TPS`, то есть патч выглядит повторяемым;
+- три независимых cold-first прогона с `spec none` дали combined aggregate `26.9184 TPS`, то есть `spec none` на этом профиле как минимум не хуже `ngram-mod`;
+- это похоже на маленький decode/MMQ gain, а не на speculative-шум;
+- патч оставлен как **текущий лучший малый кандидат** в рабочем дереве.
+
+Практический вывод по runtime mode:
+
+- для обычного `Qwen3.6-27B-Q3_K_S` на `ctx=65536, b=4096, ub=512` после MMQ `gran16` режим `spec none` выглядит наиболее консервативным default;
+- разница против `ngram-mod` минимальна, но `spec none` чуть лучше по combined 3-run aggregate и не зависит от speculative counters.
+
+#### B. Дополнительный RDNA4 bundle: `y=64` + `4 warps`
+
+Поверх `gran16` был проверен ещё один более агрессивный MMQ host-policy bundle:
+
+- `get_mmq_y_* = 64` для RDNA4;
+- `mmq_get_nwarps_* = 4` для RDNA4.
+
+Результаты:
+
+| Label | Spec mode | Aggregate TPS |
+| --- | --- | ---: |
+| `v2mini-mmq-gran16-y64-r1` | `ngram-mod 48/64/24` | `26.91` |
+| `v2mini-mmq-gran16-y64-specnone-r1` | `none` | `26.86` |
+
+Вывод:
+
+- отдельной ценности поверх `gran16` этот слой не показал;
+- improvement в `ngram-mod` слишком мал, а на `spec none` он уже не подтверждается;
+- bundle `y=64 + 4 warps` **откачен**, чтобы оставить в дереве только более чистый `gran16`-патч.
+
+#### C. RDNA4 selector: `always-MMQ` поверх `gran16`
+
+На том же 65K cold-first профиле был отдельно проверен старый сильный кандидат с 32K-сессии: принудительный `always-MMQ` для RDNA4 в `ggml_cuda_should_use_mmq()`.
+
+Результат:
+
+| Label | Spec mode | Aggregate TPS |
+| --- | --- | ---: |
+| `v2mini-mmq-gran16-always-r1` | `ngram-mod 48/64/24` | `26.01` |
+
+Вывод:
+
+- на 65K cold-first этот путь даёт сильный regress;
+- старый выигрыш `always-MMQ` на 32K не переносится напрямую на текущий профиль;
+- правка **откачена**, в рабочем дереве оставлен только `gran16`.
+
+#### D. Мягкий MMQ cap: `x_max=112` поверх `gran16`
+
+После подтверждения `gran16` был проверен более мягкий соседний cap для RDNA4:
+
+- `get_mmq_x_max_{host,device} = 112` вместо `128`.
+
+Результат:
+
+| Label | Spec mode | Aggregate TPS |
+| --- | --- | ---: |
+| `v2mini-mmq-gran16-x112-r1` | `ngram-mod 48/64/24` | `26.80` |
+
+Вывод:
+
+- мягкий cap `112` всё равно хуже подтверждённого `gran16` baseline;
+- этот путь **откачен**.

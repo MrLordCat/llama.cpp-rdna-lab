@@ -1123,10 +1123,10 @@ class BuildTabWidget(QWidget):
             "--startup-timeout", "120",
             "--request-timeout", "120",
             "--background-server-policy", "fail",
-            "--autotune-min-ctx", "32768",
-            "--autotune-ctx-values", "32768,49152,65536",
-            "--autotune-batch-values", "1024,2048,4096",
-            "--autotune-ubatch-values", "1024,2048,4096",
+            "--autotune-min-ctx", "65536",
+            "--autotune-ctx-values", "65536",
+            "--autotune-batch-values", "2048,4096",
+            "--autotune-ubatch-values", "128,256,512,640",
             "--autotune-kv-values", "q8_0,q4_0",
             "--autotune-spec-values", ",".join(spec_values),
             "--autotune-max-configs", "256",
@@ -1136,10 +1136,10 @@ class BuildTabWidget(QWidget):
 
         if sweep_mode == "smoke":
             command.extend([
-                "--autotune-ctx-values", "32768",
-                "--autotune-batch-values", "1024",
-                "--autotune-ubatch-values", "1024",
-                "--autotune-kv-values", "q8_0",
+                "--autotune-ctx-values", "65536",
+                "--autotune-batch-values", "2048",
+                "--autotune-ubatch-values", "512",
+                "--autotune-kv-values", "q4_0",
                 "--autotune-spec-values", ",".join(spec_values),
                 "--autotune-max-configs", "4",
             ])
@@ -1159,7 +1159,7 @@ class BuildTabWidget(QWidget):
             self.autotune_btn.setEnabled(False)
         if hasattr(self, "quick_bench_btn"):
             self.quick_bench_btn.setEnabled(False)
-        self.build_status_label.setText(f"Running 32K+ autotune for {resolved_model.name}...")
+        self.build_status_label.setText(f"Running 64K fast autotune for {resolved_model.name}...")
         self.bench_thread = QuickBenchmarkThread(command=command, working_dir=Path(self.parent.project_root))
         self.bench_thread.output.connect(self._on_autotune_output)
         self.bench_thread.finished_signal.connect(self._on_autotune_finished)

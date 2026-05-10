@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HISTORY_DIR = ROOT / "build_logs" / "agent-workload"
 HISTORY_CSV_NAME = "BENCH_HISTORY.csv"
 HISTORY_MD_NAME = "BENCH_HISTORY.md"
+PRIMARY_MAX_CTX = 16384
 
 HISTORY_FIELDS = [
     "timestamp",
@@ -360,6 +361,107 @@ def default_model() -> Path | None:
         if path.exists():
             return path
     return None
+
+
+def choose_repo_snapshot_files(root: Path) -> list[Path]:
+    seed_files = [
+        root / "AGENTS.md",
+        root / "CLAUDE.md",
+        root / "BENCHMARKS.md",
+        root / "PROJECT_PROFILE.md",
+        root / "QWEN_SPEED_RESEARCH.md",
+        root / "CMakeLists.txt",
+    ]
+    scan_roots = [
+        root / "gui",
+        root / "scripts",
+        root / "src",
+        root / "include",
+        root / "common",
+        root / "ggml" / "src",
+        root / "ggml" / "include",
+        root / "tests",
+    ]
+    exts = {".py", ".md", ".txt", ".json", ".cmake", ".cpp", ".c", ".h", ".hpp", ".cu", ".cuh"}
+
+    selected: list[Path] = []
+    seen: set[Path] = set()
+
+    for path in seed_files:
+        if path.exists() and path not in seen:
+            selected.append(path)
+            seen.add(path)
+
+    for scan_root in scan_roots:
+        if not scan_root.exists():
+            continue
+        for path in sorted(scan_root.rglob("*")):
+            if not path.is_file() or path.suffix.lower() not in exts:
+                continue
+            rel = path.relative_to(root).as_posix()
+            if rel.startswith("build/") or "/build/" in rel:
+                continue
+            if path in seen:
+                continue
+            selected.append(path)
+            seen.add(path)
+
+    return selected
+
+
+def build_repo_snapshot_prefix(root: Path, char_budget: int) -> tuple[str, int, int]:
+    if char_budget <= 0:
+        return "", 0, 0
+
+    files = choose_repo_snapshot_files(root)
+    chunks: list[str] = []
+    char_count = 0
+    file_count = 0
+
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+
+        if not text.strip():
+            continue
+
+        rel = path.relative_to(root).as_posix()
+        block = f"\n\n### FILE: {rel}\n{text}"
+        if char_count + len(block) > char_budget:
+            remaining = char_budget - char_count
+            if remaining > 4096:
+                block = block[:remaining]
+                chunks.append(block)
+                char_count += len(block)
+                file_count += 1
+            break
+
+        chunks.append(block)
+        char_count += len(block)
+        file_count += 1
+
+    prefix = (
+        "Ниже входящий контекст из текущего репозитория llama.cpp-with-GUI. "
+        "Учитывай этот контекст при ответе на задачу.\n"
+        "===== REPO SNAPSHOT BEGIN ====="
+        + "".join(chunks)
+        + "\n===== REPO SNAPSHOT END =====\n\n"
+    )
+    return prefix, char_count, file_count
+
+
+def apply_real_context_prefix(tasks: list[dict[str, str]], prefix: str) -> list[dict[str, str]]:
+    if not prefix:
+        return tasks
+
+    out: list[dict[str, str]] = []
+    for task in tasks:
+        task_copy = dict(task)
+        task_copy["prompt"] = prefix + task["prompt"]
+        out.append(task_copy)
+    return out
 
 
 def find_free_port(host: str) -> int:
@@ -1103,7 +1205,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--gpu-layers", type=int, default=999)
     parser.add_argument("--parallel", type=int, default=1)
-    parser.add_argument("--ctx-size", type=int, default=32768)
+    parser.add_argument("--ctx-size", type=int, default=12288)
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--ubatch-size", type=int, default=2048)
     parser.add_argument("--cache-type-k", default="q8_0")
@@ -1114,14 +1216,51 @@ def parse_args() -> argparse.Namespace:
                         help="disable model thinking by forcing chat-template kwargs; default keeps thinking enabled")
 
     parser.add_argument("--max-tokens", type=int, default=160)
+    parser.add_argument(
+        "--real-context-mode",
+        choices=["off", "repo-snapshot"],
+        default="off",
+        help="inject large incoming context into each task prompt",
+    )
+    parser.add_argument(
+        "--real-context-chars",
+        type=int,
+        default=0,
+        help="target character budget for injected incoming context; 0 disables injection",
+    )
+    parser.add_argument(
+        "--real-context-safe-fill",
+        type=float,
+        default=0.70,
+        help="target fraction of ctx budget allocated to incoming context tokens (0..1)",
+    )
+    parser.add_argument(
+        "--real-context-reserve-tokens",
+        type=int,
+        default=2048,
+        help="extra token reserve to avoid overflow from chat template/system overhead",
+    )
+    parser.add_argument(
+        "--real-context-chars-per-token",
+        type=float,
+        default=3.4,
+        help="heuristic conversion from token budget to char budget for snapshot injection",
+    )
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--top-p", type=float, default=0.9)
     parser.add_argument("--startup-timeout", type=float, default=300.0)
     parser.add_argument("--request-timeout", type=float, default=240.0)
+    parser.add_argument(
+        "--allow-ctx-above-16k",
+        action="store_true",
+        help="allow ctx > 16384 for archival experiments; default policy keeps primary lane at <=16k",
+    )
     parser.add_argument("--server-seed", type=int, default=42,
                         help="llama-server seed for deterministic decoding; set to -1 to disable fixed seed")
     parser.add_argument("--stats-ignore-first-run", action=argparse.BooleanOptionalAction, default=False,
                         help="print additional warm-only metrics that exclude run #1 (cold/probing phase)")
+    parser.add_argument("--v2-prime-pass", action=argparse.BooleanOptionalAction, default=True,
+                        help="run one unmeasured priming pass for v2/v2-mini when speculative ngram-mod and runs=1")
     parser.add_argument("--keep-server", action="store_true", help="do not stop server started by this script")
     parser.add_argument(
         "--background-server-policy",
@@ -1130,9 +1269,9 @@ def parse_args() -> argparse.Namespace:
         help="what to do if llama-server is already running before benchmark start",
     )
 
-    parser.add_argument("--autotune", action="store_true", help="run large-context parameter sweep")
-    parser.add_argument("--autotune-min-ctx", type=int, default=32768, help="minimum context for autotune")
-    parser.add_argument("--autotune-ctx-values", default="32768,49152,65536", help="comma-separated ctx values")
+    parser.add_argument("--autotune", action="store_true", help="run parameter sweep")
+    parser.add_argument("--autotune-min-ctx", type=int, default=12288, help="minimum context for autotune")
+    parser.add_argument("--autotune-ctx-values", default="12288,14336,16384", help="comma-separated ctx values")
     parser.add_argument("--autotune-batch-values", default="1024,2048,4096", help="comma-separated batch values")
     parser.add_argument("--autotune-ubatch-values", default="1024,2048,4096", help="comma-separated ubatch values")
     parser.add_argument("--autotune-kv-values", default="q8_0,q4_0", help="comma-separated kv cache values")
@@ -1192,6 +1331,22 @@ def run_suite(args: argparse.Namespace, tasks: list[dict[str, str]]) -> list[dic
             wait_for_server(base_url, 10.0)
 
         rows: list[dict[str, Any]] = []
+
+        # For v2-style tasks with ngram-mod and runs=1, a cold run often produces zero drafts.
+        # Prime once (unmeasured) so the measured run reflects steady-state speculative behavior.
+        should_prime_v2 = (
+            args.v2_prime_pass
+            and args.tasks in ("v2", "v2-mini")
+            and infer_spec_mode(args.server_extra) == "ngram-mod"
+            and args.runs == 1
+        )
+        if should_prime_v2:
+            print("[prime] running unmeasured v2 priming pass ...", flush=True)
+            for task in tasks:
+                prime_row = run_task(base_url, task, args)
+                if prime_row["error"]:
+                    raise RuntimeError(f"v2 prime pass failed on {task['id']}: {prime_row['error']}")
+
         for run_idx in range(args.runs):
             for task in tasks:
                 print(f"[{run_idx + 1}/{args.runs}] {task['id']} ...", flush=True)
@@ -1210,6 +1365,13 @@ def run_suite(args: argparse.Namespace, tasks: list[dict[str, str]]) -> list[dic
 
 def main() -> int:
     args = parse_args()
+    if args.ctx_size > PRIMARY_MAX_CTX and not args.allow_ctx_above_16k:
+        print(
+            "ERROR: ctx-size > 16384 is disabled by current benchmark policy. "
+            "Use --allow-ctx-above-16k for archival runs."
+        )
+        return 4
+
     if args.server_seed is not None and args.server_seed < 0:
         args.server_seed = None
     out_dir = Path(args.out_dir)
@@ -1249,6 +1411,23 @@ def main() -> int:
         tasks = TASKS_FULL
     else:
         tasks = TASKS_QUICK
+
+    if args.real_context_mode == "repo-snapshot":
+        safe_fill = min(max(float(args.real_context_safe_fill), 0.05), 0.95)
+        usable_tokens = int(args.ctx_size * safe_fill) - int(args.max_tokens) - int(args.real_context_reserve_tokens)
+        usable_tokens = max(1024, usable_tokens)
+        safe_char_cap = int(usable_tokens * float(args.real_context_chars_per_token))
+
+        requested_chars = int(args.real_context_chars)
+        effective_chars = safe_char_cap if requested_chars <= 0 else min(requested_chars, safe_char_cap)
+
+        prefix, chars, files = build_repo_snapshot_prefix(ROOT, effective_chars)
+        tasks = apply_real_context_prefix(tasks, prefix)
+        print(
+            f"Real context injection: mode=repo-snapshot chars={chars} files={files} "
+            f"requested={requested_chars} safe_cap={safe_char_cap} effective={effective_chars}"
+        )
+
     if not args.autotune:
         try:
             rows = run_suite(args, tasks)
@@ -1307,6 +1486,14 @@ def main() -> int:
         return 0 if not any(row["error"] for row in rows) else 2
 
     ctx_values = [v for v in parse_int_csv(args.autotune_ctx_values) if v >= args.autotune_min_ctx]
+    if not args.allow_ctx_above_16k:
+        over_limit = [v for v in ctx_values if v > PRIMARY_MAX_CTX]
+        if over_limit or args.autotune_min_ctx > PRIMARY_MAX_CTX:
+            print(
+                "ERROR: autotune ctx values above 16384 are disabled by current benchmark policy. "
+                "Use --allow-ctx-above-16k for archival runs."
+            )
+            return 4
     batch_values = parse_int_csv(args.autotune_batch_values)
     ubatch_values = parse_int_csv(args.autotune_ubatch_values)
     kv_values = parse_text_csv(args.autotune_kv_values)

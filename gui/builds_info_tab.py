@@ -121,7 +121,7 @@ class BuildsInfoTabWidget(QWidget):
                 registry.list_builds(),
                 key=lambda r: (
                     str(r.get("status", "")) != "ready",
-                    -(int(str(r.get("updated_at", "")).replace("-", "").replace(":", "").replace(" ", "") or "0")),
+                    -(int((registry.get_effective_build_timestamp(r) or "0").replace("-", "").replace(":", "").replace(" ", "") or "0")),
                     str(r.get("name", "")).lower(),
                 ),
             )

@@ -6,6 +6,13 @@
 
 `llama.cpp-with-GUI` — персональный форк `ggml-org/llama.cpp` для локального inference на машине владельца. Главный сценарий: быстро запускать и тестировать Qwen/GGUF модели через GUI, собирать llama.cpp под AMD ROCm/Vulkan, пробовать TurboQuant и аккуратно подтягивать upstream runtime fixes без импорта чужой документации и CI-шума.
 
+## Текущий performance target
+
+- Активный target: `Qwen3.6-27B-Q3_K_S` на ROCm в prompt-heavy no-reuse workload со стартовой точкой ниже `16k`.
+- Текущий reference стартовой точки: `ctx=12288` с входящим prompt около `~8k` токенов и throughput `~9.24 TPS`.
+- Цель на текущую фазу: `25-27 TPS` на стартовой точке (`ctx=12288` или ближайший контекст, где модель остаётся в prompt-heavy режиме).
+- `128k` и старый `64k` lane остаются только архивными reference-профилями и не являются активной целью.
+
 ## Машина
 
 | Компонент | Значение |
@@ -86,19 +93,19 @@
 
 ## Практичные defaults для RX 9070 XT
 
-Для Qwen3.6 text (rocWMMA enabled, 2026-05-08):
+Для Qwen3.6 text active research profile (rocWMMA enabled, 2026-05-10):
 
 ```text
 backend=ROCm (HIP SDK 7.1 + rocWMMA 2.0.0 + RDNA4 MMA configs)
 -ngl 999
 --flash-attn on
 -np 1
--c 65536 (long context optimized)
+-c 12288 (current стартовая точка prompt-heavy lane)
 -b 4096
--ub 128 (autotune: ubatch >= 256 regresses to ~20 TPS due to kernel switch)
+-ub 512 (current working 64k corridor for Qwen3.6-27B speed research)
 --cache-type-k q4_0 (slightly better than q8_0)
 --cache-type-v q4_0
---spec-type ngram-mod --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-max 64 (26.52 TPS)
+--spec-type none (current baseline for prompt-heavy no-reuse lane)
 
 Optional experimental:
 --spec-type mtp --spec-draft-n-max 3 (MTP support already in codebase, awaiting MTP-enabled GGUF)

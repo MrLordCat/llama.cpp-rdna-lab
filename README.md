@@ -8,9 +8,18 @@
 
 - PyQt6 GUI для запуска `llama-server`, CLI-инференса, скачивания моделей и сборки проекта.
 - Оптимизация под AMD Radeon RX 9070 XT через ROCm/HIP SDK 7.1, с Vulkan как fallback.
+- Реалистичная производительность Qwen3.6 в prompt-heavy режиме со стартовой точкой ниже `16k` (`ctx=12288` как текущий reference) и целевой метрикой `25-27 TPS` на этой стартовой точке.
 - TurboQuant KV/weight experiments: `tbq3_0`, `tbq4_0`, `tq3_0`.
 - Защита локальных GUI, документации и агентских инструкций от случайного перетирания при `upstream/master` merge.
 - Подготовка к MTP/Multi-Token Prediction, когда поддержка станет достаточно стабильной для форка.
+
+## Performance Focus Update (2026-05-10)
+
+- Активные 128k прогоны временно остановлены.
+- Также остановлен старый `64k`-центричный lane как основной, потому что новый prompt-heavy benchmark показал раннюю деградацию уже ниже `16k`.
+- Новый базовый сценарий для всех performance claims: `scripts/agent_workload_bench.py` с `--real-context-mode repo-snapshot` и большим входящим prompt.
+- Текущая стартовая точка: `ctx=12288` (no-reuse, prompt-heavy) с фактическим уровнем около `9.24 TPS`.
+- Новая инженерная цель: поднять стартовую точку до `25-27 TPS` через изменения в кодовой базе llama.cpp/ggml (prefill/runtime path), а не только server args.
 
 ## Статус спринтов (2026-05-07)
 

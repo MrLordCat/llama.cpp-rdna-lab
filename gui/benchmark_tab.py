@@ -149,6 +149,7 @@ class BenchmarkTabWidget(QWidget):
         row1.addWidget(QLabel("Spec:"))
         self.spec_combo = QComboBox()
         self.spec_combo.addItems(["none", "ngram-mod", "mtp"])
+        self.spec_combo.setCurrentText("none")
         row1.addWidget(self.spec_combo)
         params_layout.addLayout(row1)
 
@@ -157,7 +158,7 @@ class BenchmarkTabWidget(QWidget):
         self.ctx_spin = QSpinBox()
         self.ctx_spin.setMinimum(8192)
         self.ctx_spin.setMaximum(131072)
-        self.ctx_spin.setValue(32768)
+        self.ctx_spin.setValue(65536)
         self.ctx_spin.setSingleStep(8192)
         row2.addWidget(self.ctx_spin)
 
@@ -165,7 +166,7 @@ class BenchmarkTabWidget(QWidget):
         self.batch_spin = QSpinBox()
         self.batch_spin.setMinimum(32)
         self.batch_spin.setMaximum(8192)
-        self.batch_spin.setValue(1024)
+        self.batch_spin.setValue(2048)
         self.batch_spin.setSingleStep(32)
         row2.addWidget(self.batch_spin)
 
@@ -173,7 +174,7 @@ class BenchmarkTabWidget(QWidget):
         self.ubatch_spin = QSpinBox()
         self.ubatch_spin.setMinimum(32)
         self.ubatch_spin.setMaximum(8192)
-        self.ubatch_spin.setValue(1024)
+        self.ubatch_spin.setValue(512)
         self.ubatch_spin.setSingleStep(32)
         row2.addWidget(self.ubatch_spin)
         params_layout.addLayout(row2)
@@ -182,7 +183,7 @@ class BenchmarkTabWidget(QWidget):
         row3.addWidget(QLabel("KV K/V:"))
         self.kv_combo = QComboBox()
         self.kv_combo.addItems(["q8_0", "q4_0", "f16", "bf16", "f32"])
-        self.kv_combo.setCurrentText("q8_0")
+        self.kv_combo.setCurrentText("q4_0")
         row3.addWidget(self.kv_combo)
 
         row3.addWidget(QLabel("Max tokens:"))
@@ -195,6 +196,7 @@ class BenchmarkTabWidget(QWidget):
         row3.addWidget(QLabel("Autotune profile:"))
         self.autotune_profile_combo = QComboBox()
         self.autotune_profile_combo.addItems(["32K+", "64K+"])
+        self.autotune_profile_combo.setCurrentText("64K+")
         self.autotune_profile_combo.currentTextChanged.connect(self._on_autotune_profile_changed)
         row3.addWidget(self.autotune_profile_combo)
 
@@ -324,6 +326,7 @@ class BenchmarkTabWidget(QWidget):
         self._version_payloads = {}
 
         records = self.parent.get_registered_builds() if hasattr(self.parent, "get_registered_builds") else []
+        registry = getattr(self.parent, "build_registry", None)
         usable = [
             r for r in records
             if str(r.get("status", "")) == "ready"
@@ -331,7 +334,13 @@ class BenchmarkTabWidget(QWidget):
             and str(r.get("build_dir", "")).strip()
             and Path(str(r.get("build_dir", "")).strip()).exists()
         ]
-        usable.sort(key=lambda r: (str(r.get("updated_at", "")), str(r.get("created_at", ""))), reverse=True)
+        usable.sort(
+            key=lambda r: (
+                registry.get_effective_build_timestamp(r) if registry is not None else str(r.get("created_at", "") or r.get("updated_at", "")),
+                str(r.get("name", "")).lower(),
+            ),
+            reverse=True,
+        )
 
         for rec in usable:
             source = str(rec.get("source_type", "fork"))
@@ -339,10 +348,10 @@ class BenchmarkTabWidget(QWidget):
             short_ref = source_ref[:10] if source_ref else "-"
             build_id = str(rec.get("id", ""))
             short_id = build_id[-8:] if len(build_id) >= 8 else (build_id or "-")
-            build_date = str(rec.get("created_at", "")).strip() or str(rec.get("updated_at", "")).strip() or "-"
+            build_date = registry.get_effective_build_timestamp(rec) if registry is not None else (str(rec.get("created_at", "")).strip() or str(rec.get("updated_at", "")).strip() or "-")
             label = (
                 f"{rec.get('name', Path(str(rec.get('build_dir'))).name)} "
-                f"[{source}/{short_ref}] | id:{short_id} | date:{build_date}"
+                f"[{source}/{short_ref}] | id:{short_id} | built:{build_date}"
             )
             self.build_version_combo.addItem(label)
             self._version_payloads[label] = {
@@ -545,9 +554,9 @@ class BenchmarkTabWidget(QWidget):
         profile_text = self.autotune_profile_combo.currentText().strip()
         if profile_text == "64K+":
             autotune_min_ctx = 65536
-            ctx_quick = "65536,98304"
-            ctx_standard = "65536,81920,98304"
-            ctx_full = "65536,81920,98304"
+            ctx_quick = "65536"
+            ctx_standard = "65536"
+            ctx_full = "65536"
             profile_key = "ctx64k-plus"
         else:
             autotune_min_ctx = 32768
