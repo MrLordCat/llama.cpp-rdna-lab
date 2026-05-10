@@ -1593,3 +1593,35 @@ TG compute buffer: 6.95 MiB вместо 495 MiB → GPU cache pressure в decod
 ### Overhead
 
 Переключение scheduler происходит один раз (PP→TG) после prefill. Остальные decode-шаги не вызывают swap. Overhead измеримо мал (< 1 мс на переключение).
+
+## RDNA4 Graph-Opt Hang (2026-05-10)
+
+Проблема:
+
+- На Windows + ROCm (RX 9070 XT / `gfx1201`) запуск с `GGML_CUDA_GRAPH_OPT=1` стабильно зависал в начале первого запроса (после prefill/checkpoint, до первого ответа).
+- Симптом в server log: остановка около `begin: ngram_mod occupancy ...`.
+
+Диагностика:
+
+- Добавлена временная instrumentation в `ggml_backend_cuda_graph_optimize()`.
+- Лог показал, что зависание происходит в graph-opt path до стабильного compute/reply цикла.
+
+Фикс:
+
+- В `ggml/src/ggml-cuda/ggml-cuda.cu` добавлен guard:
+  - для `GGML_CUDA_CC_IS_RDNA4(cc)` graph optimizer отключается по умолчанию;
+  - override доступен через `GGML_CUDA_ALLOW_RDNA4_GRAPH_OPT=1` (только для ручных экспериментов).
+
+Результат после фикса (тот же workload, `ctx=65536`, `b=4096`, `ub=512`, `q4_0/q4_0`):
+
+| Label | Env/Spec | Status | Wall TPS |
+|---|---|---|---:|
+| `graphopt-on-smoke` | `GGML_CUDA_GRAPH_OPT=1`, `spec=ngram-mod` | hang | — |
+| `graphsafe-off-specnone-r1` | `GGML_CUDA_DISABLE_GRAPHS=1`, `spec=none` | stable | `24.61` |
+| `graphopt-rdna4-guard-r1` | `GGML_CUDA_GRAPH_OPT=1` + RDNA4 guard, `spec=none` | stable | `24.59` |
+| `graphopt-rdna4-guard-ngram-r1` | `GGML_CUDA_GRAPH_OPT=1` + RDNA4 guard, `spec=ngram-mod` | stable | `24.64` |
+
+Вывод:
+
+- На текущем RDNA4/ROCm пути использовать graph-opt без guard нельзя (deadlock-risk).
+- Безопасный baseline: оставить guard включённым, или задавать `GGML_CUDA_DISABLE_GRAPHS=1` для диагностических прогонов.

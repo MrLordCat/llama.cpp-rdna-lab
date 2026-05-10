@@ -4360,6 +4360,25 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
         return;
     }
 
+    // RDNA4 ROCm path: graph optimizer can cause request-start hangs on some workloads.
+    // Keep CUDA graphs available, but disable this optimization pass by default.
+    static const bool allow_rdna4_graph_opt = [] {
+        const char * env = getenv("GGML_CUDA_ALLOW_RDNA4_GRAPH_OPT");
+        return env != nullptr && atoi(env) == 1;
+    }();
+    const int cc = ggml_cuda_info().devices[cuda_ctx->device].cc;
+    if (!allow_rdna4_graph_opt && GGML_CUDA_CC_IS_RDNA4(cc)) {
+        static bool warned = false;
+        if (!warned) {
+            GGML_LOG_INFO(
+                "%s: disabling graph optimizer on RDNA4 by default (set GGML_CUDA_ALLOW_RDNA4_GRAPH_OPT=1 to override)\n",
+                __func__
+            );
+            warned = true;
+        }
+        return;
+    }
+
     ggml_cuda_stream_context & stream_context = cuda_ctx->stream_context();
     stream_context.reset();
 

@@ -589,6 +589,25 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
     if args.server_extra:
         cmd.extend(shlex.split(args.server_extra, posix=(os.name != "nt")))
 
+    env = rocm_env()
+
+    # Known issue: on some ROCm/Windows paths, forcing RDNA4 graph-opt can hang.
+    # Current backend guard disables RDNA4 graph-opt by default. Treat only explicit
+    # override mode as unsafe.
+    server_bin_l = str(server_bin).lower()
+    if (
+        os.name == "nt"
+        and "rocm" in server_bin_l
+        and env.get("GGML_CUDA_GRAPH_OPT") == "1"
+        and env.get("GGML_CUDA_ALLOW_RDNA4_GRAPH_OPT") == "1"
+        and not args.allow_unsafe_graph_opt
+    ):
+        raise RuntimeError(
+            "Unsafe override detected: GGML_CUDA_ALLOW_RDNA4_GRAPH_OPT=1 on ROCm/Windows. "
+            "This mode can hang at request start. "
+            "If you still want to test this unstable mode, pass --allow-unsafe-graph-opt."
+        )
+
     log_dir = Path(args.out_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     server_log = log_dir / f"{args.label}.server.log"
@@ -598,7 +617,7 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
     return subprocess.Popen(
         cmd,
         cwd=ROOT,
-        env=rocm_env(),
+        env=env,
         stdout=log_file,
         stderr=subprocess.STDOUT,
         text=True,
@@ -1330,6 +1349,7 @@ def update_model_preset_file(
         "q8_0": 3,
         "q4_0": 7,
     }
+
     preset = {
         "pattern": escaped,
         "name": name,
@@ -1469,6 +1489,11 @@ def parse_args() -> argparse.Namespace:
         choices=["warn", "fail", "ignore"],
         default="warn",
         help="what to do if llama-server is already running before benchmark start",
+    )
+    parser.add_argument(
+        "--allow-unsafe-graph-opt",
+        action="store_true",
+        help="allow running with GGML_CUDA_GRAPH_OPT=1 on ROCm/Windows despite known hang risk",
     )
 
     parser.add_argument("--autotune", action="store_true", help="run parameter sweep")
