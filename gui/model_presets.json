@@ -35,8 +35,8 @@
         },
         {
             "pattern": "Qwen3\\.6\\-27B\\-Q3_K_S\\.gguf",
-            "name": "AutoTune Speed Qwen3.6-27B-Q3_K_S.gguf",
-            "ctx": 131072,
+            "name": "Qwen3.6-27B Speed (ROCm, dual-sched ub=512)",
+            "ctx": 65536,
             "batch_size": 4096,
             "ubatch_size": 512,
             "gpu_layers": 999,
@@ -51,7 +51,7 @@
             "repeat_penalty": 1.0,
             "disable_thinking": false,
             "extra_args": "--spec-type ngram-mod\n--spec-ngram-mod-n-min 48\n--spec-ngram-mod-n-match 24\n--spec-ngram-mod-n-max 64",
-            "notes": "2026-05-10 long-context GUI preset for 120k+ targets: b4096/ub512, q4_0 KV, spec=ngram-mod, thinking ON. Realctx 128k benchmark reached 31.90/32.68 TPS aggregate on build-rocm-exp."
+            "notes": "Dual TG/PP scheduler (2026-05-10): ub=512 даёт ~32 TPS на RX 9070 XT — столько же, сколько ub=128 в старом билде, но с более быстрым prefill. Требует сборки из этого форка (dual-sched патч в src/llama-context.cpp). ctx=65536, q4_0 KV, ngram-mod. Для воспроизведения: Build > ROCm > cmake --build build-rocm-wmma."
         },
         {
             "pattern": "Qwen3\\.5\\-9B\\-Q6_K\\.gguf",

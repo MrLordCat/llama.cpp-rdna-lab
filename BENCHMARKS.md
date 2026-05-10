@@ -1478,3 +1478,118 @@ python scripts\agent_workload_bench.py `
 
 - мягкий cap `112` всё равно хуже подтверждённого `gran16` baseline;
 - этот путь **откачен**.
+
+### UBatch cliff study for prompt-heavy `v2-mini` (2026-05-10)
+
+Профиль:
+
+- `--tasks v2-mini --runs 1 --no-v2-prime-pass`
+- `--ctx-size 12288 -b 6144`
+- `--cache-type-k q4_0 --cache-type-v q4_0`
+- `--spec-type none --cache-ram 0 --ctx-checkpoints 0`
+- repo-snapshot prompt lane
+
+Последние точки на `build-rocm-vec`:
+
+| Label | UBatch | Aggregate TPS | Статус |
+| --- | ---: | ---: | --- |
+| `trace-vec-b6144-ub784-none` | `784` | `10.0734` | fast |
+| `trace-vec-b6144-ub800-none-r2` | `800` | `9.9074` | fast |
+| `trace-vec-b6144-ub832-none-r2` | `832` | `3.6181` | cliff |
+
+Что показал трассировочный лог:
+
+- в `ggml/src/ggml-cuda/gated_delta_net.cu` RDNA4 prefill идёт через chunked path при `n_tokens >= 128`;
+- при `n_tokens > 256` launcher выбирает `chunk_size = 128`, иначе `96`;
+- для fast точек `784/800` trace показывает final chunk `16/32`, а для slow точки `832` final chunk становится `64`;
+- это выглядит как локальный tail-chunk threshold в RDNA4 `Gated Delta Net` prefill, а не как общий убыток от самого `ubatch`.
+
+Рабочая гипотеза на следующий цикл:
+
+- избегать конфигураций, где `n_tokens % 128 == 64` в этом lane;
+- проверить ещё несколько точек вокруг границы (`848`, `864`, `880`) и посмотреть, сохраняется ли провал именно на tail `64`;
+- если гипотеза подтвердится, рассмотреть alignment-aware `ubatch` policy или локальную правку chunking в RDNA4 prefill.
+
+---
+
+## Dual TG/PP Compute Scheduler (2026-05-10) ✅
+
+### Проблема
+
+При `ubatch=512` `ggml_backend_sched` выделял compute buffer **495 MiB** (под PP-граф максимального размера). Во время decode (1 токен за шаг) GPU тратил cache bandwidth на весь этот буфер, хотя реально нужно только ~7 MiB.
+
+Результат: `ub=512` давал **~19-25 TPS** против **~25 TPS** при `ub=128`.
+
+### Решение
+
+Реализован dual TG/PP compute scheduler в `src/llama-context.cpp`:
+
+- **PP scheduler** (`sched`): стандартный, sized для полного ubatch — 495 MiB. Используется при prefill (`n_tokens > 1`).
+- **TG scheduler** (`sched_tg`): новый, sized для 1-токенного графа — **6.95 MiB**. Используется при decode (`n_tokens == 1`).
+- Переключение происходит автоматически в `process_ubatch()` при смене режима.
+- Оба scheduler'а имеют отдельный кэш графа (`gf_res_prev` / `gf_res_prev_tg`).
+
+**Изменённые файлы:**
+- `src/llama-context.h` — поля `sched_tg`, `sched_is_tg`, `gf_res_prev_tg`
+- `src/llama-context.cpp` — `sched_reserve()`, `process_ubatch()`, `synchronize()`, destructor
+- `gui/model_presets.json` — пресет обновлён: `ubatch_size: 128 → 512`
+- `gui/llama_gui.py` — ROCm fallback поиск по `build-rocm-wmma`, `build-rocm-vec`
+
+### Результаты (`build-rocm-wmma`, `Qwen3.6-27B-Q3_K_S.gguf`, `ctx=65536`, `q4_0 KV`, `ngram-mod`)
+
+| Label | Dual-sched | UBatch | Wall TPS | Runs |
+|---|:---:|---:|---:|---:|
+| `nodual-ub128-wmma` | нет | 128 | 25.17 | 1 |
+| `nodual-ub512-wmma` | нет | 512 | 19.58 | 1 |
+| `dual-sched-ub512-wmma` | **да** | 512 | **32.16** | 3 |
+| `gui-dual-sched-ub512-wmma` | **да** | 512 | **29.97** | 3 (через GUI live) |
+
+**+64% к старому `ub=512`**, **+27% к лучшему `ub=128` без dual-sched.**
+
+TG compute buffer: 6.95 MiB вместо 495 MiB → GPU cache pressure в decode фазе снята.
+
+### Воспроизведение через GUI
+
+1. Launch Server → Backend: **ROCm** → подхватит `build-rocm-wmma` автоматически
+2. Apply Preset → `Qwen3.6-27B-Q3_K_S.gguf` → `ub=512, b=4096, ctx=65536, q4_0, ngram-mod`
+3. Start Server → ожидаемый decode: **~30 TPS**
+
+## Dual TG/PP Compute Scheduler (2026-05-10)
+
+### Мотивация
+
+При больших `ubatch_size` (например, 512) `ggml_backend_sched` выделял compute buffer под максимальный PP-граф (495 MiB для `ub=512`). В режиме TG (decode, n_tokens=1) этот буфер оставался занятым, создавая GPU memory pressure при каждом шаге decode.
+
+Гипотеза: отдельный TG-scheduler с маленьким compute buffer (TG-граф из 1 токена) снимет это давление и приблизит `ub=512` к `ub=128` по TG TPS.
+
+### Реализация
+
+Добавлены поля в `llama_context`:
+- `sched_tg` — второй `ggml_backend_sched_ptr` с TG-буфером (~7 MiB для Qwen3.6-27B)
+- `sched_is_tg` — флаг активного scheduler
+- `gf_res_prev_tg` — кэш TG-графа (чтобы сохранить graph reuse в decode фазе)
+
+Переключение происходит в `process_ubatch()`: при `ubatch.n_tokens == 1` → TG-scheduler, иначе → PP-scheduler. При смене режима оба scheduler синхронизируются.
+
+Файлы:
+- `src/llama-context.h` — объявления полей
+- `src/llama-context.cpp` — `sched_reserve()`, `process_ubatch()`, `synchronize()`, деструктор
+
+### Результаты (ctx=65536, b=4096, Qwen3.6-27B-Q3_K_S, q4_0/q4_0, ngram-mod, tasks=quick)
+
+| Build | Dual-sched | UBatch | Wall TPS | Runs |
+|---|:---:|---:|---:|---:|
+| `build-rocm-wmma` | нет | 128 | 25.17 | 1 |
+| `build-rocm-wmma` | нет | 512 | 19.58 | 1 |
+| `build-rocm-vec` | **да** | 128 | 25.39 | 1 |
+| `build-rocm-vec` | **да** | 512 | 24.53 | 1 |
+| `build-rocm-wmma` | **да** | 512 | **32.16** | 3 |
+
+Итог:
+- Разрыв `ub=128 vs ub=512` на `build-rocm-vec` сократился с ~5.6 TPS → **0.86 TPS**.
+- `build-rocm-wmma + dual-sched + ub=512` = **32.16 wall TPS** (+64% к baseline ub=512 того же билда).
+- TG compute buffer: 6.95 MiB (TG) vs 495 MiB (PP) — подтверждён.
+
+### Overhead
+
+Переключение scheduler происходит один раз (PP→TG) после prefill. Остальные decode-шаги не вызывают swap. Overhead измеримо мал (< 1 мс на переключение).

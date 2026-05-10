@@ -314,7 +314,9 @@ private:
 
     std::vector<swap_info> output_swaps;
 
-    ggml_backend_sched_ptr sched;
+    ggml_backend_sched_ptr sched;    // PP scheduler: sized for ubatch (large compute buffer)
+    ggml_backend_sched_ptr sched_tg; // TG scheduler: sized for 1 token (small compute buffer)
+    bool sched_is_tg = false;        // which scheduler is currently active in sched
 
     bool sched_need_reserve = true;
 
@@ -338,6 +340,7 @@ private:
     std::vector<size_t>                     backend_buf_exp_size; // expected buffer sizes
 
     llm_graph_result_ptr gf_res_prev;
+    llm_graph_result_ptr gf_res_prev_tg; // separate graph cache for TG mode
     llm_graph_result_ptr gf_res_reserve;
 
     // host buffer for the model output (logits and embeddings)

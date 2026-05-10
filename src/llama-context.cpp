@@ -379,6 +379,11 @@ llama_context::llama_context(
 
 llama_context::~llama_context() {
     if (!model.hparams.no_alloc) {
+        // Ensure the PP scheduler is in `sched` for buffer size validation
+        // (backend_buf_exp_size was recorded from the PP scheduler)
+        if (sched_tg && sched_is_tg) {
+            std::swap(sched, sched_tg);
+        }
         for (size_t i = 0; i < backend_ptrs.size(); ++i) {
             ggml_backend_t             backend = backend_ptrs[i];
             ggml_backend_buffer_type_t buft    = backend_buft[i];
@@ -625,6 +630,39 @@ void llama_context::sched_reserve() {
         }
     }
 
+    // Build a separate TG (token generation) scheduler with a small compute buffer (1-token graph).
+    // During decode (n_tokens=1), we switch to this scheduler so the GPU compute buffer
+    // does not occupy cache bandwidth with unused PP-sized scratch memory.
+    {
+        const size_t max_nodes_tg = this->graph_max_nodes(n_seqs); // n_seqs == 1
+        gf_res_prev_tg.reset(new llm_graph_result(max_nodes_tg));
+
+        // Temporarily swap sched ↔ sched_tg so graph_reserve() uses sched_tg
+        sched_tg.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes_tg, false, cparams.op_offload));
+        std::swap(sched, sched_tg);
+
+        auto * gf = graph_reserve(n_seqs, n_seqs, n_seqs, mctx.get(), model.hparams.no_alloc);
+        if (!gf) {
+            LLAMA_LOG_WARN("%s: failed to reserve TG compute buffers, dual-sched disabled\n", __func__);
+            std::swap(sched, sched_tg);
+            sched_tg.reset();
+        } else {
+            for (size_t i = 0; i < backend_ptrs.size(); ++i) {
+                ggml_backend_t             backend = backend_ptrs[i];
+                ggml_backend_buffer_type_t buft    = backend_buft[i];
+                const size_t sz = ggml_backend_sched_get_buffer_size(sched.get(), backend);
+                if (sz > 1) {
+                    LLAMA_LOG_INFO("%s: %10s TG compute buffer size = %8.2f MiB\n", __func__,
+                            ggml_backend_buft_name(buft),
+                            sz / 1024.0 / 1024.0);
+                }
+            }
+            std::swap(sched, sched_tg);
+        }
+
+        sched_is_tg = false; // PP scheduler is active after reserve
+    }
+
     if (n_nodes_pp == n_nodes_tg) {
         LLAMA_LOG_INFO("%s: graph nodes  = %d\n", __func__, n_nodes_pp);
     } else {
@@ -649,6 +687,14 @@ void llama_context::synchronize() {
     }
 
     ggml_backend_sched_synchronize(sched.get());
+
+    // also sync the non-active scheduler if it exists (may have pending async work)
+    if (sched_tg && sched_is_tg == false) {
+        ggml_backend_sched_synchronize(sched_tg.get());
+    } else if (sched_tg && sched_is_tg == true) {
+        // sched is currently tg, sched_tg is pp — sync happened above via sched
+        // nothing extra needed
+    }
 
     // FIXME: if multiple single tokens are evaluated without a synchronization,
     // the stats will be added to the prompt evaluation stats
@@ -750,6 +796,7 @@ bool llama_context::memory_update(bool optimize) {
         // TODO: change the mctx->apply() to return information if a graph reserve is needed
         //       reset the graph result only if the memory module did reset the scheduler
         gf_res_prev->reset();
+        if (gf_res_prev_tg) { gf_res_prev_tg->reset(); }
 
         if (!mctx->apply()) {
             LLAMA_LOG_ERROR("%s: failed to apply memory update\n", __func__);
@@ -1187,6 +1234,21 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
         ret = GGML_STATUS_FAILED;
         return nullptr;
+    }
+
+    // Switch between TG (1-token decode) and PP (multi-token prefill) schedulers.
+    // The TG scheduler has a much smaller compute buffer, reducing GPU cache pressure
+    // during decode where actual batch size is always 1 regardless of ubatch setting.
+    if (sched_tg) {
+        const bool want_tg = (ubatch.n_tokens == 1);
+        if (want_tg != sched_is_tg) {
+            // Flush any pending async work on both schedulers before switching
+            if (sched_tg) { ggml_backend_sched_synchronize(sched_tg.get()); }
+            ggml_backend_sched_synchronize(sched.get());
+            std::swap(sched, sched_tg);
+            std::swap(gf_res_prev, gf_res_prev_tg);
+            sched_is_tg = want_tg;
+        }
     }
 
     auto * res = gf_res_prev.get();

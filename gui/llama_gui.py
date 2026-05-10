@@ -518,15 +518,6 @@ class LlamaCppGUI(QMainWindow):
         self.server_ctx_slider.setPageStep(1)
         self.server_ctx_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.server_ctx_slider.setTickInterval(4)  # Every 32K
-        ctx_layout.addWidget(self.server_ctx_slider)
-        self.server_ctx_label = QLabel("8192")
-        self.server_ctx_label.setMinimumWidth(60)
-        ctx_layout.addWidget(self.server_ctx_label)
-        self.server_ctx_slider.valueChanged.connect(lambda v: self.server_ctx_label.setText(str(v * 8192)))
-        col1.addLayout(ctx_layout)
-        
-        self.server_ctx_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.server_ctx_slider.setTickInterval(4)
         res_layout.addWidget(self.server_ctx_slider, 1, 1, 1, 4)
         self.server_ctx_label = QLabel("8192")
         self.server_ctx_label.setMinimumWidth(45)
@@ -2050,6 +2041,17 @@ class LlamaCppGUI(QMainWindow):
             build_dir / "bin" / "Debug" / "llama-server.exe",
             build_dir / "bin" / "llama-server",  # Linux/Mac
         ]
+        
+        # For ROCm, also check known variant build dirs in priority order
+        # (dual-sched wmma build takes priority over generic vec build)
+        if selected_backend == "ROCm":
+            rocm_variants = ["build-rocm-wmma", "build-rocm-vec", "build-rocm-exp", "build-rocm-compare"]
+            for variant in rocm_variants:
+                vdir = self.project_root / variant
+                possible_paths.extend([
+                    vdir / "bin" / "llama-server.exe",
+                    vdir / "bin" / "llama-server",
+                ])
         
         # Also check generic 'build' folder as fallback
         if build_dir != self.project_root / "build":
