@@ -6,6 +6,11 @@
 #include "fattn-wmma-f16.cuh"
 #include "fattn.cuh"
 
+#include <cstring>
+#include <mutex>
+#include <unordered_map>
+
+
 template <int DKQ, int DV, int ncols2>
 static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
@@ -320,6 +325,213 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_MMA_F16  = 400,
 };
 
+static const char * ggml_cuda_best_fattn_kernel_name(const best_fattn_kernel kernel) {
+    switch (kernel) {
+        case BEST_FATTN_KERNEL_NONE:     return "none";
+        case BEST_FATTN_KERNEL_TILE:     return "tile";
+        case BEST_FATTN_KERNEL_VEC:      return "vec";
+        case BEST_FATTN_KERNEL_WMMA_F16: return "wmma_f16";
+        case BEST_FATTN_KERNEL_MMA_F16:  return "mma_f16";
+    }
+
+    return "unknown";
+}
+
+static bool ggml_cuda_rdna4_fattn_autotune_enabled() {
+    static int cached = -1;
+    if (cached == -1) {
+        const char * env = std::getenv("GGML_RDNA4_FATTN_AUTOTUNE");
+        cached = (env != nullptr && std::strcmp(env, "0") != 0) ? 1 : 0;
+    }
+    return cached == 1;
+}
+
+static void ggml_cuda_launch_fattn_kernel(ggml_backend_cuda_context & ctx, ggml_tensor * dst, const best_fattn_kernel kernel) {
+    switch (kernel) {
+        case BEST_FATTN_KERNEL_NONE:
+            GGML_ABORT("fatal error");
+        case BEST_FATTN_KERNEL_TILE:
+            ggml_cuda_flash_attn_ext_tile(ctx, dst);
+            return;
+        case BEST_FATTN_KERNEL_VEC:
+            ggml_cuda_flash_attn_ext_vec(ctx, dst);
+            return;
+        case BEST_FATTN_KERNEL_WMMA_F16:
+            ggml_cuda_flash_attn_ext_wmma_f16(ctx, dst);
+            return;
+        case BEST_FATTN_KERNEL_MMA_F16:
+            ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
+            return;
+    }
+    GGML_ABORT("fatal error");
+}
+
+struct ggml_cuda_rdna4_fattn_key {
+    int cc;
+    int q0;
+    int q1;
+    int q2;
+    int q3;
+    int k1;
+    int gqa_ratio;
+    int k_type;
+    int v_type;
+    int gqa_opt_applies;
+
+    bool operator==(const ggml_cuda_rdna4_fattn_key & other) const {
+        return cc == other.cc &&
+            q0 == other.q0 &&
+            q1 == other.q1 &&
+            q2 == other.q2 &&
+            q3 == other.q3 &&
+            k1 == other.k1 &&
+            gqa_ratio == other.gqa_ratio &&
+            k_type == other.k_type &&
+            v_type == other.v_type &&
+            gqa_opt_applies == other.gqa_opt_applies;
+    }
+};
+
+struct ggml_cuda_rdna4_fattn_key_hash {
+    std::size_t operator()(const ggml_cuda_rdna4_fattn_key & key) const {
+        std::size_t h = 0;
+        auto mix = [&h](const int v) {
+            h ^= std::hash<int>{}(v) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        };
+
+        mix(key.cc);
+        mix(key.q0);
+        mix(key.q1);
+        mix(key.q2);
+        mix(key.q3);
+        mix(key.k1);
+        mix(key.gqa_ratio);
+        mix(key.k_type);
+        mix(key.v_type);
+        mix(key.gqa_opt_applies);
+        return h;
+    }
+};
+
+struct ggml_cuda_rdna4_fattn_state {
+    bool initialized;
+    best_fattn_kernel selected;
+
+    ggml_cuda_rdna4_fattn_state() : initialized(false), selected(BEST_FATTN_KERNEL_NONE) {}
+};
+
+static std::mutex & ggml_cuda_rdna4_fattn_tuner_mutex() {
+    static std::mutex tuner_mutex;
+    return tuner_mutex;
+}
+
+static std::unordered_map<ggml_cuda_rdna4_fattn_key, ggml_cuda_rdna4_fattn_state, ggml_cuda_rdna4_fattn_key_hash> & ggml_cuda_rdna4_fattn_tuner_state() {
+    static std::unordered_map<ggml_cuda_rdna4_fattn_key, ggml_cuda_rdna4_fattn_state, ggml_cuda_rdna4_fattn_key_hash> tuner_state;
+    return tuner_state;
+}
+
+static bool ggml_cuda_rdna4_vec_candidate_supported(const ggml_tensor * Q, const ggml_tensor * K, const ggml_tensor * V, const bool can_use_vector_kernel) {
+    if (!can_use_vector_kernel) {
+        return false;
+    }
+
+    if (!(Q->ne[0] == 64 || Q->ne[0] == 128 || Q->ne[0] == 256)) {
+        return false;
+    }
+
+#ifndef GGML_CUDA_FA_ALL_QUANTS
+    if (K->type != V->type) {
+        return false;
+    }
+#endif // GGML_CUDA_FA_ALL_QUANTS
+
+    switch (K->type) {
+        case GGML_TYPE_F16:
+        case GGML_TYPE_F32:
+        case GGML_TYPE_Q4_0:
+        case GGML_TYPE_Q8_0:
+        case GGML_TYPE_BF16:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static best_fattn_kernel ggml_cuda_rdna4_adaptive_select(const int cc, const ggml_tensor * dst, const best_fattn_kernel base_kernel) {
+    if (!ggml_cuda_rdna4_fattn_autotune_enabled() || !GGML_CUDA_CC_IS_RDNA4(cc)) {
+        return base_kernel;
+    }
+
+    if (!(base_kernel == BEST_FATTN_KERNEL_VEC || base_kernel == BEST_FATTN_KERNEL_TILE || base_kernel == BEST_FATTN_KERNEL_MMA_F16)) {
+        return base_kernel;
+    }
+
+    if (base_kernel == BEST_FATTN_KERNEL_MMA_F16) {
+        // Do not probe alternate kernels when the static selector already chose MMA.
+        return base_kernel;
+    }
+
+    const ggml_tensor * KQV  = dst;
+    const ggml_tensor * Q    = dst->src[0];
+    const ggml_tensor * K    = dst->src[1];
+    const ggml_tensor * V    = dst->src[2];
+    const ggml_tensor * mask = dst->src[3];
+
+    GGML_ASSERT(Q->ne[2] % K->ne[2] == 0);
+    const int gqa_ratio = Q->ne[2] / K->ne[2];
+
+    float max_bias = 0.0f;
+    memcpy(&max_bias, (const float *) KQV->op_params + 1, sizeof(float));
+
+    const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && K->ne[1] % FATTN_KQ_STRIDE == 0;
+    bool gqa_opt_applies = gqa_ratio >= 2 && mask && max_bias == 0.0f && K->ne[1] % FATTN_KQ_STRIDE == 0;
+    for (const ggml_tensor * t : {Q, K, V, mask}) {
+        if (t == nullptr || ggml_is_quantized(t->type)) {
+            continue;
+        }
+        for (size_t i = 1; i < GGML_MAX_DIMS; ++i) {
+            if (t->nb[i] % 16 != 0) {
+                gqa_opt_applies = false;
+                break;
+            }
+        }
+    }
+
+    const bool can_try_vec = base_kernel == BEST_FATTN_KERNEL_TILE &&
+        ggml_cuda_rdna4_vec_candidate_supported(Q, K, V, can_use_vector_kernel);
+
+    const ggml_cuda_rdna4_fattn_key key = {
+        cc,
+        (int) Q->ne[0],
+        (int) Q->ne[1],
+        (int) Q->ne[2],
+        (int) Q->ne[3],
+        (int) K->ne[1],
+        gqa_ratio,
+        (int) K->type,
+        (int) V->type,
+        (int) gqa_opt_applies,
+    };
+
+    std::lock_guard<std::mutex> lock(ggml_cuda_rdna4_fattn_tuner_mutex());
+    ggml_cuda_rdna4_fattn_state & state = ggml_cuda_rdna4_fattn_tuner_state()[key];
+
+    if (!state.initialized) {
+        state.initialized = true;
+        state.selected = base_kernel;
+
+        if (can_try_vec) {
+            // Conservative override for tiny effective batches where vector kernels are often better.
+            const int gqa_ratio_eff = gqa_opt_applies ? gqa_ratio : 1;
+            if (Q->ne[1] * gqa_ratio_eff <= 2) {
+                state.selected = BEST_FATTN_KERNEL_VEC;
+            }
+        }
+    }
+
+    return state.selected;
+}
+
 static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const ggml_tensor * dst) {
 #ifndef FLASH_ATTN_AVAILABLE
     GGML_UNUSED(device); GGML_UNUSED(dst);
@@ -482,24 +694,55 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             gqa_ratio_eff *= 2;
         }
 
+        const bool trace_path = std::getenv("GGML_TRACE_FATTN_PATH") != nullptr;
+        if (trace_path) {
+            GGML_LOG_INFO(
+                "%s: RDNA4 dispatch cc=%d Q0=%lld Q1=%lld Q2=%lld Q3=%lld gqa_ratio=%d gqa_ratio_eff=%d can_use_vector=%d KQ_stride=%d\n",
+                __func__,
+                cc,
+                (long long) Q->ne[0],
+                (long long) Q->ne[1],
+                (long long) Q->ne[2],
+                (long long) Q->ne[3],
+                gqa_ratio,
+                gqa_ratio_eff,
+                (int) can_use_vector_kernel,
+                FATTN_KQ_STRIDE);
+        }
+
         if (can_use_vector_kernel) {
             if (!ggml_is_quantized(K->type) && !ggml_is_quantized(V->type)) {
                 if (Q->ne[1] == 1) {
                     if (gqa_ratio_eff <= 2) {
+                        if (trace_path) {
+                            GGML_LOG_INFO("%s: RDNA4 choose %s\n", __func__, ggml_cuda_best_fattn_kernel_name(BEST_FATTN_KERNEL_VEC));
+                        }
                         return BEST_FATTN_KERNEL_VEC;
                     }
                     if (!gqa_opt_applies) {
+                        if (trace_path) {
+                            GGML_LOG_INFO("%s: RDNA4 choose %s\n", __func__, ggml_cuda_best_fattn_kernel_name(BEST_FATTN_KERNEL_VEC));
+                        }
                         return BEST_FATTN_KERNEL_VEC;
                     }
                 }
             } else {
                 if (Q->ne[1] * gqa_ratio_eff <= 4) {
+                    if (trace_path) {
+                        GGML_LOG_INFO("%s: RDNA4 choose %s\n", __func__, ggml_cuda_best_fattn_kernel_name(BEST_FATTN_KERNEL_VEC));
+                    }
                     return BEST_FATTN_KERNEL_VEC;
                 }
             }
         }
         if (Q->ne[1] * gqa_ratio_eff <= 4) {
+            if (trace_path) {
+                GGML_LOG_INFO("%s: RDNA4 choose %s\n", __func__, ggml_cuda_best_fattn_kernel_name(BEST_FATTN_KERNEL_TILE));
+            }
             return BEST_FATTN_KERNEL_TILE; // AMD WMMA is only faster if the full tile width of 16 can be utilized.
+        }
+        if (trace_path) {
+            GGML_LOG_INFO("%s: RDNA4 choose %s\n", __func__, ggml_cuda_best_fattn_kernel_name(BEST_FATTN_KERNEL_MMA_F16));
         }
         return BEST_FATTN_KERNEL_MMA_F16;
     }
@@ -535,22 +778,36 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
-    switch (ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst)) {
-        case BEST_FATTN_KERNEL_NONE:
-            GGML_ABORT("fatal error");
-        case BEST_FATTN_KERNEL_TILE:
-            ggml_cuda_flash_attn_ext_tile(ctx, dst);
-            break;
-        case BEST_FATTN_KERNEL_VEC:
-            ggml_cuda_flash_attn_ext_vec(ctx, dst);
-            break;
-        case BEST_FATTN_KERNEL_WMMA_F16:
-            ggml_cuda_flash_attn_ext_wmma_f16(ctx, dst);
-            break;
-        case BEST_FATTN_KERNEL_MMA_F16:
-            ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
-            break;
+    const int device = ggml_cuda_get_device();
+    const int cc = ggml_cuda_info().devices[device].cc;
+    const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+
+    const best_fattn_kernel base_kernel = ggml_cuda_get_best_fattn_kernel(device, dst);
+    if (base_kernel == BEST_FATTN_KERNEL_NONE) {
+        GGML_ABORT("fatal error");
     }
+
+    const best_fattn_kernel selected_kernel = ggml_cuda_rdna4_adaptive_select(cc, dst, base_kernel);
+
+    if (std::getenv("GGML_TRACE_FATTN_SELECTED") != nullptr) {
+        GGML_LOG_INFO(
+            "%s: cc=%d Q0=%lld Q1=%lld Q2=%lld Q3=%lld K0=%lld K1=%lld V0=%lld base=%s selected=%s\n",
+            __func__,
+            cc,
+            (long long) Q->ne[0],
+            (long long) Q->ne[1],
+            (long long) Q->ne[2],
+            (long long) Q->ne[3],
+            (long long) K->ne[0],
+            (long long) K->ne[1],
+            (long long) V->ne[0],
+            ggml_cuda_best_fattn_kernel_name(base_kernel),
+            ggml_cuda_best_fattn_kernel_name(selected_kernel));
+    }
+
+    ggml_cuda_launch_fattn_kernel(ctx, dst, selected_kernel);
 }
 
 bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {

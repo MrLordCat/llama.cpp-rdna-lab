@@ -513,6 +513,10 @@ class ServerTabWidget(QWidget):
         if not match:
             return {"matched": False, "reason": "no-preset-match", "model": model_name}
 
+        # Reset spec type to None before applying preset to avoid stale MTP/spec state
+        self.server_spec_type_combo.setCurrentText("None")
+        self.on_spec_type_changed()
+
         if "ctx" in match:
             self.server_context_spinbox.setValue(int(match["ctx"]))
         if "batch_size" in match:

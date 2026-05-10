@@ -186,11 +186,42 @@ static void launch_gated_delta_net(
     // excessive register pressure per launch.  Sweep (2026-05-08, gfx1201):
     //   n_tokens<=256 => chunk=96  (3 launches) => ~32.5 TPS  (optimal)
     //   n_tokens> 256 => chunk=128 (4 launches) => ~31.5 TPS  (optimal for larger batches)
-    const int64_t chunk_size = (n_tokens > 256) ? 128 : 96;
+    int64_t chunk_size = (n_tokens > 256) ? 128 : 96;
+
+    const char * gdn_chunk_override = std::getenv("GGML_GDN_CHUNK_SIZE");
+    if (gdn_chunk_override != nullptr) {
+        const int64_t parsed = atoll(gdn_chunk_override);
+        if (parsed > 0 && parsed % 16 == 0) {
+            chunk_size = parsed;
+        }
+    }
+
+    const bool trace_path = std::getenv("GGML_TRACE_GDN_PATH") != nullptr;
+    if (trace_path) {
+        GGML_LOG_INFO(
+            "%s: KDA=%d keep_intermediates=%d cc=%d n_tokens=%lld n_seqs=%lld S_v=%lld chunked_prefill=%d chunk_size=%lld\n",
+            __func__,
+            (int) KDA,
+            (int) keep_intermediates_t,
+            cc,
+            (long long) n_tokens,
+            (long long) n_seqs,
+            (long long) S_v,
+            (int) use_chunked_prefill,
+            (long long) chunk_size);
+    }
 
     auto launch_once = [&](const float * q_ptr, const float * k_ptr, const float * v_ptr,
                            const float * g_ptr, const float * b_ptr, const float * state_ptr,
                            int64_t n_tokens_chunk, int64_t token_offset) {
+        if (trace_path) {
+            GGML_LOG_INFO(
+                "%s: launch chunk token_offset=%lld n_tokens_chunk=%lld/%lld\n",
+                __func__,
+                (long long) token_offset,
+                (long long) n_tokens_chunk,
+                (long long) n_tokens);
+        }
         switch (S_v) {
             case 16:
                 gated_delta_net_cuda<16, KDA, keep_intermediates_t><<<grid_dims, block_dims, 0, stream>>>(
@@ -228,6 +259,7 @@ static void launch_gated_delta_net(
 
         for (int64_t token_offset = 0; token_offset < n_tokens; token_offset += chunk_size) {
             const int64_t n_tokens_chunk = (n_tokens - token_offset < chunk_size) ? (n_tokens - token_offset) : chunk_size;
+
             launch_once(
                 q_d + token_offset * sq2,
                 k_d + token_offset * sq2,

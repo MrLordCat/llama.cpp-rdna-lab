@@ -1510,6 +1510,50 @@ python scripts\agent_workload_bench.py `
 - проверить ещё несколько точек вокруг границы (`848`, `864`, `880`) и посмотреть, сохраняется ли провал именно на tail `64`;
 - если гипотеза подтвердится, рассмотреть alignment-aware `ubatch` policy или локальную правку chunking в RDNA4 prefill.
 
+### Short lane: `v2-review` (only `v2_code_review`) for low-noise prompt-eval checks (2026-05-10)
+
+Чтобы сократить длительность прогона и уменьшить шум от смешивания нескольких задач,
+в `scripts/agent_workload_bench.py` добавлен режим:
+
+- `--tasks v2-review` (только `v2_code_review`).
+
+Быстрый шаблон запуска:
+
+```powershell
+python scripts/agent_workload_bench.py --label promptfocus-v2review-<tag> --server-bin build-rocm-vec/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --tasks v2-review --runs 1 --ctx-size 12288 --batch-size 6144 --ubatch-size <UB> --cache-type-k q4_0 --cache-type-v q4_0 --server-extra "--spec-type none --cache-ram 0 --ctx-checkpoints 0" --real-context-mode repo-snapshot --real-context-chars 21872 --background-server-policy ignore --no-v2-prime-pass --no-disable-thinking --max-tokens 120
+```
+
+Подтверждение на `runs=3` (одинаковый lane, `spec=none`, no-reuse):
+
+| Label | UBatch | Aggregate TPS | prompt_eval_tps mean | prompt_eval_ms mean |
+| --- | ---: | ---: | ---: | ---: |
+| `promptfocus-v2review-ub128-r3` | `128` | `7.8540` | `736.65` | `10900.92` |
+| `promptfocus-v2review-ub256-r3` | `256` | `8.0202` | `758.95` | `10582.62` |
+| `promptfocus-v2review-ub512-r1` | `512` | `3.7187` | `288.93` | `27791.89` |
+| `promptfocus-v2review-ub824-r3` | `824` | `3.8020` | `297.17` | `27025.85` |
+| `promptfocus-v2review-ub832-r3` | `832` | `3.6944` | `287.32` | `27949.02` |
+
+Вывод:
+
+- в этом конкретном prompt-heavy lane высокие `ubatch` сейчас вредят prefill: `128/256` существенно быстрее `512+`;
+- даже в коротком однотасковом режиме сохраняется просадка `ub832` против `ub824`;
+- фокус оптимизации остаётся на prefill/prompt-eval path;
+- для быстрых A/B итераций по prompt-eval использовать `v2-review` как дефолтный short lane.
+
+Трассировочные подтверждения (текущий `build-rocm-vec`):
+
+- `GGML_TRACE_GDN_PATH=1`:
+  - `ub256`: `launch_gated_delta_net ... n_tokens=256 ... chunk_size=96`;
+  - `ub512`: `launch_gated_delta_net ... n_tokens=512 ... chunk_size=128`.
+- `GGML_TRACE_FATTN_SELECTED=1`:
+  - `ub256`: много вызовов `Q1=256`, `selected=wmma_f16`;
+  - `ub512`: вызовы с `Q1=512`, также `selected=wmma_f16`, но итоговый prompt eval резко хуже.
+
+Проверка гипотезы «виноват только chunk_size=128»:
+
+- принудительный override `GGML_GDN_CHUNK_SIZE=96` при `ub512` (`promptfocus-v2review-ub512-ch96-r1`) не восстановил скорость (`aggregate ~3.71 TPS`).
+- значит, деградация связана не только с `chunk_size`, а с более широким kernel-route/shape поведением prefill при больших `n_tokens`.
+
 ---
 
 ## Dual TG/PP Compute Scheduler (2026-05-10) ✅

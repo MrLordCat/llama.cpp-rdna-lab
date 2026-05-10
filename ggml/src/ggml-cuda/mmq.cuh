@@ -4067,6 +4067,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
     const size_t smpbo  = ggml_cuda_info().devices[id].smpbo;
     const int warp_size = ggml_cuda_info().devices[id].warp_size;
     const int nwarps    = mmq_get_nwarps_host(cc, warp_size);
+    const bool trace_path = std::getenv("GGML_TRACE_MMQ_PATH") != nullptr;
 
     const int mmq_x_max = get_mmq_x_max_host(cc);
     const int mmq_y = get_mmq_y_host(cc);
@@ -4142,6 +4143,20 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
             fprintf(stderr, "mmq_x_best=%d\n", mmq_x_best);
             GGML_ABORT("fatal error");
             break;
+    }
+
+    if (trace_path) {
+        GGML_LOG_INFO(
+            "%s: type=%d cc=%d ncols_max=%lld mmq_x_max=%d mmq_y=%d nwarps=%d mmq_x_best=%d ntiles_x_best=%d\n",
+            __func__,
+            (int) type,
+            cc,
+            (long long) args.ncols_max,
+            mmq_x_max,
+            mmq_y,
+            nwarps,
+            mmq_x_best,
+            ntiles_x_best);
     }
 }
 

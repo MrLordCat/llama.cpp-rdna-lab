@@ -2,6 +2,8 @@
 
 #include "llama-impl.h"
 
+#include <cstdlib>
+
 // utility to get one slice from the third dimension
 // input dim:  [x, y, c, b]
 // output dim: [x, y, 1, b]
@@ -57,7 +59,18 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
     g = ggml_permute(ctx0, g, 0, 2, 1, 3); // [g_0, n_tokens, H_v, n_seqs]
     b = ggml_permute(ctx0, b, 0, 2, 1, 3); // [  1, n_tokens, H_v, n_seqs]
 
-    const int CS = kda ? 16 : 64; // chunk size
+    int CS = kda ? 16 : 64; // chunk size
+
+    // Diagnostic override for non-KDA chunking experiments (e.g. ubatch cliff triage).
+    if (!kda) {
+        const char * chunk_override = getenv("LLAMA_DELTA_NET_CHUNK_SIZE");
+        if (chunk_override != nullptr) {
+            const int cs_override = atoi(chunk_override);
+            if (cs_override > 0 && cs_override % 16 == 0) {
+                CS = cs_override;
+            }
+        }
+    }
 
     const int pad = (CS - n_tokens % CS) % CS;
     const int n_chunks = (n_tokens + pad) / CS;

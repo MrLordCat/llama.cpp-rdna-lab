@@ -136,7 +136,8 @@ class BenchmarkTabWidget(QWidget):
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("Tasks:"))
         self.tasks_combo = QComboBox()
-        self.tasks_combo.addItems(["quick", "full"])
+        self.tasks_combo.addItems(["v2-mini", "v2", "quick", "full"])
+        self.tasks_combo.setCurrentText("v2-mini")
         row1.addWidget(self.tasks_combo)
 
         row1.addWidget(QLabel("Runs:"))
@@ -705,9 +706,13 @@ class BenchmarkTabWidget(QWidget):
             if hasattr(self.parent, "builds_info_tab") and hasattr(self.parent.builds_info_tab, "refresh_builds_info"):
                 self.parent.builds_info_tab.refresh_builds_info()
 
+            # Auto-apply best preset to server tab
+            if hasattr(self.parent, "server_tab") and hasattr(self.parent.server_tab, "apply_model_file_preset"):
+                self.parent.server_tab.apply_model_file_preset()
+
             message = "Benchmark finished and best model preset updated."
             if self._current_mode == "autotune":
-                message = "Auto-tune finished. Best preset saved for this model."
+                message = "Auto-tune finished. Best preset saved and applied to Launch Server tab."
             QMessageBox.information(self, "Bench", message)
         else:
             self.status_label.setText("Benchmark failed")
