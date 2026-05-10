@@ -731,6 +731,206 @@ def aggregate_completion_tps(rows: list[dict[str, Any]]) -> float:
     return (total_completion / total_wall) if total_wall > 0 and total_completion > 0 else 0.0
 
 
+def parse_server_log_diagnostics(server_log: Path) -> dict[str, Any]:
+    if not server_log.exists():
+        return {
+            "available": False,
+            "error": f"server log not found: {server_log}",
+        }
+
+    text = server_log.read_text(encoding="utf-8", errors="replace")
+
+    prompt_matches = re.findall(
+        r"prompt eval time =\s*([0-9.]+) ms /\s*(\d+) tokens \([^)]*,\s*([0-9.]+) tokens per second\)",
+        text,
+    )
+    eval_matches = re.findall(
+        r"\n\s*eval time =\s*([0-9.]+) ms /\s*(\d+) tokens \([^)]*,\s*([0-9.]+) tokens per second\)",
+        text,
+    )
+    total_matches = re.findall(r"total time =\s*([0-9.]+) ms /\s*(\d+) tokens", text)
+    task_prompt_tokens = [int(x) for x in re.findall(r"task\.n_tokens =\s*(\d+)", text)]
+    batch_chunks = [int(x) for x in re.findall(r"batch\.n_tokens =\s*(\d+)", text)]
+
+    prompt_tps = [float(m[2]) for m in prompt_matches]
+    decode_tps = [float(m[2]) for m in eval_matches]
+    prompt_ms = [float(m[0]) for m in prompt_matches]
+    decode_ms = [float(m[0]) for m in eval_matches]
+    total_ms = [float(m[0]) for m in total_matches]
+
+    def _series_stats(values: list[float]) -> dict[str, float]:
+        if not values:
+            return {"count": 0, "min": 0.0, "max": 0.0, "mean": 0.0, "median": 0.0}
+        return {
+            "count": float(len(values)),
+            "min": round(min(values), 4),
+            "max": round(max(values), 4),
+            "mean": round(statistics.mean(values), 4),
+            "median": round(statistics.median(values), 4),
+        }
+
+    warning_lines = [ln.strip() for ln in text.splitlines() if re.search(r"\b(warning|failed|error)\b", ln, re.IGNORECASE)]
+
+    return {
+        "available": True,
+        "path": str(server_log),
+        "prompt_eval_tps": _series_stats(prompt_tps),
+        "decode_eval_tps": _series_stats(decode_tps),
+        "prompt_eval_ms": _series_stats(prompt_ms),
+        "decode_eval_ms": _series_stats(decode_ms),
+        "total_ms": _series_stats(total_ms),
+        "task_prompt_tokens": {
+            "count": len(task_prompt_tokens),
+            "mean": round(statistics.mean(task_prompt_tokens), 2) if task_prompt_tokens else 0.0,
+            "max": max(task_prompt_tokens) if task_prompt_tokens else 0,
+            "min": min(task_prompt_tokens) if task_prompt_tokens else 0,
+        },
+        "batch_chunks": {
+            "count": len(batch_chunks),
+            "mean": round(statistics.mean(batch_chunks), 2) if batch_chunks else 0.0,
+            "max": max(batch_chunks) if batch_chunks else 0,
+            "min": min(batch_chunks) if batch_chunks else 0,
+        },
+        "warning_lines": warning_lines[:30],
+    }
+
+
+def build_bottleneck_hints(rows: list[dict[str, Any]], server_diag: dict[str, Any]) -> list[str]:
+    hints: list[str] = []
+    if not server_diag.get("available"):
+        return ["server log diagnostics unavailable; check server startup and log path"]
+
+    prompt_tps_mean = float(server_diag.get("prompt_eval_tps", {}).get("mean", 0.0) or 0.0)
+    decode_tps_mean = float(server_diag.get("decode_eval_tps", {}).get("mean", 0.0) or 0.0)
+    prompt_ms_mean = float(server_diag.get("prompt_eval_ms", {}).get("mean", 0.0) or 0.0)
+    decode_ms_mean = float(server_diag.get("decode_eval_ms", {}).get("mean", 0.0) or 0.0)
+    total_ms_mean = float(server_diag.get("total_ms", {}).get("mean", 0.0) or 0.0)
+
+    if prompt_tps_mean > 0 and decode_tps_mean > 0:
+        ratio = prompt_tps_mean / decode_tps_mean
+        if ratio > 20:
+            hints.append("prefill much faster than decode; prioritize decode/MMQ/FATTN path")
+        elif ratio < 8:
+            hints.append("prefill not much faster than decode; investigate prompt processing path")
+
+    if total_ms_mean > 0:
+        prefill_share = prompt_ms_mean / total_ms_mean
+        decode_share = decode_ms_mean / total_ms_mean
+        if prefill_share >= 0.70:
+            hints.append("wall time dominated by prefill; focus on batch/ubatch chunking and prefill kernels")
+        elif decode_share >= 0.30:
+            hints.append("decode share is significant; test MMQ/FATTN routing hypotheses")
+
+    row_tps = [float(r.get("completion_tps_wall") or 0.0) for r in rows if r.get("completion_tps_wall")]
+    if len(row_tps) > 1:
+        stdev = statistics.pstdev(row_tps)
+        if stdev > 0.5:
+            hints.append("high per-task TPS variance; check speculative stability and thermal/load interference")
+
+    if server_diag.get("warning_lines"):
+        hints.append("server log contains warning/error lines; inspect diagnostics markdown section")
+
+    if not hints:
+        hints.append("no obvious red flags from diagnostics; continue targeted kernel A/B experiments")
+
+    return hints
+
+
+def write_diagnostics_report(
+    out_dir: Path,
+    label: str,
+    args: argparse.Namespace,
+    rows: list[dict[str, Any]],
+) -> dict[str, str]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    server_log = out_dir / f"{label}.server.log"
+    diag_json = out_dir / f"{label}.diagnostics.json"
+    diag_md = out_dir / f"{label}.diagnostics.md"
+
+    server_diag = parse_server_log_diagnostics(server_log)
+    hints = build_bottleneck_hints(rows, server_diag)
+    aggregate_tps = aggregate_completion_tps(rows)
+
+    payload: dict[str, Any] = {
+        "label": label,
+        "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
+        "config": {
+            "ctx": args.ctx_size,
+            "batch": args.batch_size,
+            "ubatch": args.ubatch_size,
+            "cache_type_k": args.cache_type_k,
+            "cache_type_v": args.cache_type_v,
+            "flash_attn": args.flash_attn,
+            "spec_mode": infer_spec_mode(args.server_extra),
+            "tasks": args.tasks,
+            "runs": args.runs,
+        },
+        "run_metrics": {
+            "aggregate_completion_tps": round(aggregate_tps, 4),
+            "task_count": len(rows),
+            "errors": sum(1 for row in rows if row.get("error")),
+        },
+        "server_log_diagnostics": server_diag,
+        "hints": hints,
+    }
+    diag_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    lines = [
+        f"# Diagnostics: {label}",
+        "",
+        "## Config",
+        "",
+        f"- ctx: {args.ctx_size}",
+        f"- batch/ubatch: {args.batch_size}/{args.ubatch_size}",
+        f"- kv: {args.cache_type_k}/{args.cache_type_v}",
+        f"- flash_attn: {'on' if args.flash_attn else 'off'}",
+        f"- spec_mode: {infer_spec_mode(args.server_extra)}",
+        "",
+        "## Metrics",
+        "",
+        f"- aggregate_completion_tps: {aggregate_tps:.4f}",
+        f"- task_count: {len(rows)}",
+        f"- errors: {sum(1 for row in rows if row.get('error'))}",
+        "",
+        "## Server Log Summary",
+        "",
+    ]
+
+    if server_diag.get("available"):
+        p = server_diag.get("prompt_eval_tps", {})
+        d = server_diag.get("decode_eval_tps", {})
+        pm = server_diag.get("prompt_eval_ms", {})
+        dm = server_diag.get("decode_eval_ms", {})
+        lines += [
+            f"- prompt_eval_tps mean/min/max: {p.get('mean', 0.0)}/{p.get('min', 0.0)}/{p.get('max', 0.0)}",
+            f"- decode_eval_tps mean/min/max: {d.get('mean', 0.0)}/{d.get('min', 0.0)}/{d.get('max', 0.0)}",
+            f"- prompt_eval_ms mean: {pm.get('mean', 0.0)}",
+            f"- decode_eval_ms mean: {dm.get('mean', 0.0)}",
+            f"- task_prompt_tokens mean: {server_diag.get('task_prompt_tokens', {}).get('mean', 0.0)}",
+            f"- batch_chunks mean/max: {server_diag.get('batch_chunks', {}).get('mean', 0.0)}/{server_diag.get('batch_chunks', {}).get('max', 0)}",
+        ]
+    else:
+        lines.append(f"- unavailable: {server_diag.get('error', 'unknown error')}")
+
+    lines += ["", "## Bottleneck Hints", ""]
+    for hint in hints:
+        lines.append(f"- {hint}")
+
+    warnings = server_diag.get("warning_lines", []) if isinstance(server_diag, dict) else []
+    if warnings:
+        lines += ["", "## Warning/Error Lines (tail)", ""]
+        for line in warnings[:20]:
+            lines.append(f"- {line}")
+
+    diag_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"Wrote {diag_json}")
+    print(f"Wrote {diag_md}")
+    return {
+        "diagnostics_json": diag_json.name,
+        "diagnostics_md": diag_md.name,
+    }
+
+
 def infer_spec_mode(server_extra: str) -> str:
     text = (server_extra or "").lower()
     if "--spec-type mtp" in text:
@@ -1259,6 +1459,8 @@ def parse_args() -> argparse.Namespace:
                         help="llama-server seed for deterministic decoding; set to -1 to disable fixed seed")
     parser.add_argument("--stats-ignore-first-run", action=argparse.BooleanOptionalAction, default=False,
                         help="print additional warm-only metrics that exclude run #1 (cold/probing phase)")
+    parser.add_argument("--write-diagnostics", action=argparse.BooleanOptionalAction, default=True,
+                        help="write per-run diagnostics json/md parsed from server log")
     parser.add_argument("--v2-prime-pass", action=argparse.BooleanOptionalAction, default=True,
                         help="run one unmeasured priming pass for v2/v2-mini when speculative ngram-mod and runs=1")
     parser.add_argument("--keep-server", action="store_true", help="do not stop server started by this script")
@@ -1442,6 +1644,10 @@ def main() -> int:
             args.artifact_mode,
             stats_ignore_first_run=args.stats_ignore_first_run,
         )
+        diagnostics_artifacts = {"diagnostics_json": "", "diagnostics_md": ""}
+        if args.write_diagnostics:
+            diagnostics_artifacts = write_diagnostics_report(out_dir, args.label, args, rows)
+
         aggregate_tps = aggregate_completion_tps(rows)
         tps_values = [float(r["completion_tps_wall"]) for r in rows if r.get("completion_tps_wall") is not None]
         model_path = str(Path(args.model) if args.model else default_model() or "")
@@ -1476,7 +1682,7 @@ def main() -> int:
                 "best_config": "",
                 "jsonl_file": artifacts.get("jsonl_file", ""),
                 "csv_file": artifacts.get("csv_file", ""),
-                "summary_file": "",
+                "summary_file": diagnostics_artifacts.get("diagnostics_md", ""),
                 "server_log_file": f"{args.label}.server.log",
             },
             out_dir,
