@@ -1554,6 +1554,48 @@ python scripts/agent_workload_bench.py --label promptfocus-v2review-<tag> --serv
 - принудительный override `GGML_GDN_CHUNK_SIZE=96` при `ub512` (`promptfocus-v2review-ub512-ch96-r1`) не восстановил скорость (`aggregate ~3.71 TPS`).
 - значит, деградация связана не только с `chunk_size`, а с более широким kernel-route/shape поведением prefill при больших `n_tokens`.
 
+### Narrow-band ubatch sweep (`<=256`) on `v2-review` (2026-05-10)
+
+После подтверждения, что выше `ub=256` в этом lane смысла нет, был сделан короткий sweep только по low-ubatch зоне (`runs=1`):
+
+| Label | UBatch | Aggregate TPS |
+| --- | ---: | ---: |
+| `promptfocus-v2review-ub176-r1-micro` | `176` | `8.07` |
+| `promptfocus-v2review-ub184-r1-micro` | `184` | `8.23` |
+| `promptfocus-v2review-ub192-r1-micro` | `192` | `8.47` |
+| `promptfocus-v2review-ub200-r1-micro` | `200` | `6.81` |
+| `promptfocus-v2review-ub208-r1-micro` | `208` | `6.92` |
+| `promptfocus-v2review-ub216-r1-micro2` | `216` | `7.14` |
+| `promptfocus-v2review-ub224-r1-micro2` | `224` | `7.26` |
+| `promptfocus-v2review-ub232-r1-micro2` | `232` | `7.42` |
+| `promptfocus-v2review-ub240-r1-micro2` | `240` | `7.55` |
+| `promptfocus-v2review-ub248-r1-micro2` | `248` | `7.72` |
+| `promptfocus-v2review-ub256-r1-micro2` | `256` | `7.86` |
+
+Тонкий sweep вокруг пика (`188..198`) показал резкую границу:
+
+| Label | UBatch | Aggregate TPS |
+| --- | ---: | ---: |
+| `promptfocus-v2review-ub190-r1-fine` | `190` | `8.38` |
+| `promptfocus-v2review-ub192-r1-fine` | `192` | `8.46` |
+| `promptfocus-v2review-ub194-r1-fine` | `194` | `6.67` |
+| `promptfocus-v2review-ub196-r1-fine` | `196` | `6.72` |
+| `promptfocus-v2review-ub198-r1-fine` | `198` | `6.75` |
+
+Трассировочный A/B (`GGML_TRACE_GDN_PATH=1 GGML_TRACE_FATTN_SELECTED=1`):
+
+- `ub192` (`promptfocus-v2review-ub192-trace-r1`): `aggregate 8.47`, `prompt_eval_tps 821.08`, `decode_eval_tps 27.53`.
+- `ub194` (`promptfocus-v2review-ub194-trace-r1`): `aggregate 6.66`, `prompt_eval_tps 591.25`, `decode_eval_tps 27.51`.
+- decode почти неизменен; просадка целиком в prefill.
+- histogram `n_tokens` в GDN trace:
+  - `ub192`: `{192, 158, 2, 1}`;
+  - `ub194`: `{194, 140, 130, 2, 1}`.
+
+Проверка гипотезы `GDN chunk_size` на лучшей точке (`ub192`):
+
+- `GGML_GDN_CHUNK_SIZE={64,80,96,128}` дали `8.46-8.47 TPS` (разница < 1%).
+- по правилу трека это **не прогресс**, гипотеза закрыта без дополнительных re-check.
+
 ---
 
 ## Dual TG/PP Compute Scheduler (2026-05-10) ✅
