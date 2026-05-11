@@ -1689,6 +1689,36 @@ MMQ/MMVQ follow-up:
 - Попытка добавить MMVQ trace/Q3_K nwarps knob упёрлась в `amdgcn-link command failed due to signal` на `mmvq.cu`.
 - Попытка ограничить MMVQ switch до Qwen tensor types (`q3_K/q4_K/q6_K`) тоже не прошла: source-specific `mmvq.cu` compile всё равно падал в `amdgcn-link`. Эксперимент откатан, чтобы не оставлять несобираемый source state.
 
+P2 Stage A+B+C+D (MMVQ dispatch split + observability/tuning scaffold, 2026-05-11):
+
+- Stage A: публичные host entrypoints вынесены из `mmvq.cu` в новый `mmvq-dispatch.cu`.
+- Stage B: type switch (`ggml_cuda_mmvq_switch_type`) перенесён в lightweight `mmvq-dispatch.cu`, а `mmvq.cu` экспортирует per-type entrypoints.
+- Stage C: type routing разделён на `mmvq-kernels-qwen.cu` (`Q3_K/Q4_K/Q6_K`) и `mmvq-kernels-rest.cu` (остальные типы).
+- Stage D: добавлены env-gated MMVQ observability/tuning hooks:
+  - `GGML_TRACE_MMVQ_PATH=1` (route trace `qwen-hot/rest` с type и shape полями)
+  - `GGML_TRACE_MMVQ_SMALL_K=1` (small_k decision trace)
+  - `GGML_MMVQ_QWEN_FORCE_SMALL_K=1` / `GGML_MMVQ_QWEN_DISABLE_SMALL_K=1` (RDNA4 Qwen-hot override, default unchanged)
+- Normal ROCm gate (`build-rocm-vec`, target `llama-server`) прошёл после переконфигурации.
+- Reduced ROCm gate (`build-rocm-fa-reduced`, `GGML_HIP_QWEN_FA_REDUCED=ON`, `GGML_OPENMP=OFF`) также прошёл.
+- Повторные инкрементальные touch+rebuild циклы (`mmvq.cu`, `mmvq-dispatch.cu`, `mmvq-kernels-qwen.cu`, `mmvq-kernels-rest.cu`) прошли без `amdgcn-link ... signal`.
+- Runtime smoke на активной lane:
+  - `p2-stageA-smoke-20260511-181905-ub192-r1`: `8.54 TPS`
+  - `p2-stageB-smoke-20260511-182335-ub192-r1`: `8.54 TPS`
+  - `p2-stageC-smoke-20260511-182726-ub192-r1`: `8.54 TPS`
+  - `p2-stageC-reduced-smoke-20260511-183047-ub192-r1`: `8.54 TPS`
+  - `p2-active-lane-posthooks-20260511-184542-ub192-r1`: `8.55 TPS`
+  - `p2-reduced-posthooks-20260511-184624-ub192-r1`: `8.55 TPS`
+  - Все результаты остаются в `ub192` corridor, явной default-regression на scaffold этапе не видно.
+
+Stage D diagnostics:
+
+- Route trace sample (`p2-trace-route-20260511-183846-ub192-r1`) подтвердил рабочий MMVQ маршрутный лог: `qwen-hot=1077`, `rest=0` (для этой Qwen lane).
+- Force trace sample (`p2-trace-force-smallk-20260511-184219-ub192-r1`) подтвердил, что `GGML_MMVQ_QWEN_FORCE_SMALL_K=1` реально переключает `small_k=1` в Qwen-hot вызовах (`680` lines; baseline trace had `680` lines with `small_k=0`).
+- Decode-biased lane (`ctx=12288`, no-reuse, no real-context, `max_tokens=256`):
+  - runs=1: base `26.84`, force `27.09`, disable `26.88` TPS.
+  - runs=3 confirm: base `26.8355` vs force `27.0066` TPS (`+0.64%`), decode_eval_tps `28.6767 -> 28.8767` (`+0.70%`).
+  - эффект умеренный; default policy не менялась.
+
 ---
 
 ## Dual TG/PP Compute Scheduler (2026-05-10) ✅

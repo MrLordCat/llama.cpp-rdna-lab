@@ -107,24 +107,112 @@ If any gate fails, do not proceed to parameter tuning; keep P2 in unblock mode.
 
 `mmvq.cu` combines large type fanout, multiple launch variants (`ncols_dst`, fusion/no-fusion, small_k paths), and architecture-specific tables in one heavy translation unit. Under current Windows ROCm toolchain this likely creates unstable link pressure; decomposition is needed before safe performance iteration.
 
-## Solution strategy (implementation later)
+## Solution strategy
 
 - Translation-unit decomposition first: split dispatcher surface from kernel implementation clusters and isolate hot Qwen types from long-tail types.
 - Dispatch boundary hardening: keep one thin front dispatcher preserving existing entry points and move only internal switch branches to per-group files.
 - Controlled tuning surface: introduce opt-in tuning knobs only after build reliability passes and keep defaults unchanged unless experiment flags are enabled.
 - Observability before optimization: add low-overhead counters/log hooks only where needed to validate decode kernel selection.
 
-## Planned code changes (not applied yet)
+## Implementation progress (2026-05-11, Stage A+B+C+D)
 
-- ggml/src/ggml-cuda/mmvq.cu
-  - Reduce to front dispatcher + shared utility logic.
-- new files under ggml/src/ggml-cuda/
-  - `mmvq-dispatch.cuh` (shared dispatch declarations).
-  - `mmvq-kernels-qwen.cu` (Q3_K/Q4_K/Q6_K and related hot paths).
-  - `mmvq-kernels-rest.cu` (non-hot and long-tail quantized paths).
-- ggml/src/ggml-hip/CMakeLists.txt
-  - Keep compatibility with existing GLOB flow while ensuring split files are included.
-  - Preserve reduced FlashAttention experimental mode behavior.
+Applied now (defaults unchanged; opt-in tuning hooks added):
+
+- `ggml/src/ggml-cuda/mmvq.cu`
+  - Keeps MMVQ kernels/shared utility logic.
+  - Exports per-type dispatch entrypoints `ggml_cuda_mmvq_dispatch_type_<GGML_TYPE_...>(...)`.
+- `ggml/src/ggml-cuda/mmvq-dispatch.cu` (new)
+  - Contains `ggml_cuda_mul_mat_vec_q(...)` and `ggml_cuda_op_mul_mat_vec_q(...)`.
+  - Contains lightweight `ggml_cuda_mmvq_switch_type(...)` (type routing moved out of heavy kernel TU).
+  - Preserves existing dispatch contract while delegating to per-type entrypoints from `mmvq.cu`.
+- `ggml/src/ggml-cuda/mmvq.cuh`
+  - Added declaration for `ggml_cuda_mmvq_switch_type(...)`.
+  - Added shared MMVQ type-list and per-type dispatch declarations for cross-TU wiring.
+- `ggml/src/ggml-cuda/mmvq-kernels-qwen.cu` (new)
+  - Contains Qwen-hot routing group (`Q3_K`, `Q4_K`, `Q6_K`) as a dedicated helper dispatcher.
+- `ggml/src/ggml-cuda/mmvq-kernels-rest.cu` (new)
+  - Contains non-Qwen routing group for the remaining MMVQ quantized types.
+- `ggml/src/ggml-cuda/mmvq-dispatch.cu`
+  - Added env-gated route observability via `GGML_TRACE_MMVQ_PATH=1`.
+  - Route log includes type name, route group (`qwen-hot` / `rest`), `ncols_dst`, ids/fusion flags.
+- `ggml/src/ggml-cuda/mmvq.cu`
+  - Added env-gated small-k observability via `GGML_TRACE_MMVQ_SMALL_K=1`.
+  - Added env-gated RDNA4 Qwen-hot small-k controls:
+    - `GGML_MMVQ_QWEN_FORCE_SMALL_K=1`
+    - `GGML_MMVQ_QWEN_DISABLE_SMALL_K=1`
+  - Default behavior remains unchanged when these env vars are not set.
+
+Stage A/B/C validation results:
+
+- Reduced corridor ROCm gate:
+  - `cmake -S . -B build-rocm-fa-reduced -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DGGML_HIP_QWEN_FA_REDUCED=ON -DGGML_OPENMP=OFF -DCMAKE_BUILD_TYPE=Release`
+  - `cmake --build build-rocm-fa-reduced --target llama-server -j 4`
+  - Result: pass; reduced `llama-server` linked successfully.
+- Normal ROCm configure/build gate:
+  - `cmake -S . -B build-rocm-vec -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUILD_TYPE=Release`
+  - `cmake --build build-rocm-vec --target llama-server -j 4`
+  - Result: pass; `build-rocm-vec/bin/llama-server.exe` linked successfully.
+- Incremental link-stability probes:
+  - Stage A cycle: `touch mmvq.cu` + rebuild: pass.
+  - Stage A cycle: `touch mmvq-dispatch.cu` + rebuild: pass.
+  - Stage B cycle (after switch move): `touch mmvq-dispatch.cu` + rebuild: pass.
+  - Stage B cycle (after switch move): `touch mmvq.cu` + rebuild: pass.
+  - Stage C cycle: `touch mmvq-kernels-qwen.cu` + rebuild: pass.
+  - Stage C cycle: `touch mmvq-kernels-rest.cu` + rebuild: pass.
+  - Stage C cycle: `touch mmvq-dispatch.cu` + rebuild: pass.
+  - Stage C cycle: `touch mmvq.cu` + rebuild: pass.
+  - No `amdgcn-link ... signal` failure observed in these repeated MMVQ-touch cycles.
+- Runtime smoke equivalence gate (active lane, 1 run):
+  - Label `p2-stageA-smoke-20260511-181905-ub192-r1`
+  - Aggregate TPS `8.54` (in expected `ub192` corridor).
+  - Label `p2-stageB-smoke-20260511-182335-ub192-r1`
+  - Aggregate TPS `8.54` (same corridor, no obvious dispatch regression).
+  - Label `p2-stageC-smoke-20260511-182726-ub192-r1`
+  - Aggregate TPS `8.54` (same corridor after qwen/rest partition).
+  - Label `p2-stageC-reduced-smoke-20260511-183047-ub192-r1`
+  - Aggregate TPS `8.54` (reduced build corridor smoke remains stable).
+
+Stage D validation results:
+
+- Post-hook active-lane regression gate (default behavior, 1 run):
+  - Label `p2-active-lane-posthooks-20260511-184542-ub192-r1`
+  - Aggregate TPS `8.55` (same active-lane corridor as Stage A/B/C smoke).
+- Post-hook reduced-corridor smoke gate (default behavior, 1 run):
+  - Label `p2-reduced-posthooks-20260511-184624-ub192-r1`
+  - Aggregate TPS `8.55`.
+- Route observability confirmation (`GGML_TRACE_MMVQ_PATH=1`, short diagnostic run):
+  - Label `p2-trace-route-20260511-183846-ub192-r1`
+  - Server log contains MMVQ route lines with `route=qwen-hot|rest` and type names.
+  - Observed counts: `qwen-hot=1077`, `rest=0` on this Qwen workload sample.
+- Small-k observability and override confirmation:
+  - Baseline trace run shows `small_k=0` decisions for Qwen-hot decode-side calls (`680` lines in sample run).
+  - Force trace run (`GGML_MMVQ_QWEN_FORCE_SMALL_K=1`) shows `small_k=1` decisions for the same call shape (`680` lines, override is active).
+- Decode-biased lane A/B (ctx=12288, no-reuse, no real-context prefix, max_tokens=256):
+  - Runs=1:
+    - base: `p2-decode-lane-base2-20260511-184239-ub192-r1` -> `26.84 TPS`
+    - force-small-k: `p2-decode-lane-force2-20260511-184304-ub192-r1` -> `27.09 TPS`
+    - disable-small-k: `p2-decode-lane-disable2-20260511-184331-ub192-r1` -> `26.88 TPS`
+  - Runs=3 confirmation:
+    - base: `p2-decode-lane-base2-20260511-184406-ub192-r3` -> `26.8355 TPS`, `decode_eval_tps=28.6767`
+    - force-small-k: `p2-decode-lane-force2-20260511-184451-ub192-r3` -> `27.0066 TPS`, `decode_eval_tps=28.8767`
+    - delta force vs base: `+0.64%` aggregate TPS, `+0.70%` decode_eval_tps.
+
+Interpretation:
+
+- Stage A+B+C met the build-unblock and dispatch-equivalence intent for the scaffold split.
+- Type-routing edits are now isolated in lightweight dispatch TUs (`mmvq-dispatch.cu`, `mmvq-kernels-qwen.cu`, `mmvq-kernels-rest.cu`), reducing the need to touch heavy `mmvq.cu` for routing-only experiments.
+- Stage D adds explicit MMVQ route/small-k observability and an env-gated decode tuning probe without changing defaults.
+- Decode gain from force-small-k is positive but modest; it does not satisfy the earlier aggressive decode target band by itself.
+
+P2 blocker verdict:
+
+- **Closed for blocker scope**: build/link instability blocker is removed for iterative MMVQ work, and observability/tuning hooks are in place.
+- Default runtime policy remains unchanged; tuning controls stay opt-in via env vars.
+
+## Follow-up after P2 closure (optional)
+
+- If pursuing additional decode speedups, continue from this stable split with type-specific kernel tuning (for example, Q3_K/Q4_K/Q6_K launch policy variants) under env guards.
+- Keep active-lane no-regression checks mandatory before any default policy changes.
 
 ## Validation plan (after implementation)
 

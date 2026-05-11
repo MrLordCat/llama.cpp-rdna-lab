@@ -91,6 +91,26 @@ Next useful instrumentation:
 - Time `ggml_backend_tensor_get_async()` for logits and any sampler copies.
 - Keep this disabled by default to avoid perturbing normal runs.
 
+### MMVQ Decode Observability (P2)
+
+Goal: keep MMVQ dispatch/kernels tunable without returning to heavy single-TU edit loops.
+
+Runtime controls (all optional):
+
+- `GGML_TRACE_MMVQ_PATH=1`
+  - Logs MMVQ route decisions (`qwen-hot` vs `rest`) with type/shape fields.
+- `GGML_TRACE_MMVQ_SMALL_K=1`
+  - Logs small-k decision points for RDNA4 Qwen-hot decode-side calls.
+- `GGML_MMVQ_QWEN_FORCE_SMALL_K=1`
+  - Forces small-k path for RDNA4 Qwen-hot MMVQ calls (`Q3_K/Q4_K/Q6_K`).
+- `GGML_MMVQ_QWEN_DISABLE_SMALL_K=1`
+  - Forces non-small-k path for the same RDNA4 Qwen-hot set.
+
+Notes:
+
+- These knobs are experimental and intended for decode-biased A/B lanes.
+- Default behavior is unchanged when no MMVQ env var is set.
+
 ## Safety Rules
 
 - Do not disable fused GDN chunked prefill; it hung on the active lane.

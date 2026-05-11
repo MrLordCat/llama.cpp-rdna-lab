@@ -24,7 +24,7 @@ Current constraints for planning-phase points:
    - Status: implemented and validated on active lane (boundary cliff recovery confirmed)
 2. P2 MMVQ decode and linker blocker
    - File: P2_mmvq_decode_and_link_blocker.md
-   - Status: deep theoretical pre-implementation research updated (implementation not started)
+   - Status: implemented and validated for blocker scope (Stage A+B+C+D, build-unblock + observability complete)
 3. P3 HIP build pressure and TU split
    - File: P3_hip_build_pressure_and_tu_split.md
 4. P4 validation protocol and gates
