@@ -5,6 +5,7 @@
         "name": "Display name for the preset",
         "ctx": "Context size in tokens",
         "batch_size": "Batch size in tokens",
+        "ubatch_size": "Micro-batch size in tokens",
         "gpu_layers": "Number of GPU layers (0-100, 999=all)",
         "parallel": "Number of parallel slots",
         "flash_attn": "Enable flash attention (true/false)",
@@ -35,10 +36,10 @@
         },
         {
             "pattern": "Qwen3\\.6\\-27B\\-Q3_K_S\\.gguf",
-            "name": "Qwen3.6-27B Speed (ROCm, dual-sched ub=512)",
-            "ctx": 65536,
-            "batch_size": 4096,
-            "ubatch_size": 512,
+            "name": "Qwen3.6-27B-Q3_K_S (Active <16k Prompt-Heavy ROCm)",
+            "ctx": 12288,
+            "batch_size": 6144,
+            "ubatch_size": 192,
             "gpu_layers": 999,
             "parallel": 1,
             "flash_attn": true,
@@ -50,8 +51,8 @@
             "presence_penalty": 0.0,
             "repeat_penalty": 1.0,
             "disable_thinking": false,
-            "extra_args": "--spec-type ngram-mod\n--spec-ngram-mod-n-min 48\n--spec-ngram-mod-n-match 24\n--spec-ngram-mod-n-max 64",
-            "notes": "Dual TG/PP scheduler (2026-05-10): ub=512 даёт ~32 TPS на RX 9070 XT — столько же, сколько ub=128 в старом билде, но с более быстрым prefill. Требует сборки из этого форка (dual-sched патч в src/llama-context.cpp). ctx=65536, q4_0 KV, ngram-mod. Для воспроизведения: Build > ROCm > cmake --build build-rocm-wmma."
+            "extra_args": "--spec-type none",
+            "notes": "Current active non-MTP lane (May 2026): ctx=12288, b=6144, ub=192, KV q4_0, spec=none. For benchmark-only cold runs add: --cache-ram 0 --ctx-checkpoints 0."
         },
         {
             "pattern": "Qwen3\\.5\\-9B\\-Q6_K\\.gguf",
@@ -104,21 +105,22 @@
         },
         {
             "pattern": "Qwen3\\.6.*27B|Qwen3\\.6-27B",
-            "name": "Qwen3.6-27B (Long Context ROCm tuned)",
-            "ctx": 65536,
-            "batch_size": 4096,
-            "ubatch_size": 128,
+            "name": "Qwen3.6-27B (Default ROCm tuned, active lane)",
+            "ctx": 12288,
+            "batch_size": 6144,
+            "ubatch_size": 192,
             "gpu_layers": 999,
             "parallel": 1,
             "flash_attn": true,
-            "kv_cache": 3,
+            "kv_cache": 7,
+            "extra_args": "--spec-type none",
             "temperature": 0.6,
             "top_p": 0.95,
             "top_k": 20,
             "min_p": 0.0,
             "presence_penalty": 0.0,
             "repeat_penalty": 1.0,
-            "notes": "RX 9070 XT rocWMMA build. Full autotune (48 configs): BEST ctx=65536, b=4096, ub=128, q4_0 KV, spec=ngram-mod → 26.52 TPS. ub=128 is optimal; ub>=256 drops to ~20 TPS (kernel switches from VEC to TILE path)."
+            "notes": "Default preset aligned to current prompt-heavy target (<16k). Legacy 64k/128k tuning is archival/reference only."
         },
         {
             "pattern": "Qwen3\\.5.*9B",

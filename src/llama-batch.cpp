@@ -6,8 +6,53 @@
 
 #include <cassert>
 #include <cstring>
+#include <cstdlib>
 #include <algorithm>
 #include <sstream>
+
+static uint32_t llama_env_u32(const char * name, uint32_t fallback, uint32_t min_value, uint32_t max_value) {
+    const char * value = getenv(name);
+    if (!value || value[0] == '\0') {
+        return fallback;
+    }
+
+    const int parsed = atoi(value);
+    if (parsed <= 0) {
+        return fallback;
+    }
+
+    return std::min(std::max((uint32_t) parsed, min_value), max_value);
+}
+
+static uint32_t llama_shape_planned_ubatch(uint32_t n_ubatch, uint32_t remaining) {
+    const char * policy = getenv("LLAMA_UBATCH_SPLIT_POLICY");
+    if (!policy || strcmp(policy, "tail-avoid") != 0) {
+        return n_ubatch;
+    }
+
+    uint32_t target = n_ubatch;
+    const uint32_t preferred = llama_env_u32("LLAMA_UBATCH_SHAPE_PREFERRED", 0, 1, n_ubatch);
+    if (preferred > 0) {
+        target = std::min(target, preferred);
+    }
+
+    if (remaining <= target) {
+        return remaining;
+    }
+
+    const uint32_t min_tail = llama_env_u32("LLAMA_UBATCH_SHAPE_MIN_TAIL", 144, 1, target);
+    const uint32_t tail = remaining % target;
+    if (tail == 0 || tail >= min_tail) {
+        return target;
+    }
+
+    const uint32_t shrink = min_tail - tail;
+    if (target > shrink && target - shrink >= min_tail) {
+        return target - shrink;
+    }
+
+    return target;
+}
 
 llama_batch_allocr::llama_batch_allocr(uint32_t n_pos_per_embd) : n_pos_per_embd(n_pos_per_embd) {
     const char * LLAMA_BATCH_DEBUG = getenv("LLAMA_BATCH_DEBUG");
@@ -564,6 +609,21 @@ llama_ubatch llama_batch_allocr::split_equal(uint32_t n_ubatch, bool sequential)
         }
     }
 
+    uint32_t n_ubatch_eff = n_ubatch;
+    if (n_seqs == 1) {
+        const auto & seq_idxs = seq_set_map[cur_seq_set[0]];
+        uint32_t remaining = 0;
+        for (int32_t i = cur_idx[0]; i < (int32_t) seq_idxs.size(); ++i) {
+            remaining += used[seq_idxs[i]] ? 0 : 1;
+        }
+
+        n_ubatch_eff = llama_shape_planned_ubatch(n_ubatch, remaining);
+        if (getenv("LLAMA_UBATCH_TRACE")) {
+            LLAMA_LOG_INFO("%s: n_ubatch=%u planned=%u remaining=%u n_seqs=%u\n",
+                    __func__, n_ubatch, n_ubatch_eff, remaining, n_seqs);
+        }
+    }
+
     // the list of batch indices for each sequence set
     // at the end we will concat these to get the final ubatch
     std::vector<idx_vec_t> idxs_per_seq(n_seqs);
@@ -595,7 +655,7 @@ llama_ubatch llama_batch_allocr::split_equal(uint32_t n_ubatch, bool sequential)
             ++cur_idx[s];
         }
 
-        if  ((idxs_per_seq[0].size() + 1)*n_seqs > n_ubatch) {
+        if  ((idxs_per_seq[0].size() + 1)*n_seqs > n_ubatch_eff) {
             break;
         }
     }

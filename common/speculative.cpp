@@ -612,6 +612,14 @@ struct common_speculative_state_mtp : public common_speculative_state {
     uint16_t last_n_drafted  = 0;
     int32_t  last_n_accepted = -1;
 
+    int64_t t_sync_us   = 0;
+    int64_t t_get_us    = 0;
+    int64_t t_decode_us = 0;
+    int64_t t_sample_us = 0;
+
+    size_t n_get_calls    = 0;
+    size_t n_decode_calls = 0;
+
     common_speculative_state_mtp(enum common_speculative_type type,
                                  llama_context * ctx_tgt,
                                  llama_context * ctx_mtp)
@@ -707,31 +715,50 @@ struct common_speculative_state_mtp : public common_speculative_state {
                 } else {
                     src_row = last_n_accepted;
                 }
-                llama_synchronize(ctx_tgt);
+                {
+                    common_time_meas tm(t_sync_us, !gen_perf);
+                    llama_synchronize(ctx_tgt);
+                }
             } else {
                 // for the AR path get the mtp_out from the mtp ctx
                 src = llama_context_get_t_mtp_out(ctx_mtp);
                 src_row = src ? (int32_t) src->ne[1] - 1 : 0;
-                llama_synchronize(ctx_mtp);
+                {
+                    common_time_meas tm(t_sync_us, !gen_perf);
+                    llama_synchronize(ctx_mtp);
+                }
             }
             if (!src) {
                 LOG_WRN("%s: missing source tensor at k=%d; stopping chain\n", __func__, k);
                 return;
             }
-            ggml_backend_tensor_get(src, batch.embd,
-                                    (size_t) src_row * row_bytes, row_bytes);
+            {
+                common_time_meas tm(t_get_us, !gen_perf);
+                ggml_backend_tensor_get(src, batch.embd,
+                                        (size_t) src_row * row_bytes, row_bytes);
+            }
+            ++n_get_calls;
 
             batch.token[0] = cond_tok;
             batch.pos[0]   = pos;
 
-            const int32_t dec_rc = llama_decode(ctx_mtp, batch);
+            int32_t dec_rc;
+            {
+                common_time_meas tm(t_decode_us, !gen_perf);
+                dec_rc = llama_decode(ctx_mtp, batch);
+            }
+            ++n_decode_calls;
             if (dec_rc != 0) {
                 LOG_DBG("%s: llama_decode rc=%d at k=%d; stopping chain\n", __func__, dec_rc, k);
                 return;
             }
 
-            const llama_token best = common_sampler_sample(smpl, ctx_mtp, 0);
-            common_sampler_accept(smpl, best, /*accept_grammar=*/ false);
+            llama_token best;
+            {
+                common_time_meas tm(t_sample_us, !gen_perf);
+                best = common_sampler_sample(smpl, ctx_mtp, 0);
+                common_sampler_accept(smpl, best, /*accept_grammar=*/ false);
+            }
             draft_tokens.push_back(best);
             cond_tok = best;
             ++pos;
@@ -1433,5 +1460,20 @@ void common_speculative_print_stats(const common_speculative * spec) {
                 impl->n_gen_tokens,
                 impl->n_acc_tokens,
                 str_perf.c_str());
+
+        if (impl->type == COMMON_SPECULATIVE_TYPE_MTP) {
+            const auto * mtp = static_cast<const common_speculative_state_mtp *>(impl.get());
+
+            std::ostringstream oss;
+            oss << std::fixed << std::setprecision(3) << mtp->t_sync_us / 1000.0 << ", ";
+            oss << std::fixed << std::setprecision(3) << mtp->t_get_us / 1000.0 << ", ";
+            oss << std::fixed << std::setprecision(3) << mtp->t_decode_us / 1000.0 << ", ";
+            oss << std::fixed << std::setprecision(3) << mtp->t_sample_us / 1000.0;
+
+            LOG_INF("statistics mtp detail: #calls(get,decode) = %zu %zu, dur(sync,get,decode,sample) = %s ms\n",
+                mtp->n_get_calls,
+                mtp->n_decode_calls,
+                oss.str().c_str());
+        }
     }
 }

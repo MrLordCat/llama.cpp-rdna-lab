@@ -1,7 +1,9 @@
 #include "common.cuh"
 #include "fattn-common.cuh"
+#ifndef GGML_HIP_QWEN_FA_REDUCED
 #include "fattn-mma-f16.cuh"
 #include "fattn-tile.cuh"
+#endif
 #include "fattn-vec.cuh"
 #include "fattn-wmma-f16.cuh"
 #include "fattn.cuh"
@@ -11,6 +13,7 @@
 #include <unordered_map>
 
 
+#ifndef GGML_HIP_QWEN_FA_REDUCED
 template <int DKQ, int DV, int ncols2>
 static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
@@ -229,6 +232,7 @@ static void ggml_cuda_flash_attn_ext_mma_f16(ggml_backend_cuda_context & ctx, gg
             break;
     }
 }
+#endif
 
 #define FATTN_VEC_CASE(D, type_K, type_V)                                                                        \
     {                                                                                                            \
@@ -337,6 +341,15 @@ static const char * ggml_cuda_best_fattn_kernel_name(const best_fattn_kernel ker
     return "unknown";
 }
 
+static best_fattn_kernel ggml_cuda_reduced_fattn_filter(const best_fattn_kernel kernel) {
+#ifdef GGML_HIP_QWEN_FA_REDUCED
+    if (kernel == BEST_FATTN_KERNEL_TILE || kernel == BEST_FATTN_KERNEL_MMA_F16) {
+        return BEST_FATTN_KERNEL_NONE;
+    }
+#endif
+    return kernel;
+}
+
 static bool ggml_cuda_rdna4_fattn_autotune_enabled() {
     static int cached = -1;
     if (cached == -1) {
@@ -351,7 +364,11 @@ static void ggml_cuda_launch_fattn_kernel(ggml_backend_cuda_context & ctx, ggml_
         case BEST_FATTN_KERNEL_NONE:
             GGML_ABORT("fatal error");
         case BEST_FATTN_KERNEL_TILE:
+#ifdef GGML_HIP_QWEN_FA_REDUCED
+            GGML_ABORT("FlashAttention tile kernel is disabled by GGML_HIP_QWEN_FA_REDUCED");
+#else
             ggml_cuda_flash_attn_ext_tile(ctx, dst);
+#endif
             return;
         case BEST_FATTN_KERNEL_VEC:
             ggml_cuda_flash_attn_ext_vec(ctx, dst);
@@ -360,7 +377,11 @@ static void ggml_cuda_launch_fattn_kernel(ggml_backend_cuda_context & ctx, ggml_
             ggml_cuda_flash_attn_ext_wmma_f16(ctx, dst);
             return;
         case BEST_FATTN_KERNEL_MMA_F16:
+#ifdef GGML_HIP_QWEN_FA_REDUCED
+            GGML_ABORT("FlashAttention MMA F16 kernel is disabled by GGML_HIP_QWEN_FA_REDUCED");
+#else
             ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
+#endif
             return;
     }
     GGML_ABORT("fatal error");
@@ -784,7 +805,7 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
     const ggml_tensor * K = dst->src[1];
     const ggml_tensor * V = dst->src[2];
 
-    const best_fattn_kernel base_kernel = ggml_cuda_get_best_fattn_kernel(device, dst);
+    const best_fattn_kernel base_kernel = ggml_cuda_reduced_fattn_filter(ggml_cuda_get_best_fattn_kernel(device, dst));
     if (base_kernel == BEST_FATTN_KERNEL_NONE) {
         GGML_ABORT("fatal error");
     }
@@ -811,5 +832,5 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
 }
 
 bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
-    return ggml_cuda_get_best_fattn_kernel(device, dst) != BEST_FATTN_KERNEL_NONE;
+    return ggml_cuda_reduced_fattn_filter(ggml_cuda_get_best_fattn_kernel(device, dst)) != BEST_FATTN_KERNEL_NONE;
 }

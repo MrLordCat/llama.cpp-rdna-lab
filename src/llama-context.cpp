@@ -13,6 +13,7 @@
 
 #include <cinttypes>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -1230,16 +1231,32 @@ bool llama_context::set_adapter_cvec(
 }
 
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
+    const bool trace_timing = getenv("LLAMA_UBATCH_TIMING") != nullptr;
+    const bool trace_timing_sync = trace_timing && getenv("LLAMA_UBATCH_TIMING_SYNC") != nullptr;
+    const int64_t t_total_start_us = trace_timing ? ggml_time_us() : 0;
+    int64_t t_apply_us   = 0;
+    int64_t t_switch_us  = 0;
+    int64_t t_build_us   = 0;
+    int64_t t_alloc_us   = 0;
+    int64_t t_inputs_us  = 0;
+    int64_t t_compute_us = 0;
+    int64_t t_sync_us    = 0;
+    bool reused_graph = false;
+
     if (mctx && !mctx->apply()) {
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
         ret = GGML_STATUS_FAILED;
         return nullptr;
+    }
+    if (trace_timing) {
+        t_apply_us = ggml_time_us() - t_total_start_us;
     }
 
     // Switch between TG (1-token decode) and PP (multi-token prefill) schedulers.
     // The TG scheduler has a much smaller compute buffer, reducing GPU cache pressure
     // during decode where actual batch size is always 1 regardless of ubatch setting.
     if (sched_tg) {
+        const int64_t t_start_us = trace_timing ? ggml_time_us() : 0;
         const bool want_tg = (ubatch.n_tokens == 1);
         if (want_tg != sched_is_tg) {
             // Flush any pending async work on both schedulers before switching
@@ -1248,6 +1265,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             std::swap(sched, sched_tg);
             std::swap(gf_res_prev, gf_res_prev_tg);
             sched_is_tg = want_tg;
+        }
+        if (trace_timing) {
+            t_switch_us = ggml_time_us() - t_start_us;
         }
     }
 
@@ -1259,6 +1279,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     const auto gparams = graph_params(res, ubatch, mctx, gtype);
 
     if (!graph_reuse_disable && res->can_reuse(gparams)) {
+        reused_graph = true;
         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
 
         // with pipeline parallelism, the previous graph_compute_async may still be running
@@ -1275,11 +1296,13 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         ggml_backend_sched_reset(sched.get());
         ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
 
-        //const auto t_start_us = ggml_time_us();
+        const int64_t t_build_start_us = trace_timing ? ggml_time_us() : 0;
 
         gf = model.build_graph(gparams);
 
-        //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+        if (trace_timing) {
+            t_build_us = ggml_time_us() - t_build_start_us;
+        }
 
         if (!gf) {
             LLAMA_LOG_ERROR("%s: failed to initialize graph\n", __func__);
@@ -1287,28 +1310,54 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             return nullptr;
         }
 
+        const int64_t t_alloc_start_us = trace_timing ? ggml_time_us() : 0;
         if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
             LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
         }
+        if (trace_timing) {
+            t_alloc_us = ggml_time_us() - t_alloc_start_us;
+        }
     }
 
     // set the input data for the input tensors
     {
-        //const auto t_start_us = ggml_time_us();
+        const int64_t t_inputs_start_us = trace_timing ? ggml_time_us() : 0;
 
         // FIXME this call causes a crash if any model inputs were not used in the graph and were therefore not allocated
         res->set_inputs(&ubatch);
 
-        //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+        if (trace_timing) {
+            t_inputs_us = ggml_time_us() - t_inputs_start_us;
+        }
     }
 
+    const int64_t t_compute_start_us = trace_timing ? ggml_time_us() : 0;
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
+    if (trace_timing) {
+        t_compute_us = ggml_time_us() - t_compute_start_us;
+        if (trace_timing_sync) {
+            const int64_t t_sync_start_us = ggml_time_us();
+            ggml_backend_sched_synchronize(sched.get());
+            t_sync_us = ggml_time_us() - t_sync_start_us;
+        }
+    }
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
         return nullptr;
+    }
+
+    if (trace_timing) {
+        const int64_t t_total_us = ggml_time_us() - t_total_start_us;
+        LLAMA_LOG_INFO(
+                "%s: ubatch timing n_tokens=%u n_seq_tokens=%u n_seqs=%u reused=%d tg=%d "
+                "apply=%.3f switch=%.3f build=%.3f alloc=%.3f inputs=%.3f compute_call=%.3f sync=%.3f total=%.3f ms\n",
+                __func__, ubatch.n_tokens, ubatch.n_seq_tokens, ubatch.n_seqs,
+                reused_graph ? 1 : 0, sched_is_tg ? 1 : 0,
+                t_apply_us/1000.0, t_switch_us/1000.0, t_build_us/1000.0, t_alloc_us/1000.0,
+                t_inputs_us/1000.0, t_compute_us/1000.0, t_sync_us/1000.0, t_total_us/1000.0);
     }
 
     if (mtp.ctx_mtp) {

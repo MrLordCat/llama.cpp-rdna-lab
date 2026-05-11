@@ -2,7 +2,11 @@
 """Test ROCm detection"""
 
 import os
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent / "gui"))
+
 from gui.build_manager import BuildManager
 
 # Create builder

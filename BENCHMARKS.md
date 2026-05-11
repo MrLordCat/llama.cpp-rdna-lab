@@ -1520,7 +1520,7 @@ python scripts\agent_workload_bench.py `
 Быстрый шаблон запуска:
 
 ```powershell
-python scripts/agent_workload_bench.py --label promptfocus-v2review-<tag> --server-bin build-rocm-vec/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --tasks v2-review --runs 1 --ctx-size 12288 --batch-size 6144 --ubatch-size <UB> --cache-type-k q4_0 --cache-type-v q4_0 --server-extra "--spec-type none --cache-ram 0 --ctx-checkpoints 0" --real-context-mode repo-snapshot --real-context-chars 21872 --background-server-policy ignore --no-v2-prime-pass --no-disable-thinking --max-tokens 120
+python scripts/agent_workload_bench.py --label promptfocus-v2review-<tag> --server-bin build-rocm-vec/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --tasks v2-review --runs 1 --ctx-size 12288 --batch-size 6144 --ubatch-size <UB> --cache-type-k q4_0 --cache-type-v q4_0 --server-extra "--spec-type none" --real-context-mode repo-snapshot --real-context-chars 21872 --no-reuse --background-server-policy ignore --no-v2-prime-pass --no-disable-thinking --max-tokens 120
 ```
 
 Подтверждение на `runs=3` (одинаковый lane, `spec=none`, no-reuse):
@@ -1595,6 +1595,57 @@ python scripts/agent_workload_bench.py --label promptfocus-v2review-<tag> --serv
 
 - `GGML_GDN_CHUNK_SIZE={64,80,96,128}` дали `8.46-8.47 TPS` (разница < 1%).
 - по правилу трека это **не прогресс**, гипотеза закрыта без дополнительных re-check.
+- `LLAMA_FUSED_GDN_CH=0` / отключение chunked prefill на `ub192` не является рабочим обходом: `nonmtp-ub192-gdnch-off-20260511-r1` завис на первом prompt batch (`6144/8030`) сразу после `prompt processing progress`, поэтому эксперимент откатан и помечен как no-go.
+
+Дополнительные no-go проверки на той же точке (`ctx=12288`, `b=6144` unless noted, `ub192`, `spec=none`, no-reuse, `runs=1`):
+
+| Label | Проверка | Aggregate TPS | Вывод |
+| --- | --- | ---: | --- |
+| `nonmtp-ub192-nographs-noreuse-20260511-r1` | `GGML_CUDA_DISABLE_GRAPHS=1` | `8.53` | <1% к лучшему `8.47`, не считается |
+| `nonmtp-ub192-offloadmin1-noreuse-20260511-r1` | `GGML_OP_OFFLOAD_MIN_BATCH=1` | `8.47` | нет прироста |
+| `nonmtp-ub192-nocudafusion-noreuse-20260511-r1` | `GGML_CUDA_DISABLE_FUSION=1` | `8.38` | регрессия |
+| `nonmtp-ub192-t16tb16-noreuse-20260511-r1` | `--threads 16 --threads-batch 16` | `8.47` | CPU threads не bottleneck |
+| `nonmtp-ub192-backendsampling-noreuse-20260511-r1` | `--backend-sampling` | `8.43` | backend sampling не окупает overhead |
+| `nonmtp-ub192-b3072-noreuse-20260511-r1` | `b=3072` | `8.44` | хуже `b=6144` |
+| `nonmtp-ub192-b2048-noreuse-20260511-r1` | `b=2048` | `8.45` | хуже `b=6144` |
+| `nonmtp-compare-ub192-noreuse-20260511-r1` | `build-rocm-compare` | `8.10` | готовая compare-сборка хуже |
+| `nonmtp-exp-ub192-noreuse-20260511-r1` | `build-rocm-exp` | `8.09` | готовая exp-сборка хуже |
+| `nonmtp-ub192-ngrammod-noreuse-20260511-r1` | `--spec-type ngram-mod` | `8.46` | ngram-mod сгенерировал `0` draft tokens, ускорения нет |
+| `nonmtp-ub192-kvq8-noreuse-20260511-r1` | `--cache-type-k q8_0 --cache-type-v q8_0` | `8.41` | prefill тот же, decode хуже (`26.99 tok/s`) |
+
+Первые shape-planner и outer-batch проверки после добавления `LLAMA_UBATCH_SPLIT_POLICY=tail-avoid`:
+
+| Label | Изменение | Aggregate TPS | Вывод |
+| --- | --- | ---: | --- |
+| `nonmtp-shapeplan-ub256-pref192-noreuse-20260511-r1` | `-ub 256`, `LLAMA_UBATCH_SHAPE_PREFERRED=192` | `8.44` | planner реально дал chunks `192...192,158`, восстановив `ub256` с прежних `7.86`, но peak `ub192` не побил |
+| `nonmtp-ub192-b8192-noreuse-20260511-r1` | `b=8192`, `ub=192` | `8.47` | один outer prompt batch вместо `6144+1886` почти не меняет wall; boundary не bottleneck |
+
+Timing trace после добавления `LLAMA_UBATCH_TIMING`:
+
+- `nonmtp-ub192-timing-noreuse-20260511-r1`: async trace, `8.44 TPS`; build/alloc/input overhead на prompt chunks меньше `~1.5 ms`, но `compute_call` асинхронный и не показывает полную GPU стоимость.
+- `nonmtp-ub192-timing-sync32-noreuse-20260511-r1`: diagnostic-only (`LLAMA_UBATCH_TIMING_SYNC=1`, `max_tokens=32`, TPS не сравнивать). Средние sync timings: prompt `n_tokens=192` стоит `~232-240 ms` total на chunk, decode `n_tokens=1` стоит `~36 ms` на token. Host-side graph overhead не является bottleneck; следующий реальный рычаг — GDN/FATTN/MMQ device kernels или model-graph reshape вокруг них.
+
+Reduced HIP/FlashAttention build corridor после `amdgcn-link` blocker:
+
+| Label | Проверка | Aggregate TPS | Вывод |
+| --- | --- | ---: | --- |
+| `nonmtp-fa-reduced-ub192-noreuse-20260511-r1` | `build-rocm-fa-reduced`, `GGML_HIP_QWEN_FA_REDUCED=ON`, `GGML_OPENMP=OFF` | `8.46` | reduced dispatcher проходит активную Qwen/RDNA4 lane, но сам по себе не ускоряет |
+| `nonmtp-fa-reduced-forcevec-ub192-mt32-20260511-r1` | `GGML_QWEN_FA_REDUCED_FORCE=vec`, diagnostic `max_tokens=32` | diagnostic only | prompt eval упал `820 -> 580 tok/s`, force-vec для `Q1=192` закрыт |
+| `nonmtp-fa-reduced-forcewmma-ub192-mt32-20260511-r1` | `GGML_QWEN_FA_REDUCED_FORCE=wmma_f16`, diagnostic `max_tokens=32` | diagnostic only | prompt `823 tok/s`, decode `27.51 tok/s`; tiny decode через WMMA не лучше baseline |
+
+Вывод по reduced mode:
+
+- `GGML_HIP_QWEN_FA_REDUCED=ON` решает практический build blocker для дальнейших FATTN/GDN A/B патчей: heavy `fattn.cu`, tile/MMA dispatcher и template instances исключены, вместо них используется host-only reduced dispatcher.
+- Reduced dispatcher имеет ручку `GGML_QWEN_FA_REDUCED_FORCE=vec|wmma_f16` для smoke A/B FATTN selector без тяжелого `fattn.cu` relink.
+- Fresh reduced build на Windows/ROCm потребовал `-DGGML_OPENMP=OFF`, иначе link `ggml-cpu.dll` падает на `__kmpc_*` symbols.
+- Результаты из этого build можно использовать для smoke/A-B проверки kernel hypotheses, но финальные speed claims лучше подтверждать на обычном ROCm build после переноса удачной правки.
+
+MMQ/MMVQ follow-up:
+
+- `GGML_TRACE_MMQ_PATH=1` на reduced build (`nonmtp-fa-reduced-mmqtrace-ub192-mt8-20260511-r1`) дал `16674` MMQ route lines, все в prefill: `type=11/Q3_K ncols=192 xbest=96 tiles=2`, `type=12/Q4_K ncols=192 xbest=96 tiles=2`, плюс tail `ncols=158 xbest=80 tiles=2`.
+- Decode не идёт через MMQ trace; активный decode matvec path — `mmvq.cu`.
+- Попытка добавить MMVQ trace/Q3_K nwarps knob упёрлась в `amdgcn-link command failed due to signal` на `mmvq.cu`.
+- Попытка ограничить MMVQ switch до Qwen tensor types (`q3_K/q4_K/q6_K`) тоже не прошла: source-specific `mmvq.cu` compile всё равно падал в `amdgcn-link`. Эксперимент откатан, чтобы не оставлять несобираемый source state.
 
 ---
 

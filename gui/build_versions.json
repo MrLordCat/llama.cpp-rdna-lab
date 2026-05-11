@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-10 20:21:15",
+  "updated_at": "2026-05-11 13:58:21",
   "builds": [
     {
       "id": "bld-20260508073132-4d3cb594",
@@ -187,7 +187,7 @@
       "notes": "Imported from existing build directory",
       "bench_best_non_mtp_tps": "37.5657",
       "bench_best_mtp_tps": null,
-      "bench_last_run_at": "2026-05-10 20:15:32"
+      "bench_last_run_at": "2026-05-10 21:19:43"
     },
     {
       "id": "bld-20260508113803-2d592989",
@@ -354,6 +354,23 @@
       "created_at": "2026-05-10 09:23:51",
       "updated_at": "2026-05-10 14:37:37",
       "status": "archived",
+      "notes": "Imported from existing build directory",
+      "bench_best_non_mtp_tps": null,
+      "bench_best_mtp_tps": null,
+      "bench_last_run_at": ""
+    },
+    {
+      "id": "bld-20260511135818-da24be42",
+      "name": "build-rocm-fa-reduced",
+      "backend": "rocm",
+      "source_type": "fork",
+      "source_ref": "579b567f9",
+      "build_dir": "C:\\Users\\Chris\\Documents\\GitHub\\llama.cpp-with-GUI\\build-rocm-fa-reduced",
+      "server_bin": "C:\\Users\\Chris\\Documents\\GitHub\\llama.cpp-with-GUI\\build-rocm-fa-reduced\\bin\\llama-server.exe",
+      "toolchain": {},
+      "created_at": "2026-05-11 13:58:18",
+      "updated_at": "2026-05-11 13:58:18",
+      "status": "ready",
       "notes": "Imported from existing build directory",
       "bench_best_non_mtp_tps": null,
       "bench_best_mtp_tps": null,

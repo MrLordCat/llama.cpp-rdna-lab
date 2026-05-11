@@ -536,9 +536,9 @@ class ServerTabWidget(QWidget):
             self._apply_spec_controls_from_extra_args(str(match["extra_args"]).strip())
 
         kv_map = {
-            0: "f32",
-            1: "f16",
-            2: "bf16",
+            0: "f16",
+            1: "bf16",
+            2: "f32",
             3: "q8_0",
             7: "q4_0",
         }

@@ -219,6 +219,7 @@ option(GGML_HIP_NO_VMM                      "ggml: do not try to use HIP VMM"   
 option(GGML_HIP_ROCWMMA_FATTN               "ggml: enable rocWMMA for FlashAttention"         OFF)
 set   (GGML_HIP_ROCWMMA_INCLUDE_DIR "" CACHE PATH
                                             "ggml: path containing rocwmma headers (folder that contains rocwmma/)")
+option(GGML_HIP_QWEN_FA_REDUCED             "ggml: reduced HIP FlashAttention template set for local Qwen/RDNA4 experiments" OFF)
 option(GGML_HIP_MMQ_MFMA                    "ggml: enable MFMA MMA for CDNA in MMQ"           ON)
 option(GGML_HIP_EXPORT_METRICS              "ggml: enable kernel perf metrics output"         OFF)
 option(GGML_MUSA_GRAPHS                     "ggml: use MUSA graph, experimental, unstable"    OFF)

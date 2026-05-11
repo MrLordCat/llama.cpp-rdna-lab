@@ -54,6 +54,7 @@ HISTORY_FIELDS = [
     "kv_k",
     "kv_v",
     "spec_mode",
+    "no_reuse",
     "gpu_layers",
     "parallel",
     "flash_attn",
@@ -553,6 +554,16 @@ def terminate_process(proc: subprocess.Popen[str]) -> None:
         proc.wait(timeout=10)
 
 
+def split_server_extra(server_extra: str) -> list[str]:
+    if not server_extra:
+        return []
+    return shlex.split(server_extra, posix=(os.name != "nt"))
+
+
+def server_extra_has_flag(tokens: list[str], flag: str) -> bool:
+    return any(token == flag or token.startswith(flag + "=") for token in tokens)
+
+
 def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
     server_bin = Path(args.server_bin) if args.server_bin else default_server_bin()
     model = Path(args.model) if args.model else default_model()
@@ -586,8 +597,14 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
             "--chat-template-kwargs",
             json.dumps({"enable_thinking": False, "preserve_thinking": False}, separators=(",", ":")),
         ])
-    if args.server_extra:
-        cmd.extend(shlex.split(args.server_extra, posix=(os.name != "nt")))
+    extra_tokens = split_server_extra(args.server_extra)
+    if args.no_reuse:
+        if not server_extra_has_flag(extra_tokens, "--cache-ram"):
+            cmd.extend(["--cache-ram", "0"])
+        if not server_extra_has_flag(extra_tokens, "--ctx-checkpoints"):
+            cmd.extend(["--ctx-checkpoints", "0"])
+    if extra_tokens:
+        cmd.extend(extra_tokens)
 
     env = rocm_env()
 
@@ -881,6 +898,11 @@ def write_diagnostics_report(
             "cache_type_v": args.cache_type_v,
             "flash_attn": args.flash_attn,
             "spec_mode": infer_spec_mode(args.server_extra),
+            "server_extra": args.server_extra,
+            "no_reuse": args.no_reuse,
+            "ubatch_split_policy": os.environ.get("LLAMA_UBATCH_SPLIT_POLICY", ""),
+            "ubatch_shape_preferred": os.environ.get("LLAMA_UBATCH_SHAPE_PREFERRED", ""),
+            "ubatch_shape_min_tail": os.environ.get("LLAMA_UBATCH_SHAPE_MIN_TAIL", ""),
             "tasks": args.tasks,
             "runs": args.runs,
         },
@@ -904,6 +926,19 @@ def write_diagnostics_report(
         f"- kv: {args.cache_type_k}/{args.cache_type_v}",
         f"- flash_attn: {'on' if args.flash_attn else 'off'}",
         f"- spec_mode: {infer_spec_mode(args.server_extra)}",
+        f"- no_reuse: {args.no_reuse}",
+        f"- server_extra: {args.server_extra or '-'}",
+    ]
+
+    split_policy = os.environ.get("LLAMA_UBATCH_SPLIT_POLICY", "")
+    if split_policy:
+        lines += [
+            f"- ubatch_split_policy: {split_policy}",
+            f"- ubatch_shape_preferred: {os.environ.get('LLAMA_UBATCH_SHAPE_PREFERRED', '-') or '-'}",
+            f"- ubatch_shape_min_tail: {os.environ.get('LLAMA_UBATCH_SHAPE_MIN_TAIL', '-') or '-'}",
+        ]
+
+    lines += [
         "",
         "## Metrics",
         "",
@@ -951,20 +986,24 @@ def write_diagnostics_report(
 
 
 def infer_spec_mode(server_extra: str) -> str:
-    text = (server_extra or "").lower()
-    if "--spec-type mtp" in text:
-        return "mtp"
-    if "--spec-type ngram-mod" in text:
-        return "ngram-mod"
-    if "--spec-type draft" in text:
-        return "draft"
-    if "--spec-type eagle" in text:
-        return "eagle"
-    if "--spec-type none" in text:
-        return "none"
-    if "--spec-type" in text:
-        return "other"
+    tokens = [token.lower() for token in split_server_extra(server_extra)]
+    for i, token in enumerate(tokens):
+        if token == "--spec-type" and i + 1 < len(tokens):
+            return normalize_spec_mode(tokens[i + 1])
+        if token.startswith("--spec-type="):
+            return normalize_spec_mode(token.split("=", 1)[1])
     return "none"
+
+
+def normalize_spec_mode(value: str) -> str:
+    value = value.strip().lower()
+    if value in {"mtp", "ngram-mod", "draft", "none"}:
+        return value
+    if value.startswith("eagle"):
+        return "eagle"
+    if value.startswith("ngram"):
+        return value
+    return "other" if value else "none"
 
 
 def is_mtp_model_name(model_path: str) -> bool:
@@ -1471,6 +1510,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--startup-timeout", type=float, default=300.0)
     parser.add_argument("--request-timeout", type=float, default=240.0)
     parser.add_argument(
+        "--no-reuse",
+        action="store_true",
+        help="disable llama-server prompt cache and context checkpoints for cold prompt-heavy measurements",
+    )
+    parser.add_argument(
         "--allow-ctx-above-16k",
         action="store_true",
         help="allow ctx > 16384 for archival experiments; default policy keeps primary lane at <=16k",
@@ -1698,6 +1742,7 @@ def main() -> int:
                 "kv_k": args.cache_type_k,
                 "kv_v": args.cache_type_v,
                 "spec_mode": infer_spec_mode(args.server_extra),
+                "no_reuse": 1 if args.no_reuse else 0,
                 "gpu_layers": args.gpu_layers,
                 "parallel": args.parallel,
                 "flash_attn": "on" if args.flash_attn else "off",
@@ -1928,6 +1973,7 @@ def main() -> int:
             "kv_k": "sweep",
             "kv_v": "sweep",
             "spec_mode": spec_mode,
+            "no_reuse": 1 if args.no_reuse else 0,
             "gpu_layers": args.gpu_layers,
             "parallel": args.parallel,
             "flash_attn": "on" if args.flash_attn else "off",
