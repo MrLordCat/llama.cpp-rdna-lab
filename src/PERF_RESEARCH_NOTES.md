@@ -32,15 +32,19 @@ Goal: keep `ubatch <= 256` but avoid tails that route through slow GDN/FATTN sha
 
 Initial experimental controls:
 
-- `LLAMA_UBATCH_SPLIT_POLICY=tail-avoid` enables the local planner in `llama_batch_allocr::split_equal()`.
+- `LLAMA_UBATCH_SPLIT_POLICY=tail-avoid` keeps the legacy tail-only heuristic.
+- `LLAMA_UBATCH_SPLIT_POLICY=shape-score` enables deterministic scoring over candidate split sizes for single-sequence prefill.
 - `LLAMA_UBATCH_SHAPE_PREFERRED=<N>` caps the planned single-sequence prefill shape under the requested `-ub` value.
 - `LLAMA_UBATCH_SHAPE_MIN_TAIL=<N>` avoids final tails smaller than this value when possible; default is `144`.
+- `LLAMA_UBATCH_SHAPE_MIN_STEP=<N>` sets the lower bound for candidate split sizes in `shape-score` mode.
+- `LLAMA_UBATCH_SHAPE_CHUNK_HINT=<N>` sets the chunk-tail hint used by `shape-score` penalties (default `96`).
+- `LLAMA_UBATCH_SHAPE_MIN_CHUNK_TAIL=<N>` penalizes candidate split sizes with non-zero chunk tails smaller than this value.
 - `LLAMA_UBATCH_TRACE=1` logs planned shapes at split time.
 - Default behavior is unchanged when the policy env var is not set.
 
 Current intended test:
 
-- Run with `-ub 256` or `-ub 194`, plus `LLAMA_UBATCH_SPLIT_POLICY=tail-avoid LLAMA_UBATCH_SHAPE_PREFERRED=192`, to decouple scheduler reserve size from actual GDN/FATTN prompt shapes.
+- Run with `-ub 256` or `-ub 194`, plus `LLAMA_UBATCH_SPLIT_POLICY=shape-score LLAMA_UBATCH_SHAPE_PREFERRED=192`, to decouple scheduler reserve size from actual GDN/FATTN prompt shapes.
 - If this only reproduces `ub192`, it is still useful as proof that the cliff is shape-driven rather than a generic `n_ubatch` parameter effect.
 
 Validation:

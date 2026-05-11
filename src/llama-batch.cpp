@@ -24,34 +24,114 @@ static uint32_t llama_env_u32(const char * name, uint32_t fallback, uint32_t min
     return std::min(std::max((uint32_t) parsed, min_value), max_value);
 }
 
+static uint64_t llama_shape_plan_score(
+        uint32_t candidate,
+        uint32_t target,
+        uint32_t remaining,
+        uint32_t min_tail,
+        uint32_t chunk_hint,
+        uint32_t min_chunk_tail) {
+    if (candidate == 0 || candidate > target) {
+        return (uint64_t) -1;
+    }
+
+    uint64_t score = 0;
+
+    // Keep split sizes close to requested/planned target to avoid over-fragmentation.
+    score += (uint64_t) (target - candidate) * 8;
+
+    const uint32_t n_chunks = (uint32_t) (((uint64_t) remaining + candidate - 1) / candidate);
+    if (n_chunks > 1) {
+        score += (uint64_t) (n_chunks - 1) * 64;
+    }
+
+    const uint32_t final_tail = remaining % candidate;
+    if (final_tail != 0 && final_tail < min_tail) {
+        score += 20000 + (uint64_t) (min_tail - final_tail) * 128;
+    }
+
+    // Guard against local shapes that create tiny tails in chunked prefill kernels.
+    if (chunk_hint > 1) {
+        const uint32_t chunk_tail = candidate % chunk_hint;
+        if (chunk_tail != 0 && chunk_tail < min_chunk_tail) {
+            score += 100000 + (uint64_t) (min_chunk_tail - chunk_tail) * 256;
+        }
+    }
+
+    return score;
+}
+
 static uint32_t llama_shape_planned_ubatch(uint32_t n_ubatch, uint32_t remaining) {
     const char * policy = getenv("LLAMA_UBATCH_SPLIT_POLICY");
-    if (!policy || strcmp(policy, "tail-avoid") != 0) {
+    const bool use_tail_avoid = policy && strcmp(policy, "tail-avoid") == 0;
+    const bool use_shape_score = policy && strcmp(policy, "shape-score") == 0;
+    if (!use_tail_avoid && !use_shape_score) {
         return n_ubatch;
     }
 
-    uint32_t target = n_ubatch;
+    uint32_t target = std::min(n_ubatch, remaining);
     const uint32_t preferred = llama_env_u32("LLAMA_UBATCH_SHAPE_PREFERRED", 0, 1, n_ubatch);
     if (preferred > 0) {
         target = std::min(target, preferred);
     }
 
-    if (remaining <= target) {
+    if (target == 0) {
         return remaining;
     }
 
     const uint32_t min_tail = llama_env_u32("LLAMA_UBATCH_SHAPE_MIN_TAIL", 144, 1, target);
-    const uint32_t tail = remaining % target;
-    if (tail == 0 || tail >= min_tail) {
+
+    if (use_tail_avoid) {
+        if (remaining <= target) {
+            return remaining;
+        }
+
+        const uint32_t tail = remaining % target;
+        if (tail == 0 || tail >= min_tail) {
+            return target;
+        }
+
+        const uint32_t shrink = min_tail - tail;
+        if (target > shrink && target - shrink >= min_tail) {
+            return target - shrink;
+        }
+
         return target;
     }
 
-    const uint32_t shrink = min_tail - tail;
-    if (target > shrink && target - shrink >= min_tail) {
-        return target - shrink;
+    const uint32_t min_step_default = std::min(min_tail, target);
+    const uint32_t min_step = llama_env_u32("LLAMA_UBATCH_SHAPE_MIN_STEP", min_step_default, 1, target);
+    const uint32_t chunk_hint = llama_env_u32("LLAMA_UBATCH_SHAPE_CHUNK_HINT", 96, 1, target);
+    const uint32_t min_chunk_tail = chunk_hint > 1
+            ? llama_env_u32("LLAMA_UBATCH_SHAPE_MIN_CHUNK_TAIL", 32, 1, chunk_hint - 1)
+            : 0;
+
+    uint32_t best = target;
+    uint64_t best_score = (uint64_t) -1;
+    for (int32_t candidate = (int32_t) target; candidate >= (int32_t) min_step; --candidate) {
+        const uint32_t cur = (uint32_t) candidate;
+        const uint64_t score = llama_shape_plan_score(cur, target, remaining, min_tail, chunk_hint, min_chunk_tail);
+        if (score < best_score) {
+            best_score = score;
+            best = cur;
+        }
     }
 
-    return target;
+    if (getenv("LLAMA_UBATCH_TRACE")) {
+        const uint32_t final_tail = remaining % best;
+        const uint32_t chunk_tail = chunk_hint > 1 ? (best % chunk_hint) : 0;
+        LLAMA_LOG_INFO(
+                "%s: policy=shape-score target=%u chosen=%u remaining=%u tail=%u chunk_tail=%u score=%llu\n",
+                __func__,
+                target,
+                best,
+                remaining,
+                final_tail,
+                chunk_tail,
+                (unsigned long long) best_score);
+    }
+
+    return best;
 }
 
 llama_batch_allocr::llama_batch_allocr(uint32_t n_pos_per_embd) : n_pos_per_embd(n_pos_per_embd) {

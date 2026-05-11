@@ -1620,6 +1620,48 @@ python scripts/agent_workload_bench.py --label promptfocus-v2review-<tag> --serv
 | `nonmtp-shapeplan-ub256-pref192-noreuse-20260511-r1` | `-ub 256`, `LLAMA_UBATCH_SHAPE_PREFERRED=192` | `8.44` | planner реально дал chunks `192...192,158`, восстановив `ub256` с прежних `7.86`, но peak `ub192` не побил |
 | `nonmtp-ub192-b8192-noreuse-20260511-r1` | `b=8192`, `ub=192` | `8.47` | один outer prompt batch вместо `6144+1886` почти не меняет wall; boundary не bottleneck |
 
+### P1 shape-score boundary gate (`v2-review`, 2026-05-11)
+
+После внедрения `shape-score` planner (`src/llama-batch.cpp`) был выполнен полный gate на active lane:
+
+- `ctx=12288`, `b=6144`, `q4_0/q4_0`, `spec=none`, no-reuse, `--no-disable-thinking`.
+
+Screening (`runs=1`):
+
+| Label | UBatch | Policy | Aggregate TPS |
+| --- | ---: | --- | ---: |
+| `p1-gate-20260511-174248-base-ub192-r1` | `192` | off | `8.51` |
+| `p1-gate-20260511-174248-shape-ub190-r1` | `190` | shape-score | `8.43` |
+| `p1-gate-20260511-174248-shape-ub192-r1` | `192` | shape-score | `8.54` |
+| `p1-gate-20260511-174248-shape-ub194-r1` | `194` | shape-score | `8.53` |
+| `p1-gate-20260511-174248-shape-ub196-r1` | `196` | shape-score | `8.54` |
+| `p1-gate-20260511-174521-base-ub194-r1` | `194` | off | `6.71` |
+
+Confirmation (`runs=3`):
+
+| Label | UBatch | Policy | Aggregate TPS | TPS stdev |
+| --- | ---: | --- | ---: | ---: |
+| `p1-confirm-20260511-174606-base-ub194-r3` | `194` | off | `6.83` | `0.0663` |
+| `p1-confirm-20260511-174606-shape-ub194-r3` | `194` | shape-score | `8.52` | `0.0064` |
+| `p1-confirm-20260511-174606-base-ub192-r3` | `192` | off | `8.51` | `0.0009` |
+
+Итоговые дельты (по diagnostics + CSV):
+
+- shape-score `ub194` vs baseline `ub194`:
+  - aggregate TPS: `+24.73%`
+  - prompt_eval_ms: `-26.42%`
+  - decode_eval_ms: `+0.10%` (в пределах шума)
+- shape-score `ub194` vs baseline `ub192`:
+  - aggregate TPS: `+0.08%`
+  - prompt_eval_ms: `-0.11%`
+  - decode_eval_ms: `-0.10%`
+
+Verdict:
+
+- boundary cliff на `ub194` воспроизводимо снят под `shape-score` без decode-regression;
+- throughput `ub194` возвращён в corridor `ub192` класса;
+- изменение оставлено в дереве как env-guarded policy.
+
 Timing trace после добавления `LLAMA_UBATCH_TIMING`:
 
 - `nonmtp-ub192-timing-noreuse-20260511-r1`: async trace, `8.44 TPS`; build/alloc/input overhead на prompt chunks меньше `~1.5 ms`, но `compute_call` асинхронный и не показывает полную GPU стоимость.
