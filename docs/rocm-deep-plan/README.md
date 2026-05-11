@@ -1,13 +1,13 @@
-# ROCm Deep Plan (Planning Only)
+# ROCm Deep Plan (Execution + Planning)
 
 This folder contains implementation dossiers for the current Qwen ROCm acceleration blockers.
 
-Important constraints for this planning phase:
+Current constraints for planning-phase points:
 
-- No runtime code modifications in this phase.
-- No performance claims from unmerged code in this phase.
-- No test execution changes beyond plan-level command templates.
-- Each point must be fully analyzed before any implementation starts.
+- No runtime code modifications for points that are still in planning state.
+- No performance claims from unmerged code.
+- No test execution changes beyond point protocol unless explicitly approved.
+- Each point must pass its theory gates before implementation starts.
 
 ## Active lane (reference)
 
@@ -21,9 +21,10 @@ Important constraints for this planning phase:
 
 1. P1 prefill shape route blocker
    - File: P1_prefill_shape_route.md
-   - Status: theoretical potential validated for current environment (planning complete, implementation not started)
+   - Status: implemented and validated on active lane (boundary cliff recovery confirmed)
 2. P2 MMVQ decode and linker blocker
    - File: P2_mmvq_decode_and_link_blocker.md
+   - Status: deep theoretical pre-implementation research updated (implementation not started)
 3. P3 HIP build pressure and TU split
    - File: P3_hip_build_pressure_and_tu_split.md
 4. P4 validation protocol and gates
