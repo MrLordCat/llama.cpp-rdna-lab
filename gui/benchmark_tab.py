@@ -378,6 +378,8 @@ class BenchmarkTabWidget(QWidget):
         for kv_name, enabled, hint in [
             ("q4_0", True, "Main fast lane for current prompt-heavy target"),
             ("q8_0", True, "Higher-quality KV cache variant"),
+            ("tbq4", False, "TurboQuant 4 shorthand (current alias path maps to q4_0 on ROCm)"),
+            ("tbq3", False, "TurboQuant 3 shorthand (current alias path maps to tq3_0 on ROCm)"),
             ("f16", False, "FP16 KV (usually slower/heavier)"),
             ("bf16", False, "BF16 KV (usually slower/heavier)"),
             ("f32", False, "FP32 KV (debug/reference only)"),
@@ -1111,7 +1113,7 @@ class BenchmarkTabWidget(QWidget):
         return f"{head}, ... ({len(values)} total)"
 
     def _selected_autotune_kv_values(self) -> list[str]:
-        ordered = ["q4_0", "q8_0", "f16", "bf16", "f32"]
+        ordered = ["q4_0", "q8_0", "tbq4", "tbq3", "f16", "bf16", "f32"]
         return [name for name in ordered if name in self.autotune_kv_checks and self.autotune_kv_checks[name].isChecked()]
 
     def _selected_autotune_spec_values(self) -> list[str]:
