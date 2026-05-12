@@ -789,9 +789,10 @@ static __global__ void flash_attn_tile(
 
     // Skip unused kernel variants for faster compilation:
 
-    if (
+        if (
 #ifdef GGML_USE_WMMA_FATTN
-            (ncols2 != 1 && DV != 40 && DV != 72 && DV != 512) ||
+            // Keep WMMA-favored pruning, but allow DV=256 tile variants for RDNA4/Qwen A/B.
+            (ncols2 != 1 && DV != 40 && DV != 72 && DV != 256 && DV != 512) ||
 #endif // GGML_USE_WMMA_FATTN
             (use_logit_softcap && !(DV == 128 || DV == 256 || DV == 512))
     ) {

@@ -36,6 +36,31 @@ HISTORY_CSV_NAME = "BENCH_HISTORY.csv"
 HISTORY_MD_NAME = "BENCH_HISTORY.md"
 PRIMARY_MAX_CTX = 16384
 
+KERNEL_FULL_TRACE_ENV = {
+    "GGML_TRACE_FATTN_SELECTED": "1",
+    "GGML_TRACE_FATTN_TIMING": "1",
+    "GGML_TRACE_FATTN_TIMING_SYNC": "1",
+    "GGML_TRACE_FATTN_TIMING_PRE_SYNC": "1",
+    "GGML_TRACE_FATTN_WMMA_CONFIG": "1",
+    "GGML_TRACE_GDN_PATH": "1",
+    "GGML_TRACE_GDN_TIMING": "1",
+    "GGML_TRACE_GDN_TIMING_SYNC_HIP": "1",
+    "GGML_TRACE_GDN_TIMING_PRE_SYNC_HIP": "1",
+    "GGML_TRACE_MMQ_PATH": "1",
+    "GGML_TRACE_MMQ_TIMING": "1",
+    "GGML_TRACE_MMQ_TIMING_SYNC": "1",
+    "GGML_TRACE_MMQ_TIMING_PRE_SYNC": "1",
+    "GGML_TRACE_MMVQ_PATH": "1",
+    "GGML_TRACE_MMVQ_SMALL_K": "1",
+    "GGML_TRACE_MMVQ_TIMING": "1",
+    "GGML_TRACE_MMVQ_TIMING_SYNC": "1",
+    "GGML_TRACE_MMVQ_TIMING_PRE_SYNC": "1",
+    "GGML_TRACE_CUDA_NODE_TIMING": "1",
+    "GGML_TRACE_CUDA_NODE_TIMING_SYNC": "1",
+    "LLAMA_UBATCH_TIMING": "1",
+    "LLAMA_UBATCH_TIMING_SYNC": "1",
+}
+
 HISTORY_FIELDS = [
     "timestamp",
     "run_id",
@@ -482,6 +507,24 @@ def rocm_env() -> dict[str, str]:
     return env
 
 
+def apply_trace_preset(env: dict[str, str], preset: str) -> None:
+    if preset == "none":
+        return
+    if preset == "kernel-full":
+        env.update(KERNEL_FULL_TRACE_ENV)
+        return
+    raise ValueError(f"unknown trace preset: {preset}")
+
+
+def is_timeout_like_exception(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError):
+        return True
+    text = repr(exc).lower()
+    return "timed out" in text or "timeout" in text
+
+
 def find_background_llama_servers() -> list[str]:
     """Return a list of running llama-server process ids as strings."""
     try:
@@ -611,6 +654,7 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
         cmd.extend(extra_tokens)
 
     env = rocm_env()
+    apply_trace_preset(env, args.trace_preset)
 
     # Known issue: on some ROCm/Windows paths, forcing RDNA4 graph-opt can hang.
     # Current backend guard disables RDNA4 graph-opt by default. Treat only explicit
@@ -646,7 +690,12 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
     )
 
 
-def run_task(base_url: str, task: dict[str, str], args: argparse.Namespace) -> dict[str, Any]:
+def run_task(
+    base_url: str,
+    task: dict[str, str],
+    args: argparse.Namespace,
+    proc: subprocess.Popen[str] | None = None,
+) -> dict[str, Any]:
     payload = {
         "model": args.api_model,
         "messages": [
@@ -664,15 +713,32 @@ def run_task(base_url: str, task: dict[str, str], args: argparse.Namespace) -> d
 
     started = time.perf_counter()
     error = ""
+    hard_timeout = False
+    terminated_server = False
     response: dict[str, Any] | None = None
+    caught_exc: BaseException | None = None
     content = ""
+    request_timeout = float(args.request_timeout)
+    if args.task_hard_timeout > 0:
+        request_timeout = min(request_timeout, float(args.task_hard_timeout))
     try:
-        response = http_json("POST", base_url + "/v1/chat/completions", payload, timeout=args.request_timeout)
+        response = http_json("POST", base_url + "/v1/chat/completions", payload, timeout=request_timeout)
         message = response["choices"][0].get("message", {})
         content = message.get("content") or message.get("reasoning_content") or ""
     except Exception as exc:  # noqa: BLE001 - benchmark records failures as rows
+        caught_exc = exc
         error = repr(exc)
     wall_s = time.perf_counter() - started
+
+    if args.task_hard_timeout > 0 and (
+        wall_s > args.task_hard_timeout or (caught_exc is not None and is_timeout_like_exception(caught_exc))
+    ):
+        hard_timeout = True
+        timeout_error = f"TaskHardTimeoutExceeded(wall_s={wall_s:.2f}s, limit={args.task_hard_timeout:.2f}s)"
+        error = timeout_error if not error else f"{error}; {timeout_error}"
+        if proc is not None and proc.poll() is None:
+            terminate_process(proc)
+            terminated_server = True
 
     usage = response.get("usage", {}) if isinstance(response, dict) else {}
     timings = response.get("timings", {}) if isinstance(response, dict) else {}
@@ -687,6 +753,11 @@ def run_task(base_url: str, task: dict[str, str], args: argparse.Namespace) -> d
             f"TaskTimeoutExceeded(wall_s={wall_s:.2f}s, limit={args.task_fail_timeout:.2f}s)"
         )
         error = timeout_error if not error else f"{error}; {timeout_error}"
+        completion_tokens = None
+        prompt_tokens = None
+        total_tokens = None
+
+    if hard_timeout:
         completion_tokens = None
         prompt_tokens = None
         total_tokens = None
@@ -706,6 +777,8 @@ def run_task(base_url: str, task: dict[str, str], args: argparse.Namespace) -> d
         "completion_tps_wall": round(completion_tps, 4) if completion_tps is not None else None,
         "response_chars": len(content),
         "error": error,
+        "hard_timeout": hard_timeout,
+        "terminated_server": terminated_server,
         "timings": timings,
         "response_preview": content[:500],
     }
@@ -732,7 +805,7 @@ def write_results(
     fieldnames = [
         "label", "task_id", "title", "wall_s", "prompt_tokens",
         "completion_tokens", "total_tokens", "completion_tps_wall",
-        "response_chars", "error",
+        "response_chars", "error", "hard_timeout", "terminated_server",
     ]
     if artifact_mode == "full":
         with csv_path.open("w", encoding="utf-8", newline="") as f:
@@ -1450,7 +1523,9 @@ def _autotune_session_fingerprint(
         "max_tokens": int(args.max_tokens),
         "startup_timeout": float(args.startup_timeout),
         "request_timeout": float(args.request_timeout),
+        "task_hard_timeout": float(args.task_hard_timeout),
         "task_fail_timeout": float(args.task_fail_timeout),
+        "trace_preset": str(args.trace_preset),
         "no_reuse": bool(args.no_reuse),
         "real_context_mode": str(args.real_context_mode),
         "real_context_chars": int(args.real_context_chars),
@@ -1655,6 +1730,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--startup-timeout", type=float, default=300.0)
     parser.add_argument("--request-timeout", type=float, default=240.0)
     parser.add_argument(
+        "--task-hard-timeout",
+        type=float,
+        default=30.0,
+        help="abort a task request after this many seconds and terminate a server started by this script; 0 disables",
+    )
+    parser.add_argument(
         "--task-fail-timeout",
         type=float,
         default=0.0,
@@ -1689,6 +1770,12 @@ def parse_args() -> argparse.Namespace:
         "--allow-unsafe-graph-opt",
         action="store_true",
         help="allow running with GGML_CUDA_GRAPH_OPT=1 on ROCm/Windows despite known hang risk",
+    )
+    parser.add_argument(
+        "--trace-preset",
+        choices=["none", "kernel-full"],
+        default="none",
+        help="enable a built-in trace environment preset for the started server",
     )
 
     parser.add_argument("--autotune", action="store_true", help="run parameter sweep")
@@ -1789,20 +1876,23 @@ def run_suite(args: argparse.Namespace, tasks: list[dict[str, str]]) -> list[dic
         if should_prime_v2:
             print("[prime] running unmeasured v2 priming pass ...", flush=True)
             for task in tasks:
-                prime_row = run_task(base_url, task, args)
+                prime_row = run_task(base_url, task, args, proc=proc)
                 if prime_row["error"]:
                     raise RuntimeError(f"v2 prime pass failed on {task['id']}: {prime_row['error']}")
 
         for run_idx in range(args.runs):
             for task in tasks:
                 print(f"[{run_idx + 1}/{args.runs}] {task['id']} ...", flush=True)
-                row = run_task(base_url, task, args)
+                row = run_task(base_url, task, args, proc=proc)
                 row["run"] = run_idx + 1
                 rows.append(row)
                 if row["error"]:
                     print(f"  error: {row['error']}")
                 else:
                     print(f"  {row['wall_s']:.2f}s, completion_tokens={row['completion_tokens']}")
+                if row.get("hard_timeout"):
+                    print("  aborting suite after hard task timeout")
+                    return rows
         return rows
     finally:
         if proc is not None and not args.keep_server:

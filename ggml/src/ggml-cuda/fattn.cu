@@ -8,6 +8,7 @@
 #include "fattn-wmma-f16.cuh"
 #include "fattn.cuh"
 
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -339,6 +340,28 @@ static const char * ggml_cuda_best_fattn_kernel_name(const best_fattn_kernel ker
     }
 
     return "unknown";
+}
+
+static best_fattn_kernel ggml_cuda_fattn_force_kernel_from_env(const best_fattn_kernel fallback) {
+    const char * env = std::getenv("GGML_FATTN_FORCE_KERNEL");
+    if (env == nullptr || env[0] == '\0') {
+        return fallback;
+    }
+
+    if (std::strcmp(env, "vec") == 0) {
+        return BEST_FATTN_KERNEL_VEC;
+    }
+    if (std::strcmp(env, "tile") == 0) {
+        return BEST_FATTN_KERNEL_TILE;
+    }
+    if (std::strcmp(env, "wmma_f16") == 0) {
+        return BEST_FATTN_KERNEL_WMMA_F16;
+    }
+    if (std::strcmp(env, "mma_f16") == 0) {
+        return BEST_FATTN_KERNEL_MMA_F16;
+    }
+
+    return fallback;
 }
 
 static best_fattn_kernel ggml_cuda_reduced_fattn_filter(const best_fattn_kernel kernel) {
@@ -810,11 +833,15 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
         GGML_ABORT("fatal error");
     }
 
-    const best_fattn_kernel selected_kernel = ggml_cuda_rdna4_adaptive_select(cc, dst, base_kernel);
+    const best_fattn_kernel selected_kernel_default = ggml_cuda_rdna4_adaptive_select(cc, dst, base_kernel);
+    const best_fattn_kernel selected_kernel = ggml_cuda_fattn_force_kernel_from_env(selected_kernel_default);
+    const bool trace_timing = std::getenv("GGML_TRACE_FATTN_TIMING") != nullptr;
+    const bool trace_timing_sync = trace_timing && std::getenv("GGML_TRACE_FATTN_TIMING_SYNC") != nullptr;
+    const bool trace_timing_pre_sync = trace_timing_sync && std::getenv("GGML_TRACE_FATTN_TIMING_PRE_SYNC") != nullptr;
 
     if (std::getenv("GGML_TRACE_FATTN_SELECTED") != nullptr) {
         GGML_LOG_INFO(
-            "%s: cc=%d Q0=%lld Q1=%lld Q2=%lld Q3=%lld K0=%lld K1=%lld V0=%lld base=%s selected=%s\n",
+            "%s: cc=%d Q0=%lld Q1=%lld Q2=%lld Q3=%lld K0=%lld K1=%lld V0=%lld base=%s selected=%s selected_default=%s\n",
             __func__,
             cc,
             (long long) Q->ne[0],
@@ -825,10 +852,81 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
             (long long) K->ne[1],
             (long long) V->ne[0],
             ggml_cuda_best_fattn_kernel_name(base_kernel),
-            ggml_cuda_best_fattn_kernel_name(selected_kernel));
+            ggml_cuda_best_fattn_kernel_name(selected_kernel),
+            ggml_cuda_best_fattn_kernel_name(selected_kernel_default));
     }
 
+    double pre_sync_ms = 0.0;
+    bool pre_sync_applied = false;
+    if (trace_timing_pre_sync) {
+#ifdef GGML_USE_HIP
+        hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+        CUDA_CHECK(hipStreamIsCapturing(ctx.stream(), &capture_status));
+        const bool capture_active = capture_status != hipStreamCaptureStatusNone;
+#else
+        cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+        CUDA_CHECK(cudaStreamIsCapturing(ctx.stream(), &capture_status));
+        const bool capture_active = capture_status != cudaStreamCaptureStatusNone;
+#endif
+        if (!capture_active) {
+            const auto pre_sync_start = std::chrono::high_resolution_clock::now();
+            CUDA_CHECK(cudaStreamSynchronize(ctx.stream()));
+            const auto pre_sync_end = std::chrono::high_resolution_clock::now();
+            pre_sync_ms = std::chrono::duration<double, std::milli>(pre_sync_end - pre_sync_start).count();
+            pre_sync_applied = true;
+        }
+    }
+
+    const auto timing_start = trace_timing ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
     ggml_cuda_launch_fattn_kernel(ctx, dst, selected_kernel);
+
+    if (trace_timing) {
+        const auto timing_after_launch = std::chrono::high_resolution_clock::now();
+        const double enqueue_ms = std::chrono::duration<double, std::milli>(timing_after_launch - timing_start).count();
+
+        double sync_ms = 0.0;
+        int capture_active = 0;
+        bool sync_applied = false;
+        if (trace_timing_sync) {
+#ifdef GGML_USE_HIP
+            hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+            CUDA_CHECK(hipStreamIsCapturing(ctx.stream(), &capture_status));
+            capture_active = capture_status != hipStreamCaptureStatusNone;
+#else
+            cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+            CUDA_CHECK(cudaStreamIsCapturing(ctx.stream(), &capture_status));
+            capture_active = capture_status != cudaStreamCaptureStatusNone;
+#endif
+
+            if (!capture_active) {
+                CUDA_CHECK(cudaStreamSynchronize(ctx.stream()));
+                const auto timing_after_sync = std::chrono::high_resolution_clock::now();
+                sync_ms = std::chrono::duration<double, std::milli>(timing_after_sync - timing_after_launch).count();
+                sync_applied = true;
+            }
+        }
+
+        GGML_LOG_INFO(
+            "%s: timing cc=%d Q0=%lld Q1=%lld Q2=%lld Q3=%lld K1=%lld V0=%lld base=%s selected=%s sync_req=%d pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+            __func__,
+            cc,
+            (long long) Q->ne[0],
+            (long long) Q->ne[1],
+            (long long) Q->ne[2],
+            (long long) Q->ne[3],
+            (long long) K->ne[1],
+            (long long) V->ne[0],
+            ggml_cuda_best_fattn_kernel_name(base_kernel),
+            ggml_cuda_best_fattn_kernel_name(selected_kernel),
+            trace_timing_sync ? 1 : 0,
+            pre_sync_applied ? 1 : 0,
+            sync_applied ? 1 : 0,
+            capture_active,
+            pre_sync_ms,
+            enqueue_ms,
+            sync_ms,
+            enqueue_ms + sync_ms);
+    }
 }
 
 bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {

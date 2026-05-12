@@ -4,6 +4,7 @@
 #include "vecdotq.cuh"
 #include "mma.cuh"
 
+#include <chrono>
 #include <climits>
 #include <cstdint>
 
@@ -4068,12 +4069,38 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
     const int warp_size = ggml_cuda_info().devices[id].warp_size;
     const int nwarps    = mmq_get_nwarps_host(cc, warp_size);
     const bool trace_path = std::getenv("GGML_TRACE_MMQ_PATH") != nullptr;
+    const bool trace_timing = std::getenv("GGML_TRACE_MMQ_TIMING") != nullptr;
+    const bool trace_timing_sync = trace_timing && std::getenv("GGML_TRACE_MMQ_TIMING_SYNC") != nullptr;
+    const bool trace_timing_pre_sync = trace_timing_sync && std::getenv("GGML_TRACE_MMQ_TIMING_PRE_SYNC") != nullptr;
 
     const int mmq_x_max = get_mmq_x_max_host(cc);
     const int mmq_y = get_mmq_y_host(cc);
 
     int mmq_x_best  = 0;
     int ntiles_x_best = INT_MAX;
+
+    double pre_sync_ms = 0.0;
+    bool pre_sync_applied = false;
+    if (trace_timing_pre_sync) {
+#ifdef GGML_USE_HIP
+        hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+        CUDA_CHECK(hipStreamIsCapturing(stream, &capture_status));
+        const bool capture_active = capture_status != hipStreamCaptureStatusNone;
+#else
+        cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+        CUDA_CHECK(cudaStreamIsCapturing(stream, &capture_status));
+        const bool capture_active = capture_status != cudaStreamCaptureStatusNone;
+#endif
+        if (!capture_active) {
+            const auto pre_sync_start = std::chrono::high_resolution_clock::now();
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            const auto pre_sync_end = std::chrono::high_resolution_clock::now();
+            pre_sync_ms = std::chrono::duration<double, std::milli>(pre_sync_end - pre_sync_start).count();
+            pre_sync_applied = true;
+        }
+    }
+
+    const auto timing_start = trace_timing ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
 
     for (int mmq_x = 8; mmq_x <= mmq_x_max && ntiles_x_best > 1; mmq_x += 8) {
         const int granularity = mmq_get_granularity_host(mmq_x, cc);
@@ -4143,6 +4170,52 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
             fprintf(stderr, "mmq_x_best=%d\n", mmq_x_best);
             GGML_ABORT("fatal error");
             break;
+    }
+
+    if (trace_timing) {
+        const auto timing_after_launch = std::chrono::high_resolution_clock::now();
+        const double enqueue_ms = std::chrono::duration<double, std::milli>(timing_after_launch - timing_start).count();
+
+        double sync_ms = 0.0;
+        int capture_active = 0;
+        bool sync_applied = false;
+        if (trace_timing_sync) {
+#ifdef GGML_USE_HIP
+            hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+            CUDA_CHECK(hipStreamIsCapturing(stream, &capture_status));
+            capture_active = capture_status != hipStreamCaptureStatusNone;
+#else
+            cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+            CUDA_CHECK(cudaStreamIsCapturing(stream, &capture_status));
+            capture_active = capture_status != cudaStreamCaptureStatusNone;
+#endif
+
+            if (!capture_active) {
+                CUDA_CHECK(cudaStreamSynchronize(stream));
+                const auto timing_after_sync = std::chrono::high_resolution_clock::now();
+                sync_ms = std::chrono::duration<double, std::milli>(timing_after_sync - timing_after_launch).count();
+                sync_applied = true;
+            }
+        }
+
+        GGML_LOG_INFO(
+            "%s: timing type=%d cc=%d nrows_x=%lld ncols_max=%lld ncols_dst=%lld mmq_x_best=%d mmq_y=%d sync_req=%d pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+            __func__,
+            (int) type,
+            cc,
+            (long long) args.nrows_x,
+            (long long) args.ncols_max,
+            (long long) args.ncols_dst,
+            mmq_x_best,
+            mmq_y,
+            trace_timing_sync ? 1 : 0,
+            pre_sync_applied ? 1 : 0,
+            sync_applied ? 1 : 0,
+            capture_active,
+            pre_sync_ms,
+            enqueue_ms,
+            sync_ms,
+            enqueue_ms + sync_ms);
     }
 
     if (trace_path) {

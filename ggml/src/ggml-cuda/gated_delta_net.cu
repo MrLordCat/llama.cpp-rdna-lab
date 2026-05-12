@@ -299,6 +299,11 @@ static void launch_gated_delta_net(
     const bool trace_contract = std::getenv("LLAMA_TRACE_DELTA_NET_CONTRACT") != nullptr;
     const bool trace_path = std::getenv("GGML_TRACE_GDN_PATH") != nullptr;
     const bool trace_timing = std::getenv("GGML_TRACE_GDN_TIMING") != nullptr;
+    bool trace_timing_sync_hip = false;
+#ifdef GGML_USE_HIP
+    trace_timing_sync_hip = trace_timing && std::getenv("GGML_TRACE_GDN_TIMING_SYNC_HIP") != nullptr;
+#endif
+    const bool trace_timing_pre_sync_hip = trace_timing_sync_hip && std::getenv("GGML_TRACE_GDN_TIMING_PRE_SYNC_HIP") != nullptr;
     const bool use_fast_exp = !KDA && ggml_env_i64("GGML_GDN_FAST_EXP", 0, 0, 1) == 1;
     if (trace_contract) {
         GGML_LOG_INFO(
@@ -319,7 +324,7 @@ static void launch_gated_delta_net(
 
     if (trace_path) {
         GGML_LOG_INFO(
-            "%s: KDA=%d keep_intermediates=%d cc=%d n_tokens=%lld n_seqs=%lld S_v=%lld chunked_prefill=%d chunk_size=%lld fast_exp=%d\n",
+            "%s: KDA=%d keep_intermediates=%d cc=%d n_tokens=%lld n_seqs=%lld S_v=%lld chunked_prefill=%d chunk_size=%lld fast_exp=%d timing_sync_hip=%d\n",
             __func__,
             (int) KDA,
             (int) keep_intermediates_t,
@@ -329,7 +334,8 @@ static void launch_gated_delta_net(
             (long long) S_v,
             (int) use_chunked_prefill,
                 (long long) chunk_size,
-                (int) use_fast_exp);
+                (int) use_fast_exp,
+                trace_timing_sync_hip ? 1 : 0);
     }
 
     auto launch_once = [&](const float * q_ptr, const float * k_ptr, const float * v_ptr,
@@ -343,6 +349,23 @@ static void launch_gated_delta_net(
                 (long long) n_tokens_chunk,
                 (long long) n_tokens);
         }
+        double pre_sync_ms = 0.0;
+        bool pre_sync_applied = false;
+    #ifdef GGML_USE_HIP
+        if (trace_timing_pre_sync_hip) {
+            hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+            CUDA_CHECK(hipStreamIsCapturing(stream, &capture_status));
+            const bool capture_active = capture_status != hipStreamCaptureStatusNone;
+            if (!capture_active) {
+            const auto pre_sync_start = std::chrono::high_resolution_clock::now();
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            const auto pre_sync_end = std::chrono::high_resolution_clock::now();
+            pre_sync_ms = std::chrono::duration<double, std::milli>(pre_sync_end - pre_sync_start).count();
+            pre_sync_applied = true;
+            }
+        }
+    #endif
+
         const auto timing_start = trace_timing ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
 
         if constexpr (!KDA) {
@@ -442,20 +465,55 @@ static void launch_gated_delta_net(
         CUDA_CHECK(cudaGetLastError());
 
         if (trace_timing) {
+            const auto timing_after_launch = std::chrono::high_resolution_clock::now();
+            const double enqueue_ms = std::chrono::duration<double, std::milli>(timing_after_launch - timing_start).count();
+            double sync_ms = 0.0;
+            int capture_active = 0;
+            bool sync_requested = false;
+            bool sync_applied = false;
+
 #ifdef GGML_USE_HIP
-            GGML_UNUSED(timing_start);
+            sync_requested = trace_timing_sync_hip;
+            if (sync_requested) {
+                hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+                CUDA_CHECK(hipStreamIsCapturing(stream, &capture_status));
+                capture_active = capture_status != hipStreamCaptureStatusNone;
+
+                if (!capture_active) {
+                    CUDA_CHECK(cudaStreamSynchronize(stream));
+                    const auto timing_after_sync = std::chrono::high_resolution_clock::now();
+                    sync_ms = std::chrono::duration<double, std::milli>(timing_after_sync - timing_after_launch).count();
+                    sync_applied = true;
+                }
+            }
 #else
-            CUDA_CHECK(cudaStreamSynchronize(stream));
-            const auto timing_stop = std::chrono::high_resolution_clock::now();
-            const double elapsed_ms = std::chrono::duration<double, std::milli>(timing_stop - timing_start).count();
+            sync_requested = true;
+            cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+            CUDA_CHECK(cudaStreamIsCapturing(stream, &capture_status));
+            capture_active = capture_status != cudaStreamCaptureStatusNone;
+
+            if (!capture_active) {
+                CUDA_CHECK(cudaStreamSynchronize(stream));
+                const auto timing_after_sync = std::chrono::high_resolution_clock::now();
+                sync_ms = std::chrono::duration<double, std::milli>(timing_after_sync - timing_after_launch).count();
+                sync_applied = true;
+            }
+#endif
+
             GGML_LOG_INFO(
-                "%s: timing token_offset=%lld n_tokens_chunk=%lld ms=%.3f fast_exp=%d\n",
+                "%s: timing token_offset=%lld n_tokens_chunk=%lld sync_req=%d pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f fast_exp=%d\n",
                 __func__,
                 (long long) token_offset,
                 (long long) n_tokens_chunk,
-                elapsed_ms,
+                sync_requested ? 1 : 0,
+                pre_sync_applied ? 1 : 0,
+                sync_applied ? 1 : 0,
+                capture_active,
+                pre_sync_ms,
+                enqueue_ms,
+                sync_ms,
+                enqueue_ms + sync_ms,
                 (int) use_fast_exp);
-#endif
         }
     };
 

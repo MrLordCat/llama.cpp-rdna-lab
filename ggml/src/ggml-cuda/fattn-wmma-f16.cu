@@ -20,6 +20,23 @@ namespace wmma = rocwmma;
 #endif // !defined(GGML_USE_HIP)
 #endif // GGML_USE_WMMA_FATTN
 
+static int ggml_cuda_wmma_fattn_forced_cols_per_block() {
+    static int cached = -1;
+    if (cached != -1) {
+        return cached;
+    }
+
+    const char * env = std::getenv("GGML_FATTN_WMMA_FORCE_COLS_PER_BLOCK");
+    if (env == nullptr || env[0] == '\0') {
+        cached = 0;
+        return cached;
+    }
+
+    const int parsed = atoi(env);
+    cached = (parsed == 16 || parsed == 32) ? parsed : 0;
+    return cached;
+}
+
 // D == head size, VKQ_stride == num VKQ rows calculated in parallel:
 template<int D, int ncols, int nwarps, int VKQ_stride, typename KQ_acc_t, bool use_logit_softcap>
 __launch_bounds__(nwarps*ggml_cuda_get_physical_warp_size(), 1)
@@ -561,10 +578,36 @@ void ggml_cuda_flash_attn_ext_wmma_f16(ggml_backend_cuda_context & ctx, ggml_ten
 
     const enum ggml_prec prec = ggml_flash_attn_ext_get_prec(KQV);
     const int warp_size = ggml_cuda_info().devices[ctx.device].warp_size;
+    const int forced_cols_per_block = ggml_cuda_wmma_fattn_forced_cols_per_block();
+    const bool trace_wmma_cfg = std::getenv("GGML_TRACE_FATTN_WMMA_CONFIG") != nullptr;
+
+    auto trace_dispatch = [&](const int cols_per_block) {
+        if (!trace_wmma_cfg) {
+            return;
+        }
+        const uintptr_t q_ptr = (uintptr_t) Q->data;
+        const uintptr_t k_ptr = (uintptr_t) dst->src[1]->data;
+        const uintptr_t v_ptr = (uintptr_t) dst->src[2]->data;
+        fprintf(stderr,
+            "GGML_TRACE_FATTN_WMMA_CONFIG: D=%lld q_rows=%lld prec=%d forced_cols=%d selected_cols=%d "
+            "q_mod128=%llu k_mod128=%llu v_mod128=%llu q_nb1=%lld q_nb2=%lld\n",
+            (long long) Q->ne[0],
+            (long long) Q->ne[1],
+            (int) prec,
+            forced_cols_per_block,
+            cols_per_block,
+            (unsigned long long) (q_ptr & 127ULL),
+            (unsigned long long) (k_ptr & 127ULL),
+            (unsigned long long) (v_ptr & 127ULL),
+            (long long) Q->nb[1],
+            (long long) Q->nb[2]);
+    };
 
     if (prec != GGML_PREC_DEFAULT) {
-        if (Q->ne[1] <= 32 || Q->ne[0] > 128) {
+        if (forced_cols_per_block == 16 ||
+                (forced_cols_per_block == 0 && (Q->ne[1] <= 32 || Q->ne[0] > 128))) {
             constexpr int cols_per_block = 16;
+            trace_dispatch(cols_per_block);
             switch (Q->ne[0]) {
                 case 64:
                     ggml_cuda_flash_attn_ext_wmma_f16_case< 64, cols_per_block, float>(ctx, dst);
@@ -590,6 +633,7 @@ void ggml_cuda_flash_attn_ext_wmma_f16(ggml_backend_cuda_context & ctx, ggml_ten
             }
         } else {
             constexpr int cols_per_block = 32;
+            trace_dispatch(cols_per_block);
             switch (Q->ne[0]) {
                 case 64:
                     ggml_cuda_flash_attn_ext_wmma_f16_case< 64, cols_per_block, float>(ctx, dst);
@@ -641,8 +685,9 @@ void ggml_cuda_flash_attn_ext_wmma_f16(ggml_backend_cuda_context & ctx, ggml_ten
     }
 #endif // !defined(GGML_USE_HIP)
 
-    if (Q->ne[1] <= 32) {
+    if (forced_cols_per_block == 16 || (forced_cols_per_block == 0 && Q->ne[1] <= 32)) {
         constexpr int cols_per_block = 16;
+        trace_dispatch(cols_per_block);
         switch (Q->ne[0]) {
             case 64:
                 ggml_cuda_flash_attn_ext_wmma_f16_case< 64, cols_per_block, half>(ctx, dst);
@@ -670,6 +715,7 @@ void ggml_cuda_flash_attn_ext_wmma_f16(ggml_backend_cuda_context & ctx, ggml_ten
     }
 
     constexpr int cols_per_block = 32;
+    trace_dispatch(cols_per_block);
     switch (Q->ne[0]) {
         case 64:
             ggml_cuda_flash_attn_ext_wmma_f16_case< 64, cols_per_block, half>(ctx, dst);

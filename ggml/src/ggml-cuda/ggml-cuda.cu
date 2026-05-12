@@ -67,6 +67,7 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <chrono>
 #include <cinttypes>
 #include <condition_variable>
 #include <cstddef>
@@ -2965,6 +2966,31 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
     return true;
 }
 
+static double ggml_cuda_trace_stream_sync(cudaStream_t stream, bool & sync_applied, int & capture_active) {
+    sync_applied = false;
+    capture_active = 0;
+
+#ifdef GGML_USE_HIP
+    hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+    CUDA_CHECK(hipStreamIsCapturing(stream, &capture_status));
+    capture_active = capture_status != hipStreamCaptureStatusNone;
+#else
+    cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+    CUDA_CHECK(cudaStreamIsCapturing(stream, &capture_status));
+    capture_active = capture_status != cudaStreamCaptureStatusNone;
+#endif
+
+    if (capture_active) {
+        return 0.0;
+    }
+
+    const auto sync_start = std::chrono::high_resolution_clock::now();
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    const auto sync_end = std::chrono::high_resolution_clock::now();
+    sync_applied = true;
+    return std::chrono::duration<double, std::milli>(sync_end - sync_start).count();
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 // backend
@@ -4026,6 +4052,8 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
 static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
     bool graph_evaluated_or_captured = false;
+    const bool trace_node_timing = std::getenv("GGML_TRACE_CUDA_NODE_TIMING") != nullptr;
+    const bool trace_node_timing_sync = trace_node_timing && std::getenv("GGML_TRACE_CUDA_NODE_TIMING_SYNC") != nullptr;
 
     // flag used to determine whether it is an integrated_gpu
     const bool integrated            = ggml_cuda_info().devices[cuda_ctx->device].integrated;
@@ -4170,9 +4198,47 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     continue;
                 }
 
+                double node_pre_sync_ms = 0.0;
+                bool node_pre_sync_applied = false;
+                int node_pre_capture_active = 0;
+                if (trace_node_timing_sync) {
+                    node_pre_sync_ms = ggml_cuda_trace_stream_sync(cuda_ctx->stream(), node_pre_sync_applied, node_pre_capture_active);
+                }
+
+                const auto node_timing_start = trace_node_timing ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
+
                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);
 
                 if (nodes_to_skip != 0) {
+                    if (trace_node_timing) {
+                        const auto timing_after_launch = std::chrono::high_resolution_clock::now();
+                        const double enqueue_ms = std::chrono::duration<double, std::milli>(timing_after_launch - node_timing_start).count();
+                        double sync_ms = 0.0;
+                        bool sync_applied = false;
+                        int capture_active = 0;
+                        if (trace_node_timing_sync) {
+                            sync_ms = ggml_cuda_trace_stream_sync(cuda_ctx->stream(), sync_applied, capture_active);
+                        }
+
+                        GGML_LOG_INFO(
+                            "GGML_TRACE_CUDA_NODE_TIMING: idx=%d kind=fused skip=%d op=%s name=%s stream=%d ne=(%lld,%lld,%lld,%lld) pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+                            i,
+                            nodes_to_skip,
+                            ggml_op_name(node->op),
+                            node->name,
+                            cuda_ctx->curr_stream_no,
+                            (long long) node->ne[0],
+                            (long long) node->ne[1],
+                            (long long) node->ne[2],
+                            (long long) node->ne[3],
+                            node_pre_sync_applied ? 1 : 0,
+                            sync_applied ? 1 : 0,
+                            capture_active || node_pre_capture_active,
+                            node_pre_sync_ms,
+                            enqueue_ms,
+                            sync_ms,
+                            enqueue_ms + sync_ms);
+                    }
                     i += nodes_to_skip;
                     continue;
                 }
@@ -4194,6 +4260,35 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     GGML_LOG_ERROR("%s: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
                 }
                 GGML_ASSERT(ok);
+
+                if (trace_node_timing) {
+                    const auto timing_after_launch = std::chrono::high_resolution_clock::now();
+                    const double enqueue_ms = std::chrono::duration<double, std::milli>(timing_after_launch - node_timing_start).count();
+                    double sync_ms = 0.0;
+                    bool sync_applied = false;
+                    int capture_active = 0;
+                    if (trace_node_timing_sync) {
+                        sync_ms = ggml_cuda_trace_stream_sync(cuda_ctx->stream(), sync_applied, capture_active);
+                    }
+
+                    GGML_LOG_INFO(
+                        "GGML_TRACE_CUDA_NODE_TIMING: idx=%d kind=forward skip=0 op=%s name=%s stream=%d ne=(%lld,%lld,%lld,%lld) pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+                        i,
+                        ggml_op_name(node->op),
+                        node->name,
+                        cuda_ctx->curr_stream_no,
+                        (long long) node->ne[0],
+                        (long long) node->ne[1],
+                        (long long) node->ne[2],
+                        (long long) node->ne[3],
+                        node_pre_sync_applied ? 1 : 0,
+                        sync_applied ? 1 : 0,
+                        capture_active || node_pre_capture_active,
+                        node_pre_sync_ms,
+                        enqueue_ms,
+                        sync_ms,
+                        enqueue_ms + sync_ms);
+                }
 
                 if (!is_concurrent_event_active) {
                     try_launch_concurrent_event(node);

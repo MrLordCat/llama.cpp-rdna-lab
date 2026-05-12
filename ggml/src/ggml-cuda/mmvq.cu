@@ -3,6 +3,7 @@
 #include "unary.cuh"
 #include "vecdotq.cuh"
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 
@@ -421,6 +422,16 @@ static bool ggml_cuda_trace_mmvq_small_k_enabled() {
     return enabled;
 }
 
+static bool ggml_cuda_trace_mmvq_timing_enabled() {
+    static const bool enabled = std::getenv("GGML_TRACE_MMVQ_TIMING") != nullptr;
+    return enabled;
+}
+
+static bool ggml_cuda_trace_mmvq_timing_sync_enabled() {
+    static const bool enabled = std::getenv("GGML_TRACE_MMVQ_TIMING_SYNC") != nullptr;
+    return enabled;
+}
+
 template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false>
 __launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id())*ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void mul_mat_vec_q(
@@ -709,12 +720,93 @@ static void mul_mat_vec_q_switch_fusion(
         const uint32_t ids_stride, cudaStream_t stream) {
 
     const bool has_fusion = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr;
+    const bool trace_timing = ggml_cuda_trace_mmvq_timing_enabled();
+    const bool trace_timing_sync = trace_timing && ggml_cuda_trace_mmvq_timing_sync_enabled();
+    const bool trace_timing_pre_sync = trace_timing_sync && std::getenv("GGML_TRACE_MMVQ_TIMING_PRE_SYNC") != nullptr;
+    double pre_sync_ms = 0.0;
+    bool pre_sync_applied = false;
+    if (trace_timing_pre_sync) {
+#ifdef GGML_USE_HIP
+        hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+        CUDA_CHECK(hipStreamIsCapturing(stream, &capture_status));
+        const bool capture_active = capture_status != hipStreamCaptureStatusNone;
+#else
+        cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+        CUDA_CHECK(cudaStreamIsCapturing(stream, &capture_status));
+        const bool capture_active = capture_status != cudaStreamCaptureStatusNone;
+#endif
+        if (!capture_active) {
+            const auto pre_sync_start = std::chrono::high_resolution_clock::now();
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            const auto pre_sync_end = std::chrono::high_resolution_clock::now();
+            pre_sync_ms = std::chrono::duration<double, std::milli>(pre_sync_end - pre_sync_start).count();
+            pre_sync_applied = true;
+        }
+    }
+    const auto timing_start = trace_timing ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
+
+    auto log_timing = [&](const bool launched_with_fusion) {
+        if (!trace_timing) {
+            return;
+        }
+
+        const auto timing_after_launch = std::chrono::high_resolution_clock::now();
+        const double enqueue_ms = std::chrono::duration<double, std::milli>(timing_after_launch - timing_start).count();
+        double sync_ms = 0.0;
+        int capture_active = 0;
+        bool sync_applied = false;
+
+        if (trace_timing_sync) {
+#ifdef GGML_USE_HIP
+            hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+            CUDA_CHECK(hipStreamIsCapturing(stream, &capture_status));
+            capture_active = capture_status != hipStreamCaptureStatusNone;
+#else
+            cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+            CUDA_CHECK(cudaStreamIsCapturing(stream, &capture_status));
+            capture_active = capture_status != cudaStreamCaptureStatusNone;
+#endif
+
+            if (!capture_active) {
+                CUDA_CHECK(cudaStreamSynchronize(stream));
+                const auto timing_after_sync = std::chrono::high_resolution_clock::now();
+                sync_ms = std::chrono::duration<double, std::milli>(timing_after_sync - timing_after_launch).count();
+                sync_applied = true;
+            }
+        }
+
+        GGML_LOG_INFO(
+            "%s: timing type=%d/%s ncols_dst=%d small_k=%d fusion=%d ncols_x=%u grid=(%u,%u,%u) block=(%u,%u,%u) sync_req=%d pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+            __func__,
+            (int) type,
+            ggml_type_name(type),
+            c_ncols_dst,
+            small_k ? 1 : 0,
+            launched_with_fusion ? 1 : 0,
+            ncols_x,
+            block_nums.x,
+            block_nums.y,
+            block_nums.z,
+            block_dims.x,
+            block_dims.y,
+            block_dims.z,
+            trace_timing_sync ? 1 : 0,
+            pre_sync_applied ? 1 : 0,
+            sync_applied ? 1 : 0,
+            capture_active,
+            pre_sync_ms,
+            enqueue_ms,
+            sync_ms,
+            enqueue_ms + sync_ms);
+    };
+
     if constexpr (c_ncols_dst == 1) {
         if (has_fusion) {
             mul_mat_vec_q<type, c_ncols_dst, true, small_k><<<block_nums, block_dims, nbytes_shared, stream>>>
                 (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
                  channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
                  sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
+            log_timing(true);
             return;
         }
     }
@@ -725,6 +817,8 @@ static void mul_mat_vec_q_switch_fusion(
         (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
         channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
         sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
+
+    log_timing(false);
 }
 
 template <ggml_type type>
