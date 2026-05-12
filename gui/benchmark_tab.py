@@ -143,6 +143,7 @@ class BenchmarkTabWidget(QWidget):
         self.models_dir = parent.models_dir if hasattr(parent, "models_dir") else Path("models")
         self.project_root = parent.project_root if hasattr(parent, "project_root") else Path.cwd()
         self.history_csv = self.project_root / "build_logs" / "agent-workload" / "BENCH_HISTORY.csv"
+        self.history_csv_v2 = self.project_root / "build_logs" / "agent-workload" / "BENCH_HISTORY_V2.csv"
         self.best_presets_path = self.project_root / "gui" / "model_autotune_best.json"
         self.bench_thread = None
         self._version_payloads: dict[str, dict[str, object]] = {}
@@ -427,13 +428,13 @@ class BenchmarkTabWidget(QWidget):
         self.log_output.setFixedHeight(140)
         layout.addWidget(self.log_output)
 
-        presets_group = QGroupBox("Best Presets By Model")
+        presets_group = QGroupBox("Autotune Runs History (Best Result Per Run)")
         presets_layout = QVBoxLayout()
         self.presets_table = QTableWidget()
-        self.presets_table.setColumnCount(11)
+        self.presets_table.setColumnCount(12)
         self.presets_table.setHorizontalHeaderLabels([
+            "Run Time",
             "Model",
-            "Profile",
             "Best TPS",
             "Ctx",
             "Batch/UBatch",
@@ -442,18 +443,19 @@ class BenchmarkTabWidget(QWidget):
             "Extra preset",
             "Extra args",
             "Build ID",
-            "Updated",
+            "Run ID",
+            "Label",
         ])
         self.presets_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.presets_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.presets_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.presets_table.setFixedHeight(154)
+        self.presets_table.setFixedHeight(200)
         presets_layout.addWidget(self.presets_table)
 
         presets_actions = QHBoxLayout()
-        self.delete_preset_btn = QPushButton("🗑 Delete Selected Preset")
-        self.delete_preset_btn.clicked.connect(self.delete_selected_preset)
-        presets_actions.addWidget(self.delete_preset_btn)
+        self.refresh_history_btn = QPushButton("🔄 Refresh Run History")
+        self.refresh_history_btn.clicked.connect(self.refresh_saved_presets_table)
+        presets_actions.addWidget(self.refresh_history_btn)
         presets_actions.addStretch(1)
         presets_layout.addLayout(presets_actions)
 
@@ -812,8 +814,10 @@ class BenchmarkTabWidget(QWidget):
         extra_count = len(extra_presets)
         config_count = ctx_count * batch_count * ubatch_count * kv_count * spec_count * extra_count
 
-        label = f"gui-autotune-{model.stem}"
-        autotune_session_file = self.project_root / "build_logs" / "agent-workload" / f"{label}-autotune-session.json"
+        run_stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        label = f"gui-autotune-{model.stem}-{run_stamp}"
+        session_label = f"gui-autotune-{model.stem}"
+        autotune_session_file = self.project_root / "build_logs" / "agent-workload" / f"{session_label}-autotune-session.json"
         command = [
             sys.executable,
             "scripts/agent_workload_bench.py",
@@ -888,7 +892,15 @@ class BenchmarkTabWidget(QWidget):
         self._current_mode = "autotune"
         self._current_autotune_profile = profile_key
         self._current_build_id = build_id
-        self._autotune_result = {"best": "", "summary_json": "", "summary_csv": ""}
+        self._autotune_result = {
+            "best": "",
+            "summary_json": "",
+            "summary_csv": "",
+            "label": label,
+            "model": model.name,
+            "build_id": build_id,
+            "started_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
         self._reset_autotune_live_history()
         self._last_selected_model = model.name
         self._set_running_state(True)
@@ -908,6 +920,7 @@ class BenchmarkTabWidget(QWidget):
             f"spec={','.join(spec_values)} | "
             f"extra_presets={len(extra_presets)}"
         )
+        self.log_output.append(f"[INFO] Run label: {label}")
         self.log_output.append(f"[INFO] Session file: {autotune_session_file}")
         self.log_output.append(
             "[INFO] Session mode: "
@@ -1133,7 +1146,6 @@ class BenchmarkTabWidget(QWidget):
             self._autotune_result["best"] = line
         if line.startswith("CURRENT BEST:"):
             self._autotune_result["best"] = line
-            self._update_live_best_from_line(line)
         if line.endswith("-autotune-summary.json"):
             self._autotune_result["summary_json"] = line.split("Wrote ", 1)[-1].strip()
         if line.endswith("-autotune-summary.csv"):
@@ -1154,6 +1166,8 @@ class BenchmarkTabWidget(QWidget):
                 self._autotune_active_run = None
             self.status_label.setText("Benchmark stopped")
             self.log_output.append("[INFO] Benchmark/autotune stopped by user")
+            if self._current_mode == "autotune":
+                self.refresh_saved_presets_table()
             QMessageBox.information(self, "Bench", "Run stopped. Completed autotune configs can be resumed.")
             self.bench_thread = None
             return
@@ -1161,11 +1175,7 @@ class BenchmarkTabWidget(QWidget):
         if success:
             self.status_label.setText("Benchmark completed")
             if self._current_mode == "autotune":
-                self._update_best_preset_for_model(self._last_selected_model, profile_key="ctx32k-only", min_ctx=32768)
-                self._live_best_by_key.pop(self._live_key_for_current_profile(), None)
                 self.refresh_saved_presets_table()
-            else:
-                self._update_best_preset_for_model(self._last_selected_model)
             if hasattr(self.parent, "refresh_build_registry"):
                 self.parent.refresh_build_registry()
             if hasattr(self.parent, "builds_info_tab") and hasattr(self.parent.builds_info_tab, "refresh_builds_info"):
@@ -1175,9 +1185,9 @@ class BenchmarkTabWidget(QWidget):
             if hasattr(self.parent, "server_tab") and hasattr(self.parent.server_tab, "apply_model_file_preset"):
                 self.parent.server_tab.apply_model_file_preset()
 
-            message = "Benchmark finished and best model preset updated."
+            message = "Benchmark finished."
             if self._current_mode == "autotune":
-                message = "Auto-tune finished. Best preset saved and applied to Launch Server tab."
+                message = "Auto-tune finished. Run history updated and best preset applied to Launch Server tab."
             QMessageBox.information(self, "Bench", message)
         else:
             if self._current_mode == "autotune" and self._autotune_active_run is not None:
@@ -1185,6 +1195,8 @@ class BenchmarkTabWidget(QWidget):
                 if failed_row is not None:
                     self.autotune_history_table.setItem(failed_row, 8, QTableWidgetItem("failed"))
                 self._autotune_active_run = None
+            if self._current_mode == "autotune":
+                self.refresh_saved_presets_table()
             self.status_label.setText("Benchmark failed")
             QMessageBox.warning(self, "Bench", "Benchmark/autotune failed. Check log output.")
 
@@ -1196,7 +1208,7 @@ class BenchmarkTabWidget(QWidget):
         self.stop_btn.setEnabled(running)
         self.model_browse_btn.setEnabled(not running)
         self.model_refresh_btn.setEnabled(not running)
-        self.delete_preset_btn.setEnabled(not running)
+        self.refresh_history_btn.setEnabled(not running)
         self.at_batch_min_spin.setEnabled(not running)
         self.at_batch_max_spin.setEnabled(not running)
         self.at_batch_step_spin.setEnabled(not running)
@@ -1378,51 +1390,116 @@ class BenchmarkTabWidget(QWidget):
         self._save_best_presets(presets)
         self.refresh_saved_presets_table()
 
-    def refresh_saved_presets_table(self):
-        presets = self._load_best_presets()
-        for key, value in self._live_best_by_key.items():
-            if key not in presets:
-                presets[key] = dict(value)
+    @staticmethod
+    def _parse_best_config_text(best_config: str) -> dict[str, str]:
+        parsed = {
+            "ctx": "-",
+            "batch": "-",
+            "ubatch": "-",
+            "kv": "-",
+            "spec": "-",
+            "extra_preset": "-",
+            "extra_args": "-",
+        }
+
+        text = best_config.strip()
+        if not text:
+            return parsed
+
+        match = re.search(
+            r"ctx=(\d+)\s+b=(\d+)\s+ub=(\d+)\s+kv=([^\s]+)\s+spec=([^\s]+)(?:\s+extra=([^\s]+))?(?:\s+extra_args=(.*))?$",
+            text,
+        )
+        if not match:
+            return parsed
+
+        ctx, batch, ubatch, kv, spec_mode, extra_preset, extra_args = match.groups()
+        parsed["ctx"] = ctx
+        parsed["batch"] = batch
+        parsed["ubatch"] = ubatch
+        parsed["kv"] = kv
+        parsed["spec"] = spec_mode
+        parsed["extra_preset"] = extra_preset or "base"
+
+        extra_args_text = (extra_args or "").strip()
+        parsed["extra_args"] = "-" if not extra_args_text or extra_args_text == "<none>" else extra_args_text
+        return parsed
+
+    def _load_autotune_history_rows(self) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        seen_keys: set[str] = set()
+        history_candidates = [self.history_csv_v2, self.history_csv]
+
+        for history_csv in history_candidates:
+            if not history_csv.exists():
                 continue
             try:
-                old_tps = float(str(presets[key].get("best_tps", "0") or "0"))
-            except ValueError:
-                old_tps = 0.0
-            try:
-                new_tps = float(str(value.get("best_tps", "0") or "0"))
-            except ValueError:
-                new_tps = 0.0
-            if new_tps >= old_tps:
-                presets[key] = dict(value)
-        rows = sorted(presets.items(), key=lambda item: item[0].lower())
+                with history_csv.open("r", encoding="utf-8", newline="") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        if str(row.get("mode", "")).strip().lower() != "autotune":
+                            continue
+                        run_id = str(row.get("run_id", "")).strip()
+                        timestamp = str(row.get("timestamp", "")).strip()
+                        label = str(row.get("label", "")).strip()
+                        key = f"{timestamp}::{run_id}::{label}"
+                        if key in seen_keys:
+                            continue
+                        seen_keys.add(key)
+                        rows.append({str(k): str(v) for k, v in row.items()})
+            except Exception:
+                continue
+
+        rows.sort(key=lambda item: (item.get("timestamp", ""), item.get("run_id", "")), reverse=True)
+        return rows
+
+    def refresh_saved_presets_table(self):
+        rows = self._load_autotune_history_rows()
         self.presets_table.setRowCount(0)
-        for preset_key, data in rows:
-            display_name = str(data.get("model", preset_key))
-            profile = str(data.get("profile", "model-best"))
-            extra_args_value = str(data.get("extra_args", "")).strip()
+
+        for row_data in rows:
+            run_time = str(row_data.get("timestamp", "") or "-")
+            model_raw = str(row_data.get("model", "") or "-")
+            model_name = Path(model_raw).name if model_raw not in {"", "-"} else "-"
+            run_id = str(row_data.get("run_id", "") or "-")
+            build_id = str(row_data.get("build_id", "") or "-")
+            label = str(row_data.get("label", "") or "-")
+
+            aggregate_text = str(row_data.get("aggregate_tps", "0") or "0")
+            try:
+                aggregate_value = float(aggregate_text)
+            except ValueError:
+                aggregate_value = 0.0
+
+            parsed_cfg = self._parse_best_config_text(str(row_data.get("best_config", "")))
+            if parsed_cfg["ctx"] == "-":
+                parsed_cfg["ctx"] = str(row_data.get("ctx", "") or "-")
+            if parsed_cfg["spec"] == "-":
+                parsed_cfg["spec"] = str(row_data.get("spec_mode", "") or "-")
+            if parsed_cfg["extra_preset"] == "-":
+                parsed_cfg["extra_preset"] = str(row_data.get("extra_preset", "") or "-")
+            if parsed_cfg["extra_args"] == "-":
+                fallback_args = str(row_data.get("extra_args", "") or "").strip()
+                if fallback_args:
+                    parsed_cfg["extra_args"] = fallback_args
+
             row = self.presets_table.rowCount()
             self.presets_table.insertRow(row)
-            model_item = QTableWidgetItem(display_name)
-            model_item.setData(Qt.ItemDataRole.UserRole, preset_key)
-            self.presets_table.setItem(row, 0, model_item)
-            self.presets_table.setItem(row, 1, QTableWidgetItem(profile))
-            self.presets_table.setItem(row, 2, QTableWidgetItem(str(data.get("best_tps", "-"))))
-            self.presets_table.setItem(row, 3, QTableWidgetItem(str(data.get("ctx", "-"))))
-            self.presets_table.setItem(
-                row,
-                4,
-                QTableWidgetItem(f"{data.get('batch', '-')}/{data.get('ubatch', '-')}")
-            )
-            self.presets_table.setItem(
-                row,
-                5,
-                QTableWidgetItem(f"{data.get('kv_k', '-')}/{data.get('kv_v', '-')}")
-            )
-            self.presets_table.setItem(row, 6, QTableWidgetItem(str(data.get("spec_mode", "-"))))
-            self.presets_table.setItem(row, 7, QTableWidgetItem(str(data.get("extra_preset", "-"))))
-            self.presets_table.setItem(row, 8, QTableWidgetItem(extra_args_value or "-"))
-            self.presets_table.setItem(row, 9, QTableWidgetItem(str(data.get("build_id", "-"))))
-            self.presets_table.setItem(row, 10, QTableWidgetItem(str(data.get("timestamp", "-"))))
+
+            run_item = QTableWidgetItem(run_time)
+            run_item.setData(Qt.ItemDataRole.UserRole, run_id)
+            self.presets_table.setItem(row, 0, run_item)
+            self.presets_table.setItem(row, 1, QTableWidgetItem(model_name or "-"))
+            self.presets_table.setItem(row, 2, NumericTableWidgetItem(f"{aggregate_value:.4f}", aggregate_value))
+            self.presets_table.setItem(row, 3, QTableWidgetItem(parsed_cfg["ctx"]))
+            self.presets_table.setItem(row, 4, QTableWidgetItem(f"{parsed_cfg['batch']}/{parsed_cfg['ubatch']}"))
+            self.presets_table.setItem(row, 5, QTableWidgetItem(parsed_cfg["kv"]))
+            self.presets_table.setItem(row, 6, QTableWidgetItem(parsed_cfg["spec"]))
+            self.presets_table.setItem(row, 7, QTableWidgetItem(parsed_cfg["extra_preset"]))
+            self.presets_table.setItem(row, 8, QTableWidgetItem(parsed_cfg["extra_args"]))
+            self.presets_table.setItem(row, 9, QTableWidgetItem(build_id or "-"))
+            self.presets_table.setItem(row, 10, QTableWidgetItem(run_id or "-"))
+            self.presets_table.setItem(row, 11, QTableWidgetItem(label or "-"))
 
     def delete_selected_preset(self) -> None:
         row = self.presets_table.currentRow()
