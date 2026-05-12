@@ -7,12 +7,15 @@ import datetime as dt
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
     QFileDialog,
     QComboBox,
     QGroupBox,
@@ -34,12 +37,49 @@ class BenchCommandThread(QThread):
     """Run benchmark command in background so UI remains responsive."""
 
     output = pyqtSignal(str)
-    finished_signal = pyqtSignal(bool)
+    finished_signal = pyqtSignal(bool, bool)
 
     def __init__(self, command: list[str], working_dir: Path):
         super().__init__()
         self.command = command
         self.working_dir = working_dir
+        self._process: subprocess.Popen[str] | None = None
+        self._stop_requested = False
+
+    @staticmethod
+    def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
+        if proc.poll() is not None:
+            return
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+            else:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except Exception:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+        try:
+            proc.wait(timeout=8)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+
+    def request_stop(self) -> None:
+        self._stop_requested = True
+        if self._process is not None:
+            self._terminate_process_tree(self._process)
 
     def run(self):
         try:
@@ -51,14 +91,47 @@ class BenchCommandThread(QThread):
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+                preexec_fn=os.setsid if os.name != "nt" else None,
             )
+            self._process = process
+
+            if self._stop_requested:
+                self._terminate_process_tree(process)
+
             for line in process.stdout:
                 self.output.emit(line.rstrip())
+
+                if self._stop_requested and process.poll() is None:
+                    self._terminate_process_tree(process)
+
             process.wait()
-            self.finished_signal.emit(process.returncode == 0)
+            stopped = self._stop_requested
+            self.finished_signal.emit(process.returncode == 0 and not stopped, stopped)
         except Exception as exc:
             self.output.emit(f"Bench error: {exc}")
-            self.finished_signal.emit(False)
+            self.finished_signal.emit(False, self._stop_requested)
+        finally:
+            self._process = None
+
+
+class NumericTableWidgetItem(QTableWidgetItem):
+    """QTableWidgetItem with numeric sort semantics via UserRole."""
+
+    def __init__(self, text: str, numeric_value: float):
+        super().__init__(text)
+        self.setData(Qt.ItemDataRole.UserRole, numeric_value)
+
+    def __lt__(self, other):
+        if isinstance(other, QTableWidgetItem):
+            left_value = self.data(Qt.ItemDataRole.UserRole)
+            right_value = other.data(Qt.ItemDataRole.UserRole)
+            if left_value is not None and right_value is not None:
+                try:
+                    return float(left_value) < float(right_value)
+                except (TypeError, ValueError):
+                    pass
+        return super().__lt__(other)
 
 
 class BenchmarkTabWidget(QWidget):
@@ -75,10 +148,11 @@ class BenchmarkTabWidget(QWidget):
         self._version_payloads: dict[str, dict[str, object]] = {}
         self._current_mode = "single"
         self._last_selected_model = ""
-        self._current_autotune_profile = "model-best"
+        self._current_autotune_profile = "ctx32k-only"
         self._current_build_id = ""
         self._live_best_by_key: dict[str, dict[str, str]] = {}
         self._autotune_result = {"best": "", "summary_json": "", "summary_csv": ""}
+        self._autotune_active_run: str | None = None
         self.create_ui()
         self.refresh_models_list()
         self.refresh_build_choices()
@@ -130,99 +204,213 @@ class BenchmarkTabWidget(QWidget):
         build_group.setLayout(build_layout)
         layout.addWidget(build_group)
 
-        params_group = QGroupBox("Benchmark Parameters")
+        params_group = QGroupBox("Parameters")
         params_layout = QVBoxLayout()
 
-        row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Tasks:"))
+        single_group = QGroupBox("Single Benchmark (used by Run Benchmark)")
+        single_layout = QVBoxLayout()
+
+        single_row1 = QHBoxLayout()
+        single_row1.addWidget(QLabel("Tasks:"))
         self.tasks_combo = QComboBox()
         self.tasks_combo.addItems(["v2-mini", "v2", "quick", "full"])
         self.tasks_combo.setCurrentText("v2-mini")
-        row1.addWidget(self.tasks_combo)
+        single_row1.addWidget(self.tasks_combo)
 
-        row1.addWidget(QLabel("Runs:"))
+        single_row1.addWidget(QLabel("Runs:"))
         self.runs_spin = QSpinBox()
         self.runs_spin.setMinimum(1)
         self.runs_spin.setMaximum(10)
         self.runs_spin.setValue(1)
-        row1.addWidget(self.runs_spin)
+        single_row1.addWidget(self.runs_spin)
 
-        row1.addWidget(QLabel("Spec:"))
+        single_row1.addWidget(QLabel("Spec:"))
         self.spec_combo = QComboBox()
         self.spec_combo.addItems(["none", "ngram-mod", "mtp"])
         self.spec_combo.setCurrentText("none")
-        row1.addWidget(self.spec_combo)
-        params_layout.addLayout(row1)
+        single_row1.addWidget(self.spec_combo)
+        single_layout.addLayout(single_row1)
 
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Ctx:"))
+        single_row2 = QHBoxLayout()
+        single_row2.addWidget(QLabel("Ctx:"))
         self.ctx_spin = QSpinBox()
         self.ctx_spin.setMinimum(8192)
         self.ctx_spin.setMaximum(131072)
         self.ctx_spin.setValue(65536)
         self.ctx_spin.setSingleStep(8192)
-        row2.addWidget(self.ctx_spin)
+        single_row2.addWidget(self.ctx_spin)
 
-        row2.addWidget(QLabel("Batch:"))
+        single_row2.addWidget(QLabel("Batch:"))
         self.batch_spin = QSpinBox()
         self.batch_spin.setMinimum(32)
         self.batch_spin.setMaximum(8192)
         self.batch_spin.setValue(2048)
         self.batch_spin.setSingleStep(32)
-        row2.addWidget(self.batch_spin)
+        single_row2.addWidget(self.batch_spin)
 
-        row2.addWidget(QLabel("UBatch:"))
+        single_row2.addWidget(QLabel("UBatch:"))
         self.ubatch_spin = QSpinBox()
         self.ubatch_spin.setMinimum(32)
         self.ubatch_spin.setMaximum(8192)
         self.ubatch_spin.setValue(512)
         self.ubatch_spin.setSingleStep(32)
-        row2.addWidget(self.ubatch_spin)
-        params_layout.addLayout(row2)
+        single_row2.addWidget(self.ubatch_spin)
+        single_layout.addLayout(single_row2)
 
-        row3 = QHBoxLayout()
-        row3.addWidget(QLabel("KV K/V:"))
+        single_row3 = QHBoxLayout()
+        single_row3.addWidget(QLabel("KV K/V:"))
         self.kv_combo = QComboBox()
         self.kv_combo.addItems(["q8_0", "q4_0", "f16", "bf16", "f32"])
         self.kv_combo.setCurrentText("q4_0")
-        row3.addWidget(self.kv_combo)
+        single_row3.addWidget(self.kv_combo)
 
-        row3.addWidget(QLabel("Max tokens:"))
+        single_row3.addWidget(QLabel("Max tokens:"))
         self.max_tokens_spin = QSpinBox()
         self.max_tokens_spin.setMinimum(8)
         self.max_tokens_spin.setMaximum(1024)
         self.max_tokens_spin.setValue(80)
-        row3.addWidget(self.max_tokens_spin)
+        single_row3.addWidget(self.max_tokens_spin)
+        single_row3.addStretch(1)
+        single_layout.addLayout(single_row3)
 
-        row3.addWidget(QLabel("Autotune profile:"))
-        self.autotune_profile_combo = QComboBox()
-        self.autotune_profile_combo.addItems(["32K+", "64K+"])
-        self.autotune_profile_combo.setCurrentText("64K+")
-        self.autotune_profile_combo.currentTextChanged.connect(self._on_autotune_profile_changed)
-        row3.addWidget(self.autotune_profile_combo)
+        single_group.setLayout(single_layout)
+        params_layout.addWidget(single_group)
 
-        row3.addWidget(QLabel("Depth:"))
-        self.autotune_depth_combo = QComboBox()
-        self.autotune_depth_combo.addItems([
-            "Quick (~16)",
-            "Standard (~48)",
-            "Full (~108)",
-        ])
-        self.autotune_depth_combo.setCurrentIndex(1)
-        row3.addWidget(self.autotune_depth_combo)
-        params_layout.addLayout(row3)
+        autotune_group = QGroupBox("Auto-tune Grid (used by Run Auto-tune 32K)")
+        autotune_layout = QVBoxLayout()
+
+        autotune_mode_info = QLabel(
+            "Fixed mode: ctx=32768, tasks=v2-mini, runs=1, prompt-heavy repo-snapshot, "
+            "no-reuse, no-prime, thinking on, request/task timeout=20s"
+        )
+        autotune_mode_info.setStyleSheet("color: #b0b0b0;")
+        autotune_layout.addWidget(autotune_mode_info)
+
+        row4 = QHBoxLayout()
+        row4.addWidget(QLabel("Batch min:"))
+        self.at_batch_min_spin = QSpinBox()
+        self.at_batch_min_spin.setMinimum(32)
+        self.at_batch_min_spin.setMaximum(8192)
+        self.at_batch_min_spin.setValue(2048)
+        self.at_batch_min_spin.setSingleStep(32)
+        self.at_batch_min_spin.setToolTip("Minimal batch value in sweep (>= 32)")
+        row4.addWidget(self.at_batch_min_spin)
+
+        row4.addWidget(QLabel("Batch max:"))
+        self.at_batch_max_spin = QSpinBox()
+        self.at_batch_max_spin.setMinimum(32)
+        self.at_batch_max_spin.setMaximum(8192)
+        self.at_batch_max_spin.setValue(8192)
+        self.at_batch_max_spin.setSingleStep(32)
+        self.at_batch_max_spin.setToolTip("Maximal batch value in sweep")
+        row4.addWidget(self.at_batch_max_spin)
+
+        row4.addWidget(QLabel("Batch step:"))
+        self.at_batch_step_spin = QSpinBox()
+        self.at_batch_step_spin.setMinimum(1)
+        self.at_batch_step_spin.setMaximum(8192)
+        self.at_batch_step_spin.setValue(2048)
+        self.at_batch_step_spin.setSingleStep(1)
+        self.at_batch_step_spin.setToolTip("Increment for batch range")
+        row4.addWidget(self.at_batch_step_spin)
+        row4.addStretch(1)
+        autotune_layout.addLayout(row4)
+
+        row5 = QHBoxLayout()
+        row5.addWidget(QLabel("UBatch min:"))
+        self.at_ubatch_min_spin = QSpinBox()
+        self.at_ubatch_min_spin.setMinimum(32)
+        self.at_ubatch_min_spin.setMaximum(8192)
+        self.at_ubatch_min_spin.setValue(128)
+        self.at_ubatch_min_spin.setSingleStep(32)
+        self.at_ubatch_min_spin.setToolTip("Minimal ubatch value in sweep (>= 32)")
+        row5.addWidget(self.at_ubatch_min_spin)
+
+        row5.addWidget(QLabel("UBatch max:"))
+        self.at_ubatch_max_spin = QSpinBox()
+        self.at_ubatch_max_spin.setMinimum(32)
+        self.at_ubatch_max_spin.setMaximum(8192)
+        self.at_ubatch_max_spin.setValue(512)
+        self.at_ubatch_max_spin.setSingleStep(32)
+        self.at_ubatch_max_spin.setToolTip("Maximal ubatch value in sweep")
+        row5.addWidget(self.at_ubatch_max_spin)
+
+        row5.addWidget(QLabel("UBatch step:"))
+        self.at_ubatch_step_spin = QSpinBox()
+        self.at_ubatch_step_spin.setMinimum(1)
+        self.at_ubatch_step_spin.setMaximum(8192)
+        self.at_ubatch_step_spin.setValue(64)
+        self.at_ubatch_step_spin.setSingleStep(1)
+        self.at_ubatch_step_spin.setToolTip("Increment for ubatch range")
+        row5.addWidget(self.at_ubatch_step_spin)
+        row5.addStretch(1)
+        autotune_layout.addLayout(row5)
+
+        row6 = QHBoxLayout()
+        row6.addWidget(QLabel("Spec modes:"))
+        self.autotune_spec_values_input = QLineEdit()
+        self.autotune_spec_values_input.setPlaceholderText("auto or comma list: none,ngram-mod,draft,eagle3")
+        self.autotune_spec_values_input.setText("auto")
+        self.autotune_spec_values_input.setToolTip("auto = detect supported modes from llama-server --help")
+        row6.addWidget(self.autotune_spec_values_input)
+
+        row6.addWidget(QLabel("Extra presets:"))
+        self.autotune_extra_presets_input = QLineEdit()
+        self.autotune_extra_presets_input.setPlaceholderText("base||shape::--foo bar||--threads 8")
+        self.autotune_extra_presets_input.setText("base")
+        self.autotune_extra_presets_input.setToolTip("Split presets with || ; format name::args or base")
+        row6.addWidget(self.autotune_extra_presets_input)
+        autotune_layout.addLayout(row6)
+
+        row7 = QHBoxLayout()
+        self.autotune_resume_checkbox = QCheckBox("Resume unfinished session")
+        self.autotune_resume_checkbox.setChecked(True)
+        self.autotune_resume_checkbox.setToolTip("Continue from saved autotune progress if a previous run was interrupted")
+        row7.addWidget(self.autotune_resume_checkbox)
+
+        self.autotune_reset_session_checkbox = QCheckBox("Reset saved session before run")
+        self.autotune_reset_session_checkbox.setChecked(False)
+        self.autotune_reset_session_checkbox.setToolTip("Ignore and overwrite previous session checkpoint for this model/profile")
+        row7.addWidget(self.autotune_reset_session_checkbox)
+        row7.addStretch(1)
+        autotune_layout.addLayout(row7)
+
+        self.autotune_grid_preview_label = QLabel("")
+        self.autotune_grid_preview_label.setWordWrap(True)
+        autotune_layout.addWidget(self.autotune_grid_preview_label)
+
+        autotune_group.setLayout(autotune_layout)
+        params_layout.addWidget(autotune_group)
 
         params_group.setLayout(params_layout)
         layout.addWidget(params_group)
+
+        for spin_box in [
+            self.at_batch_min_spin,
+            self.at_batch_max_spin,
+            self.at_batch_step_spin,
+            self.at_ubatch_min_spin,
+            self.at_ubatch_max_spin,
+            self.at_ubatch_step_spin,
+        ]:
+            spin_box.valueChanged.connect(self._update_autotune_grid_preview)
+        self.autotune_spec_values_input.textChanged.connect(self._update_autotune_grid_preview)
+        self.autotune_extra_presets_input.textChanged.connect(self._update_autotune_grid_preview)
+        self._update_autotune_grid_preview()
 
         btn_row = QHBoxLayout()
         self.run_bench_btn = QPushButton("⚡ Run Benchmark")
         self.run_bench_btn.clicked.connect(self.run_benchmark)
         btn_row.addWidget(self.run_bench_btn)
 
-        self.run_autotune_btn = QPushButton("🎯 Run Auto-tune")
+        self.run_autotune_btn = QPushButton("🎯 Run Auto-tune 32K (v2-mini x1)")
         self.run_autotune_btn.clicked.connect(self.run_autotune)
         btn_row.addWidget(self.run_autotune_btn)
+
+        self.stop_btn = QPushButton("⏹ Stop")
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self.stop_current_run)
+        btn_row.addWidget(self.stop_btn)
 
         self.open_history_btn = QPushButton("📄 Open BENCH_HISTORY.md")
         self.open_history_btn.clicked.connect(self.open_history_md)
@@ -236,32 +424,62 @@ class BenchmarkTabWidget(QWidget):
 
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
-        self.log_output.setMinimumHeight(200)
+        self.log_output.setFixedHeight(140)
         layout.addWidget(self.log_output)
 
         presets_group = QGroupBox("Best Presets By Model")
         presets_layout = QVBoxLayout()
         self.presets_table = QTableWidget()
-        self.presets_table.setColumnCount(8)
+        self.presets_table.setColumnCount(11)
         self.presets_table.setHorizontalHeaderLabels([
             "Model",
+            "Profile",
             "Best TPS",
             "Ctx",
             "Batch/UBatch",
             "KV",
             "Spec",
+            "Extra preset",
+            "Extra args",
             "Build ID",
             "Updated",
         ])
+        self.presets_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.presets_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.presets_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.presets_table.setFixedHeight(154)
         presets_layout.addWidget(self.presets_table)
+
+        presets_actions = QHBoxLayout()
+        self.delete_preset_btn = QPushButton("🗑 Delete Selected Preset")
+        self.delete_preset_btn.clicked.connect(self.delete_selected_preset)
+        presets_actions.addWidget(self.delete_preset_btn)
+        presets_actions.addStretch(1)
+        presets_layout.addLayout(presets_actions)
+
         presets_group.setLayout(presets_layout)
         layout.addWidget(presets_group)
 
-        self._on_autotune_profile_changed(self.autotune_profile_combo.currentText())
-
-    def _on_autotune_profile_changed(self, profile_text: str):
-        profile = (profile_text or "").strip() or "32K+"
-        self.run_autotune_btn.setText(f"🎯 Run Auto-tune {profile}")
+        history_group = QGroupBox("Current Autotune Run History (Live)")
+        history_layout = QVBoxLayout()
+        self.autotune_history_table = QTableWidget()
+        self.autotune_history_table.setColumnCount(9)
+        self.autotune_history_table.setHorizontalHeaderLabels([
+            "Run",
+            "Ctx",
+            "Batch",
+            "UBatch",
+            "KV",
+            "Spec",
+            "Extra",
+            "TPS",
+            "Status",
+        ])
+        self.autotune_history_table.setSortingEnabled(True)
+        self.autotune_history_table.setMinimumHeight(300)
+        history_layout.addWidget(self.autotune_history_table)
+        history_group.setLayout(history_layout)
+        layout.addWidget(history_group)
 
     @staticmethod
     def _display_backend_from_key(key: str) -> str:
@@ -548,52 +766,54 @@ class BenchmarkTabWidget(QWidget):
             QMessageBox.warning(self, "Auto-tune", "llama-server not found for selected build version")
             return
 
-        spec_values = ["none", "ngram-mod"]
-        if ("mtp" in model.name.lower() or "nextn" in model.name.lower()) and self._server_supports_mtp(server_bin):
-            spec_values.append("mtp")
+        profile_key = "ctx32k-only"
+        autotune_min_ctx = 32768
+        autotune_ctx_values = "32768"
+        batch_values = self._build_autotune_range_values(
+            self.at_batch_min_spin.value(),
+            self.at_batch_max_spin.value(),
+            self.at_batch_step_spin.value(),
+        )
+        ubatch_values = self._build_autotune_range_values(
+            self.at_ubatch_min_spin.value(),
+            self.at_ubatch_max_spin.value(),
+            self.at_ubatch_step_spin.value(),
+        )
+        if not batch_values:
+            QMessageBox.warning(self, "Auto-tune", "Invalid AT Batch range. Check min/max/step.")
+            return
+        if not ubatch_values:
+            QMessageBox.warning(self, "Auto-tune", "Invalid AT UBatch range. Check min/max/step.")
+            return
 
-        profile_text = self.autotune_profile_combo.currentText().strip()
-        if profile_text == "64K+":
-            autotune_min_ctx = 65536
-            ctx_quick = "65536"
-            ctx_standard = "65536"
-            ctx_full = "65536"
-            profile_key = "ctx64k-plus"
-        else:
-            autotune_min_ctx = 32768
-            ctx_quick = "32768,65536"
-            ctx_standard = "32768,49152,65536"
-            ctx_full = "32768,49152,65536"
-            profile_key = "ctx32k-plus"
+        autotune_batch_values = ",".join(str(v) for v in batch_values)
+        autotune_ubatch_values = ",".join(str(v) for v in ubatch_values)
+        spec_values = self._resolve_autotune_spec_values(server_bin, model, self.autotune_spec_values_input.text().strip())
+        if not spec_values:
+            QMessageBox.warning(self, "Auto-tune", "No valid spec modes resolved for autotune.")
+            return
 
-        depth_text = self.autotune_depth_combo.currentText().strip()
-        if depth_text.startswith("Quick"):
-            autotune_ctx_values = ctx_quick
-            autotune_batch_values = "1024,2048"
-            autotune_ubatch_values = "1024,2048"
-            autotune_kv_values = "q8_0"
-            depth_key = "quick"
-        elif depth_text.startswith("Full"):
-            autotune_ctx_values = ctx_full
-            autotune_batch_values = "1024,2048,4096"
-            autotune_ubatch_values = "1024,2048,4096"
-            autotune_kv_values = "q8_0,q4_0"
-            depth_key = "full"
-        else:
-            autotune_ctx_values = ctx_standard
-            autotune_batch_values = "1024,2048"
-            autotune_ubatch_values = "1024,2048"
-            autotune_kv_values = "q8_0,q4_0"
-            depth_key = "standard"
+        extra_presets = self._parse_autotune_extra_presets(self.autotune_extra_presets_input.text().strip())
+        if not extra_presets:
+            QMessageBox.warning(self, "Auto-tune", "No valid extra presets resolved for autotune.")
+            return
+
+        autotune_extra_presets = "||".join(extra_presets)
+        autotune_kv_values = "q8_0,q4_0"
+        autotune_tasks = "v2-mini"
+        autotune_max_tokens = "120"
+        autotune_real_context_chars = "21872"
 
         ctx_count = len([v for v in autotune_ctx_values.split(",") if v.strip()])
-        batch_count = len([v for v in autotune_batch_values.split(",") if v.strip()])
-        ubatch_count = len([v for v in autotune_ubatch_values.split(",") if v.strip()])
+        batch_count = len(batch_values)
+        ubatch_count = len(ubatch_values)
         kv_count = len([v for v in autotune_kv_values.split(",") if v.strip()])
         spec_count = len(spec_values)
-        config_count = ctx_count * batch_count * ubatch_count * kv_count * spec_count
+        extra_count = len(extra_presets)
+        config_count = ctx_count * batch_count * ubatch_count * kv_count * spec_count * extra_count
 
         label = f"gui-autotune-{model.stem}"
+        autotune_session_file = self.project_root / "build_logs" / "agent-workload" / f"{label}-autotune-session.json"
         command = [
             sys.executable,
             "scripts/agent_workload_bench.py",
@@ -601,7 +821,7 @@ class BenchmarkTabWidget(QWidget):
             "--label",
             label,
             "--tasks",
-            "quick",
+            autotune_tasks,
             "--runs",
             "1",
             "--server-bin",
@@ -617,13 +837,23 @@ class BenchmarkTabWidget(QWidget):
             "--parallel",
             "1",
             "--max-tokens",
-            "160",
+            autotune_max_tokens,
             "--startup-timeout",
             "180",
             "--request-timeout",
-            "180",
+            "20",
+            "--task-fail-timeout",
+            "20",
             "--background-server-policy",
             "fail",
+            "--allow-ctx-above-16k",
+            "--real-context-mode",
+            "repo-snapshot",
+            "--real-context-chars",
+            autotune_real_context_chars,
+            "--no-reuse",
+            "--no-v2-prime-pass",
+            "--no-disable-thinking",
             "--autotune-min-ctx",
             str(autotune_min_ctx),
             "--autotune-ctx-values",
@@ -636,30 +866,190 @@ class BenchmarkTabWidget(QWidget):
             autotune_kv_values,
             "--autotune-spec-values",
             ",".join(spec_values),
+            "--autotune-extra-presets",
+            autotune_extra_presets,
             "--autotune-max-configs",
             str(max(64, config_count + 8)),
             "--autotune-update-preset",
             "--autotune-preset-file",
             "gui/model_presets.json",
+            "--autotune-session-file",
+            str(autotune_session_file),
         ]
 
+        if self.autotune_resume_checkbox.isChecked():
+            command.append("--autotune-resume")
+        else:
+            command.append("--no-autotune-resume")
+
+        if self.autotune_reset_session_checkbox.isChecked():
+            command.append("--autotune-reset-session")
+
         self._current_mode = "autotune"
-        self._current_autotune_profile = f"{profile_key}-{depth_key}"
+        self._current_autotune_profile = profile_key
         self._current_build_id = build_id
         self._autotune_result = {"best": "", "summary_json": "", "summary_csv": ""}
+        self._reset_autotune_live_history()
         self._last_selected_model = model.name
         self._set_running_state(True)
         self.log_output.clear()
         self.log_output.append(f"[INFO] Starting autotune for {model.name}")
         self.log_output.append(f"[INFO] Build ID: {build_id or '-'}")
-        self.log_output.append(f"[INFO] Autotune profile: {profile_text}, depth: {depth_text}, configs: {config_count}")
+        self.log_output.append(f"[INFO] Autotune profile: 32K fixed, configs: {config_count}")
+        self.log_output.append(f"[INFO] Workload: {autotune_tasks}, max_tokens: {autotune_max_tokens}")
+        self.log_output.append(
+            "[INFO] Lane: prompt-heavy repo-snapshot "
+            f"(chars={autotune_real_context_chars}), no-reuse, no-prime, thinking on"
+        )
+        self.log_output.append(
+            "[INFO] Sweep: "
+            f"batch={autotune_batch_values} | "
+            f"ubatch={autotune_ubatch_values} | "
+            f"spec={','.join(spec_values)} | "
+            f"extra_presets={len(extra_presets)}"
+        )
+        self.log_output.append(f"[INFO] Session file: {autotune_session_file}")
+        self.log_output.append(
+            "[INFO] Session mode: "
+            f"resume={'on' if self.autotune_resume_checkbox.isChecked() else 'off'}, "
+            f"reset={'on' if self.autotune_reset_session_checkbox.isChecked() else 'off'}"
+        )
+        self.log_output.append("[INFO] Task timeout policy: 20s hard cutoff (slow task => config fail)")
         self.bench_thread = BenchCommandThread(command=command, working_dir=self.project_root)
         self.bench_thread.output.connect(self._on_bench_output)
         self.bench_thread.finished_signal.connect(self._on_bench_finished)
         self.bench_thread.start()
 
+    def stop_current_run(self):
+        if not self.bench_thread or not self.bench_thread.isRunning():
+            QMessageBox.information(self, "Stop", "No benchmark/autotune is running")
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Stop",
+            "Stop current benchmark/autotune now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self.status_label.setText("Stopping benchmark/autotune...")
+        self.log_output.append("[INFO] Stop requested by user. Terminating benchmark process...")
+        self.bench_thread.request_stop()
+
     @staticmethod
-    def _server_supports_mtp(server_bin: Path) -> bool:
+    def _build_autotune_range_values(min_value: int, max_value: int, step: int) -> list[int]:
+        if step <= 0 or min_value <= 0 or max_value <= 0 or min_value > max_value:
+            return []
+
+        values: list[int] = []
+        current = min_value
+        while current <= max_value:
+            values.append(current)
+            current += step
+
+        if not values:
+            return []
+        return values
+
+    @staticmethod
+    def _format_values_preview(values: list[int], limit: int = 8) -> str:
+        if not values:
+            return "-"
+        if len(values) <= limit:
+            return ",".join(str(v) for v in values)
+        head = ",".join(str(v) for v in values[:limit])
+        return f"{head}, ... ({len(values)} total)"
+
+    def _update_autotune_grid_preview(self) -> None:
+        batch_values = self._build_autotune_range_values(
+            self.at_batch_min_spin.value(),
+            self.at_batch_max_spin.value(),
+            self.at_batch_step_spin.value(),
+        )
+        ubatch_values = self._build_autotune_range_values(
+            self.at_ubatch_min_spin.value(),
+            self.at_ubatch_max_spin.value(),
+            self.at_ubatch_step_spin.value(),
+        )
+
+        spec_raw = self.autotune_spec_values_input.text().strip().lower()
+        if spec_raw in {"", "auto", "all"}:
+            spec_values: list[str] = []
+            spec_factor: int | None = None
+            spec_text = "auto-detect"
+        else:
+            spec_values = []
+            seen: set[str] = set()
+            for value in self._parse_csv_values(spec_raw):
+                if value in seen:
+                    continue
+                seen.add(value)
+                spec_values.append(value)
+            spec_factor = len(spec_values)
+            spec_text = ",".join(spec_values) if spec_values else "-"
+
+        extra_presets = self._parse_autotune_extra_presets(self.autotune_extra_presets_input.text().strip())
+        extra_count = len(extra_presets)
+        extra_preview = ", ".join(extra_presets[:4])
+        if len(extra_presets) > 4:
+            extra_preview += f", ... ({len(extra_presets)} total)"
+
+        kv_factor = 2  # fixed: q8_0,q4_0 in current autotune flow
+        valid_ranges = bool(batch_values) and bool(ubatch_values)
+        base_factor = len(batch_values) * len(ubatch_values) * kv_factor * extra_count if valid_ranges else 0
+        if spec_factor is None:
+            total_text = f"{base_factor} * spec(auto)"
+        else:
+            total_text = str(base_factor * spec_factor)
+
+        lines = [
+            f"Batch values: {self._format_values_preview(batch_values)}",
+            f"UBatch values: {self._format_values_preview(ubatch_values)}",
+            f"Spec modes: {spec_text}",
+            f"Extra presets: {extra_preview or '-'}",
+            f"Estimated configs: {total_text} (ctx=1 x kv=2 x batch x ubatch x spec x extra)",
+            "Runtime lane: repo-snapshot chars=21872, no-reuse, no-prime, thinking on",
+            "Hint: for 32..128 set min=32, max=128, step=32",
+        ]
+
+        if valid_ranges:
+            self.autotune_grid_preview_label.setStyleSheet("color: #b0b0b0;")
+        else:
+            self.autotune_grid_preview_label.setStyleSheet("color: #ff6b6b;")
+            lines.append("Range error: check that min <= max and step > 0")
+
+        self.autotune_grid_preview_label.setText("\n".join(lines))
+
+    @staticmethod
+    def _parse_csv_values(values: str) -> list[str]:
+        return [v.strip().lower() for v in values.split(",") if v.strip()]
+
+    @staticmethod
+    def _parse_autotune_extra_presets(values: str) -> list[str]:
+        normalized = values.strip()
+        if not normalized:
+            return ["base"]
+
+        chunks = [chunk.strip() for chunk in normalized.split("||") if chunk.strip()]
+        if not chunks:
+            return ["base"]
+
+        result: list[str] = []
+        seen: set[str] = set()
+        for chunk in chunks:
+            item = "base" if chunk.lower() in {"base", "default", "none", "off", "-"} else chunk
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(item)
+        return result or ["base"]
+
+    @staticmethod
+    def _server_help_output(server_bin: Path) -> str:
         try:
             result = subprocess.run(
                 [str(server_bin), "--help"],
@@ -668,13 +1058,77 @@ class BenchmarkTabWidget(QWidget):
                 timeout=10,
                 check=False,
             )
-            output = (result.stdout or "") + "\n" + (result.stderr or "")
-            return "mtp" in output.lower()
+            return ((result.stdout or "") + "\n" + (result.stderr or "")).lower()
         except Exception:
-            return False
+            return ""
+
+    def _resolve_autotune_spec_values(self, server_bin: Path, model: Path, raw_values: str) -> list[str]:
+        requested = raw_values.strip().lower()
+        output = self._server_help_output(server_bin)
+
+        # Parse only explicit --spec-type enum options to avoid false positives
+        # from unrelated flags like --spec-draft-*.
+        spec_type_modes: list[str] = []
+        match = re.search(r"--spec-type\s*\[([^\]]+)\]", output)
+        if match:
+            for raw in match.group(1).split("|"):
+                mode = raw.strip().lower()
+                if mode:
+                    spec_type_modes.append(mode)
+
+        allowed_modes = set(spec_type_modes)
+
+        if requested and requested not in {"auto", "all"}:
+            ordered: list[str] = []
+            seen: set[str] = set()
+            for value in self._parse_csv_values(requested):
+                if allowed_modes and value not in allowed_modes:
+                    continue
+                if value not in seen:
+                    seen.add(value)
+                    ordered.append(value)
+            return ordered or ["none"]
+
+        if not spec_type_modes:
+            spec_type_modes = ["none", "ngram-mod"]
+
+        supported_order = ["none", "ngram-mod", "mtp", "eagle3", "eagle"]
+        resolved: list[str] = []
+        for mode in supported_order:
+            if mode in spec_type_modes:
+                resolved.append(mode)
+
+        if "none" not in resolved:
+            resolved.insert(0, "none")
+
+        if "ngram-mod" not in resolved:
+            ngram_candidates = [mode for mode in spec_type_modes if mode.startswith("ngram")]
+            if ngram_candidates:
+                fallback_ngram = "ngram-mod" if "ngram-mod" in ngram_candidates else ngram_candidates[0]
+                if fallback_ngram not in resolved:
+                    resolved.append(fallback_ngram)
+
+        model_name = model.name.lower()
+        if "mtp" in resolved and "mtp" not in model_name and "nextn" not in model_name:
+            resolved = [mode for mode in resolved if mode != "mtp"]
+
+        unique: list[str] = []
+        seen: set[str] = set()
+        for mode in resolved:
+            if mode in seen:
+                continue
+            seen.add(mode)
+            unique.append(mode)
+        return unique
+
+    @staticmethod
+    def _server_supports_mtp(server_bin: Path) -> bool:
+        return "mtp" in BenchmarkTabWidget._server_help_output(server_bin)
 
     def _on_bench_output(self, line: str):
         self.log_output.append(line)
+        if self._current_mode == "autotune":
+            self._update_autotune_live_history_from_line(line)
         if line.startswith("BEST:"):
             self._autotune_result["best"] = line
         if line.startswith("CURRENT BEST:"):
@@ -686,17 +1140,28 @@ class BenchmarkTabWidget(QWidget):
             self._autotune_result["summary_csv"] = line.split("Wrote ", 1)[-1].strip()
         if "Aggregate completion TPS" in line or line.startswith("BEST:") or line.startswith("CURRENT BEST:"):
             self.status_label.setText(line)
+        if line.startswith("CONFIG FAILED ("):
+            self.status_label.setText(line)
 
-    def _on_bench_finished(self, success: bool):
+    def _on_bench_finished(self, success: bool, stopped: bool = False):
         self._set_running_state(False)
+
+        if stopped:
+            if self._current_mode == "autotune" and self._autotune_active_run is not None:
+                stopped_row = self._find_autotune_history_row(self._autotune_active_run)
+                if stopped_row is not None:
+                    self.autotune_history_table.setItem(stopped_row, 8, QTableWidgetItem("stopped"))
+                self._autotune_active_run = None
+            self.status_label.setText("Benchmark stopped")
+            self.log_output.append("[INFO] Benchmark/autotune stopped by user")
+            QMessageBox.information(self, "Bench", "Run stopped. Completed autotune configs can be resumed.")
+            self.bench_thread = None
+            return
 
         if success:
             self.status_label.setText("Benchmark completed")
             if self._current_mode == "autotune":
-                if self._current_autotune_profile.startswith("ctx64k-plus"):
-                    self._update_best_preset_for_model(self._last_selected_model, profile_key="ctx64k-plus", min_ctx=65536)
-                else:
-                    self._update_best_preset_for_model(self._last_selected_model, profile_key="ctx32k-plus", min_ctx=32768)
+                self._update_best_preset_for_model(self._last_selected_model, profile_key="ctx32k-only", min_ctx=32768)
                 self._live_best_by_key.pop(self._live_key_for_current_profile(), None)
                 self.refresh_saved_presets_table()
             else:
@@ -715,33 +1180,52 @@ class BenchmarkTabWidget(QWidget):
                 message = "Auto-tune finished. Best preset saved and applied to Launch Server tab."
             QMessageBox.information(self, "Bench", message)
         else:
+            if self._current_mode == "autotune" and self._autotune_active_run is not None:
+                failed_row = self._find_autotune_history_row(self._autotune_active_run)
+                if failed_row is not None:
+                    self.autotune_history_table.setItem(failed_row, 8, QTableWidgetItem("failed"))
+                self._autotune_active_run = None
             self.status_label.setText("Benchmark failed")
             QMessageBox.warning(self, "Bench", "Benchmark/autotune failed. Check log output.")
+
+        self.bench_thread = None
 
     def _set_running_state(self, running: bool):
         self.run_bench_btn.setEnabled(not running)
         self.run_autotune_btn.setEnabled(not running)
+        self.stop_btn.setEnabled(running)
         self.model_browse_btn.setEnabled(not running)
         self.model_refresh_btn.setEnabled(not running)
+        self.delete_preset_btn.setEnabled(not running)
+        self.at_batch_min_spin.setEnabled(not running)
+        self.at_batch_max_spin.setEnabled(not running)
+        self.at_batch_step_spin.setEnabled(not running)
+        self.at_ubatch_min_spin.setEnabled(not running)
+        self.at_ubatch_max_spin.setEnabled(not running)
+        self.at_ubatch_step_spin.setEnabled(not running)
+        self.autotune_spec_values_input.setEnabled(not running)
+        self.autotune_extra_presets_input.setEnabled(not running)
+        self.autotune_resume_checkbox.setEnabled(not running)
+        self.autotune_reset_session_checkbox.setEnabled(not running)
 
     def _live_key_for_current_profile(self) -> str:
-        profile_bucket = "ctx64k-plus" if self._current_autotune_profile.startswith("ctx64k-plus") else "ctx32k-plus"
+        profile_bucket = "ctx32k-only"
         model_name = self._last_selected_model or Path(self.model_path_input.text().strip() or "model.gguf").name
         return f"{model_name}::{profile_bucket}"
 
     def _update_live_best_from_line(self, line: str) -> None:
         # Expected format:
-        # CURRENT BEST: ctx=65536 b=1024 ub=1024 kv=q8_0 spec=none aggregate_tps=48.27
+        # CURRENT BEST: ctx=65536 b=1024 ub=1024 kv=q8_0 spec=none extra=base aggregate_tps=48.27
         match = re.search(
-            r"ctx=(\d+)\s+b=(\d+)\s+ub=(\d+)\s+kv=([^\s]+)\s+spec=([^\s]+)\s+aggregate_tps=([0-9]+(?:\.[0-9]+)?)",
+            r"ctx=(\d+)\s+b=(\d+)\s+ub=(\d+)\s+kv=([^\s]+)\s+spec=([^\s]+)(?:\s+extra=([^\s]+))?\s+aggregate_tps=([0-9]+(?:\.[0-9]+)?)",
             line,
         )
         if not match:
             return
 
-        ctx, batch, ubatch, kv, spec_mode, tps = match.groups()
+        ctx, batch, ubatch, kv, spec_mode, extra_preset, tps = match.groups()
         model_name = self._last_selected_model or Path(self.model_path_input.text().strip() or "model.gguf").name
-        profile_bucket = "ctx64k-plus" if self._current_autotune_profile.startswith("ctx64k-plus") else "ctx32k-plus"
+        profile_bucket = "ctx32k-only"
         key = f"{model_name}::{profile_bucket}"
         self._live_best_by_key[key] = {
             "model": model_name,
@@ -753,12 +1237,74 @@ class BenchmarkTabWidget(QWidget):
             "kv_k": kv,
             "kv_v": kv,
             "spec_mode": spec_mode,
+            "extra_preset": extra_preset or "base",
+            "extra_args": "",
             "build_id": self._current_build_id,
             "run_id": "",
             "label": "",
             "timestamp": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         self.refresh_saved_presets_table()
+
+    def _reset_autotune_live_history(self) -> None:
+        self._autotune_active_run = None
+        self.autotune_history_table.setRowCount(0)
+
+    def _find_autotune_history_row(self, run_label: str) -> int | None:
+        for row in range(self.autotune_history_table.rowCount()):
+            item = self.autotune_history_table.item(row, 0)
+            if item is not None and item.text() == run_label:
+                return row
+        return None
+
+    def _update_autotune_live_history_from_line(self, line: str) -> None:
+        start_match = re.search(
+            r"Autotune \[(\d+)/(\d+)\]: ctx=(\d+), b=(\d+), ub=(\d+), kv=([^,]+), spec=([^\s]+)(?:, extra=([^\s]+))?",
+            line,
+        )
+        if start_match:
+            run_idx, total, ctx, batch, ubatch, kv, spec_mode, extra_preset = start_match.groups()
+            extra_value = extra_preset or "base"
+            run_label = f"{run_idx}/{total}"
+            row = self.autotune_history_table.rowCount()
+            self.autotune_history_table.insertRow(row)
+            self.autotune_history_table.setItem(row, 0, NumericTableWidgetItem(run_label, int(run_idx)))
+            self.autotune_history_table.setItem(row, 1, NumericTableWidgetItem(ctx, int(ctx)))
+            self.autotune_history_table.setItem(row, 2, NumericTableWidgetItem(batch, int(batch)))
+            self.autotune_history_table.setItem(row, 3, NumericTableWidgetItem(ubatch, int(ubatch)))
+            self.autotune_history_table.setItem(row, 4, QTableWidgetItem(kv))
+            self.autotune_history_table.setItem(row, 5, QTableWidgetItem(spec_mode))
+            self.autotune_history_table.setItem(row, 6, QTableWidgetItem(extra_value))
+            self.autotune_history_table.setItem(row, 7, QTableWidgetItem("-"))
+            self.autotune_history_table.setItem(row, 8, QTableWidgetItem("running"))
+            self._autotune_active_run = run_label
+            self.autotune_history_table.scrollToBottom()
+            self.status_label.setText(line)
+            return
+
+        if self._autotune_active_run is None:
+            return
+
+        active_row = self._find_autotune_history_row(self._autotune_active_run)
+        if active_row is None:
+            return
+
+        tps_match = re.search(r"Aggregate completion TPS by wall time:\s*([0-9]+(?:\.[0-9]+)?)", line)
+        if tps_match:
+            tps_value = float(tps_match.group(1))
+            self.autotune_history_table.setItem(active_row, 7, NumericTableWidgetItem(f"{tps_value:.2f}", tps_value))
+            self.autotune_history_table.setItem(active_row, 8, QTableWidgetItem("done"))
+            self._autotune_active_run = None
+            return
+
+        if line.strip().startswith("error:"):
+            self.autotune_history_table.setItem(active_row, 8, QTableWidgetItem("error"))
+            self._autotune_active_run = None
+            return
+
+        if line.startswith("CONFIG FAILED ("):
+            self.autotune_history_table.setItem(active_row, 8, QTableWidgetItem("failed"))
+            self._autotune_active_run = None
 
     def _load_best_presets(self) -> dict[str, dict[str, str]]:
         if not self.best_presets_path.exists():
@@ -822,6 +1368,8 @@ class BenchmarkTabWidget(QWidget):
             "kv_k": str(best_row.get("kv_k", "")),
             "kv_v": str(best_row.get("kv_v", "")),
             "spec_mode": str(best_row.get("spec_mode", "")),
+            "extra_preset": str(best_row.get("extra_preset", "")),
+            "extra_args": str(best_row.get("extra_args", "")),
             "build_id": str(best_row.get("build_id", "")),
             "run_id": str(best_row.get("run_id", "")),
             "label": str(best_row.get("label", "")),
@@ -848,29 +1396,75 @@ class BenchmarkTabWidget(QWidget):
                 presets[key] = dict(value)
         rows = sorted(presets.items(), key=lambda item: item[0].lower())
         self.presets_table.setRowCount(0)
-        for model_name, data in rows:
-            display_name = str(data.get("model", model_name))
+        for preset_key, data in rows:
+            display_name = str(data.get("model", preset_key))
             profile = str(data.get("profile", "model-best"))
-            if profile != "model-best":
-                display_name = f"{display_name} ({profile})"
+            extra_args_value = str(data.get("extra_args", "")).strip()
             row = self.presets_table.rowCount()
             self.presets_table.insertRow(row)
-            self.presets_table.setItem(row, 0, QTableWidgetItem(display_name))
-            self.presets_table.setItem(row, 1, QTableWidgetItem(str(data.get("best_tps", "-"))))
-            self.presets_table.setItem(row, 2, QTableWidgetItem(str(data.get("ctx", "-"))))
+            model_item = QTableWidgetItem(display_name)
+            model_item.setData(Qt.ItemDataRole.UserRole, preset_key)
+            self.presets_table.setItem(row, 0, model_item)
+            self.presets_table.setItem(row, 1, QTableWidgetItem(profile))
+            self.presets_table.setItem(row, 2, QTableWidgetItem(str(data.get("best_tps", "-"))))
+            self.presets_table.setItem(row, 3, QTableWidgetItem(str(data.get("ctx", "-"))))
             self.presets_table.setItem(
                 row,
-                3,
+                4,
                 QTableWidgetItem(f"{data.get('batch', '-')}/{data.get('ubatch', '-')}")
             )
             self.presets_table.setItem(
                 row,
-                4,
+                5,
                 QTableWidgetItem(f"{data.get('kv_k', '-')}/{data.get('kv_v', '-')}")
             )
-            self.presets_table.setItem(row, 5, QTableWidgetItem(str(data.get("spec_mode", "-"))))
-            self.presets_table.setItem(row, 6, QTableWidgetItem(str(data.get("build_id", "-"))))
-            self.presets_table.setItem(row, 7, QTableWidgetItem(str(data.get("timestamp", "-"))))
+            self.presets_table.setItem(row, 6, QTableWidgetItem(str(data.get("spec_mode", "-"))))
+            self.presets_table.setItem(row, 7, QTableWidgetItem(str(data.get("extra_preset", "-"))))
+            self.presets_table.setItem(row, 8, QTableWidgetItem(extra_args_value or "-"))
+            self.presets_table.setItem(row, 9, QTableWidgetItem(str(data.get("build_id", "-"))))
+            self.presets_table.setItem(row, 10, QTableWidgetItem(str(data.get("timestamp", "-"))))
+
+    def delete_selected_preset(self) -> None:
+        row = self.presets_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Delete Preset", "Select a preset row first.")
+            return
+
+        model_item = self.presets_table.item(row, 0)
+        if model_item is None:
+            QMessageBox.warning(self, "Delete Preset", "Cannot resolve selected preset.")
+            return
+
+        preset_key = str(model_item.data(Qt.ItemDataRole.UserRole) or "").strip()
+        if not preset_key:
+            QMessageBox.warning(self, "Delete Preset", "Cannot resolve preset key.")
+            return
+
+        presets = self._load_best_presets()
+        target = presets.get(preset_key)
+        if target is None:
+            QMessageBox.warning(self, "Delete Preset", "Preset is already missing in storage.")
+            self._live_best_by_key.pop(preset_key, None)
+            self.refresh_saved_presets_table()
+            return
+
+        model_name = str(target.get("model", preset_key))
+        profile = str(target.get("profile", "model-best"))
+        confirm = QMessageBox.question(
+            self,
+            "Delete Preset",
+            f"Delete preset for {model_name} ({profile})?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        presets.pop(preset_key, None)
+        self._live_best_by_key.pop(preset_key, None)
+        self._save_best_presets(presets)
+        self.refresh_saved_presets_table()
+        self.status_label.setText(f"Preset deleted: {model_name} ({profile})")
 
     def open_history_md(self):
         history_md = self.project_root / "build_logs" / "agent-workload" / "BENCH_HISTORY.md"

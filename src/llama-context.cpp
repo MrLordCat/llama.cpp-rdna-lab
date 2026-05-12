@@ -170,6 +170,27 @@ llama_context::llama_context(
 
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
 
+    // Optional experiment: when shape-score splitting is active, allow capping physical
+    // context ubatch to the preferred split size to reduce oversized prefill graph state.
+    if (const char * ubatch_shape_context_cap = getenv("LLAMA_UBATCH_SHAPE_CONTEXT_CAP")) {
+        if (strcmp(ubatch_shape_context_cap, "0") != 0) {
+            const char * split_policy = getenv("LLAMA_UBATCH_SPLIT_POLICY");
+            const bool use_shape_score = split_policy && strcmp(split_policy, "shape-score") == 0;
+            const char * preferred_env = getenv("LLAMA_UBATCH_SHAPE_PREFERRED");
+            const int preferred_i = preferred_env ? atoi(preferred_env) : 0;
+            if (use_shape_score && preferred_i > 0) {
+                const uint32_t preferred = (uint32_t) preferred_i;
+                const uint32_t capped = std::max(1u, std::min(cparams.n_ubatch, std::min(cparams.n_batch, preferred)));
+                if (capped < cparams.n_ubatch) {
+                    LLAMA_LOG_INFO(
+                            "%s: LLAMA_UBATCH_SHAPE_CONTEXT_CAP enabled -> n_ubatch %u -> %u (preferred=%u)\n",
+                            __func__, cparams.n_ubatch, capped, preferred);
+                    cparams.n_ubatch = capped;
+                }
+            }
+        }
+    }
+
     cparams.op_offload = params.op_offload;
     cparams.kv_unified = params.kv_unified;
 

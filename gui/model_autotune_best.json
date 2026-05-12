@@ -1,17 +1,1 @@
-{
-  "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf::ctx64k-plus": {
-    "model": "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf",
-    "profile": "ctx64k-plus",
-    "best_tps": "49.4618",
-    "ctx": "65536",
-    "batch": "sweep",
-    "ubatch": "sweep",
-    "kv_k": "sweep",
-    "kv_v": "sweep",
-    "spec_mode": "ngram-mod",
-    "build_id": "bld-20260508073132-4d3cb594",
-    "run_id": "run-4f9366e7c4",
-    "label": "gui-autotune-Qwen3.6-35B-A3B-UD-IQ3_XXS",
-    "timestamp": "2026-05-08 08:10:51"
-  }
-}
+{}

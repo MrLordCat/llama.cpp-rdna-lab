@@ -171,7 +171,6 @@ class GuiApiServer:
         model_path = str(payload.get("model_path") or "").strip() or None
         wait = bool(payload.get("wait", True))
         timeout_sec = float(payload.get("timeout_sec", 5400.0))
-        sweep_mode = str(payload.get("sweep_mode") or "full").strip().lower()
 
         done = threading.Event()
         result: dict[str, Any] = {}
@@ -186,7 +185,6 @@ class GuiApiServer:
                 model_path=model_path,
                 silent=True,
                 completion_callback=on_done,
-                sweep_mode=sweep_mode,
             )
             return {"started": bool(started)}
 

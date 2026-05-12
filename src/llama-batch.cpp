@@ -24,6 +24,70 @@ static uint32_t llama_env_u32(const char * name, uint32_t fallback, uint32_t min
     return std::min(std::max((uint32_t) parsed, min_value), max_value);
 }
 
+static bool llama_env_flag_enabled(const char * name) {
+    const char * value = getenv(name);
+    if (!value || value[0] == '\0') {
+        return false;
+    }
+
+    return strcmp(value, "0") != 0;
+}
+
+static uint32_t llama_delta_net_chunk_hint_score(uint32_t candidate, uint32_t remaining, uint32_t min_tail) {
+    const uint32_t tail = remaining % candidate;
+    const uint32_t pad = (candidate - tail) % candidate;
+    const uint32_t n_chunks = (remaining + candidate - 1) / candidate;
+
+    uint64_t score = 0;
+    // Match delta-net model policy: prioritize low padding, then fewer transitions.
+    score += (uint64_t) pad * 8192;
+    score += (uint64_t) (n_chunks > 0 ? (n_chunks - 1) : 0) * 192;
+    if (tail != 0 && tail < min_tail) {
+        score += 1000000 + (uint64_t) (min_tail - tail) * 4096;
+    }
+
+    return (uint32_t) (score > UINT32_MAX ? UINT32_MAX : score);
+}
+
+static uint32_t llama_delta_net_pick_chunk_hint(uint32_t remaining) {
+    const uint32_t candidates[] = {64, 96, 128};
+    const uint32_t min_tail = llama_env_u32("LLAMA_DELTA_NET_CHUNK_MIN_TAIL", 32, 1, 127);
+
+    uint32_t best = candidates[0];
+    uint32_t best_score = UINT32_MAX;
+    for (uint32_t candidate : candidates) {
+        const uint32_t score = llama_delta_net_chunk_hint_score(candidate, remaining, min_tail);
+        if (score < best_score) {
+            best_score = score;
+            best = candidate;
+        }
+    }
+
+    return best;
+}
+
+static uint32_t llama_shape_planned_chunk_hint(uint32_t target, uint32_t remaining) {
+    uint32_t chunk_hint = llama_env_u32("LLAMA_UBATCH_SHAPE_CHUNK_HINT", 96, 1, target);
+    if (!llama_env_flag_enabled("LLAMA_UBATCH_SHAPE_CHUNK_HINT_SYNC_DELTA")) {
+        return chunk_hint;
+    }
+
+    const char * chunk_override = getenv("LLAMA_DELTA_NET_CHUNK_SIZE");
+    if (chunk_override && chunk_override[0] != '\0') {
+        const int parsed = atoi(chunk_override);
+        if (parsed > 0 && parsed % 16 == 0) {
+            return std::min((uint32_t) parsed, target);
+        }
+    }
+
+    const char * chunk_policy = getenv("LLAMA_DELTA_NET_CHUNK_POLICY");
+    if (chunk_policy && strcmp(chunk_policy, "adaptive") == 0) {
+        return std::min(llama_delta_net_pick_chunk_hint(remaining), target);
+    }
+
+    return chunk_hint;
+}
+
 static uint64_t llama_shape_plan_score(
         uint32_t candidate,
         uint32_t target,
@@ -101,7 +165,7 @@ static uint32_t llama_shape_planned_ubatch(uint32_t n_ubatch, uint32_t remaining
 
     const uint32_t min_step_default = std::min(min_tail, target);
     const uint32_t min_step = llama_env_u32("LLAMA_UBATCH_SHAPE_MIN_STEP", min_step_default, 1, target);
-    const uint32_t chunk_hint = llama_env_u32("LLAMA_UBATCH_SHAPE_CHUNK_HINT", 96, 1, target);
+    const uint32_t chunk_hint = llama_shape_planned_chunk_hint(target, remaining);
     const uint32_t min_chunk_tail = chunk_hint > 1
             ? llama_env_u32("LLAMA_UBATCH_SHAPE_MIN_CHUNK_TAIL", 32, 1, chunk_hint - 1)
             : 0;

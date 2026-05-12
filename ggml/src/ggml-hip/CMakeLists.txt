@@ -18,6 +18,15 @@ endif()
 # CMake on Windows doesn't support the HIP language yet
 if (WIN32)
     set(CXX_IS_HIPCC TRUE)
+
+    # Fail fast on Windows if HIP is configured with a non-ROCm C++ compiler.
+    get_filename_component(_ggml_hip_cxx_name "${CMAKE_CXX_COMPILER}" NAME_WE)
+    string(TOLOWER "${_ggml_hip_cxx_name}" _ggml_hip_cxx_name_lc)
+    if (NOT _ggml_hip_cxx_name_lc MATCHES "clang" AND NOT _ggml_hip_cxx_name_lc MATCHES "hipcc")
+        message(FATAL_ERROR
+            "GGML_HIP on Windows requires ROCm clang++ or hipcc as CMAKE_CXX_COMPILER. "
+            "Current compiler: ${CMAKE_CXX_COMPILER}")
+    endif()
 else()
     string(REGEX MATCH "hipcc(\.bat)?$" CXX_IS_HIPCC "${CMAKE_CXX_COMPILER}")
 endif()
@@ -57,44 +66,47 @@ endif()
 
 message(STATUS "HIP and hipBLAS found")
 
-file(GLOB   GGML_HEADERS_ROCM "../ggml-cuda/*.cuh")
-list(APPEND GGML_HEADERS_ROCM "../../include/ggml-cuda.h")
+include(${CMAKE_CURRENT_LIST_DIR}/hip-source-bundles.cmake)
 
-file(GLOB   GGML_SOURCES_ROCM "../ggml-cuda/*.cu")
-if (GGML_HIP_QWEN_FA_REDUCED)
-    message(WARNING
-        "GGML_HIP_QWEN_FA_REDUCED=ON: building a local experimental HIP backend with "
-        "FlashAttention tile/MMA templates disabled. Use only for Qwen/RDNA4 A/B runs.")
-    list(FILTER GGML_SOURCES_ROCM EXCLUDE REGEX ".*/fattn\\.cu$")
-    list(FILTER GGML_SOURCES_ROCM EXCLUDE REGEX ".*/fattn-qwen-reduced\\.cu$")
-    list(FILTER GGML_SOURCES_ROCM EXCLUDE REGEX ".*/fattn-tile\\.cu$")
-else()
-    file(GLOB   SRCS "../ggml-cuda/template-instances/fattn-tile*.cu")
-    list(APPEND GGML_SOURCES_ROCM ${SRCS})
-    file(GLOB   SRCS "../ggml-cuda/template-instances/fattn-mma*.cu")
-    list(APPEND GGML_SOURCES_ROCM ${SRCS})
+ggml_hip_collect_sources(
+    GGML_HEADERS_ROCM
+    GGML_SOURCES_ROCM
+    GGML_HOST_SOURCES_ROCM
+    GGML_HIP_SOURCE_PROFILE
+    GGML_HIP_PROFILE_REDUCED_FATTN
+    GGML_HIP_PROFILE_NO_FA)
+
+if (GGML_HIP_PROFILE_REDUCED_FATTN)
+    if (GGML_HIP_PROFILE_NO_FA)
+        message(WARNING
+            "GGML_HIP_EXPERIMENT_PROFILE=${GGML_HIP_SOURCE_PROFILE}: building local MMVQ-focused HIP profile "
+            "with FlashAttention kernels disabled. Use only for MMVQ/decode-path A/B and build-pressure research.")
+    else()
+        message(WARNING
+            "GGML_HIP_EXPERIMENT_PROFILE=${GGML_HIP_SOURCE_PROFILE}: building local reduced FlashAttention HIP profile "
+            "for Qwen/RDNA4 A/B runs.")
+    endif()
 endif()
-file(GLOB   SRCS "../ggml-cuda/template-instances/mmq*.cu")
-list(APPEND GGML_SOURCES_ROCM ${SRCS})
-file(GLOB   SRCS "../ggml-cuda/template-instances/mmf*.cu")
-list(APPEND GGML_SOURCES_ROCM ${SRCS})
 
 if (GGML_CUDA_FA_ALL_QUANTS)
-    file(GLOB   SRCS "../ggml-cuda/template-instances/fattn-vec*.cu")
-    list(APPEND GGML_SOURCES_ROCM ${SRCS})
-    add_compile_definitions(GGML_CUDA_FA_ALL_QUANTS)
-else()
-    list(APPEND GGML_SOURCES_ROCM
-        ../ggml-cuda/template-instances/fattn-vec-instance-f16-f16.cu
-        ../ggml-cuda/template-instances/fattn-vec-instance-q4_0-q4_0.cu
-        ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-q8_0.cu
-        ../ggml-cuda/template-instances/fattn-vec-instance-bf16-bf16.cu)
+    if (GGML_HIP_PROFILE_NO_FA)
+        message(WARNING
+            "GGML_CUDA_FA_ALL_QUANTS=ON has no effect when GGML_HIP_EXPERIMENT_PROFILE=${GGML_HIP_SOURCE_PROFILE} "
+            "disables FlashAttention kernels.")
+    else()
+        add_compile_definitions(GGML_CUDA_FA_ALL_QUANTS)
+    endif()
 endif()
 
 ggml_add_backend_library(ggml-hip
                          ${GGML_HEADERS_ROCM}
                          ${GGML_SOURCES_ROCM}
                         )
+
+if (GGML_HOST_SOURCES_ROCM)
+    set_source_files_properties(${GGML_HOST_SOURCES_ROCM} PROPERTIES LANGUAGE CXX COMPILE_FLAGS "-x c++")
+    target_sources(ggml-hip PRIVATE ${GGML_HOST_SOURCES_ROCM})
+endif()
 
 set(GGML_HIP_ROCWMMA_ENABLED OFF)
 if (GGML_HIP_ROCWMMA_FATTN)
@@ -165,8 +177,12 @@ if (GGML_HIP_EXPORT_METRICS)
     set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -Rpass-analysis=kernel-resource-usage --save-temps")
 endif()
 
-if (NOT GGML_CUDA_FA)
+if (NOT GGML_CUDA_FA OR GGML_HIP_PROFILE_NO_FA)
     add_compile_definitions(GGML_CUDA_NO_FA)
+endif()
+
+if (GGML_HIP_PROFILE_NO_FA)
+    add_compile_definitions(GGML_HIP_MMVQ_FOCUSED_PROFILE)
 endif()
 
 if (CXX_IS_HIPCC)
@@ -179,11 +195,6 @@ if (CXX_IS_HIPCC)
     target_link_libraries(ggml-hip PRIVATE hip::device)
 else()
     set_source_files_properties(${GGML_SOURCES_ROCM} PROPERTIES LANGUAGE HIP)
-endif()
-
-if (GGML_HIP_QWEN_FA_REDUCED)
-    set_source_files_properties(../ggml-cuda/fattn-qwen-reduced.cpp PROPERTIES LANGUAGE CXX COMPILE_FLAGS "-x c++")
-    target_sources(ggml-hip PRIVATE ../ggml-cuda/fattn-qwen-reduced.cpp)
 endif()
 
 if (GGML_STATIC)

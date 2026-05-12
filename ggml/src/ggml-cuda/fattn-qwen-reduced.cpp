@@ -6,10 +6,13 @@
 
 struct ggml_backend_cuda_context;
 
+#if !defined(GGML_CUDA_NO_FA)
 template <int D, ggml_type type_K, ggml_type type_V>
 void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
 void ggml_cuda_flash_attn_ext_wmma_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+#endif // !defined(GGML_CUDA_NO_FA)
+
 void ggml_cuda_set_device(int device);
 
 enum qwen_reduced_fattn_kernel {
@@ -51,6 +54,7 @@ static int ggml_cuda_reduced_ctx_device(const ggml_backend_cuda_context & ctx) {
     return *reinterpret_cast<const int *>(&ctx);
 }
 
+#if !defined(GGML_CUDA_NO_FA)
 #define FATTN_REDUCED_VEC_CASE(D, type_K, type_V)                                                                \
     {                                                                                                            \
         const bool type_K_okay = K->type == (type_K) || (K->type == GGML_TYPE_F32 && (type_K) == GGML_TYPE_F16); \
@@ -97,6 +101,7 @@ static bool ggml_cuda_reduced_fattn_type_supported(const ggml_tensor * K, const 
             return false;
     }
 }
+#endif // !defined(GGML_CUDA_NO_FA)
 
 static qwen_reduced_fattn_kernel ggml_cuda_reduced_fattn_kernel(const ggml_tensor * dst) {
 #ifdef GGML_CUDA_NO_FA
@@ -152,6 +157,10 @@ static qwen_reduced_fattn_kernel ggml_cuda_reduced_fattn_kernel(const ggml_tenso
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ggml_cuda_reduced_ctx_device(ctx));
 
+#if defined(GGML_CUDA_NO_FA)
+    GGML_UNUSED(dst);
+    GGML_ABORT("FlashAttention is disabled by the active HIP experiment profile");
+#else
     switch (ggml_cuda_reduced_fattn_kernel(dst)) {
         case QWEN_REDUCED_FATTN_VEC:
             ggml_cuda_flash_attn_ext_vec_reduced(ctx, dst);
@@ -164,9 +173,16 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
     }
 
     GGML_ABORT("fatal error");
+#endif // defined(GGML_CUDA_NO_FA)
 }
 
 bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
+#if defined(GGML_CUDA_NO_FA)
+    GGML_UNUSED(device);
+    GGML_UNUSED(dst);
+    return false;
+#else
     GGML_UNUSED(device);
     return ggml_cuda_reduced_fattn_kernel(dst) != QWEN_REDUCED_FATTN_NONE;
+#endif // defined(GGML_CUDA_NO_FA)
 }

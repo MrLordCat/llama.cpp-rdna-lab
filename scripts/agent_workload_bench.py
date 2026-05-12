@@ -54,6 +54,8 @@ HISTORY_FIELDS = [
     "kv_k",
     "kv_v",
     "spec_mode",
+    "extra_preset",
+    "extra_args",
     "no_reuse",
     "gpu_layers",
     "parallel",
@@ -526,10 +528,12 @@ def http_json(method: str, url: str, payload: dict[str, Any] | None = None, time
     return json.loads(raw)
 
 
-def wait_for_server(base_url: str, timeout_s: float) -> None:
+def wait_for_server(base_url: str, timeout_s: float, proc: subprocess.Popen[str] | None = None) -> None:
     deadline = time.monotonic() + timeout_s
     last_error = ""
     while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            raise RuntimeError(f"server exited before becoming ready (exit code {proc.returncode})")
         for endpoint in ("/health", "/v1/models"):
             try:
                 http_json("GET", base_url + endpoint, timeout=2.0)
@@ -675,6 +679,18 @@ def run_task(base_url: str, task: dict[str, str], args: argparse.Namespace) -> d
     completion_tokens = usage.get("completion_tokens")
     prompt_tokens = usage.get("prompt_tokens")
     total_tokens = usage.get("total_tokens")
+
+    # Hard fail-slow guard for autotune and other scripted runs.
+    # This catches cases where request-timeout is larger than desired wall SLA.
+    if args.task_fail_timeout > 0 and wall_s > args.task_fail_timeout:
+        timeout_error = (
+            f"TaskTimeoutExceeded(wall_s={wall_s:.2f}s, limit={args.task_fail_timeout:.2f}s)"
+        )
+        error = timeout_error if not error else f"{error}; {timeout_error}"
+        completion_tokens = None
+        prompt_tokens = None
+        total_tokens = None
+
     completion_tps = None
     if isinstance(completion_tokens, int) and wall_s > 0:
         completion_tps = completion_tokens / wall_s
@@ -997,8 +1013,10 @@ def infer_spec_mode(server_extra: str) -> str:
 
 def normalize_spec_mode(value: str) -> str:
     value = value.strip().lower()
-    if value in {"mtp", "ngram-mod", "draft", "none"}:
+    if value in {"mtp", "ngram-mod", "draft", "none", "eagle", "eagle3"}:
         return value
+    if value.startswith("eagle3"):
+        return "eagle3"
     if value.startswith("eagle"):
         return "eagle"
     if value.startswith("ngram"):
@@ -1350,11 +1368,138 @@ def parse_text_csv(values: str) -> list[str]:
     return [v.strip() for v in values.split(",") if v.strip()]
 
 
+def parse_autotune_extra_presets(values: str) -> list[tuple[str, str]]:
+    raw_parts = [v.strip() for v in values.split("||") if v.strip()]
+    if not raw_parts:
+        raw_parts = ["base"]
+
+    presets: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for idx, token in enumerate(raw_parts, start=1):
+        name: str
+        extra_args: str
+
+        if "::" in token:
+            left, right = token.split("::", 1)
+            name = left.strip() or f"preset{idx}"
+            extra_args = right.strip()
+        else:
+            lowered = token.lower()
+            if lowered in {"base", "default", "none", "off", "-"}:
+                name = "base"
+                extra_args = ""
+            else:
+                name = f"extra{idx}"
+                extra_args = token
+
+        name = re.sub(r"\s+", "_", name).strip() or f"preset{idx}"
+
+        key = (name, extra_args)
+        if key in seen:
+            continue
+        seen.add(key)
+        presets.append(key)
+
+    return presets
+
+
 def _is_drop_significant(prev_tps: float, curr_tps: float, drop_pct: float) -> bool:
     if prev_tps <= 0.0:
         return False
     ratio = (prev_tps - curr_tps) / prev_tps
     return ratio >= max(0.0, drop_pct)
+
+
+def _autotune_config_key(
+    ctx_size: int,
+    batch_size: int,
+    ubatch_size: int,
+    kv_type: str,
+    spec_mode: str,
+    extra_name: str,
+    extra_args: str,
+) -> str:
+    payload = {
+        "ctx_size": int(ctx_size),
+        "batch_size": int(batch_size),
+        "ubatch_size": int(ubatch_size),
+        "kv": str(kv_type),
+        "spec_mode": str(spec_mode),
+        "extra_preset": str(extra_name),
+        "extra_args": str(extra_args),
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _autotune_session_fingerprint(
+    args: argparse.Namespace,
+    ctx_values: list[int],
+    batch_values: list[int],
+    ubatch_values: list[int],
+    kv_values: list[str],
+    spec_values: list[str],
+    extra_presets: list[tuple[str, str]],
+) -> str:
+    payload = {
+        "version": 1,
+        "model": str(args.model or ""),
+        "server_bin": str(args.server_bin or ""),
+        "tasks": str(args.tasks),
+        "runs": int(args.runs),
+        "max_tokens": int(args.max_tokens),
+        "startup_timeout": float(args.startup_timeout),
+        "request_timeout": float(args.request_timeout),
+        "task_fail_timeout": float(args.task_fail_timeout),
+        "no_reuse": bool(args.no_reuse),
+        "real_context_mode": str(args.real_context_mode),
+        "real_context_chars": int(args.real_context_chars),
+        "ctx_values": [int(v) for v in ctx_values],
+        "batch_values": [int(v) for v in batch_values],
+        "ubatch_values": [int(v) for v in ubatch_values],
+        "kv_values": [str(v) for v in kv_values],
+        "spec_values": [str(v) for v in spec_values],
+        "extra_presets": [{"name": n, "args": a} for n, a in extra_presets],
+        "base_server_extra": str(args.server_extra or "").strip(),
+    }
+    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(blob.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _load_autotune_session(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"WARNING: failed to load autotune session file {path}: {exc}")
+        return None
+    if not isinstance(payload, dict):
+        print(f"WARNING: invalid autotune session file format: {path}")
+        return None
+    return payload
+
+
+def _best_from_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    best: dict[str, Any] | None = None
+    for row in summaries:
+        try:
+            has_error = int(row.get("errors", 0)) != 0
+            agg_tps = float(row.get("aggregate_tps", 0.0))
+        except Exception:
+            continue
+        if has_error:
+            continue
+        if best is None or agg_tps > float(best.get("aggregate_tps", 0.0)):
+            best = row
+    return best
 
 
 def update_model_preset_file(
@@ -1510,6 +1655,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--startup-timeout", type=float, default=300.0)
     parser.add_argument("--request-timeout", type=float, default=240.0)
     parser.add_argument(
+        "--task-fail-timeout",
+        type=float,
+        default=0.0,
+        help="mark task as failed if wall time exceeds this threshold in seconds; 0 disables",
+    )
+    parser.add_argument(
         "--no-reuse",
         action="store_true",
         help="disable llama-server prompt cache and context checkpoints for cold prompt-heavy measurements",
@@ -1547,6 +1698,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--autotune-ubatch-values", default="1024,2048,4096", help="comma-separated ubatch values")
     parser.add_argument("--autotune-kv-values", default="q8_0,q4_0", help="comma-separated kv cache values")
     parser.add_argument("--autotune-spec-values", default="none,ngram-mod", help="comma-separated speculative modes")
+    parser.add_argument(
+        "--autotune-extra-presets",
+        default="base",
+        help=(
+            "server extra presets separated by '||'; use 'base' for no extra args; "
+            "format 'name::args' or plain args token"
+        ),
+    )
     parser.add_argument("--autotune-ngram-min", type=int, default=48)
     parser.add_argument("--autotune-ngram-match", type=int, default=24)
     parser.add_argument("--autotune-ngram-max", type=int, default=64)
@@ -1576,6 +1735,22 @@ def parse_args() -> argparse.Namespace:
         default=str(ROOT / "gui" / "model_presets.json"),
         help="preset JSON file path for --autotune-update-preset",
     )
+    parser.add_argument(
+        "--autotune-session-file",
+        default="",
+        help="path to autotune session checkpoint file (default: <out-dir>/<label>-autotune-session.json)",
+    )
+    parser.add_argument(
+        "--autotune-resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="resume unfinished autotune session when checkpoint exists",
+    )
+    parser.add_argument(
+        "--autotune-reset-session",
+        action="store_true",
+        help="discard previous session checkpoint before autotune run",
+    )
     return parser.parse_args()
 
 
@@ -1594,7 +1769,7 @@ def run_suite(args: argparse.Namespace, tasks: list[dict[str, str]]) -> list[dic
 
             proc = start_server(args)
             base_url = f"http://{args.host}:{args.port}"
-            wait_for_server(base_url, args.startup_timeout)
+            wait_for_server(base_url, args.startup_timeout, proc=proc)
         else:
             if args.port == 0:
                 args.port = 8080
@@ -1669,7 +1844,7 @@ def main() -> int:
     if args.tasks in ("v2", "v2-mini", "v2-review"):
         tasks = TASKS_V2
         if args.tasks == "v2-mini":
-            selected_ids = {"v2_code_review", "v2_write_function"}
+            selected_ids = {"v2_write_function"}
             tasks = [task for task in TASKS_V2 if task["id"] in selected_ids]
         elif args.tasks == "v2-review":
             selected_ids = {"v2_code_review"}
@@ -1705,9 +1880,10 @@ def main() -> int:
     if not args.autotune:
         try:
             rows = run_suite(args, tasks)
-        except RuntimeError as exc:
+        except Exception as exc:  # noqa: BLE001 - print clean error instead of traceback for operator workflows
             print(f"ERROR: {exc}")
-            print("Stop background server(s) or rerun with --background-server-policy warn/ignore")
+            if "background-server" in str(exc) or "already running llama-server" in str(exc):
+                print("Stop background server(s) or rerun with --background-server-policy warn/ignore")
             return 3
         artifacts = write_results(
             rows,
@@ -1742,6 +1918,8 @@ def main() -> int:
                 "kv_k": args.cache_type_k,
                 "kv_v": args.cache_type_v,
                 "spec_mode": infer_spec_mode(args.server_extra),
+                "extra_preset": "base",
+                "extra_args": args.server_extra,
                 "no_reuse": 1 if args.no_reuse else 0,
                 "gpu_layers": args.gpu_layers,
                 "parallel": args.parallel,
@@ -1777,8 +1955,9 @@ def main() -> int:
     ubatch_values = parse_int_csv(args.autotune_ubatch_values)
     kv_values = parse_text_csv(args.autotune_kv_values)
     spec_values = [v.lower() for v in parse_text_csv(args.autotune_spec_values)]
+    extra_presets = parse_autotune_extra_presets(args.autotune_extra_presets)
 
-    configs = list(product(ctx_values, batch_values, ubatch_values, kv_values, spec_values))
+    configs = list(product(ctx_values, batch_values, ubatch_values, kv_values, spec_values, extra_presets))
     if not configs:
         print("ERROR: empty autotune config list")
         return 4
@@ -1800,130 +1979,292 @@ def main() -> int:
     total_configs = len(configs)
     executed = 0
     skipped_by_prune = 0
+    completed_keys: set[str] = set()
 
     ctx_values_sorted = sorted(set(int(v) for v in ctx_values))
     kv_values_sorted = list(dict.fromkeys(kv_values))
     spec_values_sorted = list(dict.fromkeys(spec_values))
+    extra_presets_sorted = extra_presets
     ubatch_values_sorted = sorted(set(int(v) for v in ubatch_values))
     batch_values_sorted = sorted(set(int(v) for v in batch_values))
 
-    for spec_mode in spec_values_sorted:
-        for ctx_size in ctx_values_sorted:
-            for kv_type in kv_values_sorted:
-                ubatch_drop_streak = 0
-                prev_ubatch_best_tps = 0.0
+    session_file = Path(str(args.autotune_session_file).strip()) if str(args.autotune_session_file).strip() else (out_dir / f"{args.label}-autotune-session.json")
+    session_fingerprint = _autotune_session_fingerprint(
+        args,
+        ctx_values_sorted,
+        batch_values_sorted,
+        ubatch_values_sorted,
+        kv_values_sorted,
+        spec_values_sorted,
+        extra_presets_sorted,
+    )
+    print(f"Autotune session file: {session_file}")
 
-                for ubatch_size in ubatch_values_sorted:
-                    prev_batch_tps = 0.0
-                    batch_drop_streak = 0
-                    ubatch_best_tps = 0.0
+    if args.autotune_reset_session and session_file.exists():
+        try:
+            session_file.unlink()
+            print("Autotune session reset: removed previous checkpoint")
+        except Exception as exc:
+            print(f"WARNING: failed to remove previous autotune session: {exc}")
 
-                    for batch_size in batch_values_sorted:
-                        run_idx = executed + 1
-                        run_args = argparse.Namespace(**vars(args))
-                        run_args.ctx_size = int(ctx_size)
-                        run_args.batch_size = int(batch_size)
-                        run_args.ubatch_size = int(ubatch_size)
-                        run_args.cache_type_k = kv_type
-                        run_args.cache_type_v = kv_type
-                        run_args.label = f"{args.label}-cfg{run_idx:02d}"
+    if args.autotune_resume and not args.autotune_reset_session:
+        session_payload = _load_autotune_session(session_file)
+        if session_payload is not None:
+            old_fingerprint = str(session_payload.get("fingerprint", "")).strip()
+            completed_flag = bool(session_payload.get("completed", False))
 
-                        extra_bits: list[str] = []
-                        if base_server_extra:
-                            extra_bits.append(base_server_extra)
-                        if spec_mode == "ngram-mod":
-                            extra_bits.append("--spec-type ngram-mod")
-                            extra_bits.append(f"--spec-ngram-mod-n-min {args.autotune_ngram_min}")
-                            extra_bits.append(f"--spec-ngram-mod-n-match {args.autotune_ngram_match}")
-                            extra_bits.append(f"--spec-ngram-mod-n-max {args.autotune_ngram_max}")
-                        elif spec_mode == "mtp":
-                            extra_bits.append("--spec-type mtp")
-                            extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")
-                        run_args.server_extra = " ".join(extra_bits)
+            if completed_flag:
+                print("Autotune resume: existing session is already completed; starting fresh run")
+            elif old_fingerprint and old_fingerprint != session_fingerprint:
+                print("Autotune resume: session fingerprint mismatch; starting fresh run")
+            else:
+                loaded_summaries = session_payload.get("summaries", [])
+                if isinstance(loaded_summaries, list):
+                    summaries = [row for row in loaded_summaries if isinstance(row, dict)]
 
-                        print(
-                            f"Autotune [{run_idx}/{total_configs}]: ctx={ctx_size}, b={batch_size}, ub={ubatch_size}, "
-                            f"kv={kv_type}, spec={spec_mode}"
-                        )
+                loaded_best = session_payload.get("best")
+                if isinstance(loaded_best, dict):
+                    best = loaded_best
+
+                loaded_keys = session_payload.get("completed_keys", [])
+                if isinstance(loaded_keys, list):
+                    completed_keys = {str(v) for v in loaded_keys if str(v).strip()}
+
+                if not completed_keys and summaries:
+                    for row in summaries:
                         try:
-                            rows = run_suite(run_args, tasks)
-                        except RuntimeError as exc:
-                            print(f"ERROR: {exc}")
-                            return 3
-
-                        executed += 1
-                        write_results(
-                            rows,
-                            out_dir,
-                            run_args.label,
-                            args.artifact_mode,
-                            stats_ignore_first_run=args.stats_ignore_first_run,
-                        )
-                        agg_tps = aggregate_completion_tps(rows)
-                        has_error = any(row.get("error") for row in rows)
-                        summary = {
-                            "label": run_args.label,
-                            "ctx_size": ctx_size,
-                            "batch_size": batch_size,
-                            "ubatch_size": ubatch_size,
-                            "kv": kv_type,
-                            "spec_mode": spec_mode,
-                            "aggregate_tps": round(agg_tps, 4),
-                            "mean_task_tps": round(statistics.mean([float(r["completion_tps_wall"]) for r in rows if r.get("completion_tps_wall") is not None]), 4),
-                            "errors": int(has_error),
-                        }
-                        summaries.append(summary)
-
-                        if not has_error:
-                            if best is None or summary["aggregate_tps"] > best["aggregate_tps"]:
-                                best = summary
-
-                            if best is not None:
-                                print(
-                                    "CURRENT BEST: "
-                                    f"ctx={best['ctx_size']} b={best['batch_size']} ub={best['ubatch_size']} "
-                                    f"kv={best['kv']} spec={best['spec_mode']} aggregate_tps={best['aggregate_tps']:.2f}"
-                                )
-
-                            curr_tps = float(summary["aggregate_tps"])
-                            ubatch_best_tps = max(ubatch_best_tps, curr_tps)
-
-                            if args.autotune_smart_prune and _is_drop_significant(prev_batch_tps, curr_tps, args.autotune_prune_drop_pct):
-                                batch_drop_streak += 1
-                            else:
-                                batch_drop_streak = 0
-
-                            prev_batch_tps = curr_tps
-
-                            if args.autotune_smart_prune and batch_drop_streak >= max(1, args.autotune_prune_patience):
-                                remaining = len(batch_values_sorted) - (batch_values_sorted.index(batch_size) + 1)
-                                if remaining > 0:
-                                    skipped_by_prune += remaining
-                                    print(
-                                        "Autotune prune: stop larger batch values for "
-                                        f"ctx={ctx_size}, ub={ubatch_size}, kv={kv_type}, spec={spec_mode} "
-                                        f"after {batch_drop_streak} drop(s)"
-                                    )
-                                break
-
-                    if args.autotune_smart_prune and _is_drop_significant(prev_ubatch_best_tps, ubatch_best_tps, args.autotune_prune_drop_pct):
-                        ubatch_drop_streak += 1
-                    else:
-                        ubatch_drop_streak = 0
-
-                    prev_ubatch_best_tps = max(prev_ubatch_best_tps, ubatch_best_tps)
-
-                    if args.autotune_smart_prune and ubatch_drop_streak >= max(1, args.autotune_prune_patience):
-                        remaining_ub = len(ubatch_values_sorted) - (ubatch_values_sorted.index(ubatch_size) + 1)
-                        if remaining_ub > 0:
-                            est_skip = remaining_ub * len(batch_values_sorted)
-                            skipped_by_prune += est_skip
-                            print(
-                                "Autotune prune: stop larger ubatch values for "
-                                f"ctx={ctx_size}, kv={kv_type}, spec={spec_mode} "
-                                f"after {ubatch_drop_streak} drop(s)"
+                            key = _autotune_config_key(
+                                int(row.get("ctx_size", 0)),
+                                int(row.get("batch_size", 0)),
+                                int(row.get("ubatch_size", 0)),
+                                str(row.get("kv", "")),
+                                str(row.get("spec_mode", "")),
+                                str(row.get("extra_preset", "base")),
+                                str(row.get("extra_args", "")),
                             )
-                        break
+                            completed_keys.add(key)
+                        except Exception:
+                            continue
+
+                executed = max(
+                    executed,
+                    int(session_payload.get("executed", 0) or 0),
+                    len(completed_keys),
+                    len(summaries),
+                )
+                skipped_by_prune = max(
+                    skipped_by_prune,
+                    int(session_payload.get("skipped_by_prune", 0) or 0),
+                )
+
+                if best is None:
+                    best = _best_from_summaries(summaries)
+
+                print(
+                    "Autotune resume: loaded previous progress "
+                    f"({len(completed_keys)} done / {total_configs} total)"
+                )
+
+    def save_autotune_session(completed: bool = False) -> None:
+        payload = {
+            "version": 1,
+            "label": args.label,
+            "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
+            "completed": bool(completed),
+            "fingerprint": session_fingerprint,
+            "total_configs": total_configs,
+            "executed": executed,
+            "skipped_by_prune": skipped_by_prune,
+            "completed_keys": sorted(completed_keys),
+            "summaries": summaries,
+            "best": best,
+            "grid": {
+                "ctx_values": ctx_values_sorted,
+                "batch_values": batch_values_sorted,
+                "ubatch_values": ubatch_values_sorted,
+                "kv_values": kv_values_sorted,
+                "spec_values": spec_values_sorted,
+                "extra_presets": [{"name": n, "args": a} for n, a in extra_presets_sorted],
+            },
+        }
+        _write_json_atomic(session_file, payload)
+
+    save_autotune_session(completed=False)
+
+    for spec_mode in spec_values_sorted:
+        for extra_name, extra_args in extra_presets_sorted:
+            for ctx_size in ctx_values_sorted:
+                for kv_type in kv_values_sorted:
+                    ubatch_drop_streak = 0
+                    prev_ubatch_best_tps = 0.0
+
+                    for ubatch_size in ubatch_values_sorted:
+                        prev_batch_tps = 0.0
+                        batch_drop_streak = 0
+                        ubatch_best_tps = 0.0
+                        ran_any_batch_for_ubatch = False
+
+                        for batch_size in batch_values_sorted:
+                            run_idx = executed + 1
+                            run_args = argparse.Namespace(**vars(args))
+                            run_args.ctx_size = int(ctx_size)
+                            run_args.batch_size = int(batch_size)
+                            run_args.ubatch_size = int(ubatch_size)
+                            run_args.cache_type_k = kv_type
+                            run_args.cache_type_v = kv_type
+                            run_args.label = f"{args.label}-cfg{run_idx:02d}"
+
+                            extra_bits: list[str] = []
+                            if base_server_extra:
+                                extra_bits.append(base_server_extra)
+                            if extra_args:
+                                extra_bits.append(extra_args)
+
+                            if spec_mode == "ngram-mod":
+                                extra_bits.append("--spec-type ngram-mod")
+                                extra_bits.append(f"--spec-ngram-mod-n-min {args.autotune_ngram_min}")
+                                extra_bits.append(f"--spec-ngram-mod-n-match {args.autotune_ngram_match}")
+                                extra_bits.append(f"--spec-ngram-mod-n-max {args.autotune_ngram_max}")
+                            elif spec_mode == "mtp":
+                                extra_bits.append("--spec-type mtp")
+                                extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")
+                            elif spec_mode not in {"none", ""}:
+                                extra_bits.append(f"--spec-type {spec_mode}")
+
+                            run_args.server_extra = " ".join(bit for bit in extra_bits if bit).strip()
+                            config_key = _autotune_config_key(
+                                int(ctx_size),
+                                int(batch_size),
+                                int(ubatch_size),
+                                str(kv_type),
+                                str(spec_mode),
+                                str(extra_name),
+                                str(extra_args),
+                            )
+
+                            if config_key in completed_keys:
+                                continue
+
+                            print(
+                                f"Autotune [{run_idx}/{total_configs}]: ctx={ctx_size}, b={batch_size}, ub={ubatch_size}, "
+                                f"kv={kv_type}, spec={spec_mode}, extra={extra_name}"
+                            )
+                            startup_error = ""
+                            try:
+                                rows = run_suite(run_args, tasks)
+                            except TimeoutError as exc:
+                                startup_error = str(exc)
+                                rows = []
+                                print(f"CONFIG FAILED (startup timeout): {startup_error}")
+                            except RuntimeError as exc:
+                                msg = str(exc)
+                                if msg.startswith("server exited before becoming ready"):
+                                    startup_error = msg
+                                    rows = []
+                                    print(f"CONFIG FAILED (startup/runtime): {startup_error}")
+                                else:
+                                    # Most RuntimeError failures here are operator/environment-level issues.
+                                    # Keep existing fail-fast behavior for them.
+                                    print(f"ERROR: {msg}")
+                                    return 3
+
+                            ran_any_batch_for_ubatch = True
+                            executed += 1
+                            write_results(
+                                rows,
+                                out_dir,
+                                run_args.label,
+                                args.artifact_mode,
+                                stats_ignore_first_run=args.stats_ignore_first_run,
+                            )
+                            agg_tps = aggregate_completion_tps(rows)
+                            has_error = bool(startup_error) or any(row.get("error") for row in rows)
+                            task_tps_values = [
+                                float(r["completion_tps_wall"])
+                                for r in rows
+                                if r.get("completion_tps_wall") is not None
+                            ]
+                            summary = {
+                                "label": run_args.label,
+                                "ctx_size": ctx_size,
+                                "batch_size": batch_size,
+                                "ubatch_size": ubatch_size,
+                                "kv": kv_type,
+                                "spec_mode": spec_mode,
+                                "extra_preset": extra_name,
+                                "extra_args": extra_args,
+                                "aggregate_tps": round(agg_tps, 4),
+                                "mean_task_tps": round(statistics.mean(task_tps_values), 4) if task_tps_values else 0.0,
+                                "errors": int(has_error),
+                            }
+                            summaries.append(summary)
+                            completed_keys.add(config_key)
+                            save_autotune_session(completed=False)
+
+                            if not has_error:
+                                if best is None or summary["aggregate_tps"] > best["aggregate_tps"]:
+                                    best = summary
+
+                                if best is not None:
+                                    best_extra_args = str(best.get("extra_args", "")).strip()
+                                    best_extra_repr = best_extra_args if best_extra_args else "<none>"
+                                    print(
+                                        "CURRENT BEST: "
+                                        f"ctx={best['ctx_size']} b={best['batch_size']} ub={best['ubatch_size']} "
+                                        f"kv={best['kv']} spec={best['spec_mode']} extra={best.get('extra_preset', 'base')} "
+                                        f"aggregate_tps={best['aggregate_tps']:.2f} "
+                                        f"extra_args={best_extra_repr}"
+                                    )
+
+                                curr_tps = float(summary["aggregate_tps"])
+                                ubatch_best_tps = max(ubatch_best_tps, curr_tps)
+
+                                if args.autotune_smart_prune and _is_drop_significant(prev_batch_tps, curr_tps, args.autotune_prune_drop_pct):
+                                    batch_drop_streak += 1
+                                else:
+                                    batch_drop_streak = 0
+
+                                prev_batch_tps = curr_tps
+
+                                if args.autotune_smart_prune and batch_drop_streak >= max(1, args.autotune_prune_patience):
+                                    remaining = len(batch_values_sorted) - (batch_values_sorted.index(batch_size) + 1)
+                                    if remaining > 0:
+                                        skipped_by_prune += remaining
+                                        save_autotune_session(completed=False)
+                                        print(
+                                            "Autotune prune: stop larger batch values for "
+                                            f"ctx={ctx_size}, ub={ubatch_size}, kv={kv_type}, spec={spec_mode}, extra={extra_name} "
+                                            f"after {batch_drop_streak} drop(s)"
+                                        )
+                                    break
+
+                        if (
+                            ran_any_batch_for_ubatch
+                            and args.autotune_smart_prune
+                            and _is_drop_significant(prev_ubatch_best_tps, ubatch_best_tps, args.autotune_prune_drop_pct)
+                        ):
+                            ubatch_drop_streak += 1
+                        else:
+                            ubatch_drop_streak = 0
+
+                        prev_ubatch_best_tps = max(prev_ubatch_best_tps, ubatch_best_tps)
+
+                        if (
+                            ran_any_batch_for_ubatch
+                            and args.autotune_smart_prune
+                            and ubatch_drop_streak >= max(1, args.autotune_prune_patience)
+                        ):
+                            remaining_ub = len(ubatch_values_sorted) - (ubatch_values_sorted.index(ubatch_size) + 1)
+                            if remaining_ub > 0:
+                                est_skip = remaining_ub * len(batch_values_sorted)
+                                skipped_by_prune += est_skip
+                                save_autotune_session(completed=False)
+                                print(
+                                    "Autotune prune: stop larger ubatch values for "
+                                    f"ctx={ctx_size}, kv={kv_type}, spec={spec_mode}, extra={extra_name} "
+                                    f"after {ubatch_drop_streak} drop(s)"
+                                )
+                            break
 
     if args.autotune_smart_prune:
         print(f"Autotune smart-prune summary: executed={executed}, skipped~={skipped_by_prune}, total-grid={total_configs}")
@@ -1932,7 +2273,19 @@ def main() -> int:
     summary_csv = out_dir / f"{args.label}-autotune-summary.csv"
     summary_json.write_text(json.dumps(summaries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     with summary_csv.open("w", encoding="utf-8", newline="") as f:
-        fields = ["label", "ctx_size", "batch_size", "ubatch_size", "kv", "spec_mode", "aggregate_tps", "mean_task_tps", "errors"]
+        fields = [
+            "label",
+            "ctx_size",
+            "batch_size",
+            "ubatch_size",
+            "kv",
+            "spec_mode",
+            "extra_preset",
+            "extra_args",
+            "aggregate_tps",
+            "mean_task_tps",
+            "errors",
+        ]
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         for row in summaries:
@@ -1940,15 +2293,19 @@ def main() -> int:
 
     print(f"Wrote {summary_json}")
     print(f"Wrote {summary_csv}")
+    save_autotune_session(completed=True)
     model_path = str(Path(args.model) if args.model else default_model() or "")
     best_cfg = ""
     aggregate_tps = 0.0
     mean_tps = 0.0
     spec_mode = "mixed"
     if best:
+        best_extra_args = str(best.get("extra_args", "")).strip()
+        best_extra_repr = best_extra_args if best_extra_args else "<none>"
         best_cfg = (
             f"ctx={best['ctx_size']} b={best['batch_size']} ub={best['ubatch_size']} "
-            f"kv={best['kv']} spec={best['spec_mode']}"
+            f"kv={best['kv']} spec={best['spec_mode']} extra={best.get('extra_preset', 'base')} "
+            f"extra_args={best_extra_repr}"
         )
         aggregate_tps = float(best.get("aggregate_tps", 0.0))
         mean_tps = float(best.get("mean_task_tps", 0.0))
@@ -1973,6 +2330,8 @@ def main() -> int:
             "kv_k": "sweep",
             "kv_v": "sweep",
             "spec_mode": spec_mode,
+            "extra_preset": str(best.get("extra_preset", "mixed") if best else "mixed"),
+            "extra_args": str(best.get("extra_args", "") if best else ""),
             "no_reuse": 1 if args.no_reuse else 0,
             "gpu_layers": args.gpu_layers,
             "parallel": args.parallel,
@@ -1995,10 +2354,14 @@ def main() -> int:
     )
 
     if best:
+        best_extra_args = str(best.get("extra_args", "")).strip()
+        best_extra_repr = best_extra_args if best_extra_args else "<none>"
         print(
             "BEST: "
             f"ctx={best['ctx_size']} b={best['batch_size']} ub={best['ubatch_size']} "
-            f"kv={best['kv']} spec={best['spec_mode']} aggregate_tps={best['aggregate_tps']:.2f}"
+            f"kv={best['kv']} spec={best['spec_mode']} extra={best.get('extra_preset', 'base')} "
+            f"aggregate_tps={best['aggregate_tps']:.2f} "
+            f"extra_args={best_extra_repr}"
         )
         if args.autotune_update_preset:
             model_path = Path(args.model) if args.model else default_model()

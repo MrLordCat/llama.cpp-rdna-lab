@@ -1078,7 +1078,6 @@ class BuildTabWidget(QWidget):
         model_path: str | None = None,
         silent: bool = False,
         completion_callback=None,
-        sweep_mode: str = "full",
     ) -> bool:
         """Run large-context autotune sweep and update model presets.
 
@@ -1101,17 +1100,18 @@ class BuildTabWidget(QWidget):
                 QMessageBox.warning(self, "Auto-tune", "Missing llama-server binary for selected/active build")
             return False
 
-        spec_values = ["none", "ngram-mod"]
-        model_name = resolved_model.name.lower()
-        if ("mtp" in model_name or "nextn" in model_name) and self._server_supports_mtp(server_bin):
-            spec_values.append("mtp")
+        spec_values = self._resolve_autotune_spec_values(server_bin, resolved_model)
+
+        autotune_tasks = "v2-mini"
+        autotune_max_tokens = "120"
+        autotune_real_context_chars = "21872"
 
         command = [
             sys.executable,
             "scripts/agent_workload_bench.py",
             "--autotune",
             "--label", f"gui-autotune-{resolved_model.stem}",
-            "--tasks", "quick",
+            "--tasks", autotune_tasks,
             "--runs", "1",
             "--server-bin", str(server_bin),
             "--model", str(resolved_model),
@@ -1119,30 +1119,28 @@ class BuildTabWidget(QWidget):
             "--artifact-mode", "unified",
             "--gpu-layers", "99",
             "--parallel", "1",
-            "--max-tokens", "160",
+            "--max-tokens", autotune_max_tokens,
             "--startup-timeout", "120",
-            "--request-timeout", "120",
+            "--request-timeout", "20",
+            "--task-fail-timeout", "20",
             "--background-server-policy", "fail",
-            "--autotune-min-ctx", "65536",
-            "--autotune-ctx-values", "65536",
-            "--autotune-batch-values", "2048,4096",
-            "--autotune-ubatch-values", "128,256,512,640",
+            "--allow-ctx-above-16k",
+            "--real-context-mode", "repo-snapshot",
+            "--real-context-chars", autotune_real_context_chars,
+            "--no-reuse",
+            "--no-v2-prime-pass",
+            "--no-disable-thinking",
+            "--autotune-min-ctx", "32768",
+            "--autotune-ctx-values", "32768",
+            "--autotune-batch-values", "2048,4096,6144,8192",
+            "--autotune-ubatch-values", "128,192,256,512",
             "--autotune-kv-values", "q8_0,q4_0",
             "--autotune-spec-values", ",".join(spec_values),
-            "--autotune-max-configs", "256",
+            "--autotune-extra-presets", "base",
+            "--autotune-max-configs", "96",
             "--autotune-update-preset",
             "--autotune-preset-file", "gui/model_presets.json",
         ]
-
-        if sweep_mode == "smoke":
-            command.extend([
-                "--autotune-ctx-values", "65536",
-                "--autotune-batch-values", "2048",
-                "--autotune-ubatch-values", "512",
-                "--autotune-kv-values", "q4_0",
-                "--autotune-spec-values", ",".join(spec_values),
-                "--autotune-max-configs", "4",
-            ])
 
         self._autotune_silent = silent
         self._autotune_result = {
@@ -1159,7 +1157,9 @@ class BuildTabWidget(QWidget):
             self.autotune_btn.setEnabled(False)
         if hasattr(self, "quick_bench_btn"):
             self.quick_bench_btn.setEnabled(False)
-        self.build_status_label.setText(f"Running 64K fast autotune for {resolved_model.name}...")
+        self.build_status_label.setText(
+            f"Running 32K autotune (v2-mini x1, prompt-heavy repo-snapshot, no-reuse, 20s cutoff) for {resolved_model.name}..."
+        )
         self.bench_thread = QuickBenchmarkThread(command=command, working_dir=Path(self.parent.project_root))
         self.bench_thread.output.connect(self._on_autotune_output)
         self.bench_thread.finished_signal.connect(self._on_autotune_finished)
@@ -1207,8 +1207,7 @@ class BuildTabWidget(QWidget):
         return filtered[0] if filtered else None
 
     @staticmethod
-    def _server_supports_mtp(server_bin: Path) -> bool:
-        """Best-effort capability probe for --spec-type mtp support in llama-server."""
+    def _server_help_output(server_bin: Path) -> str:
         try:
             result = subprocess.run(
                 [str(server_bin), "--help"],
@@ -1217,10 +1216,60 @@ class BuildTabWidget(QWidget):
                 timeout=10,
                 check=False,
             )
-            output = (result.stdout or "") + "\n" + (result.stderr or "")
-            return "mtp" in output.lower()
+            return ((result.stdout or "") + "\n" + (result.stderr or "")).lower()
         except Exception:
-            return False
+            return ""
+
+    def _resolve_autotune_spec_values(self, server_bin: Path, model_path: Path) -> list[str]:
+        output = self._server_help_output(server_bin)
+
+        # Parse only explicit --spec-type enum options to avoid false positives
+        # from unrelated flags like --spec-draft-*.
+        spec_type_modes: list[str] = []
+        match = re.search(r"--spec-type\s*\[([^\]]+)\]", output)
+        if match:
+            for raw in match.group(1).split("|"):
+                mode = raw.strip().lower()
+                if mode:
+                    spec_type_modes.append(mode)
+
+        if not spec_type_modes:
+            spec_type_modes = ["none", "ngram-mod"]
+
+        supported_order = ["none", "ngram-mod", "mtp", "eagle3", "eagle"]
+
+        resolved: list[str] = []
+        for mode in supported_order:
+            if mode in spec_type_modes:
+                resolved.append(mode)
+
+        if "none" not in resolved:
+            resolved.insert(0, "none")
+
+        if "ngram-mod" not in resolved:
+            ngram_candidates = [mode for mode in spec_type_modes if mode.startswith("ngram")]
+            if ngram_candidates:
+                fallback_ngram = "ngram-mod" if "ngram-mod" in ngram_candidates else ngram_candidates[0]
+                if fallback_ngram not in resolved:
+                    resolved.append(fallback_ngram)
+
+        model_name = model_path.name.lower()
+        if "mtp" in resolved and "mtp" not in model_name and "nextn" not in model_name:
+            resolved = [mode for mode in resolved if mode != "mtp"]
+
+        unique: list[str] = []
+        seen: set[str] = set()
+        for mode in resolved:
+            if mode in seen:
+                continue
+            seen.add(mode)
+            unique.append(mode)
+        return unique
+
+    @staticmethod
+    def _server_supports_mtp(server_bin: Path) -> bool:
+        """Best-effort capability probe for --spec-type mtp support in llama-server."""
+        return "mtp" in BuildTabWidget._server_help_output(server_bin)
 
     def _on_quick_bench_output(self, line: str):
         if "Aggregate completion TPS by wall time" in line:
@@ -1281,11 +1330,11 @@ class BuildTabWidget(QWidget):
             if success:
                 QMessageBox.information(
                     self,
-                    "Auto-tune 32K+",
+                    "Auto-tune 32K",
                     "Autotune finished. Summary is in build_logs/agent-workload/ and preset was updated."
                 )
             else:
-                QMessageBox.warning(self, "Auto-tune 32K+", "Autotune failed. Check build status/output.")
+                QMessageBox.warning(self, "Auto-tune 32K", "Autotune failed. Check build status/output.")
 
     @staticmethod
     def _get_backend_build_dir(backend: str) -> str:

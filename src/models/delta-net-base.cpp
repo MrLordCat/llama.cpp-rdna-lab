@@ -3,6 +3,72 @@
 #include "llama-impl.h"
 
 #include <cstdlib>
+#include <cstring>
+
+static bool llama_env_flag_enabled(const char * name) {
+    const char * value = getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return false;
+    }
+
+    return strcmp(value, "0") != 0;
+}
+
+static int llama_env_i32(const char * name, int fallback, int min_value, int max_value) {
+    const char * value = getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return fallback;
+    }
+
+    const int parsed = atoi(value);
+    if (parsed <= 0) {
+        return fallback;
+    }
+
+    if (parsed < min_value) {
+        return min_value;
+    }
+    if (parsed > max_value) {
+        return max_value;
+    }
+
+    return parsed;
+}
+
+struct llama_delta_chunk_choice {
+    int      chunk_size;
+    int      pad;
+    int      tail;
+    int      n_chunks;
+    uint64_t score;
+};
+
+static llama_delta_chunk_choice llama_delta_net_pick_non_kda_chunk(int64_t n_tokens, int min_tail) {
+    const int candidates[] = {64, 96, 128};
+
+    llama_delta_chunk_choice best = {64, 0, 0, 1, (uint64_t) -1};
+    for (int cs : candidates) {
+        const int tail = (int) (n_tokens % cs);
+        const int pad = (cs - tail) % cs;
+        const int n_chunks = (int) ((n_tokens + pad) / cs);
+
+        uint64_t score = 0;
+        // Prefer low padding first, then fewer chunk transitions.
+        score += (uint64_t) pad * 8192;
+        score += (uint64_t) (n_chunks > 0 ? (n_chunks - 1) : 0) * 192;
+
+        // Heavily penalize tiny tails that frequently correlate with slower prefill shapes.
+        if (tail != 0 && tail < min_tail) {
+            score += 1000000 + (uint64_t) (min_tail - tail) * 4096;
+        }
+
+        if (score < best.score) {
+            best = {cs, pad, tail, n_chunks, score};
+        }
+    }
+
+    return best;
+}
 
 // utility to get one slice from the third dimension
 // input dim:  [x, y, c, b]
@@ -60,20 +126,53 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
     b = ggml_permute(ctx0, b, 0, 2, 1, 3); // [  1, n_tokens, H_v, n_seqs]
 
     int CS = kda ? 16 : 64; // chunk size
+    const char * chunk_policy = getenv("LLAMA_DELTA_NET_CHUNK_POLICY");
+    const bool use_adaptive_non_kda = !kda && chunk_policy != nullptr && strcmp(chunk_policy, "adaptive") == 0;
 
-    // Diagnostic override for non-KDA chunking experiments (e.g. ubatch cliff triage).
+    int model_tail = (int) (n_tokens % CS);
+    const int min_tail = llama_env_i32("LLAMA_DELTA_NET_CHUNK_MIN_TAIL", 32, 1, 127);
+    uint64_t adaptive_score = 0;
+    const char * chunk_source = kda ? "kda-default" : "default";
+
+    // Explicit override has highest priority.
     if (!kda) {
         const char * chunk_override = getenv("LLAMA_DELTA_NET_CHUNK_SIZE");
         if (chunk_override != nullptr) {
             const int cs_override = atoi(chunk_override);
             if (cs_override > 0 && cs_override % 16 == 0) {
                 CS = cs_override;
+                chunk_source = "override";
             }
+        }
+
+        if (strcmp(chunk_source, "default") == 0 && use_adaptive_non_kda) {
+            const llama_delta_chunk_choice choice = llama_delta_net_pick_non_kda_chunk(n_tokens, min_tail);
+            CS = choice.chunk_size;
+            model_tail = choice.tail;
+            adaptive_score = choice.score;
+            chunk_source = "adaptive";
         }
     }
 
-    const int pad = (CS - n_tokens % CS) % CS;
-    const int n_chunks = (n_tokens + pad) / CS;
+    const int pad = (CS - (int) (n_tokens % CS)) % CS;
+    const int n_chunks = (int) ((n_tokens + pad) / CS);
+    model_tail = (int) (n_tokens % CS);
+
+    if (llama_env_flag_enabled("LLAMA_TRACE_DELTA_NET_CONTRACT")) {
+        LLAMA_LOG_INFO(
+                "%s: contract kda=%d source=%s policy=%s cs=%d n_tokens=%lld pad=%d tail=%d n_chunks=%d min_tail=%d score=%llu\n",
+                __func__,
+                (int) kda,
+                chunk_source,
+                chunk_policy != nullptr ? chunk_policy : "default",
+                CS,
+                (long long) n_tokens,
+                pad,
+                model_tail,
+                n_chunks,
+                min_tail,
+                (unsigned long long) adaptive_score);
+    }
 
     q = ggml_pad(ctx0, q, 0, pad, 0, 0);
     k = ggml_pad(ctx0, k, 0, pad, 0, 0);

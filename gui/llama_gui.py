@@ -2045,7 +2045,13 @@ class LlamaCppGUI(QMainWindow):
         # For ROCm, also check known variant build dirs in priority order
         # (dual-sched wmma build takes priority over generic vec build)
         if selected_backend == "ROCm":
-            rocm_variants = ["build-rocm-wmma", "build-rocm-vec", "build-rocm-exp", "build-rocm-compare"]
+            rocm_variants = [
+                "build-rocm-wmma",
+                "build-rocm-upstream-stock",
+                "build-rocm-vec",
+                "build-rocm-exp",
+                "build-rocm-compare",
+            ]
             for variant in rocm_variants:
                 vdir = self.project_root / variant
                 possible_paths.extend([
