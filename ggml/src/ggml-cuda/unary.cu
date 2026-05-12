@@ -1,6 +1,9 @@
 #include "unary.cuh"
 #include "convert.cuh"
 
+#include <chrono>
+#include <cstdlib>
+
 static __device__ __forceinline__ float op_abs(float x) {
     return fabsf(x);
 }
@@ -271,6 +274,25 @@ static __global__ void unary_gated_op_kernel(const T * x, const T * g, T * dst, 
     dst[i] = (T)(op((float)x[j0]) * (float)g[j1]);
 }
 
+static __global__ void unary_gated_debug_fill_f32(float * x, float * g, const int64_t k, const int64_t n, const int64_t o0, const int64_t o1) {
+    const int64_t i = int64_t(blockDim.x)*blockIdx.x + threadIdx.x;
+
+    if (i >= k) {
+        return;
+    }
+
+    const int64_t j0 = (i / n) * o0 + (i % n);
+    const int64_t j1 = o0 == o1 ? j0 : (i / n) * o1 + (i % n);
+
+    x[j0] = 0.001f * float((i % 257) - 128);
+    g[j1] = 0.002f * float((i % 251) - 125);
+}
+
+static void unary_gated_debug_fill_f32_cuda(float * x, float * g, const int64_t k, const int64_t n, const int64_t o0, const int64_t o1, cudaStream_t stream) {
+    const int64_t num_blocks = (k + CUDA_GLU_BLOCK_SIZE - 1) / CUDA_GLU_BLOCK_SIZE;
+    unary_gated_debug_fill_f32<<<num_blocks, CUDA_GLU_BLOCK_SIZE, 0, stream>>>(x, g, k, n, o0, o1);
+}
+
 template <float (*op)(float), typename T>
 static void unary_gated_cuda(const T * x, const T * g, T * dst, const int64_t k, const int64_t n, const int64_t o0, const int64_t o1, cudaStream_t stream) {
     const int64_t num_blocks = (k + CUDA_GLU_BLOCK_SIZE - 1) / CUDA_GLU_BLOCK_SIZE;
@@ -325,6 +347,45 @@ void ggml_cuda_op_unary_gated(ggml_backend_cuda_context & ctx, ggml_tensor * dst
         if (!src1) {
             src0_p += swapped ? nc : 0;
             src1_p += swapped ? 0 : nc;
+        }
+
+        if (std::getenv("GGML_TRACE_GLU_FILL_INPUTS") != nullptr && dst->ne[1] >= 900) {
+            const auto fill_start = std::chrono::high_resolution_clock::now();
+            unary_gated_debug_fill_f32_cuda(src0_p, src1_p, ggml_nelements(dst), nc, src0_o / sizeof(float), src1_o / sizeof(float), stream);
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            const auto fill_end = std::chrono::high_resolution_clock::now();
+            GGML_LOG_INFO(
+                "GGML_TRACE_GLU_FILL: name=%s ne=(%lld,%lld,%lld,%lld) nc=%lld k=%lld o0=%lld o1=%lld fill_ms=%.3f\n",
+                dst->name,
+                (long long) dst->ne[0],
+                (long long) dst->ne[1],
+                (long long) dst->ne[2],
+                (long long) dst->ne[3],
+                (long long) nc,
+                (long long) ggml_nelements(dst),
+                (long long) (src0_o / sizeof(float)),
+                (long long) (src1_o / sizeof(float)),
+                std::chrono::duration<double, std::milli>(fill_end - fill_start).count());
+        }
+
+        if (std::getenv("GGML_TRACE_GLU_INTERNAL_TIMING") != nullptr && dst->ne[1] >= 900) {
+            const auto glu_start = std::chrono::high_resolution_clock::now();
+            unary_gated_cuda<op>(src0_p, src1_p, (float *)dst_d, ggml_nelements(dst), nc, src0_o / sizeof(float), src1_o / sizeof(float), stream);
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            const auto glu_end = std::chrono::high_resolution_clock::now();
+            GGML_LOG_INFO(
+                "GGML_TRACE_GLU_INTERNAL: name=%s ne=(%lld,%lld,%lld,%lld) nc=%lld k=%lld o0=%lld o1=%lld glu_ms=%.3f\n",
+                dst->name,
+                (long long) dst->ne[0],
+                (long long) dst->ne[1],
+                (long long) dst->ne[2],
+                (long long) dst->ne[3],
+                (long long) nc,
+                (long long) ggml_nelements(dst),
+                (long long) (src0_o / sizeof(float)),
+                (long long) (src1_o / sizeof(float)),
+                std::chrono::duration<double, std::milli>(glu_end - glu_start).count());
+            return;
         }
 
         unary_gated_cuda<op>(src0_p, src1_p, (float *)dst_d, ggml_nelements(dst), nc, src0_o / sizeof(float), src1_o / sizeof(float), stream);

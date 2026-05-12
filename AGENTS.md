@@ -116,6 +116,8 @@ cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUIL
 8. Для benchmark-режима всегда держать thinking включённым (использовать `--no-disable-thinking`), чтобы результаты были сопоставимы между сессиями.
 9. Для research A/B сравнивать candidate только с текущим best из autotune/history при аналогичных параметрах; не запускать новый sweep как baseline, если best уже известен.
 10. Для cold-first speed claims не использовать v2 priming pass: `--v2-prime-pass` допустим только как явно помеченный steady-state probe, не как основной real-scenario результат.
+11. Для RDNA4/ROCm ubatch cliffs сначала проверять allocator/residency path: сравнить default ROCm compute vbuffer chunking против `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1`, и только потом менять GDN/FATTN/MMQ selectors или физический `ubatch`.
+12. Если full trace показывает одинаковые node counts и kernel routes, но GLU/RMS_NORM/ADD/SSM_CONV/MUL_MAT замедляются вместе, считать это memory/layout/residency сигналом; не закрывать задачу меньшим `ubatch` cap без native A/B.
 
 Цель: избегать «шума» и держать только воспроизводимые ускорения в `master`.
 
@@ -146,5 +148,6 @@ cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUIL
     - coverage (доля шагов, где draft реально был),
     - effective acceptance (coverage * local acceptance).
 10. Для runtime/prototype A/B сначала восстановить текущий best из autotune/history (ctx/batch/ubatch/KV/spec/extra/real-context size) и повторять именно его без `--v2-prime-pass`; prime-результаты можно хранить только отдельно как steady-state diagnostics.
+11. Для allocator/layout гипотез документировать negative control: например, `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1` должен возвращать старый slow pocket, иначе причинность не доказана.
 
 Цель: делать исследования воспроизводимыми и понятными даже без глубокого матбэкграунда.

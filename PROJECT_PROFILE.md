@@ -111,6 +111,21 @@ Optional experimental:
 --spec-type mtp --spec-draft-n-max 3 (MTP support already in codebase, awaiting MTP-enabled GGUF)
 ```
 
+Для 32k prompt-heavy ROCm/Qwen3.6-27B lane после native ubatch cliff fix (2026-05-12):
+
+```text
+backend=ROCm (RX 9070 XT / gfx1201)
+-c 32768
+-b 5120
+-ub 1024
+--cache-type-k q4_0
+--cache-type-v q4_0
+--spec-type ngram-mod
+no reuse / no v2 prime for cold-first claims
+```
+
+Важно: `-ub 1024` теперь должен идти нативно (`PP reserve outputs 1024 -> 1`), без cap до `900`. Если cliff возвращается, сначала проверять ROCm compute vbuffer chunking и negative control `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1`.
+
 Если не хватает VRAM:
 
 ```text

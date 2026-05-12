@@ -8,6 +8,15 @@
 - Причина: даже на `16k-32k` при большом входящем prompt throughput резко деградирует, поэтому 64k уже не является ближайшей «точкой входа» для оптимизации.
 - Новая цель: `25-27 TPS` на стартовой prompt-heavy точке через изменения кода llama.cpp/ggml.
 
+## ОБНОВЛЕНИЕ 2026-05-12: native `ub1024` cliff на RDNA4/ROCm исправлен
+
+- Симптом: после снятия старого guard/cap полный `PP reserve outputs 904/1024 -> 1` мог падать в prompt-prefill slow pocket (`~300 tok/s`) при тех же FATTN/GDN/MMQ routes.
+- Диагностика: full trace показал одинаковые node counts и kernel route classes, но широкое замедление memory-heavy ops (GLU/RMS_NORM/ADD/SSM_CONV/MUL_MAT/FATTN).
+- Root cause: один крупный ROCm graph compute vbuffer allocation попадал в плохой RDNA4/Windows residency/placement pocket.
+- Фикс: `ggml/src/ggml-alloc.c` теперь по умолчанию режет ROCm graph compute vbuffer на backend chunks максимум `256 MiB`.
+- Контроль: `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1` возвращает старый slow path и используется как negative control.
+- Результат: `ctx=32768,b=5120,ub=1024,q4_0/q4_0,ngram-mod` даёт `PP reserve outputs 1024 -> 1`, prompt `~1114 tok/s`, decode `~25 tok/s` на practical `max-tokens=120`.
+
 ## ОБНОВЛЕНИЕ 2026-05-08: MTP УЖЕ РЕАЛИЗОВАНА
 
 Полный поиск кодовой базы показал, что `common_speculative_state_mtp` уже реализована в `common/speculative.cpp` (строка 604+) и `llama_set_mtp()` существует в `src/llama-context.cpp`. Текущий `llama-server --help` показывает `--spec-type mtp` как доступный вариант.

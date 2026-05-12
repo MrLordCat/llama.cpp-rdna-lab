@@ -197,11 +197,13 @@ static void common_params_fit_impl(
     int64_t sum_projected_model = 0;
     std::vector<int64_t> projected_free_per_device;
     projected_free_per_device.reserve(nd);
+    bool projected_memory_over_budget = false;
 
     if (nd == 0) {
         sum_projected_used = dmds_full.back().mb.total();
         sum_free           = dmds_full.back().total;
         sum_projected_free = sum_free - sum_projected_used;
+        projected_memory_over_budget = sum_projected_free < 0;
         LOG_INF("%s: projected to use %" PRId64 " MiB of host memory vs. %" PRId64 " MiB of total host memory\n",
             __func__, sum_projected_used/MiB, sum_free/MiB);
         if (sum_projected_free >= margins[0]) {
@@ -219,6 +221,7 @@ static void common_params_fit_impl(
             const int64_t projected_used = dmd.mb.total();
             const int64_t projected_free = dmd.free - projected_used;
             projected_free_per_device.push_back(projected_free);
+            projected_memory_over_budget = projected_memory_over_budget || projected_free < 0;
 
             sum_free            += dmd.free;
             sum_projected_used  += projected_used;
@@ -341,29 +344,63 @@ static void common_params_fit_impl(
         throw common_params_fit_exception("was unable to fit model into system memory by reducing context, abort");
     }
 
+    const char * const func_name = __func__;
+    auto continue_if_within_budget = [&](const std::string & reason) {
+        if (projected_memory_over_budget) {
+            return false;
+        }
+        LOG_WRN(
+            "%s: requested parameters fit in reported device memory but leave less than the configured free-memory target; %s, continuing\n",
+            func_name, reason.c_str());
+        return true;
+    };
     if (mparams->n_gpu_layers != default_mparams.n_gpu_layers) {
-        throw common_params_fit_exception("n_gpu_layers already set by user to " + std::to_string(mparams->n_gpu_layers) + ", abort");
+        const std::string reason = "n_gpu_layers already set by user to " + std::to_string(mparams->n_gpu_layers);
+        if (continue_if_within_budget(reason)) {
+            return;
+        }
+        throw common_params_fit_exception(reason + ", abort");
     }
     if (nd > 1) {
         if (!tensor_split) {
-            throw common_params_fit_exception("did not provide a buffer to write the tensor_split to, abort");
+            const std::string reason = "did not provide a buffer to write the tensor_split to";
+            if (continue_if_within_budget(reason)) {
+                return;
+            }
+            throw common_params_fit_exception(reason + ", abort");
         }
         if (mparams->tensor_split) {
             for (size_t id = 0; id < nd; id++) {
                 if (mparams->tensor_split[id] != 0.0f) {
-                    throw common_params_fit_exception("model_params::tensor_split already set by user, abort");
+                    const std::string reason = "model_params::tensor_split already set by user";
+                    if (continue_if_within_budget(reason)) {
+                        return;
+                    }
+                    throw common_params_fit_exception(reason + ", abort");
                 }
             }
         }
         if (mparams->split_mode == LLAMA_SPLIT_MODE_ROW) {
-            throw common_params_fit_exception("changing weight allocation for LLAMA_SPLIT_MODE_ROW not implemented, abort");
+            const std::string reason = "changing weight allocation for LLAMA_SPLIT_MODE_ROW not implemented";
+            if (continue_if_within_budget(reason)) {
+                return;
+            }
+            throw common_params_fit_exception(reason + ", abort");
         }
     }
     if (!tensor_buft_overrides) {
-        throw common_params_fit_exception("did not provide buffer to set tensor_buft_overrides, abort");
+        const std::string reason = "did not provide buffer to set tensor_buft_overrides";
+        if (continue_if_within_budget(reason)) {
+            return;
+        }
+        throw common_params_fit_exception(reason + ", abort");
     }
     if (mparams->tensor_buft_overrides && (mparams->tensor_buft_overrides->pattern || mparams->tensor_buft_overrides->buft)) {
-        throw common_params_fit_exception("model_params::tensor_buft_overrides already set by user, abort");
+        const std::string reason = "model_params::tensor_buft_overrides already set by user";
+        if (continue_if_within_budget(reason)) {
+            return;
+        }
+        throw common_params_fit_exception(reason + ", abort");
     }
 
     // step 3: iteratively fill the back to front with "dense" layers

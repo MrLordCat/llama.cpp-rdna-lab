@@ -366,6 +366,7 @@
 3. Для ROCm профилей более крупный `ubatch` обычно лучше для PP, а слишком маленький `ubatch` часто ухудшает throughput.
 4. Есть кейсы, где `ngram-mod` дает значимый рост только на повторяющихся coding-паттернах и почти нулевой эффект на "нерепетитивных" запросах.
 5. Для длинного контекста (64K+) на AMD встречается разделение: ROCm выигрывает по суммарному wall-time, Vulkan может иметь более стабильный TG на отдельных моделях/драйверах.
+6. Для RDNA4/ROCm sharp ubatch cliffs могут быть allocator/residency проблемой даже при неизменных kernel routes. Проверенный native fix: ROCm graph compute vbuffer chunking (`256 MiB` default), negative control `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1`.
 
 ### Negative signals (do not prioritize)
 
@@ -376,6 +377,11 @@
 ## Immediate Experiment Queue (Next 1-2 Sessions)
 
 Цель: быстро закрыть практичный вопрос "что по умолчанию быстрее на этой машине" без расползания в десятки вариантов.
+
+Resolved before this queue:
+
+- `ctx=32768,b=5120,ub=1024,q4_0/q4_0,ngram-mod` is now a valid native ROCm/Qwen3.6-27B lane after compute vbuffer chunking; do not reintroduce a physical `ubatch` cap as the default answer to the old cliff.
+- For future cliff triage, compare default chunking against `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1` before changing model-op chunk sizes or attention/MMQ selectors.
 
 ### Queue A: ROCm vs Vulkan parity test (same runtime profile)
 

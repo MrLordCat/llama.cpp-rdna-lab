@@ -1943,3 +1943,38 @@ TG compute buffer: 6.95 MiB вместо 495 MiB → GPU cache pressure в decod
 
 - На текущем RDNA4/ROCm пути использовать graph-opt без guard нельзя (deadlock-risk).
 - Безопасный baseline: оставить guard включённым, или задавать `GGML_CUDA_DISABLE_GRAPHS=1` для диагностических прогонов.
+
+## RDNA4 ROCm Native UBatch Cliff Fix (2026-05-12)
+
+Проблема:
+
+- На RX 9070 XT / ROCm `Qwen3.6-27B-Q3_K_S` уходил в slow pocket при полном native PP reserve: `ctx=32768, ub=904/1024` и также `ctx=16384, ub=900`.
+- Full trace показал одинаковые graph/node counts и те же FATTN/GDN/MMQ route classes, но широкое замедление memory-heavy ops: GLU/RMS_NORM/ADD/SSM_CONV и часть MUL_MAT/FATTN. Это не был single-kernel selector bug.
+- A/B подтвердил причину: один крупный ROCm compute vbuffer allocation попадает в плохой residency/placement pocket. Простое смещение base offset не помогало; разбиение compute vbuffer на backend chunks помогало при сохранении полного `PP reserve`.
+
+Фикс:
+
+- В `ggml/src/ggml-alloc.c` для ROCm graph allocator добавлен default max compute vbuffer chunk size `256 MiB`.
+- `ggml_dyn_tallocr` теперь может создавать несколько backend buffer chunks для одного virtual compute buffer; model/KV offload и requested ubatch не уменьшаются.
+- Override для экспериментов: `GGML_COMPUTE_VBUFFER_MAX_CHUNK_SIZE=<bytes>`.
+- Контрольное отключение default ROCm chunking: `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1`.
+
+Результаты (`build-rocm-vec`, `ctx=32768`, `b=5120`, `q4_0/q4_0`, `ngram-mod`, no-reuse, repo-snapshot context):
+
+| Label | PP reserve | ROCm0 compute | Prompt eval |
+| --- | ---: | ---: | ---: |
+| `native-singlechunk-ctx32768-ub904-mt1-r1` | `904 -> 1` | single chunk | `23524.85 ms / 302.87 tok/s` |
+| `native-defaultchunk-ctx32768-ub904-mt1-r1` | `904 -> 1` | `374.84 MiB` | `6862.92 ms / 1038.19 tok/s` |
+| `native-final-ctx32768-ub1024-mt1-r1` | `1024 -> 1` | `424.53 MiB` | `6392.54 ms / 1114.58 tok/s` |
+| `native-defaultchunk-ctx16384-ub900-mt1-r1` | `900 -> 1` | `281.54 MiB` | `6798.72 ms / 1047.99 tok/s` |
+
+Practical run:
+
+| Label | PP reserve | Prompt eval | Decode | Total |
+| --- | ---: | ---: | ---: | ---: |
+| `native-defaultchunk-ctx32768-ub1024-mt120-r1` | `1024 -> 1` | `6394.28 ms / 1114.28 tok/s` | `120 tok / 25.03 tok/s` | `11188.80 ms` |
+
+Вывод:
+
+- Старый guard/cap до `ub=900` больше не нужен для native `ub1024` path.
+- Контроль `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1` возвращает slow result, что подтверждает allocator/residency root cause.

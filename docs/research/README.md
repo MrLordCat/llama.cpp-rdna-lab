@@ -108,10 +108,16 @@ python scripts/research/spec_effective_acceptance.py \
 - E005 multi-case speculative model validation completed: `experiments/E005_spec_model_batch_validation.md`
 - E006 full retest and scientific audit completed: `experiments/E006_full_retest_and_scientific_audit.md`
 - E007 ub490+ root-cause + 32k ceiling-break follow-up documented: `experiments/E007_H08_current_ub480_490_recon.md`
+- E008 ROCm compute-vbuffer residency cliff fix documented: `experiments/E008_H11_rocm_compute_vbuffer_residency.md`
 
 Retest artifacts snapshot:
 
 - `build_logs/agent-workload/retests-20260512/`
+
+Latest root-cause lesson:
+
+- A sharp RDNA4 ROCm `ubatch` cliff can happen with identical kernel routes and node counts. For `Qwen3.6-27B`, the final fix was ROCm graph compute vbuffer chunking, not a smaller physical `ubatch` or a GDN/FATTN selector change.
+- Keep `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1` as the negative control when validating future allocator/residency hypotheses.
 
 ## R&D Loop
 

@@ -44,19 +44,21 @@ Where:
 | H08 | Chunk-size contract alignment (model op + runtime) | Avoid pathological boundaries that trigger slow paths; current bad zone is physical n_ubatch >480 | +5% to +30% at cliff zones | model-specific behavior and boundary drift | current-best ubatch boundary sweep + physical context cap |
 | H09 | Coverage-aware speculative acceptance model | Local draft acceptance overestimates global speedup if draft coverage is low | improves prediction fidelity | extra instrumentation complexity | compare implied vs effective acceptance |
 | H10 | Overhead-aware speculative model by mode/config | Fixed overhead term misses severe regressions in some high-coverage MTP cases | improves prediction fidelity | more parameters and overfitting risk | backsolve implied overhead across measured cases |
+| H11 | ROCm compute vbuffer chunking | A single large ROCm graph compute allocation can land in a bad RDNA4/Windows residency pocket even when kernel routes are unchanged | removes 3x+ prefill cliffs at large native ubatch | extra backend buffer chunks may add allocator fragmentation or affect non-ROCm backends if scoped incorrectly | single-chunk A/B with full `PP reserve` |
 
 ## Priority (Start Here)
 
-1. H08 because existing measurements show sharp boundary cliffs, but target the current 480/490 neighborhood rather than the historical 824/832 pair.
-2. H02 because it can be prototyped quickly in scheduler logic.
-3. H05 because prefill IO is still dominant in prompt-heavy scenarios.
-4. H09 to avoid misleading speculative projections in low-coverage runs.
-5. H10 to explain cross-mode speculative regressions with measured overhead.
-6. H01 as a low-risk extension of existing ngram flow.
+1. H11 is completed and kept: E008 confirms ROCm compute vbuffer chunking fixes the native `ub904/1024` residency cliff.
+2. H08 remains useful for symptom triage, but caps/planners are now diagnostic tools rather than the preferred final fix when allocator layout can be repaired.
+3. H02 because it can be prototyped quickly in scheduler logic.
+4. H05 because prefill IO is still dominant in prompt-heavy scenarios.
+5. H09 to avoid misleading speculative projections in low-coverage runs.
+6. H10 to explain cross-mode speculative regressions with measured overhead.
+7. H01 as a low-risk extension of existing ngram flow.
 
 ## Evidence Snapshot (E006 Retest)
 
-- Supported by measured evidence: H08 as a boundary/cliff class (current action target: physical n_ubatch cap at 480), H09.
+- Supported by measured evidence: H11 as the allocator/residency root cause for the native `ub904/1024` cliff, H08 as a boundary/cliff symptom class, H09.
 - Supported as modeling-next-step: H10.
 - Analytic-only so far: H02.
 - Plausible but not measured yet: H01, H03, H04, H05, H06, H07.

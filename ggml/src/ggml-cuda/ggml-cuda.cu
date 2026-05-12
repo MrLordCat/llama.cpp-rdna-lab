@@ -73,6 +73,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cfloat>
+#include <cwchar>
 #include <initializer_list>
 #include <limits>
 #include <map>
@@ -83,6 +84,19 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <dxgi1_4.h>
+#include <pdh.h>
+#include <pdhmsg.h>
+#endif
 
 static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 
@@ -116,6 +130,214 @@ int ggml_cuda_get_device() {
     CUDA_CHECK(cudaGetDevice(&id));
     return id;
 }
+
+#if defined(_WIN32)
+static std::string ggml_cuda_wstr_to_utf8(const wchar_t * wstr) {
+    if (wstr == nullptr || wstr[0] == L'\0') {
+        return {};
+    }
+
+    const int len = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1) {
+        return {};
+    }
+
+    std::string ret(size_t(len - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr, -1, ret.data(), len, nullptr, nullptr);
+    return ret;
+}
+
+static std::string ggml_cuda_ascii_lower(std::string text) {
+    for (char & c : text) {
+        if (c >= 'A' && c <= 'Z') {
+            c = char(c - 'A' + 'a');
+        }
+    }
+    return text;
+}
+
+static bool ggml_cuda_get_wddm_global_dedicated_usage(const LUID & luid, uint64_t * usage) {
+    HQUERY query = nullptr;
+    HCOUNTER counter = nullptr;
+
+    PDH_STATUS status = PdhOpenQueryW(nullptr, 0, &query);
+    if (status != ERROR_SUCCESS) {
+        return false;
+    }
+
+    status = PdhAddEnglishCounterW(query, L"\\GPU Adapter Memory(*)\\Dedicated Usage", 0, &counter);
+    if (status != ERROR_SUCCESS) {
+        PdhCloseQuery(query);
+        return false;
+    }
+
+    status = PdhCollectQueryData(query);
+    if (status != ERROR_SUCCESS) {
+        PdhCloseQuery(query);
+        return false;
+    }
+
+    DWORD buffer_size = 0;
+    DWORD item_count = 0;
+    status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_LARGE, &buffer_size, &item_count, nullptr);
+    if (status != (PDH_STATUS) PDH_MORE_DATA || buffer_size == 0 || item_count == 0) {
+        PdhCloseQuery(query);
+        return false;
+    }
+
+    std::vector<uint8_t> buffer(buffer_size);
+    auto * items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W *>(buffer.data());
+    status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_LARGE, &buffer_size, &item_count, items);
+    if (status != ERROR_SUCCESS) {
+        PdhCloseQuery(query);
+        return false;
+    }
+
+    wchar_t luid_pattern[64];
+    swprintf(luid_pattern, sizeof(luid_pattern) / sizeof(luid_pattern[0]),
+        L"luid_0x%08lx_0x%08lx", (unsigned long) luid.HighPart, (unsigned long) luid.LowPart);
+    const std::string luid_pattern_text = ggml_cuda_ascii_lower(ggml_cuda_wstr_to_utf8(luid_pattern));
+
+    bool found = false;
+    uint64_t best_usage = 0;
+    for (DWORD i = 0; i < item_count; ++i) {
+        if (items[i].szName == nullptr) {
+            continue;
+        }
+        const std::string item_name = ggml_cuda_ascii_lower(ggml_cuda_wstr_to_utf8(items[i].szName));
+        if (item_name.find(luid_pattern_text) == std::string::npos) {
+            continue;
+        }
+        if (items[i].FmtValue.CStatus != ERROR_SUCCESS) {
+            continue;
+        }
+        best_usage = std::max(best_usage, (uint64_t) std::max<LONGLONG>(items[i].FmtValue.largeValue, 0));
+        found = true;
+    }
+
+    PdhCloseQuery(query);
+    if (!found) {
+        return false;
+    }
+
+    *usage = best_usage;
+    return true;
+}
+
+static bool ggml_cuda_get_wddm_budget_memory(int device, size_t * free, size_t * total) {
+    if (std::getenv("GGML_CUDA_NO_WDDM_BUDGET") != nullptr) {
+        return false;
+    }
+
+    cudaDeviceProp prop;
+    cudaError_t prop_err = cudaGetDeviceProperties(&prop, device);
+    if (prop_err != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+
+    IDXGIFactory1 * factory = nullptr;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+        return false;
+    }
+
+    const std::string cuda_name = ggml_cuda_ascii_lower(prop.name);
+    IDXGIAdapter1 * best_adapter = nullptr;
+    DXGI_QUERY_VIDEO_MEMORY_INFO best_info = {};
+    LUID best_luid = {};
+    SIZE_T best_dedicated = 0;
+    bool best_name_match = false;
+
+    for (UINT i = 0;; ++i) {
+        IDXGIAdapter1 * adapter = nullptr;
+        const HRESULT enum_hr = factory->EnumAdapters1(i, &adapter);
+        if (enum_hr == DXGI_ERROR_NOT_FOUND) {
+            break;
+        }
+        if (FAILED(enum_hr) || adapter == nullptr) {
+            continue;
+        }
+
+        DXGI_ADAPTER_DESC1 desc = {};
+        if (FAILED(adapter->GetDesc1(&desc)) || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) {
+            adapter->Release();
+            continue;
+        }
+
+        IDXGIAdapter3 * adapter3 = nullptr;
+        if (FAILED(adapter->QueryInterface(IID_PPV_ARGS(&adapter3))) || adapter3 == nullptr) {
+            adapter->Release();
+            continue;
+        }
+
+        DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+        const HRESULT info_hr = adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info);
+        adapter3->Release();
+        if (FAILED(info_hr) || info.Budget == 0) {
+            adapter->Release();
+            continue;
+        }
+
+        const std::string dxgi_name = ggml_cuda_ascii_lower(ggml_cuda_wstr_to_utf8(desc.Description));
+        const bool name_match = !cuda_name.empty() && !dxgi_name.empty() &&
+            (dxgi_name.find(cuda_name) != std::string::npos || cuda_name.find(dxgi_name) != std::string::npos);
+        const bool replace = best_adapter == nullptr ||
+            (name_match && !best_name_match) ||
+            (name_match == best_name_match && desc.DedicatedVideoMemory > best_dedicated);
+
+        if (replace) {
+            if (best_adapter != nullptr) {
+                best_adapter->Release();
+            }
+            best_adapter = adapter;
+            best_info = info;
+            best_luid = desc.AdapterLuid;
+            best_dedicated = desc.DedicatedVideoMemory;
+            best_name_match = name_match;
+        } else {
+            adapter->Release();
+        }
+    }
+
+    factory->Release();
+
+    if (best_adapter == nullptr) {
+        return false;
+    }
+    best_adapter->Release();
+
+    uint64_t global_dedicated_usage = 0;
+    const bool has_global_usage = ggml_cuda_get_wddm_global_dedicated_usage(best_luid, &global_dedicated_usage);
+    const bool use_global_usage = std::getenv("GGML_CUDA_WDDM_STRICT_GLOBAL") != nullptr && has_global_usage;
+    const uint64_t current_usage = use_global_usage ? global_dedicated_usage : (uint64_t) best_info.CurrentUsage;
+    const uint64_t available_process = best_info.Budget > best_info.CurrentUsage ?
+        (uint64_t) best_info.Budget - (uint64_t) best_info.CurrentUsage : 0;
+    const uint64_t available_global = has_global_usage && best_info.Budget > global_dedicated_usage ?
+        (uint64_t) best_info.Budget - global_dedicated_usage : 0;
+
+    *total = (size_t) best_info.Budget;
+    *free  = best_info.Budget > current_usage ? (size_t) (best_info.Budget - current_usage) : 0;
+
+    if (std::getenv("GGML_TRACE_CUDA_WDDM_BUDGET") != nullptr) {
+        GGML_LOG_INFO(
+            "GGML_TRACE_CUDA_WDDM_BUDGET: device=%d cuda_name=%s luid_high=0x%08lx luid_low=0x%08lx budget=%zu process_usage=%zu global_dedicated_usage=%zu has_global_usage=%d use_global_usage=%d available=%zu available_process=%zu available_global=%zu name_match=%d\n",
+            device, prop.name,
+            (unsigned long) best_luid.HighPart,
+            (unsigned long) best_luid.LowPart,
+            (size_t) best_info.Budget,
+            (size_t) best_info.CurrentUsage,
+            (size_t) global_dedicated_usage,
+            has_global_usage ? 1 : 0,
+                use_global_usage ? 1 : 0,
+            *free,
+                (size_t) available_process,
+                (size_t) available_global,
+            best_name_match ? 1 : 0);
+    }
+
+    return true;
+}
+#endif
 
 static cudaError_t ggml_cuda_device_malloc(void ** ptr, size_t size, int device) {
     ggml_cuda_set_device(device);
@@ -2443,27 +2665,71 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     bool use_batched_cublas_bf16 = src0->type == GGML_TYPE_BF16 && bf16_mma_hardware_available(cc);
     bool use_batched_cublas_f32  = src0->type == GGML_TYPE_F32;
 
+    const bool trace_mul_mat_route = std::getenv("GGML_TRACE_CUDA_MUL_MAT_ROUTE") != nullptr;
+    const auto log_mul_mat_route = [&](const char * route) {
+        if (!trace_mul_mat_route) {
+            return;
+        }
+
+        GGML_LOG_INFO(
+            "GGML_TRACE_CUDA_MUL_MAT_ROUTE: route=%s dst=%s src0=%s src1=%s src0_type=%s src1_type=%s dst_type=%s split=%d bad_padding=%d use_vec_f=%d use_mat_f=%d use_vec_q=%d use_mat_q=%d use_batched_cublas_f16=%d use_batched_cublas_bf16=%d use_batched_cublas_f32=%d src0_ne=(%lld,%lld,%lld,%lld) src1_ne=(%lld,%lld,%lld,%lld) dst_ne=(%lld,%lld,%lld,%lld) src0_nb=(%zu,%zu,%zu,%zu) src1_nb=(%zu,%zu,%zu,%zu) dst_nb=(%zu,%zu,%zu,%zu) src0_mod128=%llu src1_mod128=%llu dst_mod128=%llu\n",
+            route,
+            dst->name,
+            src0->name,
+            src1->name,
+            ggml_type_name(src0->type),
+            ggml_type_name(src1->type),
+            ggml_type_name(dst->type),
+            split ? 1 : 0,
+            bad_padding_clear ? 1 : 0,
+            use_mul_mat_vec_f ? 1 : 0,
+            use_mul_mat_f ? 1 : 0,
+            use_mul_mat_vec_q ? 1 : 0,
+            use_mul_mat_q ? 1 : 0,
+            use_batched_cublas_f16 ? 1 : 0,
+            use_batched_cublas_bf16 ? 1 : 0,
+            use_batched_cublas_f32 ? 1 : 0,
+            (long long) src0->ne[0], (long long) src0->ne[1], (long long) src0->ne[2], (long long) src0->ne[3],
+            (long long) src1->ne[0], (long long) src1->ne[1], (long long) src1->ne[2], (long long) src1->ne[3],
+            (long long) dst->ne[0],  (long long) dst->ne[1],  (long long) dst->ne[2],  (long long) dst->ne[3],
+            src0->nb[0], src0->nb[1], src0->nb[2], src0->nb[3],
+            src1->nb[0], src1->nb[1], src1->nb[2], src1->nb[3],
+            dst->nb[0],  dst->nb[1],  dst->nb[2],  dst->nb[3],
+            (unsigned long long) ((uintptr_t) src0->data & 127),
+            (unsigned long long) ((uintptr_t) src1->data & 127),
+            (unsigned long long) ((uintptr_t) dst->data  & 127));
+    };
+
     if (!split && use_mul_mat_vec_f) {
         // the custom F16 vector kernel can be used over batched cuBLAS GEMM
         // but this is only faster for GPUs without tensor cores or with a thin src0 matrix (particularly KQV in attention)
+        log_mul_mat_route("mul_mat_vec_f_direct");
         ggml_cuda_mul_mat_vec_f(ctx, src0, src1, nullptr, dst);
     } else if (!split && use_mul_mat_f) {
+        log_mul_mat_route("mul_mat_f_direct");
         ggml_cuda_mul_mat_f(ctx, src0, src1, nullptr, dst);
     } else if (!split && use_mul_mat_vec_q) {
+        log_mul_mat_route("mul_mat_vec_q_direct");
         ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
     } else if (!split && use_mul_mat_q) {
+        log_mul_mat_route("mul_mat_q_direct");
         ggml_cuda_mul_mat_q(ctx, src0, src1, nullptr, dst);
     } else if (!split && (use_batched_cublas_f16 || use_batched_cublas_bf16 || use_batched_cublas_f32)
         && !ggml_is_transposed(src0) && !ggml_is_transposed(src1) && src1->ne[2]*src1->ne[3] > 1) {
         // general KQ + KQV multi-batch without FlashAttention
+        log_mul_mat_route("batched_cublas");
         ggml_cuda_mul_mat_batched_cublas(ctx, src0, src1, dst);
     } else if (use_mul_mat_vec_f) {
+        log_mul_mat_route("mul_mat_vec_f_backend");
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_vec_f, nullptr);
     } else if (use_mul_mat_vec_q) {
+        log_mul_mat_route("mul_mat_vec_q_backend");
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_vec_q, quantize_row_q8_1_cuda);
     } else if (use_mul_mat_q) {
+        log_mul_mat_route("mul_mat_q_backend");
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_q, quantize_mmq_q8_1_cuda);
     } else {
+        log_mul_mat_route("cublas_backend");
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_cublas, nullptr);
     }
 }
@@ -2989,6 +3255,46 @@ static double ggml_cuda_trace_stream_sync(cudaStream_t stream, bool & sync_appli
     const auto sync_end = std::chrono::high_resolution_clock::now();
     sync_applied = true;
     return std::chrono::duration<double, std::milli>(sync_end - sync_start).count();
+}
+
+static unsigned long long ggml_cuda_trace_tensor_ptr_mod(const ggml_tensor * tensor, uintptr_t mod) {
+    if (tensor == nullptr || tensor->data == nullptr) {
+        return 0;
+    }
+
+    return (unsigned long long) ((uintptr_t) tensor->data & (mod - 1));
+}
+
+static const char * ggml_cuda_trace_tensor_type_name(const ggml_tensor * tensor) {
+    return tensor == nullptr ? "none" : ggml_type_name(tensor->type);
+}
+
+static const char * ggml_cuda_trace_tensor_buffer_name(const ggml_tensor * tensor) {
+    if (tensor == nullptr) {
+        return "none";
+    }
+
+    const ggml_tensor * owner = tensor->view_src != nullptr ? tensor->view_src : tensor;
+    return owner->buffer == nullptr ? "none" : ggml_backend_buffer_name(owner->buffer);
+}
+
+static long long ggml_cuda_trace_tensor_buffer_offset(const ggml_tensor * tensor) {
+    if (tensor == nullptr || tensor->data == nullptr) {
+        return -1;
+    }
+
+    const ggml_tensor * owner = tensor->view_src != nullptr ? tensor->view_src : tensor;
+    if (owner->buffer == nullptr) {
+        return -1;
+    }
+
+    const char * base = (const char *) ggml_backend_buffer_get_base(owner->buffer);
+    const char * data = (const char *) tensor->data;
+    return (long long) (data - base);
+}
+
+static unsigned long long ggml_cuda_trace_tensor_nbytes(const ggml_tensor * tensor) {
+    return tensor == nullptr ? 0 : (unsigned long long) ggml_nbytes(tensor);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -4221,16 +4527,34 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                         }
 
                         GGML_LOG_INFO(
-                            "GGML_TRACE_CUDA_NODE_TIMING: idx=%d kind=fused skip=%d op=%s name=%s stream=%d ne=(%lld,%lld,%lld,%lld) pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+                            "GGML_TRACE_CUDA_NODE_TIMING: idx=%d kind=fused skip=%d op=%s name=%s stream=%d type=%s src0_type=%s src1_type=%s buf=%s src0_buf=%s src1_buf=%s ne=(%lld,%lld,%lld,%lld) off=%lld src0_off=%lld src1_off=%lld nbytes=%llu src0_nbytes=%llu src1_nbytes=%llu data_mod64k=%llu data_mod2m=%llu src0_mod64k=%llu src0_mod2m=%llu src1_mod64k=%llu src1_mod2m=%llu pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
                             i,
                             nodes_to_skip,
                             ggml_op_name(node->op),
                             node->name,
                             cuda_ctx->curr_stream_no,
+                            ggml_cuda_trace_tensor_type_name(node),
+                            ggml_cuda_trace_tensor_type_name(node->src[0]),
+                            ggml_cuda_trace_tensor_type_name(node->src[1]),
+                            ggml_cuda_trace_tensor_buffer_name(node),
+                            ggml_cuda_trace_tensor_buffer_name(node->src[0]),
+                            ggml_cuda_trace_tensor_buffer_name(node->src[1]),
                             (long long) node->ne[0],
                             (long long) node->ne[1],
                             (long long) node->ne[2],
                             (long long) node->ne[3],
+                            ggml_cuda_trace_tensor_buffer_offset(node),
+                            ggml_cuda_trace_tensor_buffer_offset(node->src[0]),
+                            ggml_cuda_trace_tensor_buffer_offset(node->src[1]),
+                            ggml_cuda_trace_tensor_nbytes(node),
+                            ggml_cuda_trace_tensor_nbytes(node->src[0]),
+                            ggml_cuda_trace_tensor_nbytes(node->src[1]),
+                            ggml_cuda_trace_tensor_ptr_mod(node, 64ull*1024),
+                            ggml_cuda_trace_tensor_ptr_mod(node, 2ull*1024*1024),
+                            ggml_cuda_trace_tensor_ptr_mod(node->src[0], 64ull*1024),
+                            ggml_cuda_trace_tensor_ptr_mod(node->src[0], 2ull*1024*1024),
+                            ggml_cuda_trace_tensor_ptr_mod(node->src[1], 64ull*1024),
+                            ggml_cuda_trace_tensor_ptr_mod(node->src[1], 2ull*1024*1024),
                             node_pre_sync_applied ? 1 : 0,
                             sync_applied ? 1 : 0,
                             capture_active || node_pre_capture_active,
@@ -4272,15 +4596,33 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     }
 
                     GGML_LOG_INFO(
-                        "GGML_TRACE_CUDA_NODE_TIMING: idx=%d kind=forward skip=0 op=%s name=%s stream=%d ne=(%lld,%lld,%lld,%lld) pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+                        "GGML_TRACE_CUDA_NODE_TIMING: idx=%d kind=forward skip=0 op=%s name=%s stream=%d type=%s src0_type=%s src1_type=%s buf=%s src0_buf=%s src1_buf=%s ne=(%lld,%lld,%lld,%lld) off=%lld src0_off=%lld src1_off=%lld nbytes=%llu src0_nbytes=%llu src1_nbytes=%llu data_mod64k=%llu data_mod2m=%llu src0_mod64k=%llu src0_mod2m=%llu src1_mod64k=%llu src1_mod2m=%llu pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
                         i,
                         ggml_op_name(node->op),
                         node->name,
                         cuda_ctx->curr_stream_no,
+                        ggml_cuda_trace_tensor_type_name(node),
+                        ggml_cuda_trace_tensor_type_name(node->src[0]),
+                        ggml_cuda_trace_tensor_type_name(node->src[1]),
+                        ggml_cuda_trace_tensor_buffer_name(node),
+                        ggml_cuda_trace_tensor_buffer_name(node->src[0]),
+                        ggml_cuda_trace_tensor_buffer_name(node->src[1]),
                         (long long) node->ne[0],
                         (long long) node->ne[1],
                         (long long) node->ne[2],
                         (long long) node->ne[3],
+                        ggml_cuda_trace_tensor_buffer_offset(node),
+                        ggml_cuda_trace_tensor_buffer_offset(node->src[0]),
+                        ggml_cuda_trace_tensor_buffer_offset(node->src[1]),
+                        ggml_cuda_trace_tensor_nbytes(node),
+                        ggml_cuda_trace_tensor_nbytes(node->src[0]),
+                        ggml_cuda_trace_tensor_nbytes(node->src[1]),
+                        ggml_cuda_trace_tensor_ptr_mod(node, 64ull*1024),
+                        ggml_cuda_trace_tensor_ptr_mod(node, 2ull*1024*1024),
+                        ggml_cuda_trace_tensor_ptr_mod(node->src[0], 64ull*1024),
+                        ggml_cuda_trace_tensor_ptr_mod(node->src[0], 2ull*1024*1024),
+                        ggml_cuda_trace_tensor_ptr_mod(node->src[1], 64ull*1024),
+                        ggml_cuda_trace_tensor_ptr_mod(node->src[1], 2ull*1024*1024),
                         node_pre_sync_applied ? 1 : 0,
                         sync_applied ? 1 : 0,
                         capture_active || node_pre_capture_active,
@@ -4739,6 +5081,17 @@ void ggml_backend_cuda_get_device_memory(int device, size_t * free, size_t * tot
     ggml_cuda_set_device(device);
 
     CUDA_CHECK(cudaMemGetInfo(free, total));
+
+#if defined(_WIN32)
+    size_t wddm_free = 0;
+    size_t wddm_total = 0;
+    if (ggml_cuda_get_wddm_budget_memory(device, &wddm_free, &wddm_total)) {
+        *free = std::min(*free, wddm_free);
+        if (wddm_total > 0) {
+            *total = std::min(*total, wddm_total);
+        }
+    }
+#endif
 }
 
 bool ggml_backend_cuda_register_host_buffer(void * buffer, size_t size) {
@@ -4877,6 +5230,17 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
     ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *)dev->context;
     ggml_cuda_set_device(ctx->device);
     CUDA_CHECK(cudaMemGetInfo(free, total));
+
+#if defined(_WIN32)
+    size_t wddm_free = 0;
+    size_t wddm_total = 0;
+    if (ggml_cuda_get_wddm_budget_memory(ctx->device, &wddm_free, &wddm_total)) {
+        *free = std::min(*free, wddm_free);
+        if (wddm_total > 0) {
+            *total = std::min(*total, wddm_total);
+        }
+    }
+#endif
 
 // ref: https://github.com/ggml-org/llama.cpp/pull/17368
 #if defined(__linux__)

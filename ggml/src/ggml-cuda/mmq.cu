@@ -3,6 +3,8 @@
 #include "quantize.cuh"
 #include "mmid.cuh"
 
+#include <cstdlib>
+
 static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
     switch (args.type_x) {
         case GGML_TYPE_Q1_0:
@@ -315,6 +317,10 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
 #ifdef GGML_CUDA_FORCE_MMQ
     return true;
 #endif //GGML_CUDA_FORCE_MMQ
+
+    if (std::getenv("GGML_CUDA_FORCE_MMQ_RUNTIME") != nullptr) {
+        return true;
+    }
 
     if (GGML_CUDA_CC_IS_NVIDIA(cc)) {
         return !fp16_mma_hardware_available(cc) || ne11 < MMQ_DP4A_MAX_BATCH_SIZE;

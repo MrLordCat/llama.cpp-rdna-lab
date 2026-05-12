@@ -92,10 +92,29 @@ Potential novelty:
 Risk:
 - model-specific behavior may limit generalization
 
+Status update 2026-05-12:
+- D5 was useful for diagnosing the symptom, but the native `ub904/1024` fix did not require lowering physical `ubatch`.
+- E008 showed the deeper mechanism was ROCm compute-vbuffer allocation/residency; chunking the virtual compute buffer into backend allocations removed the cliff while keeping full `PP reserve`.
+
+## D6: Backend allocation residency control
+
+Idea:
+- treat graph compute buffer placement as a first-class runtime parameter on Windows + ROCm
+- split large virtual compute buffers into backend chunks when a single allocation falls into a slow residency pocket
+
+Potential novelty:
+- fixes broad same-route slowdowns where every memory-heavy op regresses together
+
+Risk:
+- too many chunks can add fragmentation or hurt backends that do not need the workaround
+
+Current evidence:
+- E008 kept ROCm default chunking at `256 MiB` and preserved full native `ub1024`.
+
 ## Immediate Experimental Sequence
 
 1. Validate D1 with a minimal scheduler prototype and fixed safety guards.
-2. Evaluate D5 around known boundary cliffs with controlled sweeps.
+2. Evaluate D5/D6 around known boundary cliffs with controlled sweeps and a single-chunk negative control.
 3. Test D2 router only after D1 policy signals are proven useful.
 4. Run D3 and D4 as deeper kernel/runtime phases.
 

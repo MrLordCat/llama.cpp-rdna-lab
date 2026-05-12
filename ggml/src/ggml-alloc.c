@@ -415,7 +415,7 @@ static size_t ggml_vbuffer_chunk_size(struct vbuffer * buf, int chunk) {
 static size_t ggml_vbuffer_size(struct vbuffer * buf) {
     size_t size = 0;
     for (int i = 0; i < GGML_VBUFFER_MAX_CHUNKS && buf->chunks[i]; ++i) {
-        size += ggml_backend_buffer_get_size(buf->chunks[i]);
+        size += ggml_vbuffer_chunk_size(buf, i);
     }
     return size;
 }
@@ -494,6 +494,42 @@ struct ggml_gallocr {
     int n_leafs;
 };
 
+#define GGML_ROCM_COMPUTE_VBUFFER_MAX_CHUNK_SIZE (256ull * 1024ull * 1024ull)
+
+static bool ggml_env_is_enabled(const char * name) {
+    const char * value = getenv(name);
+    return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static size_t ggml_parse_size_env(const char * name) {
+    const char * value = getenv(name);
+    if (value == NULL || value[0] == '\0') {
+        return 0;
+    }
+
+    char * end = NULL;
+    unsigned long long parsed = strtoull(value, &end, 0);
+    if (end == value || parsed == 0) {
+        return 0;
+    }
+
+    return (size_t) parsed;
+}
+
+static size_t ggml_gallocr_max_chunk_size(ggml_backend_buffer_type_t buft, size_t max_buffer_size) {
+    const size_t env_max_chunk = ggml_parse_size_env("GGML_COMPUTE_VBUFFER_MAX_CHUNK_SIZE");
+    if (env_max_chunk > 0) {
+        return MIN(env_max_chunk, max_buffer_size);
+    }
+
+    const char * name = ggml_backend_buft_name(buft);
+    if (name != NULL && strncmp(name, "ROCm", 4) == 0 && !ggml_env_is_enabled("GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK")) {
+        return MIN((size_t) GGML_ROCM_COMPUTE_VBUFFER_MAX_CHUNK_SIZE, max_buffer_size);
+    }
+
+    return max_buffer_size;
+}
+
 ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs) {
     ggml_gallocr_t galloc = (ggml_gallocr_t)calloc(1, sizeof(struct ggml_gallocr));
     GGML_ASSERT(galloc != NULL);
@@ -521,7 +557,7 @@ ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs
 
         if (galloc->buf_tallocs[i] == NULL) {
             size_t alignment = ggml_backend_buft_get_alignment(bufts[i]);
-            size_t max_size = ggml_backend_buft_get_max_size(bufts[i]);
+            size_t max_size = ggml_gallocr_max_chunk_size(bufts[i], ggml_backend_buft_get_max_size(bufts[i]));
             galloc->buf_tallocs[i] = ggml_dyn_tallocr_new(alignment, max_size);
         }
     }
