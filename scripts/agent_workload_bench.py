@@ -1676,8 +1676,8 @@ def parse_args() -> argparse.Namespace:
                         help="print additional warm-only metrics that exclude run #1 (cold/probing phase)")
     parser.add_argument("--write-diagnostics", action=argparse.BooleanOptionalAction, default=True,
                         help="write per-run diagnostics json/md parsed from server log")
-    parser.add_argument("--v2-prime-pass", action=argparse.BooleanOptionalAction, default=True,
-                        help="run one unmeasured priming pass for v2/v2-mini when speculative ngram-mod and runs=1")
+    parser.add_argument("--v2-prime-pass", action=argparse.BooleanOptionalAction, default=False,
+                        help="opt into one unmeasured priming pass for v2/v2-mini when speculative ngram-mod and runs=1")
     parser.add_argument("--keep-server", action="store_true", help="do not stop server started by this script")
     parser.add_argument(
         "--background-server-policy",
@@ -1778,8 +1778,8 @@ def run_suite(args: argparse.Namespace, tasks: list[dict[str, str]]) -> list[dic
 
         rows: list[dict[str, Any]] = []
 
-        # For v2-style tasks with ngram-mod and runs=1, a cold run often produces zero drafts.
-        # Prime once (unmeasured) so the measured run reflects steady-state speculative behavior.
+        # Optional steady-state probe: this is disabled by default because the cold-first
+        # prompt-heavy lane must not pre-fill speculative state with an unmeasured request.
         should_prime_v2 = (
             args.v2_prime_pass
             and args.tasks in ("v2", "v2-mini", "v2-review")

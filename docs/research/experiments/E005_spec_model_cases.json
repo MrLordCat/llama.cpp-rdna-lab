@@ -1,0 +1,48 @@
+[
+  {
+    "id": "ngram_prime_sparse_postrebuild",
+    "baseline_csv": "build_logs/agent-workload/postrebuild-vec-b6144-ub512-none.csv",
+    "candidate_csv": "build_logs/agent-workload/postrebuild-vec-b6144-ub512-ngram-prime.csv",
+    "baseline_log": "build_logs/agent-workload/postrebuild-vec-b6144-ub512-none.server.log",
+    "candidate_log": "build_logs/agent-workload/postrebuild-vec-b6144-ub512-ngram-prime.server.log"
+  },
+  {
+    "id": "specngram_lowcov_exp_b4096_ub512",
+    "baseline_csv": "build_logs/agent-workload/v2-scan-exp-b4096-ub512-p1-specnone-r1.csv",
+    "candidate_csv": "build_logs/agent-workload/v2-scan-exp-b4096-ub512-p1-specngram-r1.csv",
+    "baseline_log": "build_logs/agent-workload/v2-scan-exp-b4096-ub512-p1-specnone-r1.server.log",
+    "candidate_log": "build_logs/agent-workload/v2-scan-exp-b4096-ub512-p1-specngram-r1.server.log"
+  },
+  {
+    "id": "mtp_n1_highcov_c12288",
+    "baseline_csv": "build_logs/agent-workload/mtp-recheck-wmma-none-v2review-c12288.csv",
+    "candidate_csv": "build_logs/agent-workload/mtp-recheck-wmma-mtp-n1-v2review-c12288.csv",
+    "baseline_log": "build_logs/agent-workload/mtp-recheck-wmma-none-v2review-c12288.server.log",
+    "candidate_log": "build_logs/agent-workload/mtp-recheck-wmma-mtp-n1-v2review-c12288.server.log",
+    "draft_len": 1
+  },
+  {
+    "id": "mtp_n2_highcov_c12288",
+    "baseline_csv": "build_logs/agent-workload/mtp-recheck-wmma-none-v2review-c12288.csv",
+    "candidate_csv": "build_logs/agent-workload/mtp-recheck-wmma-mtp-n2-v2review-c12288.csv",
+    "baseline_log": "build_logs/agent-workload/mtp-recheck-wmma-none-v2review-c12288.server.log",
+    "candidate_log": "build_logs/agent-workload/mtp-recheck-wmma-mtp-n2-v2review-c12288.server.log",
+    "draft_len": 2
+  },
+  {
+    "id": "mtp_n3_highcov_c12288",
+    "baseline_csv": "build_logs/agent-workload/mtp-recheck-wmma-none-v2review-c12288.csv",
+    "candidate_csv": "build_logs/agent-workload/mtp-recheck-wmma-mtp-n3-v2review-c12288.csv",
+    "baseline_log": "build_logs/agent-workload/mtp-recheck-wmma-none-v2review-c12288.server.log",
+    "candidate_log": "build_logs/agent-workload/mtp-recheck-wmma-mtp-n3-v2review-c12288.server.log",
+    "draft_len": 3
+  },
+  {
+    "id": "mtp_n2_highcov_c12288_ub256",
+    "baseline_csv": "build_logs/agent-workload/mtp-recheck-wmma-none-v2review-c12288-ub256.csv",
+    "candidate_csv": "build_logs/agent-workload/mtp-recheck-wmma-mtp-n2-v2review-c12288-ub256.csv",
+    "baseline_log": "build_logs/agent-workload/mtp-recheck-wmma-none-v2review-c12288-ub256.server.log",
+    "candidate_log": "build_logs/agent-workload/mtp-recheck-wmma-mtp-n2-v2review-c12288-ub256.server.log",
+    "draft_len": 2
+  }
+]

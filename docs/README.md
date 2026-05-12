@@ -10,5 +10,6 @@
 - `UPSTREAM_SYNC.md` — как догонять upstream без импорта чужих docs/actions.
 - `MTP.md` — заметки по Multi-Token Prediction.
 - `QWEN_SPEED_RESEARCH.md` — план ускорений Qwen и внедрения MTP.
+- `docs/research/README.md` — research hub для новых гипотез ускорения (после ngram/FlashAttention).
 
 При merge из upstream папка `docs/**` защищена через `.gitattributes` (`merge=ours`). Новые сведения из upstream docs переносить сюда вручную только если они реально нужны этому форку.

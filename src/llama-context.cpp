@@ -170,27 +170,6 @@ llama_context::llama_context(
 
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
 
-    // Optional experiment: when shape-score splitting is active, allow capping physical
-    // context ubatch to the preferred split size to reduce oversized prefill graph state.
-    if (const char * ubatch_shape_context_cap = getenv("LLAMA_UBATCH_SHAPE_CONTEXT_CAP")) {
-        if (strcmp(ubatch_shape_context_cap, "0") != 0) {
-            const char * split_policy = getenv("LLAMA_UBATCH_SPLIT_POLICY");
-            const bool use_shape_score = split_policy && strcmp(split_policy, "shape-score") == 0;
-            const char * preferred_env = getenv("LLAMA_UBATCH_SHAPE_PREFERRED");
-            const int preferred_i = preferred_env ? atoi(preferred_env) : 0;
-            if (use_shape_score && preferred_i > 0) {
-                const uint32_t preferred = (uint32_t) preferred_i;
-                const uint32_t capped = std::max(1u, std::min(cparams.n_ubatch, std::min(cparams.n_batch, preferred)));
-                if (capped < cparams.n_ubatch) {
-                    LLAMA_LOG_INFO(
-                            "%s: LLAMA_UBATCH_SHAPE_CONTEXT_CAP enabled -> n_ubatch %u -> %u (preferred=%u)\n",
-                            __func__, cparams.n_ubatch, capped, preferred);
-                    cparams.n_ubatch = capped;
-                }
-            }
-        }
-    }
-
     cparams.op_offload = params.op_offload;
     cparams.kv_unified = params.kv_unified;
 
@@ -596,16 +575,23 @@ void llama_context::sched_reserve() {
     int n_splits_tg = -1;
     int n_nodes_tg  = -1;
 
+    const uint32_t n_outputs_pp_requested = sched_reserve_pp_outputs == 0 ? n_seqs : sched_reserve_pp_outputs;
+    const uint32_t n_outputs_pp_reserve = n_outputs_pp_requested == uint32_t(-1) ?
+            n_tokens : std::min(n_tokens, std::max(n_seqs, n_outputs_pp_requested));
+    if (n_outputs_pp_reserve != n_tokens) {
+        LLAMA_LOG_INFO("%s: PP reserve outputs %u -> %u\n", __func__, n_tokens, n_outputs_pp_reserve);
+    }
+
     // reserve pp (prompt processing) graph first so that buffers are only allocated once
     {
-        auto * gf = graph_reserve(n_tokens, n_seqs, n_tokens, mctx.get(),
+        auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp_reserve, mctx.get(),
                 model.hparams.no_alloc, model.hparams.no_alloc ? backend_buf_exp_size.data() : nullptr);
         if (!gf) {
             if (cparams.pipeline_parallel) {
                 LLAMA_LOG_WARN("%s: compute buffer allocation failed, retrying without pipeline parallelism\n", __func__);
                 cparams.pipeline_parallel = false;
                 sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, false, cparams.op_offload));
-                gf = graph_reserve(n_tokens, n_seqs, n_tokens, mctx.get());
+                gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp_reserve, mctx.get());
             }
             if (!gf) {
                 throw std::runtime_error("failed to allocate compute pp buffers");
@@ -633,7 +619,7 @@ void llama_context::sched_reserve() {
         //
         // auto * gf = graph_reserve(n_tokens, 1, n_tokens, mctx.get());
         //
-        auto * gf = graph_reserve(n_tokens, n_seqs, n_tokens, mctx.get(), model.hparams.no_alloc);
+        auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp_reserve, mctx.get(), model.hparams.no_alloc);
         if (!gf) {
             throw std::runtime_error("failed to allocate compute pp buffers");
         }
@@ -701,6 +687,8 @@ void llama_context::sched_reserve() {
 
     LLAMA_LOG_INFO("%s: reserve took %.2f ms, sched copies = %d\n",
             __func__, (t_end_us - t_start_us)/1000.0, ggml_backend_sched_get_n_copies(sched.get()));
+
+    sched_reserved_pp_outputs = sched_reserve_pp_outputs;
 }
 
 void llama_context::synchronize() {
@@ -834,8 +822,11 @@ bool llama_context::memory_update(bool optimize) {
 
         const uint32_t n_seqs = cparams.n_seq_max;
         const uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
+        const uint32_t n_outputs_pp_requested = sched_reserve_pp_outputs == 0 ? n_seqs : sched_reserve_pp_outputs;
+        const uint32_t n_outputs_pp_reserve = n_outputs_pp_requested == uint32_t(-1) ?
+            n_tokens : std::min(n_tokens, std::max(n_seqs, n_outputs_pp_requested));
 
-        auto * gf = graph_reserve(n_tokens, n_seqs, n_tokens, mctx.get());
+        auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp_reserve, mctx.get());
         if (!gf) {
             LLAMA_LOG_ERROR("%s: failed to reserve graph after the memory update\n", __func__);
         }
@@ -1429,6 +1420,11 @@ int llama_context::encode(const llama_batch & batch_inp) {
     // TODO: this clear of the buffer can easily be forgotten - need something better
     embd_seq.clear();
 
+    sched_reserve_pp_outputs = uint32_t(-1);
+    if (sched_reserved_pp_outputs != sched_reserve_pp_outputs) {
+        sched_need_reserve = true;
+    }
+
     sched_reserve();
 
     n_queued_tokens += n_tokens;
@@ -1762,6 +1758,15 @@ int llama_context::decode(const llama_batch & batch_inp) {
     // TODO: this clear of the buffer can easily be forgotten - need something better
     embd_seq.clear();
     output_swaps.clear();
+
+    uint32_t sched_pp_outputs = std::max<uint32_t>(1, n_outputs_all);
+    if (n_tokens_all > 1 && n_outputs_all == n_tokens_all) {
+        sched_pp_outputs = uint32_t(-1);
+    }
+    sched_reserve_pp_outputs = sched_pp_outputs;
+    if (sched_reserved_pp_outputs != sched_reserve_pp_outputs) {
+        sched_need_reserve = true;
+    }
 
     sched_reserve();
 

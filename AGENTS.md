@@ -114,5 +114,37 @@ cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUIL
 6. Если идея подтверждена, фиксировать одновременно: код + запись в `BENCHMARKS.md` + артефакты в `build_logs/agent-workload/`.
 7. Главный трек поиска ускорений: кодовые изменения в llama.cpp/ggml prefill/runtime path (`ggml/src`, `src`, `common`), а не только перебор server flags.
 8. Для benchmark-режима всегда держать thinking включённым (использовать `--no-disable-thinking`), чтобы результаты были сопоставимы между сессиями.
+9. Для research A/B сравнивать candidate только с текущим best из autotune/history при аналогичных параметрах; не запускать новый sweep как baseline, если best уже известен.
+10. Для cold-first speed claims не использовать v2 priming pass: `--v2-prime-pass` допустим только как явно помеченный steady-state probe, не как основной real-scenario результат.
 
 Цель: избегать «шума» и держать только воспроизводимые ускорения в `master`.
+
+## Research Protocol (docs/research)
+
+Для всех новых гипотез после ngram/FlashAttention:
+
+1. Перед кодовыми правками открыть `docs/research/HYPOTHESES.md` и выбрать гипотезу с ID.
+2. Создать заметку эксперимента в `docs/research/experiments/E###_*.md` по шаблону `docs/research/EXPERIMENT_TEMPLATE.md`.
+3. Сначала выполнить аналитический gate (дёшево):
+    - `python scripts/research/formula_sanity_checks.py`
+    - `python scripts/research/required_acceptance.py ...`
+    - `python scripts/research/speedup_model.py ...`
+4. В заметке явно помечать, где `projected` (модель), а где `measured` (реальный benchmark).
+5. Только после аналитического gate запускать microbench и затем lane benchmark.
+6. Любой результат фиксировать в `docs/research/RESULTS_LOG.md` с решением `keep/iterate/revert`.
+7. Новые утилиты для формул/проверок класть в `scripts/research/` и проверять `py_compile`.
+8. Для speculative-гипотез обязательно делать measured-vs-formula cross-check через:
+    - `python scripts/research/bench_pair_compare.py ...`
+    - `python scripts/research/spec_log_stats.py ...`
+    - `python scripts/research/spec_effective_acceptance.py ...`
+    - `python scripts/research/formula_vs_observed.py ...`
+    - `python scripts/research/spec_model_compare.py ...`
+    - `python scripts/research/spec_model_batch_compare.py ...`
+    - `python scripts/research/required_spec_overhead.py ...`
+9. В отчёте явно разделять:
+    - local acceptance (внутри сгенерированных draft токенов),
+    - coverage (доля шагов, где draft реально был),
+    - effective acceptance (coverage * local acceptance).
+10. Для runtime/prototype A/B сначала восстановить текущий best из autotune/history (ctx/batch/ubatch/KV/spec/extra/real-context size) и повторять именно его без `--v2-prime-pass`; prime-результаты можно хранить только отдельно как steady-state diagnostics.
+
+Цель: делать исследования воспроизводимыми и понятными даже без глубокого матбэкграунда.

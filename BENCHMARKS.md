@@ -63,6 +63,50 @@ build_logs\agent-workload\<label>.server.log
 - `spec=ngram-mod` без prime (`--no-v2-prime-pass`) почти равен `spec=none`; всплеск при включённом prime не считать cold-first прогрессом.
 - KV-типы `f16/bf16` на этом lane дают сильную регрессию (`~3.7-3.8 TPS`), `q4_0` остаётся лучшим.
 
+### Shape-score paradox + context-cap probe (2026-05-11, superseded)
+
+На lane `ctx=12288`, `b=6144`, `q4_0/q4_0`, no-reuse с shape-score:
+
+- `ub=192` стабильно в быстром коридоре (`~8.52 TPS`);
+- `ub=512` при тех же split-параметрах падает до `~4.19-4.24 TPS`.
+
+Трассы показали, что для `ub192` и `ub512` совпадают:
+
+- planner chosen/target histogram (`chosen=192`);
+- GDN `n_tokens` histogram;
+- FATTN hot-shape и MMQ selector route.
+
+Бывший экспериментальный runtime-рычаг, использованный только как диагностический discriminator:
+
+- env `LLAMA_UBATCH_SHAPE_CONTEXT_CAP=1`;
+- при `LLAMA_UBATCH_SPLIT_POLICY=shape-score` и `LLAMA_UBATCH_SHAPE_PREFERRED=192` физический context `n_ubatch` капается до preferred.
+- после root-cause проверки этот guard удалён из runtime: финальный фикс не меняет requested `-ub` и не использует shape-score/preferred cap.
+
+Проверка на том же бинаре:
+
+| Label | UBatch arg | Context cap | Aggregate TPS | Prompt eval | Decode eval |
+| --- | ---: | --- | ---: | ---: | ---: |
+| `p7-pass2-postctx-20260511-205925-shape-ub512-r1` | `512` | off | `4.19` | `332.79 tok/s` | `27.26 tok/s` |
+| `p7-pass2-cap-20260511-205849-shape-ub512-r1` | `512` | on (`n_ubatch 512 -> 192`) | `8.53` | `827.82 tok/s` | `27.81 tok/s` |
+| `p7-pass2-cap-20260511-205746-shape-ub192-r1` | `192` | on | `8.54` | `~828 tok/s` | `~27.8 tok/s` |
+
+Вывод на этом этапе был неполным: context-cap доказал связь cliff с reserve/layout, но сам по себе был workaround, а не финальным решением.
+
+### PP reserve outputs root cause (2026-05-12)
+
+Финальная причина `ub489 -> ub490+` cliff на RDNA4/ROCm оказалась в reserve-time PP graph layout: обычный server decode резервировал PP graph как будто нужны logits/outputs для всех `n_tokens`, хотя на этом lane фактически нужен один output. Это раздувало compute buffer и переводило full graph в медленный layout при `ub490+`.
+
+Финальный фикс: `llama_context::sched_reserve()` резервирует PP graph по фактическому числу decode outputs; all-output/encoder режимы оставляют полный reserve. Это не cap/guard и не меняет requested `-ub`.
+
+Clean validation после удаления diagnostic probes, без `LLAMA_PP_RESERVE_SEQ_OUTPUTS`, без `LLAMA_UBATCH_SPLIT_POLICY`, без `LLAMA_UBATCH_SHAPE_PREFERRED`, без `LLAMA_UBATCH_SHAPE_CONTEXT_CAP`:
+
+| Label | UBatch arg | Auto reserve log | Wall | Prompt eval |
+| --- | ---: | --- | ---: | ---: |
+| `e010-ub490-final-ppout` | `490` | `PP reserve outputs 490 -> 1` | `7.41s` | `966.26 tok/s` |
+| `e010-ub512-clean-ppout` | `512` | `PP reserve outputs 512 -> 1` | `7.32s` | `979.33 tok/s` |
+
+До output-aware reserve direct `ub490/491/512` были в slow band около `24-25s` wall и `~280-300 tok/s` prompt eval; с финальным reserve прямые `ub490+` остаются в fast band без обхода через меньший ubatch.
+
 Чтобы исключить искажения от фонового `llama-server`, запускать benchmark с жёсткой проверкой:
 
 ```powershell
@@ -1718,6 +1762,71 @@ Stage D diagnostics:
   - runs=1: base `26.84`, force `27.09`, disable `26.88` TPS.
   - runs=3 confirm: base `26.8355` vs force `27.0066` TPS (`+0.64%`), decode_eval_tps `28.6767 -> 28.8767` (`+0.70%`).
   - эффект умеренный; default policy не менялась.
+
+P3 theory fanout check (dry-run explain, 2026-05-11):
+
+- Команда для всех проверок: `cmake --build <build-dir> --target llama-server -- -d explain -n`.
+- `touch fattn.cu`:
+  - normal (`build-rocm-vec`): rebuild `fattn.cu.obj` + relink chain (`7` steps).
+  - reduced (`build-rocm-fa-reduced`): `ninja: no work to do`.
+- `touch mmvq.cu`:
+  - normal (`build-rocm-vec`): rebuild `mmvq.cu.obj` + relink chain (`7` steps).
+  - reduced (`build-rocm-fa-reduced`): rebuild `mmvq.cu.obj` + relink chain (`7` steps).
+- Теоретический вывод: reduced corridor уже снимает FATTN-side build pressure, но не снимает MMVQ-side pressure; MMVQ-focused corridor остаётся предметом P3 implementation.
+
+Artifacts:
+
+- `build_logs/agent-workload/p3-dryrun-normal-fattn.txt`
+- `build_logs/agent-workload/p3-dryrun-reduced-fattn.txt`
+- `build_logs/agent-workload/p3-dryrun-normal-mmvq.txt`
+- `build_logs/agent-workload/p3-dryrun-reduced-mmvq.txt`
+
+P3 implementation build gates (2026-05-11):
+
+- Build-system implementation landed for:
+  - centralized HIP source bundle assembly,
+  - `GGML_HIP_EXPERIMENT_PROFILE` (`default`, `qwen-fa-reduced`, `mmvq-focused`),
+  - Windows HIP compiler fail-fast guard (`clang++/hipcc` required).
+- Configure gates passed for all three profiles:
+  - `build-rocm-vec` (`default`)
+  - `build-rocm-fa-reduced` (`qwen-fa-reduced`)
+  - `build-rocm-mmvq-focused` (`mmvq-focused`)
+- Build gate passed for all three profiles: `llama-server` linked successfully.
+- Guard test passed: intentional bad configure with Strawberry/GNU now fails early with:
+  - `GGML_HIP on Windows requires ROCm clang++ or hipcc as CMAKE_CXX_COMPILER`.
+
+Artifacts:
+
+- `build_logs/agent-workload/p3-implementation-build-gates.txt`
+- `build_logs/agent-workload/p3-guard-bad-config.txt`
+
+P3 runtime closure checks (2026-05-11):
+
+- Active lane (`v2-review`, `repo-snapshot chars=21872`, `ctx=12288`, `b/ub=6144/192`, no-reuse):
+  - `p3-close-default-20260511-r1`: **8.54 TPS** (pass)
+  - `p3-close-reduced-20260511-r1`: **8.55 TPS** (pass)
+  - `p3-close-mmvq-focused-20260511-r2`: **request timeout** (`TimeoutError('timed out')`), server log stops at prompt progress `6144/8030`.
+- Short decode-biased sanity (`tasks=quick`, no real-context, same ctx/b/ub, `max_tokens=64`):
+  - `p3-close-default-quick-20260511-r1`: **26.57 TPS**
+  - `p3-close-reduced-quick-20260511-r1`: **26.59 TPS**
+  - `p3-close-mmvq-focused-quick-20260511-r1`: **17.56 TPS** (major regression vs default/reduced in short lane)
+- Additional check (`p3-close-mmvq-focused-sanity-20260511-r1`): with `--flash-attn off` and KV `q4_0/q4_0`, context init fails with `V cache quantization requires flash_attn`.
+
+P3 closure interpretation:
+
+- P3 is closed for build-pressure workflow objective.
+- `mmvq-focused` is kept as a narrow debug/build profile only and is not promoted to active prompt-heavy runtime lane.
+
+Artifacts:
+
+- `build_logs/agent-workload/p3-close-default-20260511-r1.csv`
+- `build_logs/agent-workload/p3-close-reduced-20260511-r1.csv`
+- `build_logs/agent-workload/p3-close-mmvq-focused-20260511-r2.csv`
+- `build_logs/agent-workload/p3-close-default-quick-20260511-r1.csv`
+- `build_logs/agent-workload/p3-close-reduced-quick-20260511-r1.csv`
+- `build_logs/agent-workload/p3-close-mmvq-focused-quick-20260511-r1.csv`
+- `build_logs/agent-workload/p3-close-mmvq-focused-20260511-r2.diagnostics.md`
+- `build_logs/agent-workload/p3-close-mmvq-focused-sanity-20260511-r1.server.log`
 
 ---
 

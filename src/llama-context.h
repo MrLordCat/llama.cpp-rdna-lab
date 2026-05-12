@@ -319,6 +319,8 @@ private:
     bool sched_is_tg = false;        // which scheduler is currently active in sched
 
     bool sched_need_reserve = true;
+    uint32_t sched_reserve_pp_outputs = 1;
+    uint32_t sched_reserved_pp_outputs = 0;
 
     ggml_backend_t backend_cpu = nullptr;
     std::vector<ggml_backend_ptr> backends;

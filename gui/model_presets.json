@@ -23,10 +23,23 @@
     "presets": [
         {
             "pattern": "Qwen3\\.6\\-27B\\-Q3_K_S\\.gguf",
+            "name": "History Default Qwen3.6-27B-Q3_K_S.gguf",
+            "ctx": 32768,
+            "batch_size": 2560,
+            "ubatch_size": 480,
+            "gpu_layers": 99,
+            "parallel": 1,
+            "flash_attn": true,
+            "kv_cache": 7,
+            "notes": "Applied from Autotune Runs History: run_id=run-0256de9fbc, tps=9.9751, time=2026-05-12 07:32:22, spec=ngram-mod, extra=base",
+            "extra_args": "--spec-type ngram-mod"
+        },
+        {
+            "pattern": "Qwen3\\.6\\-27B\\-Q3_K_S\\.gguf",
             "name": "AutoTune 32k+ Qwen3.6-27B-Q3_K_S.gguf",
             "ctx": 32768,
-            "batch_size": 2048,
-            "ubatch_size": 192,
+            "batch_size": 5120,
+            "ubatch_size": 1024,
             "gpu_layers": 99,
             "parallel": 1,
             "flash_attn": true,
