@@ -1,0 +1,18 @@
+# Results Log
+
+Compact ledger of completed experiments.
+
+| Date | ID | Short Name | Baseline TPS | Candidate TPS | Delta | Decision | Artifacts |
+| --- | --- | --- | ---: | ---: | ---: | --- | --- |
+| 2026-05-12 | E001 | H02 analytic gate | 9.85 | 16.23 (projected) | +64.7% (projected) | Proceed to microbench | docs/research/experiments/E001_H02_analytic_gate.md |
+| 2026-05-12 | E001-R1 | H02 runtime ub480 no-prime A/B | 9.9270 | 9.9056 | -0.22% | Revert; zero draft coverage | docs/research/experiments/E001_H02_analytic_gate.md |
+| 2026-05-12 | E002 | H08 historical ub824/832 cliff | 10.17 | 3.60 | -64.6% | Superseded as current target | docs/research/experiments/E002_H08_measured_ubatch_cliff.md |
+| 2026-05-12 | E002-R1 | H08 current ub480/490 boundary | 9.9751 | 0.0000 | fail at 490+ | Use ub480 as current best; target 480/490 | docs/research/experiments/E002_H08_measured_ubatch_cliff.md |
+| 2026-05-12 | E007 | H08 ub490 physical cap recon | 4.0122 | 9.7788 | +143.7% vs ub490 cliff | Candidate fix: cap physical n_ubatch to 480 | docs/research/experiments/E007_H08_current_ub480_490_recon.md |
+| 2026-05-12 | E003 | ngram formula vs observed | 9.43 / 9.85 | 9.81 / 10.84 | mixed (+4.1%, +10.1%) | Coverage-aware acceptance required | docs/research/experiments/E003_ngram_formula_observed_crosscheck.md |
+| 2026-05-12 | E004 | coverage-aware formula validation | 9.85 | 10.84 | +10.1% (observed) | Adopt coverage-aware projections | docs/research/experiments/E004_coverage_aware_formula_validation.md |
+| 2026-05-12 | E005 | speculative model batch validation | mixed | mixed | 5/6 fit wins for coverage-aware | Keep H09, add overhead-aware next step | docs/research/experiments/E005_spec_model_batch_validation.md |
+| 2026-05-12 | E006 | full retest + scientific audit | E001-E005 | reproduced | all 5 experiments PASS reproducibility | Continue with stronger statistical protocol | docs/research/experiments/E006_full_retest_and_scientific_audit.md |
+| 2026-05-12 | E007-R1 | H08 reserve-size fix for ub490+ | 4.0122 (ub490 no-cap old) / 9.7788 (ub480 cap) | 9.81 (ub490 no-cap patched) / 9.80 (ub512 no-cap patched) | +144.5% vs ub490 cliff / +0.3% vs ub480 | Keep; cliff removed without physical cap | build_logs/agent-workload/e007-fix-ub490-nocap-full.csv, build_logs/agent-workload/e007-fix-ub512-nocap-full.csv, build_logs/agent-workload/e007-fix-ub480-baseline-full.csv, docs/research/experiments/E007_H08_current_ub480_490_recon.md |
+| 2026-05-12 | E007-R2 | H08 auto mode check (no preferred) | 9.80 (ub490 no-preferred) | 3.98 (ub512 no-preferred) | -59.4% at ub512 | Keep guard policy; generic auto not sufficient yet | build_logs/agent-workload/e007-autofix2-ub490-nopref-full.csv, build_logs/agent-workload/e007-autofix2-ub512-nopref-full.csv, build_logs/agent-workload/e007-autofix2-ub512-pref480-full.csv, docs/research/experiments/E007_H08_current_ub480_490_recon.md |
+| 2026-05-12 | E007-R3 | H08 large-context ceiling break | 9.9751 (`ctx=32768,b=2560,ub=480`) | 10.8176 (`ctx=32768,b=5120,ub=1024`) | +8.45% | Keep; new 32k ceiling after PP reserve fix | build_logs/agent-workload/gui-autotune-Qwen3.6-27B-Q3_K_S-20260512-073021-autotune-summary.csv, build_logs/agent-workload/gui-autotune-Qwen3.6-27B-Q3_K_S-20260512-114709-autotune-summary.csv, build_logs/agent-workload/gui-autotune-Qwen3.6-27B-Q3_K_S-20260512-114709-cfg01.server.log, docs/research/experiments/E007_H08_current_ub480_490_recon.md |
