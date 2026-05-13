@@ -138,6 +138,25 @@ Negative control: `GGML_TKV_DIRECT_FATTN=0` для `turbo4_0/q8_0` теперь 
 
 Вывод: Stormrage `turbo4/turbo2` shape теперь воспроизводится на локальных реальных `TKV4/TKV2`, но на наших моделях и RDNA4 он не даёт speed advantage над `q4_0/q4_0`. Главный внешний выигрыш Stormrage остаётся связан с RDNA2 MoE-specific accelerator (`RDNA2_MATMUL_OPT_V1`), а не с общим dense/TurboKV path.
 
+Extra `b=1024,ub=1024` recheck: по просьбе снят тот же Stormrage shape, но с раскрытым большим microbatch (`b=1024`, `ub=1024`; при исходном `b=256` значение `ub=1024` фактически не проверяет 1024-token microbatch). На RX 9070 XT большой `ubatch` резко поднимает MoE prefill, включая TurboKV, но `q4_0/q4_0` всё ещё быстрее в том же shape.
+
+| Local RX 9070 XT | KV | pp512 | pp2048 | pp4096 | tg128 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Dense27B Q3_K_S | `q4_0/q4_0` | `1079.38` | `1244.60` | `1225.79` | `28.85` |
+| Dense27B Q3_K_S | `turbo4_0/turbo4_0` | `1006.08` | `1172.52` | `1135.15` | `20.95` |
+| Dense27B Q3_K_S | `turbo4_0/turbo2_0` | `997.35` | `1168.99` | `1133.96` | `20.78` |
+| MoE35B IQ3_XXS | `q4_0/q4_0` | `2807.61` | `3549.80` | `3500.76` | `102.50` |
+| MoE35B IQ3_XXS | `turbo4_0/turbo2_0` | `2590.18` | `3290.59` | `3182.46` | `56.28` |
+
+Артефакты extra run:
+- `build_logs/agent-workload/stormrage-extra-ub1024-dense27b-q4-q4-20260513.jsonl`
+- `build_logs/agent-workload/stormrage-extra-ub1024-dense27b-turbo4-turbo4-20260513.jsonl`
+- `build_logs/agent-workload/stormrage-extra-ub1024-dense27b-turbo4-turbo2-20260513.jsonl`
+- `build_logs/agent-workload/stormrage-extra-ub1024-moe35b-q4-q4-20260513.jsonl`
+- `build_logs/agent-workload/stormrage-extra-ub1024-moe35b-turbo4-turbo2-20260513.jsonl`
+
+MoE accelerator portability note: Stormrage `RDNA2_MATMUL_OPT_V1` is gated by compile flag, env var and `GGML_CUDA_CC_IS_RDNA2(cc)` in their `ggml/src/ggml-cuda/mmq.cuh`. It uses an RDNA2-tuned LDS double-buffer/padding path for MoE prefill, so it should not be blindly enabled on RDNA4 (`gfx1201`). If revisited, treat it as a separate guarded RDNA4 MoE/MMQ experiment with q4/TKV A/B and dense negative control; it is not a direct TurboKV storage-port follow-up.
+
 Первичный underfilled A/B на `ub=192` сохранён только как диагностический trace direct/fallback, не как главный speed claim:
 
 Подробный артефакт: `build_logs/agent-workload/e009-q4-vs-turbokv-v2review-20260513.md`.
