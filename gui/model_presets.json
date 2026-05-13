@@ -52,7 +52,7 @@
             "name": "AutoTune 32k+ Qwen3.6-27B-Q3_K_S.gguf",
             "ctx": 32768,
             "batch_size": 5120,
-            "ubatch_size": 1024,
+            "ubatch_size": 1512,
             "gpu_layers": 99,
             "parallel": 1,
             "flash_attn": true,

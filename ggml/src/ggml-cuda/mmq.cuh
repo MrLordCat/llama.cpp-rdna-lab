@@ -3457,7 +3457,8 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
         const char * __restrict__ x, const int offset_x, const int * __restrict__ y,
         const int * __restrict__ ids_dst, float * __restrict__ dst, float * __restrict__ tmp_fixup,
         const int stride_row_x, const int ncols_y, const int stride_col_dst,
-        const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop) {
+    const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop,
+    const bool use_rdna4_moe_mmq_staging) {
 
     constexpr int              warp_size  = ggml_cuda_get_physical_warp_size();
     constexpr int              nwarps     = mmq_get_nwarps_device();
@@ -3491,6 +3492,67 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
 
     constexpr int sz = sizeof(block_q8_1_mmq) / sizeof(int);
 
+#if defined(GGML_USE_HIP) && defined(RDNA4) && defined(AMD_WMMA_AVAILABLE)
+    if (use_rdna4_moe_mmq_staging) {
+        constexpr int tile_x_ints = mmq_y * mmq_get_mma_tile_x_k(type);
+        constexpr int lds_bank_pad = 1;
+        int * tile_x_cur  = tile_x;
+        int * tile_x_next = tile_x + tile_x_ints + lds_bank_pad;
+
+        if (kb0_start < kb0_stop) {
+            load_tiles(x, tile_x_cur, offset_x + kb0_start, tile_x_max_i, stride_row_x);
+        }
+        __syncthreads();
+
+        for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
+            const int kb0_next = kb0 + blocks_per_iter;
+            {
+                const int * by0 = y + ncols_y * (kb0 * qk / ne_block) * sz;
+#pragma unroll
+                for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
+                    int l = l0 + threadIdx.y*warp_size + threadIdx.x;
+
+                    tile_y[l] = by0[l];
+                }
+            }
+
+            if (kb0_next < kb0_stop) {
+                load_tiles(x, tile_x_next, offset_x + kb0_next, tile_x_max_i, stride_row_x);
+            }
+
+            __syncthreads();
+
+            vec_dot(tile_x_cur, tile_y, sum, 0);
+
+            __syncthreads();
+
+            {
+                const int * by0 = y + ncols_y * ((kb0 * qk / ne_block) * sz + sz);
+#pragma unroll
+                for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
+                    int l = l0 + threadIdx.y*warp_size + threadIdx.x;
+
+                    tile_y[l] = by0[l];
+                }
+            }
+
+            __syncthreads();
+
+            vec_dot(tile_x_cur, tile_y, sum, MMQ_TILE_NE_K);
+
+            __syncthreads();
+
+            if (kb0_next < kb0_stop) {
+                int * tmp = tile_x_cur;
+                tile_x_cur = tile_x_next;
+                tile_x_next = tmp;
+            }
+        }
+    } else
+#else
+    GGML_UNUSED(use_rdna4_moe_mmq_staging);
+#endif
+    {
     for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
         load_tiles(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
         {
@@ -3525,6 +3587,7 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
 
         __syncthreads();
     }
+    }
 
     if (fixup) {
         write_back(sum, ids_dst, tmp_fixup + blockIdx.x*(mmq_x*mmq_y), mmq_y, mmq_y, mmq_x);
@@ -3554,7 +3617,7 @@ static __global__ void mul_mat_q(
         const uint3 blocks_per_ne00, const int nrows_x, const int ncols_dst, const int stride_row_x, const int ncols_y, const int stride_col_dst,
         const uint3 channel_ratio, const uint3 nchannels_y, const int stride_channel_x, const int stride_channel_y, const int stride_channel_dst,
         const uint3 sample_ratio, const uint3 nsamples_y, const int stride_sample_x, const int stride_sample_y, const int stride_sample_dst,
-        const uint3 ntx) {
+        const uint3 ntx, const bool use_rdna4_moe_mmq_staging) {
 
     // Skip unused template specializations for faster compilation:
     if (mmq_x > get_mmq_x_max_device() || mmq_x % mmq_get_granularity_device(mmq_x) != 0) {
@@ -3639,7 +3702,7 @@ static __global__ void mul_mat_q(
         constexpr bool fixup = false;
         mul_mat_q_process_tile<type, mmq_x, need_check, fixup>
             (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, stride_row_x, ncols_y, stride_col_dst,
-             tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00.z);
+             tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00.z, use_rdna4_moe_mmq_staging);
         return;
     }
 #endif // (defined(GGML_USE_HIP) && !defined(CDNA4) && !defined(CDNA3)) || __CUDA_ARCH__ < GGML_CUDA_CC_VOLTA
@@ -3719,7 +3782,7 @@ static __global__ void mul_mat_q(
         constexpr bool fixup = false; // All but (potentially) the last iterations write their data to dst rather than the fixup buffer.
         mul_mat_q_process_tile<type, mmq_x, need_check, fixup>
             (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, stride_row_x, ncols_y, stride_col_dst,
-             tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop);
+             tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop, use_rdna4_moe_mmq_staging);
 
         kbc += blocks_per_ne00.z;
         kbc -= fastmodulo(kbc, blocks_per_ne00);
@@ -3788,7 +3851,7 @@ static __global__ void mul_mat_q(
     constexpr bool fixup = true; // Last index writes its data to fixup buffer to avoid data races with other blocks.
     mul_mat_q_process_tile<type, mmq_x, need_check, fixup>
         (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, stride_row_x, ncols_y, stride_col_dst,
-         tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop);
+         tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop, use_rdna4_moe_mmq_staging);
 }
 
 template <ggml_type type, int mmq_x, bool need_check>
@@ -3938,18 +4001,28 @@ struct mmq_args {
     bool use_stream_k; int64_t ncols_max;
 };
 
+static bool mmq_rdna4_moe_mmq_staging_enabled(const mmq_args & args, const int cc) {
+#if defined(GGML_USE_HIP)
+    return GGML_CUDA_CC_IS_RDNA4(cc) && args.ids_dst != nullptr && std::getenv("GGML_RDNA4_MOE_MMQ_STAGING") != nullptr;
+#else
+    GGML_UNUSED(args);
+    GGML_UNUSED(cc);
+    return false;
+#endif
+}
+
 template<ggml_type type>
-static size_t mmq_get_nbytes_shared(const int mmq_x, const int mmq_y, const int cc, const int warp_size, const int nwarps) {
+static size_t mmq_get_nbytes_shared(const int mmq_x, const int mmq_y, const int cc, const int warp_size, const int nwarps, const bool use_rdna4_moe_mmq_staging = false) {
     const tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(type, mmq_y);
     const int mmq_tile_x_k = mmq_get_mma_tile_x_k(type);
     const size_t nbs_ids = mmq_x*sizeof(int);
     const size_t nbs_x = (turing_mma_available(cc) || amd_mfma_available(cc) || amd_wmma_available(cc)) ? mmq_y*mmq_tile_x_k*sizeof(int) : txs.qs*sizeof(int) + txs.dm*sizeof(half2) + txs.sc*sizeof(int);
     const size_t nbs_y = mmq_x * (sizeof(block_q8_1_mmq));
-    return nbs_ids + nbs_x + GGML_PAD(nbs_y, nwarps*warp_size*sizeof(int));
+    return nbs_ids + nbs_x*(use_rdna4_moe_mmq_staging ? 2 : 1) + (use_rdna4_moe_mmq_staging ? sizeof(int) : 0) + GGML_PAD(nbs_y, nwarps*warp_size*sizeof(int));
 }
 
 template <ggml_type type, int mmq_x>
-static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
+static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream, const bool use_rdna4_moe_mmq_staging) {
     const int id = ggml_cuda_get_device();
     const int cc = ggml_cuda_info().devices[id].cc;
     const int nsm = ggml_cuda_info().devices[id].nsm;
@@ -3959,7 +4032,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
 
     const dim3 block_dims(warp_size, nwarps, 1);
 
-    const int nbytes_shared = mmq_get_nbytes_shared<type>(mmq_x, mmq_y, cc, warp_size, nwarps);
+    const int nbytes_shared = mmq_get_nbytes_shared<type>(mmq_x, mmq_y, cc, warp_size, nwarps, use_rdna4_moe_mmq_staging);
 
     CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, mmq_x, false>), nbytes_shared);
     CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, mmq_x,  true>), nbytes_shared);
@@ -3989,7 +4062,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
                  blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
                  channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
                  sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-                 ntx_fd);
+                 ntx_fd, use_rdna4_moe_mmq_staging);
         } else {
             constexpr bool need_check = true;
             mul_mat_q<type, mmq_x, need_check><<<block_nums_xy_tiling, block_dims, nbytes_shared, stream>>>
@@ -3997,7 +4070,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
                  blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
                  channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
                  sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-                 ntx_fd);
+                 ntx_fd, use_rdna4_moe_mmq_staging);
         }
         return;
     }
@@ -4029,7 +4102,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
              blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
              channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
              sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-             ntx_fd);
+             ntx_fd, use_rdna4_moe_mmq_staging);
 
         if (!fixup_needed) {
             return;
@@ -4047,7 +4120,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
              blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
              channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
              sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-             ntx_fd);
+             ntx_fd, use_rdna4_moe_mmq_staging);
 
         if (!fixup_needed) {
             return;
@@ -4072,6 +4145,8 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
     const bool trace_timing = std::getenv("GGML_TRACE_MMQ_TIMING") != nullptr;
     const bool trace_timing_sync = trace_timing && std::getenv("GGML_TRACE_MMQ_TIMING_SYNC") != nullptr;
     const bool trace_timing_pre_sync = trace_timing_sync && std::getenv("GGML_TRACE_MMQ_TIMING_PRE_SYNC") != nullptr;
+    const bool use_rdna4_moe_mmq_staging_requested = mmq_rdna4_moe_mmq_staging_enabled(args, cc);
+    bool use_rdna4_moe_mmq_staging_effective = use_rdna4_moe_mmq_staging_requested;
 
     const int mmq_x_max = get_mmq_x_max_host(cc);
     const int mmq_y = get_mmq_y_host(cc);
@@ -4102,69 +4177,82 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
 
     const auto timing_start = trace_timing ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
 
-    for (int mmq_x = 8; mmq_x <= mmq_x_max && ntiles_x_best > 1; mmq_x += 8) {
-        const int granularity = mmq_get_granularity_host(mmq_x, cc);
+    const auto select_mmq_x_best = [&](const bool use_rdna4_moe_mmq_staging) {
+        mmq_x_best = 0;
+        ntiles_x_best = INT_MAX;
 
-        if (mmq_x % granularity != 0 || mmq_get_nbytes_shared<type>(mmq_x, mmq_y, cc, warp_size, nwarps) > smpbo) {
-            continue;
+        for (int mmq_x = 8; mmq_x <= mmq_x_max && ntiles_x_best > 1; mmq_x += 8) {
+            const int granularity = mmq_get_granularity_host(mmq_x, cc);
+
+            if (mmq_x % granularity != 0 || mmq_get_nbytes_shared<type>(mmq_x, mmq_y, cc, warp_size, nwarps, use_rdna4_moe_mmq_staging) > smpbo) {
+                continue;
+            }
+
+            const int ntiles_x = (args.ncols_max + mmq_x - 1) / mmq_x;
+
+            if (ntiles_x < ntiles_x_best) {
+                mmq_x_best = mmq_x;
+                ntiles_x_best = ntiles_x;
+            }
         }
+    };
 
-        const int ntiles_x = (args.ncols_max + mmq_x - 1) / mmq_x;
+    select_mmq_x_best(use_rdna4_moe_mmq_staging_effective);
 
-        if (ntiles_x < ntiles_x_best) {
-            mmq_x_best = mmq_x;
-            ntiles_x_best = ntiles_x;
-        }
+    // If staged LDS layout does not fit SMEM constraints for any mmq_x, fall back safely.
+    if (mmq_x_best == 0 && use_rdna4_moe_mmq_staging_effective) {
+        use_rdna4_moe_mmq_staging_effective = false;
+        select_mmq_x_best(use_rdna4_moe_mmq_staging_effective);
     }
 
     switch (mmq_x_best) {
         case   8:
-            launch_mul_mat_q<type,   8>(ctx, args, stream);
+            launch_mul_mat_q<type,   8>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case  16:
-            launch_mul_mat_q<type,  16>(ctx, args, stream);
+            launch_mul_mat_q<type,  16>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case  24:
-            launch_mul_mat_q<type,  24>(ctx, args, stream);
+            launch_mul_mat_q<type,  24>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case  32:
-            launch_mul_mat_q<type,  32>(ctx, args, stream);
+            launch_mul_mat_q<type,  32>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case  40:
-            launch_mul_mat_q<type,  40>(ctx, args, stream);
+            launch_mul_mat_q<type,  40>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case  48:
-            launch_mul_mat_q<type,  48>(ctx, args, stream);
+            launch_mul_mat_q<type,  48>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case  56:
-            launch_mul_mat_q<type,  56>(ctx, args, stream);
+            launch_mul_mat_q<type,  56>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case  64:
-            launch_mul_mat_q<type,  64>(ctx, args, stream);
+            launch_mul_mat_q<type,  64>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case  72:
-            launch_mul_mat_q<type,  72>(ctx, args, stream);
+            launch_mul_mat_q<type,  72>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case  80:
-            launch_mul_mat_q<type,  80>(ctx, args, stream);
+            launch_mul_mat_q<type,  80>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case  88:
-            launch_mul_mat_q<type,  88>(ctx, args, stream);
+            launch_mul_mat_q<type,  88>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case  96:
-            launch_mul_mat_q<type,  96>(ctx, args, stream);
+            launch_mul_mat_q<type,  96>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case 104:
-            launch_mul_mat_q<type, 104>(ctx, args, stream);
+            launch_mul_mat_q<type, 104>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case 112:
-            launch_mul_mat_q<type, 112>(ctx, args, stream);
+            launch_mul_mat_q<type, 112>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case 120:
-            launch_mul_mat_q<type, 120>(ctx, args, stream);
+            launch_mul_mat_q<type, 120>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         case 128:
-            launch_mul_mat_q<type, 128>(ctx, args, stream);
+            launch_mul_mat_q<type, 128>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
             break;
         default:
             fprintf(stderr, "mmq_x_best=%d\n", mmq_x_best);
@@ -4199,7 +4287,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
         }
 
         GGML_LOG_INFO(
-            "%s: timing type=%d cc=%d nrows_x=%lld ncols_max=%lld ncols_dst=%lld mmq_x_best=%d mmq_y=%d sync_req=%d pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+            "%s: timing type=%d cc=%d nrows_x=%lld ncols_max=%lld ncols_dst=%lld mmq_x_best=%d mmq_y=%d rdna4_staging=%d sync_req=%d pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
             __func__,
             (int) type,
             cc,
@@ -4208,6 +4296,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
             (long long) args.ncols_dst,
             mmq_x_best,
             mmq_y,
+            use_rdna4_moe_mmq_staging_effective ? 1 : 0,
             trace_timing_sync ? 1 : 0,
             pre_sync_applied ? 1 : 0,
             sync_applied ? 1 : 0,
@@ -4220,7 +4309,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
 
     if (trace_path) {
         GGML_LOG_INFO(
-            "%s: type=%d cc=%d ncols_max=%lld mmq_x_max=%d mmq_y=%d nwarps=%d mmq_x_best=%d ntiles_x_best=%d\n",
+            "%s: type=%d cc=%d ncols_max=%lld mmq_x_max=%d mmq_y=%d nwarps=%d mmq_x_best=%d ntiles_x_best=%d rdna4_staging=%d\n",
             __func__,
             (int) type,
             cc,
@@ -4229,7 +4318,8 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
             mmq_y,
             nwarps,
             mmq_x_best,
-            ntiles_x_best);
+            ntiles_x_best,
+            use_rdna4_moe_mmq_staging_effective ? 1 : 0);
     }
 }
 

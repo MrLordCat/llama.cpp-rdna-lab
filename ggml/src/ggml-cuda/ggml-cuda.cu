@@ -2747,6 +2747,30 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
     GGML_TENSOR_BINARY_OP_LOCALS
 
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+    const bool trace_mul_mat_route = std::getenv("GGML_TRACE_CUDA_MUL_MAT_ROUTE") != nullptr;
+    const auto log_mul_mat_id_route = [&](const char * route) {
+        if (!trace_mul_mat_route) {
+            return;
+        }
+
+        GGML_LOG_INFO(
+            "GGML_TRACE_CUDA_MUL_MAT_ID_ROUTE: route=%s dst=%s src0=%s src1=%s src0_type=%s src1_type=%s dst_type=%s cc=%d ne2=%lld ne02=%lld ne12=%lld ids_ne0=%lld src0_ne=(%lld,%lld,%lld,%lld) src1_ne=(%lld,%lld,%lld,%lld) dst_ne=(%lld,%lld,%lld,%lld)\n",
+            route,
+            dst->name,
+            src0->name,
+            src1->name,
+            ggml_type_name(src0->type),
+            ggml_type_name(src1->type),
+            ggml_type_name(dst->type),
+            cc,
+            (long long) ne2,
+            (long long) ne02,
+            (long long) ne12,
+            (long long) ids->ne[0],
+            (long long) src0->ne[0], (long long) src0->ne[1], (long long) src0->ne[2], (long long) src0->ne[3],
+            (long long) src1->ne[0], (long long) src1->ne[1], (long long) src1->ne[2], (long long) src1->ne[3],
+            (long long) dst->ne[0],  (long long) dst->ne[1],  (long long) dst->ne[2],  (long long) dst->ne[3]);
+    };
 
     // [TAG_MUL_MAT_ID_CUDA_GRAPHS]
     if (src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
@@ -2755,11 +2779,13 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
             if (ggml_is_quantized(src0->type)) {
                 const int mmvq_mmid_max = get_mmvq_mmid_max_batch(src0->type, cc);
                 if (ne2 <= mmvq_mmid_max) {
+                    log_mul_mat_id_route("mul_mat_vec_q_direct");
                     ggml_cuda_mul_mat_vec_q(ctx, src0, src1, ids, dst);
                     return;
                 }
             } else {
                 if (GGML_CUDA_CC_IS_AMD(cc)) {
+                    log_mul_mat_id_route("mul_mat_vec_f_direct");
                     ggml_cuda_mul_mat_vec_f(ctx, src0, src1, ids, dst);
                     return;
                 }
@@ -2767,11 +2793,13 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         }
 
         if (ggml_cuda_should_use_mmq(src0->type, cc, ne12, /*n_experts=*/ne02)) {
+            log_mul_mat_id_route("mul_mat_q_direct");
             ggml_cuda_mul_mat_q(ctx, src0, src1, ids, dst);
             return;
         }
 
         if (ggml_cuda_should_use_mmf(src0->type, cc, WARP_SIZE, src0->ne, src0->nb, src1->ne[2], /*mul_mat_id=*/true)) {
+            log_mul_mat_id_route("mul_mat_f_direct");
             ggml_cuda_mul_mat_f(ctx, src0, src1, ids, dst);
             return;
         }
@@ -2792,6 +2820,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
 
     const int64_t n_expert_used = ids->ne[0];
     const int64_t ne_get_rows = ne12 * n_expert_used;
+    log_mul_mat_id_route("fallback_sorted_rows");
 
     std::vector<int32_t> ids_to_sorted_host;
     ids_to_sorted_host.reserve(2*ne_get_rows);
