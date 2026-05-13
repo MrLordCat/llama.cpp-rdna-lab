@@ -951,6 +951,30 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) dequantize_row_tq3_0,
         .from_float_ref           = (ggml_from_float_t) quantize_row_tq3_0_ref,
     },
+    [GGML_TYPE_TKV2_0] = {
+        .type_name                = "turbo2_0",
+        .blck_size                = QK_TKV_0,
+        .type_size                = sizeof(block_tkv2_0),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_tkv2_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_tkv2_0_ref,
+    },
+    [GGML_TYPE_TKV3_0] = {
+        .type_name                = "turbo3_0",
+        .blck_size                = QK_TKV_0,
+        .type_size                = sizeof(block_tkv3_0),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_tkv3_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_tkv3_0_ref,
+    },
+    [GGML_TYPE_TKV4_0] = {
+        .type_name                = "turbo4_0",
+        .blck_size                = QK_TKV_0,
+        .type_size                = sizeof(block_tkv4_0),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_tkv4_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_tkv4_0_ref,
+    },
 };
 
 const struct ggml_type_traits * ggml_get_type_traits(enum ggml_type type) {
@@ -1087,6 +1111,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "RWKV_WKV7",
     "SOLVE_TRI",
     "GATED_DELTA_NET",
+    "TURBO_WHT",
 
     "UNARY",
 
@@ -1104,7 +1129,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT != 96");
+static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1195,6 +1220,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "rwkv_wkv6(k, v, r, tf, td, s)",
     "gated_linear_attn(k, v, q, gate, s)",
     "rwkv_wkv7(r, w, k, v, a, b, s)",
+    "turbo_wht(x)",
     "A X = B, A triangular, solve X",
     "gated_delta_net(q, k, v, g, beta, s)",
 
@@ -1214,7 +1240,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT != 96");
+static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -5421,6 +5447,35 @@ void ggml_flash_attn_ext_add_sinks(
     a->src[4] = sinks;
 }
 
+// ggml_turbo_wht
+
+struct ggml_tensor * ggml_turbo_wht(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        int                   direction,
+        int                   group_size) {
+    GGML_ASSERT(ggml_is_contiguous(a));
+    GGML_ASSERT(a->type == GGML_TYPE_F32);
+    GGML_ASSERT(direction == 0 || direction == 1);
+
+    if (group_size == 0) {
+        group_size = QK_TKV_0;
+    }
+
+    GGML_ASSERT(group_size == QK_TKV_0);
+    GGML_ASSERT(a->ne[0] % group_size == 0);
+
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, a->ne);
+
+    result->op     = GGML_OP_TURBO_WHT;
+    result->src[0] = a;
+
+    ggml_set_op_params_i32(result, 0, direction);
+    ggml_set_op_params_i32(result, 1, group_size);
+
+    return result;
+}
+
 // ggml_flash_attn_back
 
 struct ggml_tensor * ggml_flash_attn_back(
@@ -7725,6 +7780,9 @@ size_t ggml_quantize_chunk(
         case GGML_TYPE_TBQ3_0:  result = quantize_tbq3_0 (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_TBQ4_0:  result = quantize_tbq4_0 (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_TQ3_0:   result = quantize_tq3_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_TKV2_0:  result = quantize_tkv2_0 (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_TKV3_0:  result = quantize_tkv3_0 (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_TKV4_0:  result = quantize_tkv4_0 (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ2_XXS: result = quantize_iq2_xxs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ2_XS:  result = quantize_iq2_xs (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ3_XXS: result = quantize_iq3_xxs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;

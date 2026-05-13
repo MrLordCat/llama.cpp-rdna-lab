@@ -10907,6 +10907,89 @@ void ggml_compute_forward_rwkv_wkv7(
     }
 }
 
+// ggml_compute_forward_turbo_wht
+
+static constexpr int GGML_TURBO_WHT_GROUP_SIZE = 128;
+
+static inline int ggml_turbo_wht_sign(int i) {
+    uint32_t x = (uint32_t)i * 0x9E3779B9u + 0x85EBCA6Bu;
+    x ^= x >> 16;
+    x *= 0x7FEB352Du;
+    x ^= x >> 15;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16;
+    return (x & 1u) ? 1 : -1;
+}
+
+static void ggml_turbo_wht_128(float * x) {
+    for (int step = 1; step < GGML_TURBO_WHT_GROUP_SIZE; step <<= 1) {
+        for (int i = 0; i < GGML_TURBO_WHT_GROUP_SIZE; i += step * 2) {
+            for (int j = i; j < i + step; ++j) {
+                const float a = x[j];
+                const float b = x[j + step];
+                x[j]        = a + b;
+                x[j + step] = a - b;
+            }
+        }
+    }
+}
+
+void ggml_compute_forward_turbo_wht(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+
+    GGML_ASSERT(src0->type == GGML_TYPE_F32);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(ggml_is_contiguous(src0));
+    GGML_ASSERT(ggml_is_contiguous(dst));
+
+    const int direction  = ggml_get_op_params_i32(dst, 0);
+    const int group_size = ggml_get_op_params_i32(dst, 1);
+    GGML_ASSERT(direction == 0 || direction == 1);
+    GGML_ASSERT(group_size == GGML_TURBO_WHT_GROUP_SIZE);
+    GGML_ASSERT(src0->ne[0] % group_size == 0);
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const int64_t head_dim        = src0->ne[0];
+    const int64_t n_heads         = ggml_nelements(src0) / head_dim;
+    const int64_t groups_per_head = head_dim / group_size;
+    const int64_t n_groups        = n_heads * groups_per_head;
+
+    const int64_t dr = (n_groups + nth - 1) / nth;
+    const int64_t g0 = dr * ith;
+    const int64_t g1 = MIN(g0 + dr, n_groups);
+
+    const float * src = (const float *) src0->data;
+    float       * out = (float       *) dst->data;
+
+    const float inv_sqrt128 = 0.08838834764831845f;
+    float tmp[GGML_TURBO_WHT_GROUP_SIZE];
+
+    for (int64_t g = g0; g < g1; ++g) {
+        const int64_t head_idx    = g / groups_per_head;
+        const int64_t group_in_hd = g % groups_per_head;
+        const int64_t base        = head_idx * head_dim + group_in_hd * group_size;
+
+        for (int j = 0; j < GGML_TURBO_WHT_GROUP_SIZE; ++j) {
+            const float x = src[base + j];
+            tmp[j] = direction == 0 ? x * (float) ggml_turbo_wht_sign(j) : x;
+        }
+
+        ggml_turbo_wht_128(tmp);
+
+        for (int j = 0; j < GGML_TURBO_WHT_GROUP_SIZE; ++j) {
+            float x = tmp[j] * inv_sqrt128;
+            if (direction == 1) {
+                x *= (float) ggml_turbo_wht_sign(j);
+            }
+            out[base + j] = x;
+        }
+    }
+}
+
 // ggml_compute_forward_map_custom1
 
 void ggml_compute_forward_map_custom1(

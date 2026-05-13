@@ -304,6 +304,31 @@ typedef struct {
 } block_tq3_0;
 static_assert(sizeof(block_tq3_0) == QK_TQ3_0/4 + QK_TQ3_0/8 + sizeof(ggml_half), "wrong tq3_0 block size/padding");
 
+// TurboKV cache formats (128-element WHT blocks)
+#define QK_TKV_0 128
+
+// 2.125 bpw
+typedef struct {
+    uint8_t qs[QK_TKV_0 / 4];
+    ggml_half d;
+} block_tkv2_0;
+static_assert(sizeof(block_tkv2_0) == QK_TKV_0 / 4 + sizeof(ggml_half), "wrong tkv2_0 block size/padding");
+
+// 3.125 bpw
+typedef struct {
+    uint8_t qs[QK_TKV_0 / 4];
+    uint8_t qh[QK_TKV_0 / 8];
+    ggml_half d;
+} block_tkv3_0;
+static_assert(sizeof(block_tkv3_0) == QK_TKV_0 / 4 + QK_TKV_0 / 8 + sizeof(ggml_half), "wrong tkv3_0 block size/padding");
+
+// 4.125 bpw
+typedef struct {
+    uint8_t qs[QK_TKV_0 / 2];
+    ggml_half d;
+} block_tkv4_0;
+static_assert(sizeof(block_tkv4_0) == QK_TKV_0 / 2 + sizeof(ggml_half), "wrong tkv4_0 block size/padding");
+
 //
 // Super-block quantization structures
 //

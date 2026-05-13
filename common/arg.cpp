@@ -399,15 +399,26 @@ const std::vector<ggml_type> kv_cache_types = {
     GGML_TYPE_TBQ3_0,
     GGML_TYPE_TBQ4_0,
     GGML_TYPE_TQ3_0,
+    GGML_TYPE_TKV2_0,
+    GGML_TYPE_TKV3_0,
+    GGML_TYPE_TKV4_0,
 };
 
 static ggml_type kv_cache_type_from_str(const std::string & s) {
-    // Local compatibility aliases for turbo-style KV flags used in external benchmark scripts.
-    if (s == "turbo4" || s == "tbq4" || s == "tb4") {
-        return GGML_TYPE_Q4_0;
+    if (s == "turbo4") {
+        return GGML_TYPE_TKV4_0;
     }
-    if (s == "turbo3" || s == "turbo2" || s == "tbq3" || s == "tb3") {
-        return GGML_TYPE_TQ3_0;
+    if (s == "turbo3") {
+        return GGML_TYPE_TKV3_0;
+    }
+    if (s == "turbo2") {
+        return GGML_TYPE_TKV2_0;
+    }
+    if (s == "tbq4" || s == "tb4") {
+        return GGML_TYPE_TBQ4_0;
+    }
+    if (s == "tbq3" || s == "tb3") {
+        return GGML_TYPE_TBQ3_0;
     }
 
     for (const auto & type : kv_cache_types) {
@@ -423,7 +434,7 @@ static std::string get_all_kv_cache_types() {
     for (const auto & type : kv_cache_types) {
         msg << ggml_type_name(type) << (&type == &kv_cache_types.back() ? "" : ", ");
     }
-    msg << ", turbo4(alias:q4_0), turbo3(alias:tq3_0), turbo2(alias:tq3_0), tbq4(alias:q4_0), tbq3(alias:tq3_0), tb4(alias:q4_0), tb3(alias:tq3_0)";
+    msg << ", turbo4, turbo3, turbo2, tbq4, tbq3, tb4, tb3";
     return msg.str();
 }
 

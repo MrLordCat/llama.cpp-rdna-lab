@@ -45,6 +45,7 @@ Where:
 | H09 | Coverage-aware speculative acceptance model | Local draft acceptance overestimates global speedup if draft coverage is low | improves prediction fidelity | extra instrumentation complexity | compare implied vs effective acceptance |
 | H10 | Overhead-aware speculative model by mode/config | Fixed overhead term misses severe regressions in some high-coverage MTP cases | improves prediction fidelity | more parameters and overfitting risk | backsolve implied overhead across measured cases |
 | H11 | ROCm compute vbuffer chunking | A single large ROCm graph compute allocation can land in a bad RDNA4/Windows residency pocket even when kernel routes are unchanged | removes 3x+ prefill cliffs at large native ubatch | extra backend buffer chunks may add allocator fragmentation or affect non-ROCm backends if scoped incorrectly | single-chunk A/B with full `PP reserve` |
+| H12 | Direct/hybrid compressed-KV FlashAttention for local TurboKV | Full graph-dequant fallback is slow; full direct prefill is also slower at large ubatch; Turbo4 currently wants F16/WMMA prefill plus direct TKV decode | implemented; corrected ub1024 Turbo4 gap vs q4 is ~10%, not the earlier ub192 ~26% | complex graph/backend integration and output equivalence risk | keep hybrid default for Turbo4, tune decode vec-dot and F16 dequant/prefill overhead, continue equivalence validation |
 
 ## Priority (Start Here)
 
@@ -52,9 +53,10 @@ Where:
 2. H08 remains useful for symptom triage, but caps/planners are now diagnostic tools rather than the preferred final fix when allocator layout can be repaired.
 3. H02 because it can be prototyped quickly in scheduler logic.
 4. H05 because prefill IO is still dominant in prompt-heavy scenarios.
-5. H09 to avoid misleading speculative projections in low-coverage runs.
-6. H10 to explain cross-mode speculative regressions with measured overhead.
-7. H01 as a low-risk extension of existing ngram flow.
+5. H12 implemented as default Turbo4 hybrid path, but remains a performance-tuning track until the remaining `~10%` active-lane q4 gap is closed.
+6. H09 to avoid misleading speculative projections in low-coverage runs.
+7. H10 to explain cross-mode speculative regressions with measured overhead.
+8. H01 as a low-risk extension of existing ngram flow.
 
 ## Evidence Snapshot (E006 Retest)
 
@@ -62,3 +64,4 @@ Where:
 - Supported as modeling-next-step: H10.
 - Analytic-only so far: H02.
 - Plausible but not measured yet: H01, H03, H04, H05, H06, H07.
+- Prototype measured and promoted to default for eligible TKV lanes. Smoke `pp64/tg8` improved `turbo4_0` from `186.69/17.09` fallback to `227.88/24.82` direct. Corrected active-lane `v2-review` at `ub=1024` shows Turbo4 hybrid below q4 but much closer (`q4_0=11.15 TPS`, `turbo4=10.02 TPS`, `-10.1%`); diagnostic `ub=192` remains useful only for direct-vs-fallback (`turbo4 direct=6.68`, fallback=3.10 TPS).

@@ -14,12 +14,36 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <numeric>
 #include <sstream>
 #include <unordered_set>
 
 // dedup helpers
+
+static constexpr int LLAMA_TKV_GROUP_SIZE = 128;
+
+static bool llama_is_turbo_kv_type(enum ggml_type type) {
+    return type == GGML_TYPE_TQ3_0 || type == GGML_TYPE_TKV2_0 || type == GGML_TYPE_TKV3_0 || type == GGML_TYPE_TKV4_0;
+}
+
+static bool llama_is_tkv_kv_type(enum ggml_type type) {
+    return type == GGML_TYPE_TKV2_0 || type == GGML_TYPE_TKV3_0 || type == GGML_TYPE_TKV4_0;
+}
+
+static bool llama_tkv_direct_fattn_enabled() {
+    const char * env = std::getenv("GGML_TKV_DIRECT_FATTN");
+    if (env == nullptr || env[0] == '\0') {
+        return true;
+    }
+    return std::strcmp(env, "0") != 0;
+}
+
+static bool llama_tkv_direct_prefill_enabled() {
+    const char * env = std::getenv("GGML_TKV_DIRECT_PREFILL");
+    return env != nullptr && env[0] != '\0' && std::strcmp(env, "0") != 0;
+}
 
 static ggml_tensor * build_attn_inp_kq_mask(
         ggml_context * ctx,
@@ -1983,6 +2007,20 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     k = ggml_permute(ctx0, k, 0, 2, 1, 3);
     v = ggml_permute(ctx0, v, 0, 2, 1, 3);
 
+    const bool direct_tkv_base = use_flash_attn && llama_tkv_direct_fattn_enabled() &&
+            llama_is_tkv_kv_type(k->type) && llama_is_tkv_kv_type(v->type) && k->type == v->type &&
+            q->ne[0] % LLAMA_TKV_GROUP_SIZE == 0 &&
+            k->ne[0] % LLAMA_TKV_GROUP_SIZE == 0 && v->ne[0] % LLAMA_TKV_GROUP_SIZE == 0;
+    const bool direct_tkv_fattn = direct_tkv_base && (q->ne[1] <= 2 || llama_tkv_direct_prefill_enabled());
+
+    if (direct_tkv_fattn) {
+        if (!ggml_is_contiguous(q)) {
+            q = ggml_cont(ctx0, q);
+        }
+        q = ggml_turbo_wht(ctx0, q, 0, LLAMA_TKV_GROUP_SIZE);
+        cb(q, "q_tkv_wht", il);
+    }
+
     ggml_tensor * cur;
 
     if (use_flash_attn) {
@@ -1992,16 +2030,15 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             v = ggml_transpose(ctx0, v);
         }
 
-        // Dequant tq3_0 K/V for flash attention.
-        // dequantize_block_tq3_0 runs inverse WHT, restoring original values.
-        // Use F32 intermediate (CPU backend can't dequant to F16).
-        // Flash attention's existing F32→F16 conversion handles the rest.
-        if (k->type == GGML_TYPE_TQ3_0) {
-            k = ggml_cast(ctx0, k, GGML_TYPE_F32);
+        // Dequant TurboQuant K/V for flash attention.
+        // Dequant kernels run inverse WHT, restoring original values.
+        // Flash attention consumes F16 K/V, so avoid a F32 intermediate on this GPU path.
+        if (!direct_tkv_fattn && llama_is_turbo_kv_type(k->type)) {
+            k = ggml_cast(ctx0, k, GGML_TYPE_F16);
             cb(k, "k_dequant", il);
         }
-        if (v->type == GGML_TYPE_TQ3_0) {
-            v = ggml_cast(ctx0, v, GGML_TYPE_F32);
+        if (!direct_tkv_fattn && llama_is_turbo_kv_type(v->type)) {
+            v = ggml_cast(ctx0, v, GGML_TYPE_F16);
             cb(v, "v_dequant", il);
         }
 
@@ -2020,6 +2057,14 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         ggml_flash_attn_ext_add_sinks(cur, sinks);
         ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);
+
+        if (direct_tkv_fattn) {
+            if (!ggml_is_contiguous(cur)) {
+                cur = ggml_cont(ctx0, cur);
+            }
+            cur = ggml_turbo_wht(ctx0, cur, 1, LLAMA_TKV_GROUP_SIZE);
+            cb(cur, "kqv_tkv_iwht", il);
+        }
 
         if (v_mla) {
 #if 0

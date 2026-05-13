@@ -469,11 +469,20 @@ static void print_usage(int /* argc */, char ** argv) {
 }
 
 static ggml_type ggml_type_from_name(const std::string & s) {
-    if (s == "turbo4" || s == "tbq4" || s == "tb4") {
-        return GGML_TYPE_Q4_0;
+    if (s == "turbo4") {
+        return GGML_TYPE_TKV4_0;
     }
-    if (s == "turbo3" || s == "turbo2" || s == "tbq3" || s == "tb3") {
-        return GGML_TYPE_TQ3_0;
+    if (s == "turbo3") {
+        return GGML_TYPE_TKV3_0;
+    }
+    if (s == "turbo2") {
+        return GGML_TYPE_TKV2_0;
+    }
+    if (s == "tbq4" || s == "tb4") {
+        return GGML_TYPE_TBQ4_0;
+    }
+    if (s == "tbq3" || s == "tb3") {
+        return GGML_TYPE_TBQ3_0;
     }
 
     if (s == "f16") {
@@ -508,6 +517,15 @@ static ggml_type ggml_type_from_name(const std::string & s) {
     }
     if (s == "tq3_0") {
         return GGML_TYPE_TQ3_0;
+    }
+    if (s == "turbo2_0") {
+        return GGML_TYPE_TKV2_0;
+    }
+    if (s == "turbo3_0") {
+        return GGML_TYPE_TKV3_0;
+    }
+    if (s == "turbo4_0") {
+        return GGML_TYPE_TKV4_0;
     }
 
     return GGML_TYPE_COUNT;

@@ -130,6 +130,24 @@ void quantize_row_tq3_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, 
     quantize_row_tq3_0_ref(x, y, k);
 }
 
+void quantize_row_tkv2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
+    assert(k % QK_TKV_0 == 0);
+    block_tkv2_0 * GGML_RESTRICT y = vy;
+    quantize_row_tkv2_0_ref(x, y, k);
+}
+
+void quantize_row_tkv3_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
+    assert(k % QK_TKV_0 == 0);
+    block_tkv3_0 * GGML_RESTRICT y = vy;
+    quantize_row_tkv3_0_ref(x, y, k);
+}
+
+void quantize_row_tkv4_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
+    assert(k % QK_TKV_0 == 0);
+    block_tkv4_0 * GGML_RESTRICT y = vy;
+    quantize_row_tkv4_0_ref(x, y, k);
+}
+
 //===================================== Q8_K ==============================================
 
 void quantize_row_q8_K_generic(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {

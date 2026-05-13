@@ -33,6 +33,62 @@ build_logs\agent-workload\<label>.server.log
 
 Для коротких агентных ответов runner по умолчанию добавляет `--chat-template-kwargs {"enable_thinking":false,"preserve_thinking":false}`. Это можно отключить флагом `--no-disable-thinking`.
 
+## TurboKV direct FlashAttention smoke (2026-05-13)
+
+Это короткий технический smoke для guarded prototype `GGML_TKV_DIRECT_FATTN=1`, а не финальный target-lane speed claim. Полный артефакт с командами и числами: `build_logs/agent-workload/e009-tkv-direct-fattn-smoke-20260513.md`.
+
+Профиль:
+
+- `build-rocm-vec/bin/llama-bench.exe`
+- `models/Qwen3.6-27B-Q3_K_S.gguf`
+- `-p 64 -n 8 -b 128 -ub 128 -fa 1 -fitt 2048 -fitc 4096 -r 1 --no-warmup`
+- `HSA_OVERRIDE_GFX_VERSION` unset
+
+Результаты:
+
+| KV cache | Path | pp64 tok/s | tg8 tok/s |
+| --- | --- | ---: | ---: |
+| q4_0/q4_0 | baseline before direct prototype | `224.10` | `26.81` |
+| turbo4_0/turbo4_0 | graph dequant fallback | `186.69` | `17.09` |
+| turbo4_0/turbo4_0 | `GGML_TKV_DIRECT_FATTN=1` | `227.88` | `24.82` |
+| turbo3_0/turbo3_0 | `GGML_TKV_DIRECT_FATTN=1` | `221.67` | `24.60` |
+| turbo2_0/turbo2_0 | `GGML_TKV_DIRECT_FATTN=1` | `225.50` | `25.52` |
+
+Итог: direct path убирает основной penalty graph-dequant на маленьком smoke-lane и возвращает TKV decode близко к `q4_0/q4_0`. Перед включением по умолчанию нужны deterministic equivalence и полноценный prompt-heavy A/B.
+
+## TurboKV vs q4 on active lane (2026-05-13)
+
+Главное сравнение для `turbo4` нужно вести на том же best-shape, что и `q4`: `v2-review`, `ctx=12288`, `b=6144`, `ub=1024`, `repo-snapshot chars=21872`, no-reuse, thinking on, `spec=none`, модель `Qwen3.6-27B-Q3_K_S.gguf`.
+
+Подробный артефакт с командами и файлами: `build_logs/agent-workload/e009-q4-vs-turbo4-ub1024-v2review-20260513.md`.
+
+| KV cache | Mode | Runs | Aggregate TPS | Delta vs q4 |
+| --- | --- | ---: | ---: | ---: |
+| q4_0/q4_0 | baseline | `3` | `11.15` | baseline |
+| turbo4_0/turbo4_0 | hybrid default (direct decode, F16 prefill) | `3` | `10.02` | `-10.1%` |
+| turbo4_0/turbo4_0 | full direct prefill (`GGML_TKV_DIRECT_PREFILL=1`) | `1` | `7.70` | `-30.9%` |
+
+Breakdown confirmed by server timings:
+
+| KV cache | Prompt eval TPS mean | Decode eval TPS mean |
+| --- | ---: | ---: |
+| q4_0/q4_0 | `1149.47` | `27.85` |
+| turbo4_0/turbo4_0 hybrid | `1013.22` | `25.80` |
+
+Итог для текущего этапа: правильный `ub=1024` резко сокращает разрыв `turbo4` к `q4` с прежних `~26%` до `~10%`. Full-direct prefill пока хуже; текущий лучший путь для качества/скорости — `turbo4` hybrid: prefill через F16 dequant + WMMA, decode через direct TKV.
+
+Первичный underfilled A/B на `ub=192` сохранён только как диагностический trace direct/fallback, не как главный speed claim:
+
+Подробный артефакт: `build_logs/agent-workload/e009-q4-vs-turbokv-v2review-20260513.md`.
+
+| KV cache | Mode | Aggregate TPS | Delta vs q4 |
+| --- | --- | ---: | ---: |
+| q4_0/q4_0 | baseline | `9.01` | baseline |
+| turbo4_0/turbo4_0 | direct (default) | `6.68` | `-25.9%` |
+| turbo3_0/turbo3_0 | direct (default) | `6.25` | `-30.6%` |
+| turbo2_0/turbo2_0 | direct (default) | `6.71` | `-25.5%` |
+| turbo4_0/turbo4_0 | fallback (`GGML_TKV_DIRECT_FATTN=0`) | `3.10` | `-65.6%` |
+
 ## Надёжность замеров
 
 ### Активная политика контекста (2026-05-10)

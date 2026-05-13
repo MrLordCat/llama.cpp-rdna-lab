@@ -680,3 +680,233 @@ size_t quantize_tbq4_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst
     }
     return nrows * row_size;
 }
+
+// ---------------------------------------------------------------------------
+// TurboKV: 128-element WHT cache formats
+// ---------------------------------------------------------------------------
+
+static inline int turboq_tkv_sign(int i) {
+    uint32_t x = (uint32_t)i * 0x9E3779B9u + 0x85EBCA6Bu;
+    x ^= x >> 16;
+    x *= 0x7FEB352Du;
+    x ^= x >> 15;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16;
+    return (x & 1u) ? 1 : -1;
+}
+
+static void turboq_tkv_wht_forward(float * x) {
+    for (int j = 0; j < QK_TKV_0; ++j) {
+        x[j] *= (float) turboq_tkv_sign(j);
+    }
+    for (int step = 1; step < QK_TKV_0; step <<= 1) {
+        for (int i = 0; i < QK_TKV_0; i += step * 2) {
+            for (int j = i; j < i + step; ++j) {
+                const float a = x[j];
+                const float b = x[j + step];
+                x[j]        = a + b;
+                x[j + step] = a - b;
+            }
+        }
+    }
+    const float s = 0.08838834764831845f;
+    for (int j = 0; j < QK_TKV_0; ++j) {
+        x[j] *= s;
+    }
+}
+
+static void turboq_tkv_wht_inverse(float * x) {
+    for (int step = 1; step < QK_TKV_0; step <<= 1) {
+        for (int i = 0; i < QK_TKV_0; i += step * 2) {
+            for (int j = i; j < i + step; ++j) {
+                const float a = x[j];
+                const float b = x[j + step];
+                x[j]        = a + b;
+                x[j + step] = a - b;
+            }
+        }
+    }
+    const float s = 0.08838834764831845f;
+    for (int j = 0; j < QK_TKV_0; ++j) {
+        x[j] *= s * (float) turboq_tkv_sign(j);
+    }
+}
+
+static void turboq_tkv_prepare_rotated(const float * x, float * rotated, float * norm_out) {
+    float norm_sq = 0.0f;
+    for (int j = 0; j < QK_TKV_0; ++j) {
+        norm_sq += x[j] * x[j];
+    }
+
+    float norm = sqrtf(norm_sq);
+    if (norm < 1e-10f) {
+        norm = 1e-10f;
+    }
+
+    for (int j = 0; j < QK_TKV_0; ++j) {
+        rotated[j] = x[j] / norm;
+    }
+    turboq_tkv_wht_forward(rotated);
+    *norm_out = norm;
+}
+
+void quantize_row_tkv2_0_ref(const float * GGML_RESTRICT x, block_tkv2_0 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TKV_0 == 0);
+    const int64_t nb = k / QK_TKV_0;
+    float * rotated = turboq_get_scratch(QK_TKV_0);
+    const float scale_up = sqrtf((float) QK_TKV_0);
+
+    for (int64_t b = 0; b < nb; ++b) {
+        float norm;
+        turboq_tkv_prepare_rotated(x + b * QK_TKV_0, rotated, &norm);
+        memset(y[b].qs, 0, sizeof(y[b].qs));
+
+        for (int j = 0; j < QK_TKV_0; ++j) {
+            const uint8_t idx = quantize_scalar_2bit(rotated[j] * scale_up);
+            y[b].qs[j / 4] |= (uint8_t) ((idx & 0x3) << (2 * (j % 4)));
+        }
+        y[b].d = GGML_FP32_TO_FP16(norm);
+    }
+}
+
+void dequantize_row_tkv2_0(const block_tkv2_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TKV_0 == 0);
+    const int64_t nb = k / QK_TKV_0;
+    float * rotated = turboq_get_scratch(QK_TKV_0);
+    const float scale_down = 1.0f / sqrtf((float) QK_TKV_0);
+
+    for (int64_t b = 0; b < nb; ++b) {
+        const float norm = GGML_FP16_TO_FP32(x[b].d);
+        for (int j = 0; j < QK_TKV_0; ++j) {
+            const uint8_t idx = (x[b].qs[j / 4] >> (2 * (j % 4))) & 0x3;
+            rotated[j] = turboq_codebook_2bit[idx] * scale_down;
+        }
+        turboq_tkv_wht_inverse(rotated);
+        for (int j = 0; j < QK_TKV_0; ++j) {
+            y[b * QK_TKV_0 + j] = rotated[j] * norm;
+        }
+    }
+}
+
+size_t quantize_tkv2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix) {
+    (void)imatrix;
+    assert(n_per_row % QK_TKV_0 == 0);
+
+    const int64_t nb_per_row = n_per_row / QK_TKV_0;
+    const size_t row_size = nb_per_row * sizeof(block_tkv2_0);
+
+    for (int64_t row = 0; row < nrows; ++row) {
+        quantize_row_tkv2_0_ref(src + row * n_per_row, (block_tkv2_0 *)((char *)dst + row * row_size), n_per_row);
+    }
+    return nrows * row_size;
+}
+
+void quantize_row_tkv3_0_ref(const float * GGML_RESTRICT x, block_tkv3_0 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TKV_0 == 0);
+    const int64_t nb = k / QK_TKV_0;
+    float * rotated = turboq_get_scratch(QK_TKV_0);
+    const float scale_up = sqrtf((float) QK_TKV_0);
+
+    for (int64_t b = 0; b < nb; ++b) {
+        float norm;
+        turboq_tkv_prepare_rotated(x + b * QK_TKV_0, rotated, &norm);
+        memset(y[b].qs, 0, sizeof(y[b].qs));
+        memset(y[b].qh, 0, sizeof(y[b].qh));
+
+        for (int j = 0; j < QK_TKV_0; ++j) {
+            const uint8_t idx = quantize_scalar_3bit(rotated[j] * scale_up);
+            y[b].qs[j / 4] |= (uint8_t) ((idx & 0x3) << (2 * (j % 4)));
+            y[b].qh[j / 8] |= (uint8_t) (((idx >> 2) & 0x1) << (j % 8));
+        }
+        y[b].d = GGML_FP32_TO_FP16(norm);
+    }
+}
+
+void dequantize_row_tkv3_0(const block_tkv3_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TKV_0 == 0);
+    const int64_t nb = k / QK_TKV_0;
+    float * rotated = turboq_get_scratch(QK_TKV_0);
+    const float scale_down = 1.0f / sqrtf((float) QK_TKV_0);
+
+    for (int64_t b = 0; b < nb; ++b) {
+        const float norm = GGML_FP16_TO_FP32(x[b].d);
+        for (int j = 0; j < QK_TKV_0; ++j) {
+            const int low2 = (x[b].qs[j / 4] >> (2 * (j % 4))) & 0x3;
+            const int hi1  = (x[b].qh[j / 8] >> (j % 8)) & 0x1;
+            const int idx  = low2 | (hi1 << 2);
+            rotated[j] = turboq_codebook_3bit[idx] * scale_down;
+        }
+        turboq_tkv_wht_inverse(rotated);
+        for (int j = 0; j < QK_TKV_0; ++j) {
+            y[b * QK_TKV_0 + j] = rotated[j] * norm;
+        }
+    }
+}
+
+size_t quantize_tkv3_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix) {
+    (void)imatrix;
+    assert(n_per_row % QK_TKV_0 == 0);
+
+    const int64_t nb_per_row = n_per_row / QK_TKV_0;
+    const size_t row_size = nb_per_row * sizeof(block_tkv3_0);
+
+    for (int64_t row = 0; row < nrows; ++row) {
+        quantize_row_tkv3_0_ref(src + row * n_per_row, (block_tkv3_0 *)((char *)dst + row * row_size), n_per_row);
+    }
+    return nrows * row_size;
+}
+
+void quantize_row_tkv4_0_ref(const float * GGML_RESTRICT x, block_tkv4_0 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TKV_0 == 0);
+    const int64_t nb = k / QK_TKV_0;
+    float * rotated = turboq_get_scratch(QK_TKV_0);
+    const float scale_up = sqrtf((float) QK_TKV_0);
+
+    for (int64_t b = 0; b < nb; ++b) {
+        float norm;
+        turboq_tkv_prepare_rotated(x + b * QK_TKV_0, rotated, &norm);
+        memset(y[b].qs, 0, sizeof(y[b].qs));
+
+        for (int j = 0; j < QK_TKV_0; ++j) {
+            const uint8_t idx = quantize_scalar_4bit(rotated[j] * scale_up);
+            if (j % 2 == 0) {
+                y[b].qs[j / 2] = idx;
+            } else {
+                y[b].qs[j / 2] |= (uint8_t) (idx << 4);
+            }
+        }
+        y[b].d = GGML_FP32_TO_FP16(norm);
+    }
+}
+
+void dequantize_row_tkv4_0(const block_tkv4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TKV_0 == 0);
+    const int64_t nb = k / QK_TKV_0;
+    float * rotated = turboq_get_scratch(QK_TKV_0);
+    const float scale_down = 1.0f / sqrtf((float) QK_TKV_0);
+
+    for (int64_t b = 0; b < nb; ++b) {
+        const float norm = GGML_FP16_TO_FP32(x[b].d);
+        for (int j = 0; j < QK_TKV_0; ++j) {
+            const uint8_t idx = (j % 2 == 0) ? (x[b].qs[j / 2] & 0x0F) : ((x[b].qs[j / 2] >> 4) & 0x0F);
+            rotated[j] = turboq_codebook_4bit[idx] * scale_down;
+        }
+        turboq_tkv_wht_inverse(rotated);
+        for (int j = 0; j < QK_TKV_0; ++j) {
+            y[b * QK_TKV_0 + j] = rotated[j] * norm;
+        }
+    }
+}
+
+size_t quantize_tkv4_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix) {
+    (void)imatrix;
+    assert(n_per_row % QK_TKV_0 == 0);
+
+    const int64_t nb_per_row = n_per_row / QK_TKV_0;
+    const size_t row_size = nb_per_row * sizeof(block_tkv4_0);
+
+    for (int64_t row = 0; row < nrows; ++row) {
+        quantize_row_tkv4_0_ref(src + row * n_per_row, (block_tkv4_0 *)((char *)dst + row * row_size), n_per_row);
+    }
+    return nrows * row_size;
+}

@@ -293,6 +293,146 @@ static __device__ void cpy_blck_f32_tq3_0(const char * cxi, char * cdsti) {
     quantize_f32_tq3_0_block((const float *)cxi, (block_tq3_0 *)cdsti);
 }
 
+static __device__ __forceinline__ int tkv_sign_device(int i) {
+    uint32_t x = (uint32_t)i * 0x9E3779B9u + 0x85EBCA6Bu;
+    x ^= x >> 16;
+    x *= 0x7FEB352Du;
+    x ^= x >> 15;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16;
+    return (x & 1u) ? 1 : -1;
+}
+
+static __device__ __forceinline__ void tkv_wht128_forward_device(float * x) {
+    for (int j = 0; j < QK_TKV_0; ++j) {
+        x[j] *= (float) tkv_sign_device(j);
+    }
+    for (int step = 1; step < QK_TKV_0; step <<= 1) {
+        for (int i = 0; i < QK_TKV_0; i += step * 2) {
+            for (int j = i; j < i + step; ++j) {
+                const float a = x[j];
+                const float b = x[j + step];
+                x[j]        = a + b;
+                x[j + step] = a - b;
+            }
+        }
+    }
+    const float s = 0.08838834764831845f;
+    for (int j = 0; j < QK_TKV_0; ++j) {
+        x[j] *= s;
+    }
+}
+
+static __device__ __forceinline__ uint8_t tkv_quantize_2bit(float x) {
+    if (x < -0.9816f) return 0;
+    if (x <  0.0000f) return 1;
+    if (x <  0.9816f) return 2;
+    return 3;
+}
+
+static __device__ __forceinline__ uint8_t tkv_quantize_3bit(float x) {
+    if (x < -1.7480f) return 0;
+    if (x < -1.0500f) return 1;
+    if (x < -0.5006f) return 2;
+    if (x <  0.0000f) return 3;
+    if (x <  0.5006f) return 4;
+    if (x <  1.0500f) return 5;
+    if (x <  1.7480f) return 6;
+    return 7;
+}
+
+static __device__ __forceinline__ uint8_t tkv_quantize_4bit(float x) {
+    if (x < -2.4008f) return 0;
+    if (x < -1.8435f) return 1;
+    if (x < -1.4371f) return 2;
+    if (x < -1.0993f) return 3;
+    if (x < -0.7996f) return 4;
+    if (x < -0.5225f) return 5;
+    if (x < -0.2583f) return 6;
+    if (x <  0.0000f) return 7;
+    if (x <  0.2583f) return 8;
+    if (x <  0.5225f) return 9;
+    if (x <  0.7996f) return 10;
+    if (x <  1.0993f) return 11;
+    if (x <  1.4371f) return 12;
+    if (x <  1.8435f) return 13;
+    if (x <  2.4008f) return 14;
+    return 15;
+}
+
+template<typename block_t>
+static __device__ __forceinline__ void tkv_prepare_rotated_device(const float * __restrict__ x, float * rotated, block_t * __restrict__ y) {
+    float norm_sq = 0.0f;
+    for (int j = 0; j < QK_TKV_0; ++j) {
+        norm_sq += x[j] * x[j];
+    }
+
+    float norm = sqrtf(norm_sq);
+    if (norm < 1e-10f) {
+        norm = 1e-10f;
+    }
+
+    for (int j = 0; j < QK_TKV_0; ++j) {
+        rotated[j] = x[j] / norm;
+    }
+    tkv_wht128_forward_device(rotated);
+    y->d = __float2half(norm);
+}
+
+static __device__ void quantize_f32_tkv2_0_block(const float * __restrict__ x, block_tkv2_0 * __restrict__ y) {
+    float rotated[QK_TKV_0];
+    tkv_prepare_rotated_device(x, rotated, y);
+    memset(y->qs, 0, sizeof(y->qs));
+
+    const float scale_up = 11.313708498984761f;
+    for (int j = 0; j < QK_TKV_0; ++j) {
+        const uint8_t idx = tkv_quantize_2bit(rotated[j] * scale_up);
+        y->qs[j / 4] |= (uint8_t) ((idx & 0x3) << (2 * (j % 4)));
+    }
+}
+
+static __device__ void quantize_f32_tkv3_0_block(const float * __restrict__ x, block_tkv3_0 * __restrict__ y) {
+    float rotated[QK_TKV_0];
+    tkv_prepare_rotated_device(x, rotated, y);
+    memset(y->qs, 0, sizeof(y->qs));
+    memset(y->qh, 0, sizeof(y->qh));
+
+    const float scale_up = 11.313708498984761f;
+    for (int j = 0; j < QK_TKV_0; ++j) {
+        const uint8_t idx = tkv_quantize_3bit(rotated[j] * scale_up);
+        y->qs[j / 4] |= (uint8_t) ((idx & 0x3) << (2 * (j % 4)));
+        y->qh[j / 8] |= (uint8_t) (((idx >> 2) & 0x1) << (j % 8));
+    }
+}
+
+static __device__ void quantize_f32_tkv4_0_block(const float * __restrict__ x, block_tkv4_0 * __restrict__ y) {
+    float rotated[QK_TKV_0];
+    tkv_prepare_rotated_device(x, rotated, y);
+    memset(y->qs, 0, sizeof(y->qs));
+
+    const float scale_up = 11.313708498984761f;
+    for (int j = 0; j < QK_TKV_0; ++j) {
+        const uint8_t idx = tkv_quantize_4bit(rotated[j] * scale_up);
+        if (j % 2 == 0) {
+            y->qs[j / 2] = idx;
+        } else {
+            y->qs[j / 2] |= (uint8_t) (idx << 4);
+        }
+    }
+}
+
+static __device__ void cpy_blck_f32_tkv2_0(const char * cxi, char * cdsti) {
+    quantize_f32_tkv2_0_block((const float *)cxi, (block_tkv2_0 *)cdsti);
+}
+
+static __device__ void cpy_blck_f32_tkv3_0(const char * cxi, char * cdsti) {
+    quantize_f32_tkv3_0_block((const float *)cxi, (block_tkv3_0 *)cdsti);
+}
+
+static __device__ void cpy_blck_f32_tkv4_0(const char * cxi, char * cdsti) {
+    quantize_f32_tkv4_0_block((const float *)cxi, (block_tkv4_0 *)cdsti);
+}
+
 template<typename src_t, typename dst_t>
 static __device__ void cpy_1_scalar(const char * cxi, char * cdsti) {
     *(dst_t *) cdsti = ggml_cuda_cast<dst_t>(*(const src_t *) cxi);

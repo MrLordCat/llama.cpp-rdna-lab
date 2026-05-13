@@ -432,7 +432,10 @@ extern "C" {
         GGML_TYPE_TBQ3_0  = 42, // TurboQuant 3-bit (CPU, 256-block)
         GGML_TYPE_TBQ4_0  = 43, // TurboQuant 4-bit (CPU, 256-block)
         GGML_TYPE_TQ3_0   = 44, // TurboQuant 3-bit GPU (32-block, polar+WHT)
-        GGML_TYPE_COUNT   = 45,
+                GGML_TYPE_TKV2_0  = 45, // TurboKV 2-bit (128-block, WHT)
+                GGML_TYPE_TKV3_0  = 46, // TurboKV 3-bit (128-block, WHT)
+                GGML_TYPE_TKV4_0  = 47, // TurboKV 4-bit (128-block, WHT)
+                GGML_TYPE_COUNT   = 48,
     };
 
     // precision
@@ -566,6 +569,7 @@ extern "C" {
         GGML_OP_RWKV_WKV7,
         GGML_OP_SOLVE_TRI,
         GGML_OP_GATED_DELTA_NET,
+        GGML_OP_TURBO_WHT,
 
         GGML_OP_UNARY,
 
@@ -2409,6 +2413,12 @@ extern "C" {
     GGML_API void ggml_flash_attn_ext_add_sinks(
             struct ggml_tensor * a,
             struct ggml_tensor * sinks);
+
+    GGML_API struct ggml_tensor * ggml_turbo_wht(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            int                   direction,
+            int                   group_size);
 
     // TODO: needs to be adapted to ggml_flash_attn_ext
     GGML_API struct ggml_tensor * ggml_flash_attn_back(
