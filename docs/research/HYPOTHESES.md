@@ -47,6 +47,8 @@ Where:
 | H11 | ROCm compute vbuffer chunking | A single large ROCm graph compute allocation can land in a bad RDNA4/Windows residency pocket even when kernel routes are unchanged | removes 3x+ prefill cliffs at large native ubatch | extra backend buffer chunks may add allocator fragmentation or affect non-ROCm backends if scoped incorrectly | single-chunk A/B with full `PP reserve` |
 | H12 | Direct/hybrid compressed-KV FlashAttention for local TurboKV | Full graph-dequant fallback is slow; full direct prefill is also slower at large ubatch; Turbo4 currently wants F16/WMMA prefill plus direct TKV decode | implemented; corrected ub1024 Turbo4 gap vs q4 is ~7% for `turbo4/turbo4`, ~5% for opt-in `turbo4/q8_0` | complex graph/backend integration and output equivalence risk | keep hybrid default for Turbo4, keep mixed TKV/Q8 opt-in, tune decode vec-dot and F16 dequant/prefill overhead, continue equivalence validation |
 | H13 | RDNA4 MoE/MMQ LDS staging adaptation | Stormrage's RDNA2 MoE accelerator suggests MMQ prefill can benefit from explicit LDS staging, padding, and occupancy tuning; RDNA4 needs a separate gated variant rather than a direct RDNA2 port | +3% to +10% MoE prefill if current RX 9070 XT path is LDS/occupancy limited | wrong kernel route or RDNA4 occupancy regression; dense path regressions | opt-in RDNA4-only A/B on MoE `b=1024,ub=1024` with dense negative control |
+| H14 | C01 q3_K shape-presence + narrow stream-k gating | Shape-scoped kernel toggles are useful only if target `ncols` buckets are present in the exact lane; pre-check can avoid false A/B conclusions | higher experiment yield; fewer non-activated probes | lane/task drift can silently change shape histogram and invalidate targeted knobs | confirm target `ncols` distribution in trace first, then run env-gated micro A/B |
+| H15 | RDNA4 MMVQ Q3_K/Q4_K decode fast path | The active Qwen lane still spends steady decode time in q3/q4 matvec routes; an RDNA4-scoped MMVQ launch policy or kernel specialization may reduce per-token decode cost without extra VRAM | +2% to +8% decode if the target bucket is active | extra template variants can increase compile time or regress occupancy | C02 resource trace, `MMVQ type=11 ncols_dst=1` timing, then env-gated A/B |
 
 ## Priority (Start Here)
 
@@ -56,9 +58,11 @@ Where:
 4. H05 because prefill IO is still dominant in prompt-heavy scenarios.
 5. H12 implemented as default Turbo4 hybrid path, but remains a performance-tuning track until the remaining `~7%` active-lane q4 gap is closed.
 6. H13 is the next Stormrage-derived performance idea, but must stay opt-in and RDNA4-gated until MoE A/B proves a win.
-7. H09 to avoid misleading speculative projections in low-coverage runs.
-8. H10 to explain cross-mode speculative regressions with measured overhead.
-9. H01 as a low-risk extension of existing ngram flow.
+7. H14 to reduce C01 trial noise: verify shape presence before shape-scoped kernel prototypes.
+8. H09 to avoid misleading speculative projections in low-coverage runs.
+9. H10 to explain cross-mode speculative regressions with measured overhead.
+10. H01 as a low-risk extension of existing ngram flow.
+11. H15 is a narrow follow-up to C02: attempt only env-gated MMVQ Q3/Q4 decode variants and keep/revert by paired runtime + hotspot evidence.
 
 ## Evidence Snapshot (E006 Retest)
 

@@ -4011,6 +4011,24 @@ static bool mmq_rdna4_moe_mmq_staging_enabled(const mmq_args & args, const int c
 #endif
 }
 
+static int mmq_rdna4_q3_force_mmq_x() {
+#if defined(GGML_USE_HIP)
+    const char * env = std::getenv("GGML_MMQ_RDNA4_Q3_FORCE_MMQ_X");
+    if (env == nullptr) {
+        return 0;
+    }
+
+    const int mmq_x = std::atoi(env);
+    if (mmq_x < 8 || mmq_x > 128 || mmq_x % 8 != 0) {
+        return 0;
+    }
+
+    return mmq_x;
+#else
+    return 0;
+#endif
+}
+
 template<ggml_type type>
 static size_t mmq_get_nbytes_shared(const int mmq_x, const int mmq_y, const int cc, const int warp_size, const int nwarps, const bool use_rdna4_moe_mmq_staging = false) {
     const tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(type, mmq_y);
@@ -4134,6 +4152,80 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
     }
 }
 
+struct mmq_kernel_resource_trace {
+    int block_threads = 0;
+    int nbytes_shared = 0;
+    int num_regs = -1;
+    int max_dyn_shared_bytes = -1;
+    size_t static_shared_bytes = 0;
+    int max_blocks_per_sm = -1;
+    int max_threads_per_sm = -1;
+    float occupancy_pct = -1.0f;
+    float waves_per_sm = -1.0f;
+};
+
+template <ggml_type type, int mmq_x, bool need_check>
+static mmq_kernel_resource_trace mmq_collect_kernel_resource_trace(
+        const mmq_args & args,
+        const bool use_rdna4_moe_mmq_staging,
+        const int cc,
+        const int warp_size,
+        const int nwarps) {
+    GGML_UNUSED(args);
+    GGML_UNUSED(cc);
+
+    mmq_kernel_resource_trace trace;
+    trace.block_threads = warp_size * nwarps;
+
+    const int mmq_y = get_mmq_y_host(cc);
+    const int nbytes_shared = mmq_get_nbytes_shared<type>(mmq_x, mmq_y, cc, warp_size, nwarps, use_rdna4_moe_mmq_staging);
+    trace.nbytes_shared = nbytes_shared;
+
+    int max_blocks_per_sm = -1;
+    if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &max_blocks_per_sm,
+            mul_mat_q<type, mmq_x, need_check>,
+            trace.block_threads,
+            nbytes_shared) == cudaSuccess) {
+        trace.max_blocks_per_sm = max_blocks_per_sm;
+    }
+
+    int max_threads_per_sm = 0;
+    const int device = ggml_cuda_get_device();
+#ifdef GGML_USE_HIP
+    if (hipDeviceGetAttribute(&max_threads_per_sm, hipDeviceAttributeMaxThreadsPerMultiProcessor, device) == hipSuccess) {
+        trace.max_threads_per_sm = max_threads_per_sm;
+    }
+#else
+    if (cudaDeviceGetAttribute(&max_threads_per_sm, cudaDevAttrMaxThreadsPerMultiProcessor, device) == cudaSuccess) {
+        trace.max_threads_per_sm = max_threads_per_sm;
+    }
+#endif
+
+    if (trace.max_blocks_per_sm > 0 && trace.max_threads_per_sm > 0) {
+        const int active_threads = trace.max_blocks_per_sm * trace.block_threads;
+        trace.occupancy_pct = 100.0f * (float) active_threads / (float) trace.max_threads_per_sm;
+        trace.waves_per_sm = (float) active_threads / (float) warp_size;
+    }
+
+#ifdef GGML_USE_HIP
+    hipFuncAttributes attr;
+    if (hipFuncGetAttributes(&attr, (const void *) mul_mat_q<type, mmq_x, need_check>) == hipSuccess) {
+        trace.num_regs = attr.numRegs;
+        trace.static_shared_bytes = attr.sharedSizeBytes;
+    }
+#else
+    cudaFuncAttributes attr;
+    if (cudaFuncGetAttributes(&attr, mul_mat_q<type, mmq_x, need_check>) == cudaSuccess) {
+        trace.num_regs = attr.numRegs;
+        trace.max_dyn_shared_bytes = attr.maxDynamicSharedSizeBytes;
+        trace.static_shared_bytes = attr.sharedSizeBytes;
+    }
+#endif
+
+    return trace;
+}
+
 template <ggml_type type>
 void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
     const int    id     = ggml_cuda_get_device();
@@ -4143,6 +4235,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
     const int nwarps    = mmq_get_nwarps_host(cc, warp_size);
     const bool trace_path = std::getenv("GGML_TRACE_MMQ_PATH") != nullptr;
     const bool trace_timing = std::getenv("GGML_TRACE_MMQ_TIMING") != nullptr;
+    const bool trace_resources = std::getenv("GGML_TRACE_MMQ_RESOURCES") != nullptr;
     const bool trace_timing_sync = trace_timing && std::getenv("GGML_TRACE_MMQ_TIMING_SYNC") != nullptr;
     const bool trace_timing_pre_sync = trace_timing_sync && std::getenv("GGML_TRACE_MMQ_TIMING_PRE_SYNC") != nullptr;
     const bool use_rdna4_moe_mmq_staging_requested = mmq_rdna4_moe_mmq_staging_enabled(args, cc);
@@ -4153,6 +4246,8 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
 
     int mmq_x_best  = 0;
     int ntiles_x_best = INT_MAX;
+    int mmq_x_forced = 0;
+    mmq_kernel_resource_trace kernel_trace;
 
     double pre_sync_ms = 0.0;
     bool pre_sync_applied = false;
@@ -4205,55 +4300,48 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
         select_mmq_x_best(use_rdna4_moe_mmq_staging_effective);
     }
 
+    if (GGML_CUDA_CC_IS_RDNA4(cc) && type == GGML_TYPE_Q3_K) {
+        const int mmq_x_override = mmq_rdna4_q3_force_mmq_x();
+        if (mmq_x_override > 0) {
+            const int granularity = mmq_get_granularity_host(mmq_x_override, cc);
+            const bool shared_fits = mmq_get_nbytes_shared<type>(mmq_x_override, mmq_y, cc, warp_size, nwarps, use_rdna4_moe_mmq_staging_effective) <= smpbo;
+            if (mmq_x_override % granularity == 0 && shared_fits) {
+                mmq_x_best = mmq_x_override;
+                ntiles_x_best = (args.ncols_max + mmq_x_best - 1) / mmq_x_best;
+                mmq_x_forced = mmq_x_override;
+            }
+        }
+    }
+
     switch (mmq_x_best) {
-        case   8:
-            launch_mul_mat_q<type,   8>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case  16:
-            launch_mul_mat_q<type,  16>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case  24:
-            launch_mul_mat_q<type,  24>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case  32:
-            launch_mul_mat_q<type,  32>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case  40:
-            launch_mul_mat_q<type,  40>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case  48:
-            launch_mul_mat_q<type,  48>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case  56:
-            launch_mul_mat_q<type,  56>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case  64:
-            launch_mul_mat_q<type,  64>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case  72:
-            launch_mul_mat_q<type,  72>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case  80:
-            launch_mul_mat_q<type,  80>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case  88:
-            launch_mul_mat_q<type,  88>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case  96:
-            launch_mul_mat_q<type,  96>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case 104:
-            launch_mul_mat_q<type, 104>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case 112:
-            launch_mul_mat_q<type, 112>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case 120:
-            launch_mul_mat_q<type, 120>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
-        case 128:
-            launch_mul_mat_q<type, 128>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective);
-            break;
+#define GGML_MMQ_LAUNCH_CASE(mmq_x_case) \
+        case mmq_x_case: \
+            if (trace_resources) { \
+                if (args.nrows_x % mmq_y == 0) { \
+                    kernel_trace = mmq_collect_kernel_resource_trace<type, mmq_x_case, false>(args, use_rdna4_moe_mmq_staging_effective, cc, warp_size, nwarps); \
+                } else { \
+                    kernel_trace = mmq_collect_kernel_resource_trace<type, mmq_x_case, true>(args, use_rdna4_moe_mmq_staging_effective, cc, warp_size, nwarps); \
+                } \
+            } \
+            launch_mul_mat_q<type, mmq_x_case>(ctx, args, stream, use_rdna4_moe_mmq_staging_effective); \
+            break
+        GGML_MMQ_LAUNCH_CASE(8);
+        GGML_MMQ_LAUNCH_CASE(16);
+        GGML_MMQ_LAUNCH_CASE(24);
+        GGML_MMQ_LAUNCH_CASE(32);
+        GGML_MMQ_LAUNCH_CASE(40);
+        GGML_MMQ_LAUNCH_CASE(48);
+        GGML_MMQ_LAUNCH_CASE(56);
+        GGML_MMQ_LAUNCH_CASE(64);
+        GGML_MMQ_LAUNCH_CASE(72);
+        GGML_MMQ_LAUNCH_CASE(80);
+        GGML_MMQ_LAUNCH_CASE(88);
+        GGML_MMQ_LAUNCH_CASE(96);
+        GGML_MMQ_LAUNCH_CASE(104);
+        GGML_MMQ_LAUNCH_CASE(112);
+        GGML_MMQ_LAUNCH_CASE(120);
+        GGML_MMQ_LAUNCH_CASE(128);
+#undef GGML_MMQ_LAUNCH_CASE
         default:
             fprintf(stderr, "mmq_x_best=%d\n", mmq_x_best);
             GGML_ABORT("fatal error");
@@ -4287,7 +4375,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
         }
 
         GGML_LOG_INFO(
-            "%s: timing type=%d cc=%d nrows_x=%lld ncols_max=%lld ncols_dst=%lld mmq_x_best=%d mmq_y=%d rdna4_staging_req=%d rdna4_staging_eff=%d sync_req=%d pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+            "%s: timing type=%d cc=%d nrows_x=%lld ncols_max=%lld ncols_dst=%lld mmq_x_best=%d mmq_x_forced=%d mmq_y=%d rdna4_staging_req=%d rdna4_staging_eff=%d sync_req=%d pre_sync_applied=%d sync_applied=%d capture=%d trace_resources=%d block_threads=%d nbytes_shared=%d smpbo=%zu shared_pct=%.2f regs=%d static_shared=%zu max_dyn_shared=%d max_blocks_per_sm=%d max_threads_per_sm=%d occupancy_pct=%.2f waves_per_sm=%.2f pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
             __func__,
             (int) type,
             cc,
@@ -4295,6 +4383,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
             (long long) args.ncols_max,
             (long long) args.ncols_dst,
             mmq_x_best,
+            mmq_x_forced,
             mmq_y,
             use_rdna4_moe_mmq_staging_requested ? 1 : 0,
             use_rdna4_moe_mmq_staging_effective ? 1 : 0,
@@ -4302,6 +4391,18 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
             pre_sync_applied ? 1 : 0,
             sync_applied ? 1 : 0,
             capture_active,
+                trace_resources ? 1 : 0,
+                kernel_trace.block_threads,
+                kernel_trace.nbytes_shared,
+                smpbo,
+                smpbo > 0 ? 100.0 * (double) kernel_trace.nbytes_shared / (double) smpbo : 0.0,
+                kernel_trace.num_regs,
+                kernel_trace.static_shared_bytes,
+                kernel_trace.max_dyn_shared_bytes,
+                kernel_trace.max_blocks_per_sm,
+                kernel_trace.max_threads_per_sm,
+                kernel_trace.occupancy_pct,
+                kernel_trace.waves_per_sm,
             pre_sync_ms,
             enqueue_ms,
             sync_ms,
@@ -4310,7 +4411,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
 
     if (trace_path) {
         GGML_LOG_INFO(
-            "%s: type=%d cc=%d ncols_max=%lld mmq_x_max=%d mmq_y=%d nwarps=%d mmq_x_best=%d ntiles_x_best=%d rdna4_staging_req=%d rdna4_staging_eff=%d\n",
+            "%s: type=%d cc=%d ncols_max=%lld mmq_x_max=%d mmq_y=%d nwarps=%d mmq_x_best=%d mmq_x_forced=%d ntiles_x_best=%d trace_resources=%d block_threads=%d nbytes_shared=%d smpbo=%zu shared_pct=%.2f regs=%d max_blocks_per_sm=%d occupancy_pct=%.2f waves_per_sm=%.2f rdna4_staging_req=%d rdna4_staging_eff=%d\n",
             __func__,
             (int) type,
             cc,
@@ -4319,7 +4420,17 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
             mmq_y,
             nwarps,
             mmq_x_best,
+            mmq_x_forced,
             ntiles_x_best,
+            trace_resources ? 1 : 0,
+            kernel_trace.block_threads,
+            kernel_trace.nbytes_shared,
+            smpbo,
+            smpbo > 0 ? 100.0 * (double) kernel_trace.nbytes_shared / (double) smpbo : 0.0,
+            kernel_trace.num_regs,
+            kernel_trace.max_blocks_per_sm,
+            kernel_trace.occupancy_pct,
+            kernel_trace.waves_per_sm,
             use_rdna4_moe_mmq_staging_requested ? 1 : 0,
             use_rdna4_moe_mmq_staging_effective ? 1 : 0);
     }

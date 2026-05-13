@@ -5,6 +5,18 @@
 
 #include <cstdlib>
 
+static int ggml_rdna4_stream_k_min_ne11() {
+    // Experimental override for RDNA4 stream-k threshold (default keeps existing behavior).
+    int min_ne11 = 256;
+    if (const char * env = std::getenv("GGML_MMQ_RDNA4_STREAM_K_MIN_NE11")) {
+        const int parsed = std::atoi(env);
+        if (parsed > 0) {
+            min_ne11 = parsed;
+        }
+    }
+    return min_ne11;
+}
+
 static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
     switch (args.type_x) {
         case GGML_TYPE_Q1_0:
@@ -252,7 +264,7 @@ void ggml_cuda_op_mul_mat_q(
     // There are multiple parallel CUDA streams for src1_ncols != ne11 which would introduce a race condition for this buffer.
     const bool use_stream_k = ((GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA)
                             || GGML_CUDA_CC_IS_CDNA(cc)
-                            || (GGML_CUDA_CC_IS_RDNA4(cc) && ne11 >= 256))
+                            || (GGML_CUDA_CC_IS_RDNA4(cc) && ne11 >= ggml_rdna4_stream_k_min_ne11()))
                             && src1_ncols == ne11;
     const mmq_args args = {
         src0_dd_i, src0->type, (const int *) src1_ddq_i, nullptr, nullptr, dst_dd_i,

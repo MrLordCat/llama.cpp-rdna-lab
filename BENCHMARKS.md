@@ -1899,6 +1899,40 @@ Stage D diagnostics:
   - runs=3 confirm: base `26.8355` vs force `27.0066` TPS (`+0.64%`), decode_eval_tps `28.6767 -> 28.8767` (`+0.70%`).
   - эффект умеренный; default policy не менялась.
 
+C01 follow-up (MMVQ small_k default-on for RDNA4 Qwen-hot, 2026-05-13):
+
+- В `ggml/src/ggml-cuda/mmvq.cu` для RDNA4 Qwen-hot (`Q3_K/Q4_K/Q6_K`, `ncols_dst=1`) small_k включён по умолчанию.
+- Env override сохранён: `GGML_MMVQ_QWEN_FORCE_SMALL_K=1` / `GGML_MMVQ_QWEN_DISABLE_SMALL_K=1`.
+- Decode lane с requested task set (`review_bug,patch_sim`, `ctx=12288`, `ub=192`, no-reuse, `runs=1`):
+  - default small_k: `28.02` и rerun `28.06` TPS;
+  - disable small_k: `27.86` TPS;
+  - uplift default над disable: `~+0.6..+0.7%`.
+- Serial kernel-full trace pair (`disable -> default`) подтвердил cost drop:
+  - `CUDA_NODE`: `1793.128 -> 1767.849 ms` (`-25.279 ms`),
+  - `CUDA_NODE op=MUL_MAT kind=forward`: `956.045 -> 943.461 ms` (`-12.584 ms`).
+- Артефакты: `build_logs/agent-workload/c01-two-tasks-r1-*.jsonl`, `build_logs/agent-workload/c01-two-tasks-trace-r1-*-serial.server.log`, `build_logs/agent-workload/c01-two-tasks-trace-smallk-default-vs-disable.md`.
+
+C01 E012 dual-metric check (RDNA4 stream-k min gate, 2026-05-13):
+
+- Added env-gated RDNA4 stream-k threshold override in `ggml/src/ggml-cuda/mmq.cu`:
+  - `GGML_MMQ_RDNA4_STREAM_K_MIN_NE11` (default remains `256`, no default behavior change).
+- Same lane (`review_bug,patch_sim`, `ctx=12288`, `ub=192`, no-reuse, `runs=1`, `max_tokens=256`):
+  - baseline: `14.40` TPS,
+  - candidate (`min_ne11=192`): `14.42` TPS.
+- Serial trace pair (`kernel-full` + MMQ timing) showed hotspot-time improvement:
+  - `CUDA_NODE`: `22430.960 -> 22379.713 ms` (`-51.247 ms`),
+  - `CUDA_NODE op=MUL_MAT kind=forward`: `14417.721 -> 14384.724 ms` (`-32.997 ms`),
+  - MMQ target bucket (`mul_mat_q_case type=11, ncols_max=192`): `8944.730 -> 8936.004 ms` (`-8.726 ms`, same call count).
+- Full-point sweep (`skmin=128..9999`) on same lane found best runtime at `skmin=144` (`14.4325`), baseline point `skmin=256` was `14.2724`.
+- Fresh no-hard-timeout trace confirmation (`skmin=256 -> 144`) also improved expensive places:
+  - `CUDA_NODE`: `22625.835 -> 22440.438 ms` (`-185.397 ms`),
+  - `CUDA_NODE op=MUL_MAT kind=forward`: `14480.357 -> 14420.098 ms` (`-60.259 ms`),
+  - MMQ target bucket (`type=11, ncols_max=192`): `8968.599 -> 8959.550 ms` (`-9.049 ms`, same calls).
+- Verdict:
+  - runtime: positive (`skmin=144` vs `256`),
+  - hotspot: positive,
+  - keep as env knob with best-known point `skmin=144`; default unchanged until extra confirmation.
+
 P3 theory fanout check (dry-run explain, 2026-05-11):
 
 - Команда для всех проверок: `cmake --build <build-dir> --target llama-server -- -d explain -n`.
@@ -2114,3 +2148,31 @@ Practical run:
 
 - Старый guard/cap до `ub=900` больше не нужен для native `ub1024` path.
 - Контроль `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1` возвращает slow result, что подтверждает allocator/residency root cause.
+
+## RDNA4 MMVQ Q3_K Decode Fast Path (2026-05-13)
+
+Проверка:
+
+- Lane: `Qwen3.6-27B-Q3_K_S`, `ctx=12288`, `b=6144`, `ub=192`, KV `q4_0/q4_0`, `review_bug+patch_sim`, no-reuse.
+- Candidate: для RDNA4 `GGML_TYPE_Q3_K` при `ncols_dst=1` в `mmvq.cu` использовать `nwarps=2`.
+- Q4_K не менялся: он уже находится в RDNA4 whitelist на `nwarps=8`, а текущий сигнал пришёл из Q3-heavy lane.
+
+Результат:
+
+| Label | Runs | Aggregate TPS | Notes |
+| --- | ---: | ---: | --- |
+| `e013-h15-control-postrevert-r3` | 3 | `9.1629` | fresh paired control after reverting candidate |
+| `e013-h15-q3warps2-r3` | 3 | `9.3847` | candidate |
+
+Статистика:
+
+- Delta: `+2.42%`.
+- Bootstrap CI: `[+0.2019, +0.2442]` TPS, verdict positive.
+- Trace cross-check: `e013-h15-baseline-r1` -> `e013-h15-q3warps2-r1` gave `6.3251 -> 6.5513 TPS` (`+3.58%`).
+- Hotspot evidence: `MUL_MAT forward -252.983 ms`, `MMQ -108.954 ms`, `MMQ type=11 ncols_max=192 -96.409 ms`.
+- Follow-up `Q3_K nwarps=4` rejected: `9.3847 -> 9.2136 TPS` (`-1.82%`), bootstrap CI `[-0.2072, -0.1335]` TPS.
+
+Вывод:
+
+- Keep: узкий RDNA4/Q3_K decode policy оставлен как default.
+- Rollback point remains trivial: remove the `GGML_TYPE_Q3_K: return 2` case from RDNA4 `calc_nwarps()` if a future broader lane shows regression.

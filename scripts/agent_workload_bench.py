@@ -1659,6 +1659,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", default=str(ROOT / "build_logs" / "agent-workload"), help="output directory")
     parser.add_argument("--tasks", choices=["quick", "full", "v2", "v2-mini", "v2-review"], default="quick",
                         help="prompt set: quick (v1 short tasks), full (v1 extended), v2 (realistic agentic-flow tasks), v2-mini (v2_code_review + v2_write_function), v2-review (only v2_code_review)")
+    parser.add_argument(
+        "--task-ids",
+        default="",
+        help="comma-separated task IDs to run from the selected task set (e.g. 'review_bug,patch_sim')",
+    )
     parser.add_argument("--runs", type=int, default=1, help="repeat each task N times")
 
     parser.add_argument("--no-start", action="store_true", help="use an already running server")
@@ -1951,6 +1956,24 @@ def main() -> int:
         tasks = TASKS_FULL
     else:
         tasks = TASKS_QUICK
+
+    if args.task_ids.strip():
+        requested_ids = [x.strip() for x in args.task_ids.split(",") if x.strip()]
+        requested_set = set(requested_ids)
+        available_ids = {task["id"] for task in tasks}
+        unknown_ids = [task_id for task_id in requested_ids if task_id not in available_ids]
+        if unknown_ids:
+            print(
+                "ERROR: unknown --task-ids for selected task set: "
+                + ", ".join(unknown_ids)
+                + ". Available: "
+                + ", ".join(sorted(available_ids))
+            )
+            return 5
+        tasks = [task for task in tasks if task["id"] in requested_set]
+        if not tasks:
+            print("ERROR: --task-ids filter left no tasks to run")
+            return 5
 
     if args.real_context_mode == "repo-snapshot":
         safe_fill = min(max(float(args.real_context_safe_fill), 0.05), 0.95)

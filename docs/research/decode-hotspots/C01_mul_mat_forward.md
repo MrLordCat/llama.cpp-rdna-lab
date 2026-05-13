@@ -1,0 +1,582 @@
+# C01 - MUL_MAT forward
+
+Quick return anchor:
+- `docs/research/decode-hotspots/C01_RESUME_PLAYBOOK.md`
+
+## Resume checkpoint after chatflow detour (2026-05-13)
+
+Fresh resume run (lane contract from playbook):
+- `build_logs/agent-workload/c01-resume-r1-resources.server.log`
+- `build_logs/agent-workload/c01-resume-r1-resources.csv`
+- aggregate TPS: `6.3221`
+
+Mandatory pre-edit gate status on this run:
+- shape presence gate (`qtype=11`, `ncols_max=192`): PASS (`count=26524`),
+- cold/steady split (`MUL_MAT forward`, steady `<5 ms`): steady dominated by `mul_mat_q_direct|q3_K` (`78.20%` share),
+- q3 coarse component split (steady):
+	- `compute_core_q3`: `84.25%`,
+	- `fallback_cublas`: `14.38%`,
+	- `dequant_load_vec_q3`: `1.37%`.
+
+Comparison checkpoints:
+- vs global decode baseline (`decode-trace-current-ctx12288-ub192-r1`): not comparable for runtime verdict due different task mix.
+- vs C01-compatible baseline (`e013-c01-two-tasks-trace-r1-resources`):
+	- runtime: `6.6897 -> 6.3221 TPS` (`-5.5%`) on first resume run,
+	- route compare: no major route flip in primary target buckets;
+		`MUL_MAT forward` average timing ratio remained close (`0.992`).
+
+Control rerun on the same lane:
+- `build_logs/agent-workload/c01-resume-r2-control.server.log`
+- aggregate TPS: `6.3309`
+- vs `c01-resume-r1-resources`: `+0.14%` (inconclusive/noise-level)
+- trace compare (`c01_r1 -> c01_r2`) shows near-identical hotspot timings (`avg ratio ~0.999` for `MUL_MAT forward`).
+
+Interpretation:
+- C01 route topology remained consistent after return.
+- The runtime level around `~6.33 TPS` is now stable across two same-lane reruns; continue hypothesis work from this point.
+
+## Post-resume quick probe A/B (stream-k knob, 2026-05-13)
+
+Candidate:
+- `GGML_MMQ_RDNA4_STREAM_K_MIN_NE11=144`
+
+Lane/result:
+- baseline: `c01-resume-r2-control` -> `6.3309 TPS`
+- candidate: `c01-resume-r3-streamk144` -> `6.3354 TPS`
+- runtime delta: `+0.07%` (borderline/inconclusive)
+
+Hotspot-time signal (trace compare `c01_r2_control -> c01_r3_streamk144`):
+- `CUDA_NODE op=MUL_MAT kind=forward`: `15448.053 -> 15428.358 ms` (`-19.695 ms`)
+- `CUDA_NODE op=MUL_MAT`: `15603.131 -> 15580.533 ms` (`-22.598 ms`)
+- no route topology change; effect is micro-level and needs stronger confirmation.
+
+Verdict:
+- keep as knob-only signal (no default change).
+- requires a paired rerun and/or stronger candidate before promotion.
+
+## Stream-k knob confirmation (runs=3, no trace overhead)
+
+Same lane (`review_bug,patch_sim`, `ctx=12288`, `b=6144`, `ub=192`, `no-reuse`), but with `runs=3` for final confirmation:
+
+- control: `c01-next-control-r3` -> `9.1787 TPS`
+- candidate `GGML_MMQ_RDNA4_STREAM_K_MIN_NE11=144`: `c01-next-streamk144-r3` -> `9.0528 TPS`
+- delta: `-1.37%` (statistical verdict: negative, bootstrap 95% CI excludes zero on negative side)
+
+Interpretation:
+- The previous `r1` micro-positive signal did not hold under `runs=3` confirmation.
+- For effective acceleration, `stream-k NE11=144` should not be a primary direction (keep only as optional debug knob).
+
+Current priority after this confirmation:
+1. Continue C01 on `mul_mat_q_direct|q3_K` core path (steady dominant share) with route-local hypotheses.
+2. Favor ideas that can reduce q3 core kernel time directly (not selector noise): shared/register pressure, memory-layout/loads, launch granularity for `ncols~139/140` cluster.
+3. Use dual-metric gate (TPS + hotspot-time) and keep `runs=3` for any near-borderline candidate.
+
+## Post-resume probe B: force MMQ runtime (2026-05-13)
+
+Candidate:
+- `GGML_CUDA_FORCE_MMQ_RUNTIME=1`
+
+Runtime confirmation (`runs=3`, no trace overhead):
+- baseline: `c01-next-control-r3` -> `9.1787 TPS`
+- candidate: `c01-next-force-mmq-r3` -> `9.1127 TPS`
+- delta: `-0.72%` (borderline/inconclusive runtime verdict)
+
+Hotspot/route causality check (trace pair):
+- compare: `c01-resume-r2-control.server.log` -> `c01-next-force-mmq-trace-r1.server.log`
+- `CUDA_NODE op=MUL_MAT kind=forward`: `15448.053 -> 15532.074 ms` (`+84.021 ms`)
+- MMQ q3 bucket (`type=11, ncols_max=192`): `9558.537 -> 9659.888 ms` (`+101.351 ms`)
+- steady route split did not reduce `cublas_backend|f32` share (it slightly increased from `13.33%` to `13.43%`).
+
+Verdict:
+- reject as acceleration path for this lane.
+- do not spend further cycles on forced-MMQ global routing; it increases target q3 hotspot time.
+
+## Current cost snapshot
+
+- Center: `CUDA_NODE op=MUL_MAT kind=forward`
+- sum_ms: `1717.322`
+- count: `8454`
+- avg_ms: `0.203`
+- Priority: `P1`
+
+Source trace:
+- `build_logs/agent-workload/decode-trace-current-ctx12288-ub192-r1.server.log`
+
+## Full sub-trace (current baseline)
+
+### Top node names by sum_ms
+
+| Node name | sum_ms | count | avg_ms |
+| --- | ---: | ---: | ---: |
+| `node_200` | 124.818 | 21 | 5.944 |
+| `node_34` | 32.351 | 21 | 1.541 |
+| `node_13` | 31.140 | 21 | 1.483 |
+| `result_output` | 24.280 | 21 | 1.156 |
+| `linear_attn_out-0` | 9.421 | 21 | 0.449 |
+
+### Top shapes (`ne`) by sum_ms
+
+| ne | sum_ms | count | avg_ms |
+| --- | ---: | ---: | ---: |
+| `(256,48,1,1)` | 123.910 | 16 | 7.744 |
+| `(17408,159,1,1)` | 87.390 | 126 | 0.694 |
+| `(10240,1,1,1)` | 86.933 | 768 | 0.113 |
+| `(17408,140,1,1)` | 85.563 | 126 | 0.679 |
+| `(17408,139,1,1)` | 84.905 | 126 | 0.674 |
+| `(5120,1,1,1)` | 80.279 | 784 | 0.102 |
+
+## A/B signal already observed
+
+- Control: `decode-trace-current-ctx12288-ub192-r1` -> `26.30 TPS`
+- Candidate: `GGML_MMVQ_QWEN_FORCE_SMALL_K=1` (`decode-trace-current-ctx12288-ub192-force-smallk-r1`) -> `26.66 TPS`
+- Trace compare: `build_logs/agent-workload/decode-trace-smallk-compare.md`
+- Notable route delta: MMVQ moved from `small_k=0` to `small_k=1`, and total `CUDA_NODE` time dropped.
+
+## Two-task r1 validation (requested lane)
+
+- Task set: `review_bug, patch_sim` only
+- Runs: `r1`
+- Baseline (new default small_k):
+	- `c01-two-tasks-r1-default-smallk` -> `28.02 TPS`
+	- `c01-two-tasks-r1-default-smallk-rerun` -> `28.06 TPS`
+- Control with small_k disabled:
+	- `c01-two-tasks-r1-disable-smallk` -> `27.86 TPS`
+- Net uplift on this lane: about `+0.16..+0.20 TPS` (`~+0.6..+0.7%`) in favor of default small_k.
+
+Artifacts:
+- `build_logs/agent-workload/c01-two-tasks-r1-default-smallk.jsonl`
+- `build_logs/agent-workload/c01-two-tasks-r1-default-smallk-rerun.jsonl`
+- `build_logs/agent-workload/c01-two-tasks-r1-disable-smallk.jsonl`
+
+## Trace validation on two-task r1 lane
+
+Serial `kernel-full` traces (no parallel overlap):
+
+- default small_k: `c01-two-tasks-trace-r1-default-smallk-serial` -> `26.68 TPS`
+- disable small_k: `c01-two-tasks-trace-r1-disable-smallk-serial` -> `26.46 TPS`
+
+Key trace deltas (`disable -> default`):
+
+- `CUDA_NODE`: `1793.128 -> 1767.849 ms` (`-25.279 ms`)
+- `CUDA_NODE op=MUL_MAT`: `1113.771 -> 1099.978 ms` (`-13.793 ms`)
+- `CUDA_NODE op=MUL_MAT kind=forward`: `956.045 -> 943.461 ms` (`-12.584 ms`)
+- MMVQ route migration for qwen-hot types:
+	- `small_k=0` buckets disappear,
+	- `small_k=1` buckets appear with lower average kernel time.
+
+Compare report:
+- `build_logs/agent-workload/c01-two-tasks-trace-smallk-default-vs-disable.md`
+
+## Route decision map (code-verified)
+
+- File: `ggml/src/ggml-cuda/mmvq.cu`
+- `small_k` auto-heuristic is evaluated inside `should_use_small_k(...)`.
+- Generic RDNA path still disables auto-small_k by default.
+- Qwen-hot RDNA4 path (`Q3_K/Q4_K/Q6_K`, `ncols_dst=1`) now defaults to `small_k=1`.
+- Explicit env overrides remain supported:
+	- `GGML_MMVQ_QWEN_FORCE_SMALL_K=1` forces enable.
+	- `GGML_MMVQ_QWEN_DISABLE_SMALL_K=1` forces disable.
+
+## C01 verdict
+
+- Decision: `keep`
+- Reason: stable same-lane decode uplift on requested two-task `r1` lane, with matching reduction in `MUL_MAT forward` trace cost.
+- Risk: low. Override escape hatch is preserved via env flags if any model-specific regression appears.
+
+## Deep route drilldown (where C01 still spends time)
+
+Source:
+- `build_logs/agent-workload/c01-two-tasks-trace-r1-default-smallk-serial.server.log`
+
+### Route-level split inside `MUL_MAT forward` (`TOTAL=969.854 ms`)
+
+| Route + type | sum_ms | share |
+| --- | ---: | ---: |
+| `mul_mat_q_direct | q3_K` | 386.811 | 39.88% |
+| `mul_mat_vec_q_direct | q3_K` | 214.295 | 22.10% |
+| `cublas_backend | f32` | 205.952 | 21.24% |
+| `mul_mat_vec_f_direct | f32` | 67.749 | 6.99% |
+| `mul_mat_vec_q_direct | q4_K` | 44.489 | 4.59% |
+| `mul_mat_q_direct | q4_K` | 37.753 | 3.89% |
+| `mul_mat_vec_q_direct | q6_K` | 12.805 | 1.32% |
+
+### Important distinction: cold spike vs steady-state
+
+- `node_200` (`cublas_backend|f32`) has a huge one-off spike:
+	- `count=11`, `sum=111.333`, `median=0.152`, `max=109.980 ms`.
+- Similar first-pass spikes exist for:
+	- `node_34`: `max=21.953 ms`,
+	- `node_13`: `max=20.835 ms`.
+- If we isolate calls with `total_ms < 5` (steady-ish window), route shares become:
+	- `mul_mat_q_direct|q3_K`: `47.30%`
+	- `mul_mat_vec_q_direct|q3_K`: `24.08%`
+	- `cublas_backend|f32`: `11.94%`
+
+Conclusion: for sustained throughput, the main pressure is not cublas spike itself but `q3_K` direct routes (about `71%` in steady slice).
+
+### Concrete hotspots by single call
+
+Top expensive individual calls in this trace:
+
+1. `node_200` `ne=(256,48,1,1)` -> `109.980 ms` (cold spike)
+2. `node_34` `ne=(48,2,1,1)` -> `21.953 ms` (cold spike)
+3. `node_13` `ne=(10240,2,1,1)` -> `20.835 ms` (cold spike)
+4. `linear_attn_out-0` `ne=(5120,140,1,1)` -> `6.875 ms`
+5. `node_13` `ne=(10240,140,1,1)` -> `6.749 ms`
+
+### Updated C01 next target
+
+- Priority route to optimize next: `mul_mat_q_direct|q3_K` (not MMVQ small_k path).
+- Practical next A/B for C01:
+	1. separate cold-first vs warmed decode claim (to avoid one-off cublas spike contamination),
+	2. route-level A/B aimed at `q3_K` direct path (`ncols_dst~139/140` cluster),
+	3. verify that any gain remains when `review_bug,patch_sim` only and `runs=1`.
+
+## C01 deeper route focus (q3_K direct)
+
+Baseline used:
+- `build_logs/agent-workload/c01-two-tasks-trace-r1-streamk-default-serial.server.log`
+
+`mul_mat_q_direct|q3_K` contribution:
+- total in `MUL_MAT forward`: `386.397 ms`
+- steady slice (`total_ms < 5`): `379.574 ms`
+
+Top `ne` buckets inside `mul_mat_q_direct|q3_K`:
+
+| ne | sum_ms | count |
+| --- | ---: | ---: |
+| `(17408,140,1,1)` | 84.034 | 126 |
+| `(17408,139,1,1)` | 83.980 | 126 |
+| `(5120,139,1,1)` | 53.885 | 79 |
+| `(5120,140,1,1)` | 53.724 | 79 |
+| `(10240,140,1,1)` | 27.644 | 48 |
+| `(10240,139,1,1)` | 21.167 | 48 |
+
+Interpretation: dominant sustained pressure is the `139/140` batch cluster in q3_K direct MMQ path (mostly FFN-related shapes), not MMVQ.
+
+## C01 experiment E1: RDNA4 stream-k threshold for q3_K cluster
+
+What was tested (two-task lane, `review_bug,patch_sim`, `r1`):
+- default threshold behavior: `c01-two-tasks-r1-streamk-default` -> `28.07 TPS`
+- candidate `GGML_MMQ_RDNA4_STREAM_K_MIN_NE11=128`: `c01-two-tasks-r1-streamk-ne11-128` -> `28.13 TPS`
+- aggressive `...=96`: `c01-two-tasks-r1-streamk-ne11-96` -> `27.35 TPS` (unstable/worse)
+
+Trace pair (`default` vs `128`) conclusion:
+- `MUL_MAT forward` sum increased (`939.913 -> 945.236 ms`)
+- `MUL_MAT` cold spikes (`node_200`, `node_34`, `node_13`) became larger
+- despite tiny TPS noise-level gain in one non-trace run, route-cost signal is not consistently positive
+
+Decision for E1:
+- `reject` (do not keep stream-k threshold tweak in code)
+- code reverted to baseline behavior.
+
+## C01 experiment E2: force q3_K 139/140 out of MMQ
+
+Idea:
+- tighten RDNA4 q*_K MMQ gate from `ne11<=192` to `<=128` to route `ne11=139/140` through cublas path.
+
+Two-task `r1` result (`review_bug,patch_sim`):
+- default gate: `c01-two-tasks-r1-rdna4-qkmax-default` -> `28.27 TPS`
+- candidate (`qk_max=128`): `c01-two-tasks-r1-rdna4-qkmax-128` -> `25.56 TPS`
+
+Decision for E2:
+- `reject` (strong regression, high variance)
+- code reverted.
+
+Interpretation:
+- On this lane, keeping q3_K `139/140` inside MMQ is clearly better than spilling to cublas.
+
+## C01 experiment E3: force larger MMQ x-tile on RDNA4
+
+Idea:
+- keep route unchanged, but force MMQ selector to skip `xbest=80` and start from larger tile (`xbest=96/112`) for q3_K `ncols_max=139/140`.
+
+What was tested (`review_bug,patch_sim`, `r1`):
+- baseline: `c01-two-tasks-r1-rdna4-minx-default` -> `27.91 TPS`
+- candidate `GGML_MMQ_RDNA4_MIN_X=96`: `c01-two-tasks-r1-rdna4-minx-96` -> `27.95 TPS` (noise-level)
+- candidate `GGML_MMQ_RDNA4_MIN_X=112`: `c01-two-tasks-r1-rdna4-minx-112-candidate` -> `27.93 TPS` (no gain)
+
+MMQ timing cross-check (target cluster):
+- default (`xbest=80`):
+	- `ncols_max=140`: `162.176 ms` (`349` calls)
+	- `ncols_max=139`: `156.866 ms` (`349` calls)
+- forced (`xbest=96`):
+	- `ncols_max=140`: `174.449 ms` (`349` calls)
+	- `ncols_max=139`: `169.128 ms` (`349` calls)
+
+Decision for E3:
+- `reject` (target MMQ cluster became slower; TPS gain not stable)
+- code reverted.
+
+## C01 experiment E4: force exact MMQ x-tile (64/96)
+
+Idea:
+- bypass heuristic `xbest=80` and force exact MMQ x-tile to map performance curve on the target q3_K cluster.
+
+Two-task `r1` TPS:
+- default selector: `c01-two-tasks-r1-forcex-default` -> `28.05 TPS`
+- force `x=64`: `c01-two-tasks-r1-forcex-64` -> `27.97 TPS`
+- force `x=96`: `c01-two-tasks-r1-forcex-96` -> `28.03 TPS`
+
+MMQ timing (type=11/q3_K, `ncols_max=139/140`, `349` calls each):
+- default (`xbest=80`):
+	- `140`: `162.176 ms`
+	- `139`: `156.866 ms`
+- force `x=64`:
+	- `140`: `193.804 ms`
+	- `139`: `188.365 ms`
+- force `x=96`:
+	- `140`: `176.930 ms`
+	- `139`: `169.765 ms`
+
+Decision for E4:
+- `reject` (`xbest=80` is best among tested points for this lane)
+- code reverted.
+
+## C01 experiment E5: RDNA4 MMQ y-tile (128 -> 64)
+
+Idea:
+- reduce MMQ y-tile on RDNA4 from default `128` to `64` to test potential register/shared-memory relief.
+
+Two-task `r1` TPS:
+- default (`mmq_y=128`): `c01-two-tasks-r1-rdna4-y-default` -> `28.08 TPS`
+- candidate (`mmq_y=64`): `c01-two-tasks-r1-rdna4-y-64` -> `28.06 TPS`
+
+MMQ timing (type=11/q3_K, `ncols_max=139/140`, `349` calls each):
+- default (`mmq_y=128`):
+	- `140`: `162.176 ms`
+	- `139`: `156.866 ms`
+- candidate (`mmq_y=64`):
+	- `140`: `239.652 ms`
+	- `139`: `229.054 ms`
+
+Decision for E5:
+- `reject` (target MMQ cluster became substantially slower)
+- code reverted.
+
+## Hypotheses (to validate)
+
+1. High-cost `MUL_MAT forward` slices are shape-sensitive (`(256,48,1,1)` and long skinny matrices).
+2. Decode route has MMVQ-driven coupling into `MUL_MAT` wall cost (indirect speed gain already visible).
+3. Some `MUL_MAT` nodes are memory-bound and benefit from reduced sync/launch pressure rather than arithmetic changes.
+
+## Trace workflow for C01
+
+1. Reproduce baseline kernel trace.
+2. Extract `MUL_MAT forward` by node and by `ne` (already done once).
+3. Run controlled A/B variants and compare traces with `scripts/research/compare_kernel_traces.py`.
+4. Mark each variant as `keep/neutral/reject` by same-lane TPS + `sum_ms` deltas.
+
+## Acceptance gate for C01
+
+- Primary: stable decode TPS gain over baseline on same lane.
+- Secondary: measurable `sum_ms` reduction in `MUL_MAT forward` without regressions in other major centers.
+- Promotion: requires at least one confirmation rerun.
+
+### Dual-metric verdict policy (TPS + hotspot-time)
+
+For C01 we now record two outcomes per candidate:
+
+1. runtime verdict:
+- based on lane TPS.
+
+2. hotspot verdict:
+- based on expensive-place timing deltas in trace (first of all `CUDA_NODE op=MUL_MAT kind=forward`, plus target MMQ bucket timing).
+
+Important:
+- if TPS is neutral/noisy but hotspot-time in the target expensive place improves, this is still a positive research signal (`hotspot-positive`) and should be kept for iteration notes.
+- merge/default decisions still require stable end-to-end gain.
+
+## E6 analytic gate before new kernel edits
+
+To avoid low-yield selector sweeps, C01 now uses a simple Amdahl pre-gate for the target q3_K direct cluster.
+
+- Baseline share inside `MUL_MAT forward` (current C01 trace):
+	- `f = 386.397 / 969.854 = 0.3984`
+- Model:
+	- `S = 1 / ((1 - f) + f / s_local)`
+	- where `s_local` is local speedup of the target cluster.
+
+Required local speedup corridor from this gate:
+
+| target center speedup `S` | required local `s_local` |
+| ---: | ---: |
+| `1.01x` | `1.0255x` |
+| `1.02x` | `1.0518x` |
+| `1.03x` | `1.0789x` |
+| `1.05x` | `1.1357x` |
+
+Implication:
+- candidates below about `+5%` local gain on the q3_K cluster are unlikely to produce a stable end-to-end uplift on this lane.
+
+## C01 experiment E011: narrow q3_K 139/140 no-stream-k probe
+
+Idea:
+- Test one narrow mechanism-only candidate (no route changes): disable stream-k only for `RDNA4 + Q3_K + ne11 in {139,140}` via env flag.
+
+Implementation status:
+- Prototype was added as env-gated code path in `ggml/src/ggml-cuda/mmq.cu` and then reverted after verification.
+
+Requested lane A/B (`review_bug,patch_sim`, `r1`):
+- baseline: `e011-c01-two-tasks-r1-baseline` -> `9.34 TPS`
+- candidate: `e011-c01-two-tasks-r1-candidate-nostreamk139140` -> `9.36 TPS`
+
+Trace validation (`kernel-full` + MMQ timing):
+- baseline: `e011-c01-two-tasks-trace-r1-baseline-mmqtiming` -> `6.64 TPS`
+- candidate: `e011-c01-two-tasks-trace-r1-candidate-nostreamk139140-mmqtiming` -> `6.56 TPS`
+- MMQ timing lines show `ncols_max=192` on this lane slice, so the `139/140`-scoped toggle was effectively not exercised.
+
+Decision for E011:
+- `reject`
+- reason: candidate condition did not activate on measured shape bucket (`ncols_max=192`), and trace run regressed.
+- code reverted.
+
+Actionable lesson:
+- Before coding shape-specific gates, first confirm that the target shape bucket is present in the exact lane variant being benchmarked.
+
+## C01 experiment E012: RDNA4 stream-k threshold gate for observed `ncols_max=192`
+
+Idea:
+- keep default behavior unchanged,
+- add an env-gated RDNA4 stream-k threshold override,
+- test candidate at `GGML_MMQ_RDNA4_STREAM_K_MIN_NE11=192` on the same two-task lane.
+
+Code:
+- `ggml/src/ggml-cuda/mmq.cu`
+- new env-gated helper: `GGML_MMQ_RDNA4_STREAM_K_MIN_NE11` (default stays `256`).
+
+Lane TPS (`review_bug,patch_sim`, `r1`):
+- baseline: `e012-c01-two-tasks-r1-streamk-default` -> `14.40 TPS`
+- candidate: `e012-c01-two-tasks-r1-streamk-min192` -> `14.42 TPS`
+
+Trace hotspot deltas (`kernel-full + MMQ timing`, sync-applied):
+- `CUDA_NODE`: `22430.960 -> 22379.713 ms` (`-51.247 ms`)
+- `CUDA_NODE op=MUL_MAT`: `14575.007 -> 14541.438 ms` (`-33.569 ms`)
+- `CUDA_NODE op=MUL_MAT kind=forward`: `14417.721 -> 14384.724 ms` (`-32.997 ms`)
+- target MMQ bucket (`mul_mat_q_case type=11, ncols_max=192`):
+	- `8944.730 -> 8936.004 ms` (`-8.726 ms`, same call count `25128`)
+
+Decision for E012 (initial 192 probe):
+- runtime verdict: `neutral-positive` (small TPS uplift, r1)
+- hotspot verdict: `positive` (clear reduction in target expensive places)
+- overall: `iterate/keep-as-knob` (default unchanged, env-gated candidate retained for broader sweep)
+
+E012-R1 full-point sweep (all practical RDNA4 stream-k points):
+
+Checked thresholds (`GGML_MMQ_RDNA4_STREAM_K_MIN_NE11`):
+- `128, 144, 160, 176, 192, 208, 224, 240, 256, 320, 9999`
+
+Sweep runtime ranking (agg TPS):
+- best: `144` (`14.4325`)
+- then: `160` (`14.4230`), `128` (`14.4029`), `176` (`14.4008`)
+- baseline point `256`: `14.2724`
+
+E012-R1 hotspot confirmation (`256` vs best `144`, both with `--task-hard-timeout 0`):
+- `CUDA_NODE`: `22625.835 -> 22440.438 ms` (`-185.397 ms`)
+- `CUDA_NODE op=MUL_MAT`: `14639.932 -> 14576.019 ms` (`-63.913 ms`)
+- `CUDA_NODE op=MUL_MAT kind=forward`: `14480.357 -> 14420.098 ms` (`-60.259 ms`)
+- target MMQ bucket (`mul_mat_q_case type=11, ncols_max=192`):
+  - `8968.599 -> 8959.550 ms` (`-9.049 ms`, same call count `25128`)
+
+Updated decision after full sweep:
+- runtime verdict: `positive` for `skmin=144` vs `256`
+- hotspot verdict: `positive`
+- overall: `keep-as-knob` (best candidate now `skmin=144`), default still unchanged pending extra confirmation.
+
+Artifacts:
+- `build_logs/agent-workload/e012-c01-sweep-summary.md`
+- `build_logs/agent-workload/e012-c01-two-tasks-r1-sweep-skmin-*.csv`
+- `build_logs/agent-workload/e012-c01-two-tasks-trace-r1-sweep-skmin-256-mmqtiming-nohard.server.log`
+- `build_logs/agent-workload/e012-c01-two-tasks-trace-r1-sweep-skmin-144-mmqtiming-nohard.server.log`
+- `build_logs/agent-workload/e012-c01-trace-compare-skmin256-vs-144-nohard.md`
+
+## E013 diagnostics toolkit (added)
+
+### 1) Per-kernel MMQ resource telemetry
+
+Code path:
+- `ggml/src/ggml-cuda/mmq.cuh`
+
+Enable:
+- `GGML_TRACE_MMQ_TIMING=1`
+- `GGML_TRACE_MMQ_TIMING_SYNC=1`
+- `GGML_TRACE_MMQ_RESOURCES=1`
+
+Now `mul_mat_q_case: timing` includes (when available):
+- `regs`
+- `nbytes_shared` + `shared_pct`
+- `max_blocks_per_sm`
+- `max_threads_per_sm`
+- `occupancy_pct`
+- `waves_per_sm`
+
+This gives lane-local resource context for MMQ buckets without external profiler.
+
+### 2) Shape presence gate before shape-scoped experiments
+
+Script:
+- `scripts/research/c01_shape_presence_gate.py`
+
+Example:
+
+```bash
+python scripts/research/c01_shape_presence_gate.py \
+	build_logs/agent-workload/<trace>.server.log \
+	--qtype 11 --ncols 139,140 --min-count 1 --strict
+```
+
+Rule:
+- if gate fails, reject shape-scoped probe before coding.
+
+### 3) Cold-vs-steady split protocol
+
+Script:
+- `scripts/research/cold_steady_trace_split.py`
+
+Example:
+
+```bash
+python scripts/research/cold_steady_trace_split.py \
+	build_logs/agent-workload/<trace>.server.log \
+	--op MUL_MAT --kind forward --steady-max-ms 5 --top 12
+```
+
+Outputs route shares separately for:
+- `cold` (spikes)
+- `steady` (sustained window)
+
+### 4) Coarse q3 path components (proxy split)
+
+Script:
+- `scripts/research/c01_q3_path_components.py`
+
+Example:
+
+```bash
+python scripts/research/c01_q3_path_components.py \
+	build_logs/agent-workload/<trace>.server.log --kind forward --steady-max-ms 5
+```
+
+Notes:
+- components are explicit proxies from route lines (`compute_core_q3`, `dequant_load_vec_q3`, `fallback_cublas`), not kernel-internal cycle counters.
+
+### 5) Statistical decision layer for borderline deltas
+
+Script:
+- `scripts/research/decision_stats.py`
+
+Example:
+
+```bash
+python scripts/research/decision_stats.py \
+	--baseline build_logs/agent-workload/<base>.csv \
+	--candidate build_logs/agent-workload/<cand>.csv \
+	--bootstrap 3000 --borderline-pct 1.0
+```
+
+Outputs:
+- aggregate delta
+- per-task 95% CI
+- bootstrap delta CI
+- effect size (Cohen d)
+- statistical verdict (`positive`/`negative`/`inconclusive`)

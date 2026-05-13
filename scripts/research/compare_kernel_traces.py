@@ -95,6 +95,25 @@ def parse_log(path: Path, sync_only: bool) -> dict[str, list[float]]:
                 add(groups, f"MMVQ type={qtype} ncols_dst={ncols_dst} small_k={small_k} fusion={fusion}", value)
                 continue
 
+            if "mul_mat_q_case: timing" in line:
+                qtype = field(line, "type")
+                ncols_max = field(line, "ncols_max")
+                mmq_x_best = field(line, "mmq_x_best")
+                mmq_y = field(line, "mmq_y")
+                occupancy_pct = field(line, "occupancy_pct")
+                waves_per_sm = field(line, "waves_per_sm")
+                regs = field(line, "regs")
+                shared_pct = field(line, "shared_pct")
+
+                add(groups, "MMQ", value)
+                add(groups, "PRE_SYNC before MMQ", pre_sync_ms(line))
+                add(groups, f"MMQ type={qtype} ncols_max={ncols_max}", value)
+                add(groups, f"MMQ type={qtype} ncols_max={ncols_max} mmq_x_best={mmq_x_best}", value)
+                add(groups, f"MMQ type={qtype} mmq_x_best={mmq_x_best} mmq_y={mmq_y}", value)
+                add(groups, f"MMQ_RES type={qtype} regs={regs} shared_pct={shared_pct}", value)
+                add(groups, f"MMQ_RES type={qtype} occupancy_pct={occupancy_pct} waves_per_sm={waves_per_sm}", value)
+                continue
+
             if "process_ubatch: ubatch timing" in line:
                 n_tokens = field(line, "n_tokens")
                 add(groups, "UBATCH", value)

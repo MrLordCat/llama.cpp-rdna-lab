@@ -340,6 +340,8 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
                 case GGML_TYPE_Q5_1:
                 case GGML_TYPE_Q8_0:
                 case GGML_TYPE_Q2_K:
+                case GGML_TYPE_Q3_K:
+                    return 2;
                 case GGML_TYPE_Q4_K:
                 case GGML_TYPE_Q5_K:
                 case GGML_TYPE_Q6_K:
@@ -915,6 +917,8 @@ static void mul_mat_vec_q_switch_ncols_dst(
         }
 
         if (is_qwen_hot_rdna4) {
+            // RDNA4 Qwen-hot decode path: default to small_k and allow explicit env overrides.
+            use = true;
             forced_small_k = ggml_cuda_mmvq_qwen_force_small_k_enabled();
             forced_disable_small_k = ggml_cuda_mmvq_qwen_disable_small_k_enabled();
             if (forced_small_k) {
