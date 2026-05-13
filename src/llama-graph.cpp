@@ -32,6 +32,10 @@ static bool llama_is_tkv_kv_type(enum ggml_type type) {
     return type == GGML_TYPE_TKV2_0 || type == GGML_TYPE_TKV3_0 || type == GGML_TYPE_TKV4_0;
 }
 
+static bool llama_tkv_direct_partner_type_ok(enum ggml_type type) {
+    return llama_is_tkv_kv_type(type) || type == GGML_TYPE_Q8_0;
+}
+
 static bool llama_tkv_direct_fattn_enabled() {
     const char * env = std::getenv("GGML_TKV_DIRECT_FATTN");
     if (env == nullptr || env[0] == '\0') {
@@ -2007,13 +2011,18 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     k = ggml_permute(ctx0, k, 0, 2, 1, 3);
     v = ggml_permute(ctx0, v, 0, 2, 1, 3);
 
-    const bool direct_tkv_base = use_flash_attn && llama_tkv_direct_fattn_enabled() &&
-            llama_is_tkv_kv_type(k->type) && llama_is_tkv_kv_type(v->type) && k->type == v->type &&
+    const bool direct_tkv_k = llama_is_tkv_kv_type(k->type);
+    const bool direct_tkv_v = llama_is_tkv_kv_type(v->type);
+        const bool tkv_fattn_candidate = use_flash_attn &&
+            (direct_tkv_k || direct_tkv_v) &&
+            llama_tkv_direct_partner_type_ok(k->type) && llama_tkv_direct_partner_type_ok(v->type) &&
             q->ne[0] % LLAMA_TKV_GROUP_SIZE == 0 &&
-            k->ne[0] % LLAMA_TKV_GROUP_SIZE == 0 && v->ne[0] % LLAMA_TKV_GROUP_SIZE == 0;
+            (!direct_tkv_k || k->ne[0] % LLAMA_TKV_GROUP_SIZE == 0) &&
+            (!direct_tkv_v || v->ne[0] % LLAMA_TKV_GROUP_SIZE == 0);
+        const bool direct_tkv_base = tkv_fattn_candidate && llama_tkv_direct_fattn_enabled();
     const bool direct_tkv_fattn = direct_tkv_base && (q->ne[1] <= 2 || llama_tkv_direct_prefill_enabled());
 
-    if (direct_tkv_fattn) {
+    if (direct_tkv_fattn && direct_tkv_k) {
         if (!ggml_is_contiguous(q)) {
             q = ggml_cont(ctx0, q);
         }
@@ -2037,9 +2046,17 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             k = ggml_cast(ctx0, k, GGML_TYPE_F16);
             cb(k, "k_dequant", il);
         }
+        if (!direct_tkv_fattn && tkv_fattn_candidate && k->type == GGML_TYPE_Q8_0) {
+            k = ggml_cast(ctx0, k, GGML_TYPE_F16);
+            cb(k, "k_mixed_q8_f16", il);
+        }
         if (!direct_tkv_fattn && llama_is_turbo_kv_type(v->type)) {
             v = ggml_cast(ctx0, v, GGML_TYPE_F16);
             cb(v, "v_dequant", il);
+        }
+        if (!direct_tkv_fattn && tkv_fattn_candidate && v->type == GGML_TYPE_Q8_0) {
+            v = ggml_cast(ctx0, v, GGML_TYPE_F16);
+            cb(v, "v_mixed_q8_f16", il);
         }
 
         // this can happen when KV cache is not used (e.g. an embedding model with non-causal attn)
@@ -2058,7 +2075,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         ggml_flash_attn_ext_add_sinks(cur, sinks);
         ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);
 
-        if (direct_tkv_fattn) {
+        if (direct_tkv_fattn && direct_tkv_v) {
             if (!ggml_is_contiguous(cur)) {
                 cur = ggml_cont(ctx0, cur);
             }

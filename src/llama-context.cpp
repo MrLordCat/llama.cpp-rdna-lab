@@ -26,6 +26,10 @@ static bool llama_is_tkv_kv_type(enum ggml_type type) {
     return type == GGML_TYPE_TKV2_0 || type == GGML_TYPE_TKV3_0 || type == GGML_TYPE_TKV4_0;
 }
 
+static bool llama_tkv_direct_partner_type_ok(enum ggml_type type) {
+    return llama_is_tkv_kv_type(type) || type == GGML_TYPE_Q8_0;
+}
+
 static bool llama_tkv_direct_fattn_enabled() {
     const char * env = std::getenv("GGML_TKV_DIRECT_FATTN");
     if (env == nullptr || env[0] == '\0') {
@@ -3212,15 +3216,19 @@ llama_context * llama_init_from_model(
         }
     }
 
-    if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && llama_is_turbo_kv_type(params.type_k)) {
-        if (llama_tkv_direct_fattn_enabled() && llama_is_tkv_kv_type(params.type_k) && params.type_k == params.type_v) {
+    if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && (llama_is_turbo_kv_type(params.type_k) || llama_is_turbo_kv_type(params.type_v))) {
+        const bool direct_tkv_k = llama_is_tkv_kv_type(params.type_k);
+        const bool direct_tkv_v = llama_is_tkv_kv_type(params.type_v);
+        if (llama_tkv_direct_fattn_enabled() &&
+                (direct_tkv_k || direct_tkv_v) &&
+                llama_tkv_direct_partner_type_ok(params.type_k) && llama_tkv_direct_partner_type_ok(params.type_v)) {
             if (llama_tkv_direct_prefill_enabled()) {
-                LLAMA_LOG_INFO("%s: %s K/V cache with flash_attn - using full direct TKV FlashAttention\n", __func__, ggml_type_name(params.type_k));
+                LLAMA_LOG_INFO("%s: %s/%s K/V cache with flash_attn - using full direct TKV FlashAttention\n", __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
             } else {
-                LLAMA_LOG_INFO("%s: %s K/V cache with flash_attn - using hybrid TKV FlashAttention (direct decode, F16 prefill)\n", __func__, ggml_type_name(params.type_k));
+                LLAMA_LOG_INFO("%s: %s/%s K/V cache with flash_attn - using hybrid TKV FlashAttention (direct decode, F16 prefill)\n", __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
             }
         } else {
-            LLAMA_LOG_WARN("%s: %s K cache with flash_attn - GGML_TKV_DIRECT_FATTN=0, fallback to graph dequant K/V\n", __func__, ggml_type_name(params.type_k));
+            LLAMA_LOG_WARN("%s: %s/%s K/V cache with flash_attn - no direct TKV route, fallback to graph dequant where needed\n", __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
         }
     }
 

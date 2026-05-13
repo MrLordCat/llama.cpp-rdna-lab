@@ -316,6 +316,18 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV2_0, GGML_TYPE_TKV2_0)
     FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV3_0, GGML_TYPE_TKV3_0)
     FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV4_0, GGML_TYPE_TKV4_0)
+    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV2_0, GGML_TYPE_TKV3_0)
+    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV3_0, GGML_TYPE_TKV2_0)
+    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV2_0, GGML_TYPE_TKV4_0)
+    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV4_0, GGML_TYPE_TKV2_0)
+    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV3_0, GGML_TYPE_TKV4_0)
+    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV4_0, GGML_TYPE_TKV3_0)
+    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV2_0, GGML_TYPE_Q8_0)
+    FATTN_VEC_CASES_TKV_D(GGML_TYPE_Q8_0,   GGML_TYPE_TKV2_0)
+    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV3_0, GGML_TYPE_Q8_0)
+    FATTN_VEC_CASES_TKV_D(GGML_TYPE_Q8_0,   GGML_TYPE_TKV3_0)
+    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV4_0, GGML_TYPE_Q8_0)
+    FATTN_VEC_CASES_TKV_D(GGML_TYPE_Q8_0,   GGML_TYPE_TKV4_0)
 
     GGML_ABORT("fatal error");
 }
@@ -419,7 +431,13 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
 #ifndef GGML_CUDA_FA_ALL_QUANTS
     if (K->type != V->type) {
-        return BEST_FATTN_KERNEL_NONE;
+        const bool K_direct_tkv = K->type == GGML_TYPE_TKV2_0 || K->type == GGML_TYPE_TKV3_0 || K->type == GGML_TYPE_TKV4_0;
+        const bool V_direct_tkv = V->type == GGML_TYPE_TKV2_0 || V->type == GGML_TYPE_TKV3_0 || V->type == GGML_TYPE_TKV4_0;
+        const bool K_direct_ok  = K_direct_tkv || K->type == GGML_TYPE_Q8_0;
+        const bool V_direct_ok  = V_direct_tkv || V->type == GGML_TYPE_Q8_0;
+        if (!(K_direct_tkv || V_direct_tkv) || !K_direct_ok || !V_direct_ok) {
+            return BEST_FATTN_KERNEL_NONE;
+        }
     }
 #endif // GGML_CUDA_FA_ALL_QUANTS
 
@@ -458,7 +476,12 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     const bool K_is_tkv = K->type == GGML_TYPE_TKV2_0 || K->type == GGML_TYPE_TKV3_0 || K->type == GGML_TYPE_TKV4_0;
     const bool V_is_tkv = V->type == GGML_TYPE_TKV2_0 || V->type == GGML_TYPE_TKV3_0 || V->type == GGML_TYPE_TKV4_0;
     if (K_is_tkv || V_is_tkv) {
-        if (!K_is_tkv || !V_is_tkv || K->type != V->type || V->ne[0] % QK_TKV_0 != 0 || !can_use_vector_kernel) {
+        const bool K_direct_ok = K_is_tkv || K->type == GGML_TYPE_Q8_0;
+        const bool V_direct_ok = V_is_tkv || V->type == GGML_TYPE_Q8_0;
+        if (!K_direct_ok || !V_direct_ok ||
+                (K_is_tkv && K->ne[0] % QK_TKV_0 != 0) ||
+                (V_is_tkv && V->ne[0] % QK_TKV_0 != 0) ||
+                !can_use_vector_kernel) {
             return BEST_FATTN_KERNEL_NONE;
         }
         return BEST_FATTN_KERNEL_VEC;

@@ -109,6 +109,163 @@ static void set_rows_cuda_quant(
     }
 }
 
+template <typename idx_t>
+__launch_bounds__(QK_TKV_0)
+static __global__ void k_set_rows_tkv4(const float * __restrict__ src0,
+                                       const idx_t * __restrict__ src1,
+                                       block_tkv4_0 * __restrict__ dst,
+                                       const int64_t ne00,
+                                       const int64_t ne01,
+                                       const int64_t ne02,
+                                       const int64_t ne10,
+                                       const int64_t ne11,
+                                       const int64_t ne12,
+                                       const int64_t ne13,
+                                       const int64_t s01,
+                                       const int64_t s02,
+                                       const int64_t s03,
+                                       const int64_t s10,
+                                       const int64_t s11,
+                                       const int64_t s12,
+                                       const int64_t s1,
+                                       const int64_t s2,
+                                       const int64_t s3) {
+    const int j = threadIdx.x;
+
+    const int64_t n_blocks_per_row = ne00 / QK_TKV_0;
+    const int64_t g = blockIdx.x;
+    const int64_t i_blk = g % n_blocks_per_row;
+
+    int64_t tmp = g / n_blocks_per_row;
+    const int64_t i01 = tmp % ne01;
+    tmp /= ne01;
+    const int64_t i02 = tmp % ne02;
+    const int64_t i03 = tmp / ne02;
+
+    const int64_t i12 = i03 % ne12;
+    const int64_t i11 = i02 % ne11;
+    const int64_t i10 = i01;
+
+    const int64_t dst_row = *(src1 + i10*s10 + i11*s11 + i12*s12);
+    const float * src_row = src0 + i01*s01 + i02*s02 + i03*s03;
+    block_tkv4_0 * dst_row_ptr = (block_tkv4_0 *) ((char *) dst + dst_row*s1 + i02*s2 + i03*s3);
+    block_tkv4_0 * blk = dst_row_ptr + i_blk;
+
+    __shared__ float x[QK_TKV_0];
+    __shared__ float sum_sq[QK_TKV_0];
+    __shared__ uint8_t qidx[QK_TKV_0];
+
+    x[j] = src_row[i_blk*QK_TKV_0 + j];
+    sum_sq[j] = x[j]*x[j];
+    __syncthreads();
+
+    for (int stride = QK_TKV_0/2; stride > 0; stride >>= 1) {
+        if (j < stride) {
+            sum_sq[j] += sum_sq[j + stride];
+        }
+        __syncthreads();
+    }
+
+    __shared__ float s_norm;
+    if (j == 0) {
+        float norm = sqrtf(sum_sq[0]);
+        if (norm < 1e-10f) {
+            norm = 1e-10f;
+        }
+        s_norm = norm;
+        blk->d = __float2half(norm);
+    }
+    __syncthreads();
+
+    const float inv_norm = 1.0f / s_norm;
+    x[j] *= inv_norm;
+    __syncthreads();
+
+    x[j] *= (float) tkv_sign_device(j);
+    __syncthreads();
+
+#define WHT_STAGE(step) \
+    if ((j % (2*(step))) < (step)) { \
+        const float a = x[j]; \
+        const float b = x[j + (step)]; \
+        x[j] = a + b; \
+        x[j + (step)] = a - b; \
+    } \
+    __syncthreads();
+
+    WHT_STAGE(1)
+    WHT_STAGE(2)
+    WHT_STAGE(4)
+    WHT_STAGE(8)
+    WHT_STAGE(16)
+    WHT_STAGE(32)
+    WHT_STAGE(64)
+
+#undef WHT_STAGE
+
+    x[j] *= 0.08838834764831845f;
+
+    const float scale_up = 11.313708498984761f;
+    qidx[j] = tkv_quantize_4bit(x[j] * scale_up);
+    __syncthreads();
+
+    if ((j & 1) == 0) {
+        blk->qs[j / 2] = (uint8_t) ((qidx[j] & 0xF) | ((qidx[j + 1] & 0xF) << 4));
+    }
+
+    GGML_UNUSED(ne10);
+    GGML_UNUSED(ne13);
+}
+
+template <typename idx_t>
+static void set_rows_cuda_tkv4(
+        ggml_backend_cuda_context & ctx,
+        const ggml_tensor * src0,
+        const ggml_tensor * src1,
+        ggml_tensor * dst) {
+    const float * src0_d = (const float *) src0->data;
+    const idx_t * src1_d = (const idx_t *) src1->data;
+
+    GGML_TENSOR_BINARY_OP_LOCALS
+
+    GGML_ASSERT(ne00 % QK_TKV_0 == 0);
+
+    const int64_t n_blocks_per_row = ne00 / QK_TKV_0;
+    const int64_t n_groups = n_blocks_per_row * ne01 * ne02 * ne03;
+
+    const int64_t s01 = nb01/sizeof(float);
+    const int64_t s02 = nb02/sizeof(float);
+    const int64_t s03 = nb03/sizeof(float);
+    const int64_t s10 = nb10/sizeof(idx_t);
+    const int64_t s11 = nb11/sizeof(idx_t);
+    const int64_t s12 = nb12/sizeof(idx_t);
+
+    cudaStream_t stream = ctx.stream();
+
+    if (n_groups > 0 && ne00 > 0 && ne01 > 0 && ne02 > 0 && ne11 > 0 && ne12 > 0) {
+        k_set_rows_tkv4<idx_t><<<n_groups, QK_TKV_0, 0, stream>>>(
+            src0_d,
+            src1_d,
+            (block_tkv4_0 *) dst->data,
+            ne00,
+            ne01,
+            ne02,
+            ne10,
+            ne11,
+            ne12,
+            ne13,
+            s01,
+            s02,
+            s03,
+            s10,
+            s11,
+            s12,
+            nb1,
+            nb2,
+            nb3);
+    }
+}
+
 template <typename src_t, typename idx_t, typename dst_t>
 static __global__ void k_set_rows(const src_t * __restrict__ src0,
                                   const idx_t * __restrict__ src1,
@@ -340,15 +497,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_TKV4_0) {
-        set_rows_cuda_quant<idx_t, block_tkv4_0, QK_TKV_0, quantize_f32_tkv4_0_block>(
-            src0_d, src1_d, (block_tkv4_0*)dst->data,
-            ne00, ne01, ne02, ne03,
-            ne10, ne11, ne12, ne13,
-            nb01, nb02, nb03,
-            nb10, nb11, nb12,
-            nb1, nb2, nb3,
-            stream
-        );
+        set_rows_cuda_tkv4<idx_t>(ctx, src0, src1, dst);
     } else {
         GGML_ABORT("unsupported type %s", ggml_type_name(dst->type));
     }

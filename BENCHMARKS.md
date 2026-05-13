@@ -77,6 +77,67 @@ Breakdown confirmed by server timings:
 
 Итог для текущего этапа: правильный `ub=1024` резко сокращает разрыв `turbo4` к `q4` с прежних `~26%` до `~10%`. Full-direct prefill пока хуже; текущий лучший путь для качества/скорости — `turbo4` hybrid: prefill через F16 dequant + WMMA, decode через direct TKV.
 
+### Follow-up: specialized TKV4 set_rows kernel (2026-05-13)
+
+После внедрения отдельного `TKV4` kernel path в `ggml/src/ggml-cuda/set-rows.cu` (вместо generic quant path для `GGML_TYPE_TKV4_0`) повторный A/B на том же lane дал дополнительное сокращение разрыва к `q4`.
+
+Артефакты:
+- `build_logs/agent-workload/e013-tkv4setrows-finalstable-q4-ub1024-r3.*`
+- `build_logs/agent-workload/e013-tkv4setrows-finalstable-turbo4-ub1024-r3.*`
+
+| KV cache | Mode | Runs | Aggregate TPS | Delta vs q4 |
+| --- | --- | ---: | ---: | ---: |
+| q4_0/q4_0 | baseline | `3` | `11.17` | baseline |
+| turbo4_0/turbo4_0 | hybrid default + specialized TKV4 set_rows | `3` | `10.38` | `-7.1%` |
+
+Дополнительно проверялись stage-2/stage-3 идеи (warp-level pack/reduction в set_rows и sign LUT для WHT), но воспроизводимого выигрыша поверх stage-1 не показали, поэтому откатаны для сохранения стабильного минимального diff.
+
+### Follow-up: mixed TKV/Q8 direct FATTN route (2026-05-13)
+
+Следующая идея из shadow/storage route - разрешить direct decode для mixed K/V, где одна сторона остаётся `TKV`, а другая `q8_0`. В hybrid prefill обе стороны при необходимости приводятся к F16, поэтому large-ubatch prefill остаётся на стабильном WMMA пути; direct compressed path используется на decode.
+
+Артефакты:
+- `build_logs/agent-workload/e015-mixedroute-control-turbo4-turbo4-ub1024-r3.*`
+- `build_logs/agent-workload/e015-mixedroute-prefillfix-turbo4-q8v-ub1024-r3.*`
+- `build_logs/agent-workload/e015-mixedroute-prefillfix-q8k-turbo4v-ub1024-r1.*`
+- `build_logs/agent-workload/e015-mixedroute-directoff-turbo4-q8v-ub1024-r1.*`
+
+| KV cache | Mode | Runs | KV size | Aggregate TPS | Delta vs q4 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| q4_0/q4_0 | baseline from set_rows A/B | `3` | `216 MiB` | `11.17` | baseline |
+| turbo4_0/turbo4_0 | same-build control | `3` | `198 MiB` | `10.36` | `-7.3%` |
+| turbo4_0/q8_0 | mixed direct decode, F16 prefill | `3` | `303 MiB` | `10.60` | `-5.1%` |
+| q8_0/turbo4_0 | mixed direct decode, F16 prefill smoke | `1` | `303 MiB` | `10.26` | `-8.1%` |
+
+Итог: mixed `turbo4_0/q8_0` больше не падает на prefill и даёт небольшой speed-up относительно `turbo4_0/turbo4_0` control (`+2.3%`), но требует больше KV памяти (`303 MiB` против `198 MiB`) и всё ещё не обгоняет q4. Оставляем как явный opt-in режим для проверки более точного V cache, не как default recommendation.
+
+Negative control: `GGML_TKV_DIRECT_FATTN=0` для `turbo4_0/q8_0` теперь корректно уходит в F16 fallback и завершает lane (`4.51 TPS` r1), но этот путь не конкурентен и нужен только как guard/debug switch.
+
+### Stormrage benchmark shape recheck (2026-05-13)
+
+Повторён benchmark shape из `Stormrage34/llama.cpp-turboquant-hip/scripts/run_rdna2_bench.sh` на текущей локальной сборке: `p=512,2048,4096`, `n=128`, `b=256`, `ub=128`, `ctk=turbo4`, `ctv=turbo2`, `fa=1`, `mmp=0`, `t=8`, `ngl=99`, `fit-target=2048`, `fitc=4096`, `r=3`. Для контроля также снят `q4_0/q4_0` тем же shape.
+
+Важное ограничение: внешние числа из Stormrage README сняты на RX 6800 XT / RDNA2 (`gfx1030`) и для их MoE IQ4_XS/RDNA2 accelerator path. Локальные числа ниже сняты на RX 9070 XT / RDNA4 (`gfx1201`), ROCm 7.1, с локальными моделями `Qwen3.6-35B-A3B-UD-IQ3_XXS` и `Qwen3.6-27B-Q3_K_S`. Это operational-сравнение одного benchmark shape, не строгое apples-to-apples.
+
+| Source / GPU | Model / KV | pp512 | pp2048 | pp4096 | tg128 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Stormrage README, RX 6800 XT | MoE baseline | `~480` | n/a | n/a | `~57` |
+| Stormrage README, RX 6800 XT | MoE stable RDNA2 | `~540` | n/a | n/a | `~55` |
+| Stormrage README, RX 6800 XT | MoE + RDNA2_MATMUL_OPT_V1 | `~1772 +/- 6` | n/a | n/a | `~52 +/- 7` |
+| Stormrage README, RX 6800 XT | Dense 27B summary | `~480` | n/a | n/a | `~27` |
+| Local RX 9070 XT | MoE35B `q4_0/q4_0` | `1318.83` | `1275.92` | `1239.98` | `102.76` |
+| Local RX 9070 XT | MoE35B `turbo4_0/turbo2_0` | `1143.86` | `1064.55` | `992.07` | `56.71` |
+| Local RX 9070 XT | Dense27B `q4_0/q4_0` | `795.66` | `787.07` | `776.22` | `28.59` |
+| Local RX 9070 XT | Dense27B `turbo4_0/turbo2_0` | `636.45` | `608.08` | `554.85` | `20.49` |
+
+Артефакты локального повторения:
+- `build_logs/agent-workload/stormrage-shape-current-moe35b-q4-q4-20260513.jsonl`
+- `build_logs/agent-workload/stormrage-shape-current-moe35b-turbo4-turbo2-20260513.jsonl`
+- `build_logs/agent-workload/stormrage-shape-current-dense27b-q4-q4-20260513.jsonl`
+- `build_logs/agent-workload/stormrage-shape-current-dense27b-turbo4-turbo2-20260513.jsonl`
+
+Вывод: Stormrage `turbo4/turbo2` shape теперь воспроизводится на локальных реальных `TKV4/TKV2`, но на наших моделях и RDNA4 он не даёт speed advantage над `q4_0/q4_0`. Главный внешний выигрыш Stormrage остаётся связан с RDNA2 MoE-specific accelerator (`RDNA2_MATMUL_OPT_V1`), а не с общим dense/TurboKV path.
+
 Первичный underfilled A/B на `ub=192` сохранён только как диагностический trace direct/fallback, не как главный speed claim:
 
 Подробный артефакт: `build_logs/agent-workload/e009-q4-vs-turbokv-v2review-20260513.md`.

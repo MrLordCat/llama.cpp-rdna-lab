@@ -60,12 +60,15 @@
 
 ## Result
 
-- Outcome: TKV FlashAttention implemented, built, and enabled by default for eligible local TKV K/V combinations. Current default is hybrid for Turbo4: direct decode with F16 dequant + WMMA prefill; `GGML_TKV_DIRECT_PREFILL=1` forces full direct prefill for experiments.
+- Outcome: TKV FlashAttention implemented, built, and enabled by default for eligible local TKV K/V combinations, including explicit mixed TKV/Q8 selections. Current default is hybrid for Turbo4: direct decode with F16 dequant + WMMA prefill; `GGML_TKV_DIRECT_PREFILL=1` forces full direct prefill for experiments.
 - Delta (smoke): `pp64/tg8`, `turbo4_0/turbo4_0` improved from `186.69/17.09 tok/s` fallback to `227.88/24.82 tok/s`; direct `turbo3_0/turbo3_0` measured `221.67/24.60 tok/s`; direct `turbo2_0/turbo2_0` measured `225.50/25.52 tok/s`.
 - Delta (active lane vs q4, corrected best-shape): `v2-review` lane `ctx=12288`, `b=6144`, `ub=1024`, no-reuse, repo-snapshot context, 3 runs: `q4_0/q4_0 = 11.15 TPS`; `turbo4_0/turbo4_0` hybrid default = `10.02 TPS` (`-10.1%`). Full direct prefill probe with `GGML_TKV_DIRECT_PREFILL=1` measured `7.70 TPS`.
+- Delta (follow-up set_rows + mixed route): specialized `TKV4 set_rows` improved same-type `turbo4_0/turbo4_0` to `10.38 TPS` (`-7.1%` vs `q4_0=11.17`). Mixed `turbo4_0/q8_0` direct decode with F16 prefill measured `10.60 TPS` over 3 runs (`-5.1%` vs q4, `303 MiB` KV); reverse `q8_0/turbo4_0` smoke measured `10.26 TPS` over 1 run.
+- Negative control: mixed `turbo4_0/q8_0` with `GGML_TKV_DIRECT_FATTN=0` completed through F16 fallback at `4.51 TPS` r1, confirming the fallback path is safe but not performance-competitive.
+- Stormrage-shape recheck: local current `run_rdna2_bench.sh` shape (`p=512,2048,4096`, `n=128`, `b=256`, `ub=128`, `ctk=turbo4`, `ctv=turbo2`, `fa=1`, `fit-target=2048`, `fitc=4096`, `r=3`) measured dense27B `TKV4/TKV2 = 636.45/608.08/554.85 pp, 20.49 tg128` and MoE35B `TKV4/TKV2 = 1143.86/1064.55/992.07 pp, 56.71 tg128` on RX 9070 XT. Same-shape local `q4_0/q4_0` stayed faster (`795.66/787.07/776.22 pp, 28.59 tg128` dense; `1318.83/1275.92/1239.98 pp, 102.76 tg128` MoE). Stormrage README numbers are RX 6800 XT/RDNA2 and not direct pass/fail targets.
 - Delta (diagnostic ub192): `q4_0/q4_0 = 9.01 TPS`; direct `turbo4_0 = 6.68 TPS`, direct `turbo3_0 = 6.25 TPS`, direct `turbo2_0 = 6.71 TPS`; fallback `turbo4_0` with `GGML_TKV_DIRECT_FATTN=0` = `3.10 TPS`.
 - Confidence: medium for runtime speed behavior (smoke + active-lane A/B). Full logit-level equivalence is still pending.
-- Recommendation: keep the hybrid default for Turbo4 and continue kernel/runtime tuning before claiming TurboKV throughput parity or advantage over q4_0 on active lane.
+- Recommendation: keep the hybrid default for Turbo4, keep mixed `turbo4_0/q8_0` as explicit opt-in, and continue kernel/runtime tuning before claiming TurboKV throughput parity or advantage over q4_0 on active lane.
 
 ## Notes
 
@@ -74,5 +77,8 @@
 - 2026-05-13 smoke commands used `--no-warmup -r 1 -p 64 -n 8 -b 128 -ub 128 -fa 1 -fitt 2048 -fitc 4096` on `models/Qwen3.6-27B-Q3_K_S.gguf` with `HSA_OVERRIDE_GFX_VERSION` unset.
 - 2026-05-13 active-lane A/B (`v2-review`, no-reuse, repo-snapshot) stored in `build_logs/agent-workload/e009-q4-vs-turbokv-v2review-20260513.md`.
 - 2026-05-13 corrected `ub=1024` Turbo4 vs q4 A/B stored in `build_logs/agent-workload/e009-q4-vs-turbo4-ub1024-v2review-20260513.md`.
+- 2026-05-13 specialized `TKV4 set_rows` follow-up stored in `build_logs/agent-workload/e013-tkv4setrows-finalstable-*.{jsonl,csv,diagnostics.md,server.log}`.
+- 2026-05-13 mixed TKV/Q8 route follow-up stored in `build_logs/agent-workload/e015-mixedroute-*.{jsonl,csv,diagnostics.md,server.log}`.
+- 2026-05-13 Stormrage-shape recheck stored in `build_logs/agent-workload/stormrage-shape-current-*-20260513.jsonl`.
 - Stormrage full TurboKV port is larger because its `GGML_TYPE_TURBO2_0/3_0/4_0` IDs conflict with local `Q1_0/TBQ3_0/TBQ4_0/TQ3_0` layout.
-- Stormrage RDNA2 MMQ double-buffer path appears less relevant to the current dense RDNA4 target and should be treated as a separate MoE/IQ4_XS experiment if revisited.
+- Stormrage RDNA2 MoE LDS double-buffer path remains the only clearly unported performance idea, but it targets gfx1030 MoE prefill and should be treated as a separate MoE/IQ4_XS experiment if revisited on RDNA4.
