@@ -2747,7 +2747,8 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
     GGML_TENSOR_BINARY_OP_LOCALS
 
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
-    const bool trace_mul_mat_route = std::getenv("GGML_TRACE_CUDA_MUL_MAT_ROUTE") != nullptr;
+    const bool trace_mul_mat_route = std::getenv("GGML_TRACE_CUDA_MUL_MAT_ROUTE") != nullptr
+        || std::getenv("GGML_TRACE_MUL_MAT_ID_ROUTE") != nullptr;
     const auto log_mul_mat_id_route = [&](const char * route) {
         if (!trace_mul_mat_route) {
             return;

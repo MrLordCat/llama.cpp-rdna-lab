@@ -4287,7 +4287,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
         }
 
         GGML_LOG_INFO(
-            "%s: timing type=%d cc=%d nrows_x=%lld ncols_max=%lld ncols_dst=%lld mmq_x_best=%d mmq_y=%d rdna4_staging=%d sync_req=%d pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+            "%s: timing type=%d cc=%d nrows_x=%lld ncols_max=%lld ncols_dst=%lld mmq_x_best=%d mmq_y=%d rdna4_staging_req=%d rdna4_staging_eff=%d sync_req=%d pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
             __func__,
             (int) type,
             cc,
@@ -4296,6 +4296,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
             (long long) args.ncols_dst,
             mmq_x_best,
             mmq_y,
+            use_rdna4_moe_mmq_staging_requested ? 1 : 0,
             use_rdna4_moe_mmq_staging_effective ? 1 : 0,
             trace_timing_sync ? 1 : 0,
             pre_sync_applied ? 1 : 0,
@@ -4309,7 +4310,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
 
     if (trace_path) {
         GGML_LOG_INFO(
-            "%s: type=%d cc=%d ncols_max=%lld mmq_x_max=%d mmq_y=%d nwarps=%d mmq_x_best=%d ntiles_x_best=%d rdna4_staging=%d\n",
+            "%s: type=%d cc=%d ncols_max=%lld mmq_x_max=%d mmq_y=%d nwarps=%d mmq_x_best=%d ntiles_x_best=%d rdna4_staging_req=%d rdna4_staging_eff=%d\n",
             __func__,
             (int) type,
             cc,
@@ -4319,6 +4320,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
             nwarps,
             mmq_x_best,
             ntiles_x_best,
+            use_rdna4_moe_mmq_staging_requested ? 1 : 0,
             use_rdna4_moe_mmq_staging_effective ? 1 : 0);
     }
 }
