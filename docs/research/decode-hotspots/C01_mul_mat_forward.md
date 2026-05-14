@@ -649,3 +649,20 @@ Decision:
 
 Residual risk:
 - This is RDNA4-wide MMQ policy, not Q3-only. The active C01 lane improved Q3_K and Q4_K MMQ buckets, but broader RDNA4 MMQ-heavy lanes should be watched.
+
+## C01 experiment E016: post-y64/w4 force-x follow-up
+
+Idea:
+- Re-test force-x after E015 because the old force-x sweep used the previous `mmq_y=128/nwarps=8` geometry.
+
+No-trace r1 results:
+- E015 default reference: `mmq_x_best=96`, r3 `9.6080 TPS`
+- `GGML_MMQ_RDNA4_Q3_FORCE_MMQ_X=64`: `9.02 TPS`
+- `GGML_MMQ_RDNA4_Q3_FORCE_MMQ_X=80`: `8.20 TPS`
+- `GGML_MMQ_RDNA4_Q3_FORCE_MMQ_X=112`: `9.06 TPS`
+- `GGML_MMQ_RDNA4_Q3_FORCE_MMQ_X=128`: `8.77 TPS`
+
+Decision:
+- `reject`
+- reason: all valid force-x points are below the E015 default selector.
+- keep: default `mmq_x=96` on the active bucket.
