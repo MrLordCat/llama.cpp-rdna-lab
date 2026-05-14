@@ -59,6 +59,11 @@ Primary center:
 11. E016 post-y64/w4 force-x follow-up:
    - force `mmq_x=64/80/112/128` all regressed against E015 default,
    - keep selected `mmq_x=96` for the active bucket.
+12. E017 added a Q3_K MMQ theory gate:
+   - script: `scripts/research/c01_mmq_q3_theory_gate.py`,
+   - half-scale at `x96` rejected analytically because it stays above `32 KiB` shared,
+   - k-pair8 tested after passing the gate but rejected at r1 (`9.59 TPS` vs E015 `9.6080`),
+   - temporary code probe was reverted and `llama-server` rebuilt.
 
 ## Lane Contract (resume baseline)
 
@@ -118,6 +123,7 @@ GGML_TRACE_MMQ_RESOURCES=1 GGML_TRACE_MMQ_TIMING=1 GGML_TRACE_MMQ_TIMING_SYNC=1 
    Q3_K MMQ compute/load internals beyond tile size:
    `load_tiles_q3_K`, scale/min unpack, accumulator/write-back pressure.
    Do not continue force-x sweeps unless a later change alters shared layout or selector math.
+   Run the Q3 theory gate before any new kernel probe.
 6. If a candidate is hotspot-positive but runtime-neutral, keep it as research-positive
    and confirm again with a paired control rerun.
 7. If a candidate is runtime-positive, proceed to `runs=3` confirmation before any

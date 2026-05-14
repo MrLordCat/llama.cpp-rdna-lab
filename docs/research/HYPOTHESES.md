@@ -51,6 +51,7 @@ Where:
 | H15 | RDNA4 MMVQ Q3_K/Q4_K decode fast path | The active Qwen lane still spends steady decode time in q3/q4 matvec routes; an RDNA4-scoped MMVQ launch policy or kernel specialization may reduce per-token decode cost without extra VRAM | +2% to +8% decode if the target bucket is active | extra template variants can increase compile time or regress occupancy | C02 resource trace, `MMVQ type=11 ncols_dst=1` timing, then env-gated A/B |
 | H16 | C01 Q3_K MMQ selector/resource pressure | After MMVQ is closed, the active C01 cost is still `mul_mat_q_direct|q3_K`; route-local selector/resource levers may expose a cheap win before deeper kernel work | 0% to +3% if selector-bound; larger only if it points to a deeper q3 compute/load issue | runtime noise and cold-start redistribution can look like gains without target hotspot improvement | fresh post-E013 trace, force/selectors A/B, target bucket timing |
 | H17 | RDNA4 MMQ smaller y tile with fewer warps | `mmq_y=128/nwarps=8` is LDS-heavy on RDNA4 Q3_K; pairing `mmq_y=64` with `nwarps=4` preserves write-back geometry while reducing shared pressure | +1% to +4% on C01 if resource placement dominates | lower occupancy/waves could regress other MMQ-heavy lanes | paired C01 r3 plus target trace |
+| H18 | C01 Q3_K theory gate before code probes | Q3_K MMQ ideas can be cheaply screened by shared-memory split, tile-count ratio, and loop-structure changes before rebuilding kernels | improves experiment yield; avoids low-ceiling probes | simple model can miss compiler/register effects | run `c01_mmq_q3_theory_gate.py`, then only test candidates with a plausible limiting-term change |
 
 ## Priority (Start Here)
 
@@ -67,6 +68,7 @@ Where:
 11. H15 is a narrow follow-up to C02: attempt only env-gated MMVQ Q3/Q4 decode variants and keep/revert by paired runtime + hotspot evidence.
 12. H16 is completed as a negative selector/resource screen: simple force-x, stream-k, launch-bounds, and `mmq_y` probes did not produce a target-positive keep candidate; next C01 step should be deeper Q3_K compute/load specialization.
 13. H17 is completed and kept for RDNA4: `mmq_y=64/nwarps=4` improves C01 paired r3 by `+2.24%` with target hotspot improvement.
+14. H18 is now the required C01 screen for new Q3_K MMQ ideas. Initial gate rejected half-scale as low-ceiling and rejected k-pair8 after r1 (`9.59 TPS` vs E015 `9.6080`).
 
 ## Evidence Snapshot (E006 Retest)
 

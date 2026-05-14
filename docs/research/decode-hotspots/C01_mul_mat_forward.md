@@ -666,3 +666,34 @@ Decision:
 - `reject`
 - reason: all valid force-x points are below the E015 default selector.
 - keep: default `mmq_x=96` on the active bucket.
+
+## C01 experiment E017: Q3_K theory gate + k-pair8 probe
+
+New analytic gate:
+- script: `scripts/research/c01_mmq_q3_theory_gate.py`
+- command:
+
+```bash
+python scripts/research/c01_mmq_q3_theory_gate.py build_logs/agent-workload/c01-e015-rdna4-y64w4-trace-r1.server.log --ncols 192
+```
+
+Gate output for active bucket:
+- current: `mmq_x=96`, `mmq_y=64`, shared `35712` bytes, x tile count `2`
+- Q3 x tile shared: `21504` bytes
+- Q8 y tile shared: `13824` bytes
+- misc shared: `384` bytes
+
+Theory decisions:
+- Q3 half-scale packing at `x96`: projected `33664` bytes, still above `32 KiB`, so it cannot unlock a second block/SM. Do not test first.
+- Q3 half-scale packing + `x80`: projected `31360` bytes, but x tile count rises `2 -> 3`; too risky before cheaper probes.
+- k-pair8: same shared and tile count, halves outer k-loop/dB loads. Proceeded to r1 test.
+
+Runtime gate:
+- candidate: `c01-e017-rdna4-q3-kpair8-r1`
+- aggregate: `9.59 TPS`
+- E015 reference: `9.6080 TPS`
+
+Decision:
+- `reject`
+- reason: theory-positive but too small in practice; below E015 reference at r1.
+- code reverted and `llama-server` rebuilt.
