@@ -2176,3 +2176,31 @@ Practical run:
 
 - Keep: узкий RDNA4/Q3_K decode policy оставлен как default.
 - Rollback point remains trivial: remove the `GGML_TYPE_Q3_K: return 2` case from RDNA4 `calc_nwarps()` if a future broader lane shows regression.
+
+## RDNA4 MMQ y64/w4 C01 Decode Fast Path (2026-05-14)
+
+Проверка:
+
+- Lane: `Qwen3.6-27B-Q3_K_S`, `ctx=12288`, `b=6144`, `ub=192`, KV `q4_0/q4_0`, `review_bug+patch_sim`, no-reuse.
+- Candidate: для RDNA4 MMQ использовать `mmq_y=64` и `nwarps=4` вместо generic AMD `mmq_y=128/nwarps=8`.
+- Причина: отдельный `mmq_y=64` не компилировался из-за write-back invariant, но связка `64/4` сохраняет `nwarps * tile_C::I == mmq_y` и снижает shared pressure.
+
+Результат:
+
+| Label | Runs | Aggregate TPS | Notes |
+| --- | ---: | ---: | --- |
+| `c01-e015-control-postrevert-r3` | 3 | `9.3974` | paired control after reverting candidate |
+| `c01-e015-rdna4-y64w4-r3` | 3 | `9.6080` | candidate |
+
+Статистика:
+
+- Delta: `+2.24%`.
+- Bootstrap CI: `[+0.1855, +0.2368]` TPS, verdict positive.
+- Trace cross-check: `c01-poste013-r1-resources` -> `c01-e015-rdna4-y64w4-trace-r1` gave `6.61 -> 6.69 TPS`.
+- Hotspot evidence: `MUL_MAT forward -513.477 ms`, `MMQ -505.679 ms`, `MMQ type=11 ncols_max=192 -398.537 ms`.
+- Resource shift for Q3_K: shared `88.09% -> 54.49%`; reported occupancy/waves `12.50%/8 -> 6.25%/4`, but wall and target timing improved.
+
+Вывод:
+
+- Keep: RDNA4 MMQ policy `mmq_y=64/nwarps=4` оставлен как default.
+- Residual risk: это RDNA4-wide MMQ policy, поэтому будущие Q4/Q5/Q6-heavy lanes стоит смотреть на regression, хотя активная Qwen C01 lane улучшилась.

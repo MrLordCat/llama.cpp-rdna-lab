@@ -580,3 +580,72 @@ Outputs:
 - bootstrap delta CI
 - effect size (Cohen d)
 - statistical verdict (`positive`/`negative`/`inconclusive`)
+
+## C01 experiment E014: post-E013 MMQ selector/resource pressure
+
+Fresh post-E013 resource baseline:
+- label: `c01-poste013-r1-resources`
+- artifact: `build_logs/agent-workload/c01-poste013-r1-resources.server.log`
+- trace aggregate: `6.61 TPS`
+- shape gate: `qtype=11 ncols=192` PASS (`192:26524`, `91:349`, `90:349`)
+- steady `MUL_MAT forward`: `15616.091 ms`
+- steady `mul_mat_q_direct|q3_K`: `12325.249 ms` (`78.93%`)
+- q3 coarse split: `compute_core_q3=84.72%`, `fallback_cublas=14.07%`, `dequant_load_vec_q3=1.21%`
+
+No-trace selector probes against fresh default (`9.41 TPS`):
+- forced `mmq_x=64`: `8.90 TPS`
+- forced `mmq_x=80`: `8.34 TPS`
+- forced `mmq_x=112`: `8.76 TPS`
+- forced `mmq_x=128`: `8.59 TPS`
+- apparent `mmq_x=88/104`: looked similar to default, but trace showed the override did not activate (`mmq_x_best=96`, `mmq_x_forced=0`)
+
+Additional probes:
+- real `mmq_x=104` by temporary granularity-8 override: hard timeout at `30.01s`, reject.
+- post-E013 stream-k retest: `skmin=192 -> 9.43 TPS`, `skmin=144 -> 9.41 TPS`; no repeatable gain over default.
+- `mmq_y=64`: compile-time reject; `mmq_write_back_mma` static assert requires `nwarps * tile_C::I == mmq_y`.
+- RDNA4 `launch_bounds(..., 1)`: runtime `9.48 TPS`, but target trace worsened:
+  - `MMQ type=11 ncols_max=192`: `9949.928 -> 10005.326 ms`
+  - decision: reject as non-causal/runtime-noise; code reverted.
+
+Decision:
+- `reject`
+- reason: none of the simple selector/resource probes improved both wall runtime and target MMQ bucket.
+- code state: all temporary probes reverted; `llama-server` rebuilt after rollback.
+
+Next C01 direction:
+- stop scalar selector sweeps for this bucket.
+- inspect Q3_K MMQ compute/load internals (`load_tiles_q3_K`, scale/min unpack, accumulator/write-back pressure) with the same target-positive rule.
+
+## C01 experiment E015: RDNA4 MMQ `mmq_y=64/nwarps=4`
+
+Idea:
+- Pair the previously failed `mmq_y=64` direction with `nwarps=4` on RDNA4.
+- This preserves the MMA write-back invariant (`nwarps * tile_C::I == mmq_y`) while reducing the Q3_K MMQ shared-memory footprint.
+
+Code:
+- `ggml/src/ggml-cuda/mmq.cuh`
+- RDNA4 host/device `mmq_y`: `128 -> 64`
+- RDNA4 host/device `nwarps`: `8 -> 4`
+
+Paired lane A/B (`review_bug,patch_sim`, `runs=3`):
+- baseline: `c01-e015-control-postrevert-r3` -> `9.3974 TPS`
+- candidate: `c01-e015-rdna4-y64w4-r3` -> `9.6080 TPS`
+- delta: `+0.2107 TPS` (`+2.24%`)
+- bootstrap CI: `[+0.1855,+0.2368]` TPS
+- verdict: positive
+
+Trace validation (`c01-poste013-r1-resources` -> `c01-e015-rdna4-y64w4-trace-r1`):
+- trace TPS: `6.61 -> 6.69`
+- `CUDA_NODE op=MUL_MAT kind=forward`: `15498.053 -> 14984.576 ms` (`-513.477 ms`)
+- `MMQ`: `10887.326 -> 10381.647 ms` (`-505.679 ms`)
+- target bucket `MMQ type=11 ncols_max=192`: `9949.928 -> 9551.391 ms` (`-398.537 ms`)
+- Q3 resource line:
+  - baseline: `mmq_y=128`, `shared_pct=88.09`, `occupancy_pct=12.50`, `waves_per_sm=8.00`
+  - candidate: `mmq_y=64`, `shared_pct=54.49`, `occupancy_pct=6.25`, `waves_per_sm=4.00`
+
+Decision:
+- `keep`
+- reason: paired r3 positive, bootstrap positive, and target hotspot positive.
+
+Residual risk:
+- This is RDNA4-wide MMQ policy, not Q3-only. The active C01 lane improved Q3_K and Q4_K MMQ buckets, but broader RDNA4 MMQ-heavy lanes should be watched.

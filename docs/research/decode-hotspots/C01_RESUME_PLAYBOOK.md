@@ -46,6 +46,16 @@ Primary center:
    - `GGML_TYPE_Q3_K` on RDNA4 `ncols_dst=1` now uses `nwarps=2`,
    - paired non-trace result: `9.1629 -> 9.3847 TPS` (`+2.42%`),
    - trace hotspot improved: `MMQ type=11 ncols_max=192 -96.409 ms`.
+9. E014 post-E013 selector/resource screen:
+   - fresh trace artifact: `build_logs/agent-workload/c01-poste013-r1-resources.server.log`,
+   - steady `mul_mat_q_direct|q3_K`: `12325.249 ms` (`78.93%`),
+   - force-x, stream-k retest, `mmq_y=64`, and RDNA4 `launch_bounds(..., 1)` produced no target-positive keep candidate,
+   - all temporary code probes were reverted and `llama-server` was rebuilt.
+10. E015 RDNA4 MMQ y64/w4 kept:
+   - code: RDNA4 MMQ uses `mmq_y=64` and `nwarps=4`,
+   - paired r3: `9.3974 -> 9.6080 TPS` (`+2.24%`),
+   - bootstrap CI: `[+0.1855,+0.2368]` TPS,
+   - trace target: `MMQ type=11 ncols_max=192` improved by `-398.537 ms`.
 
 ## Lane Contract (resume baseline)
 
@@ -100,9 +110,11 @@ GGML_TRACE_MMQ_RESOURCES=1 GGML_TRACE_MMQ_TIMING=1 GGML_TRACE_MMQ_TIMING_SYNC=1 
 2. `GGML_CUDA_FORCE_MMQ_RUNTIME=1` is also rejected for this lane:
    runtime `-0.72%` and hotspot-time regression on `MUL_MAT forward` / MMQ q3 bucket.
 3. E013 closed the MMVQ Q3_K side center with a kept narrow policy change.
-4. Continue C01 with route-local hypotheses on `mul_mat_q_direct|q3_K` using a fresh
-   post-E013 paired control as reference.
-5. If a candidate is hotspot-positive but runtime-neutral, keep it as research-positive
+4. E015 kept the first direct C01 MMQ policy win after E013.
+5. Continue C01 with a fresh post-E015 control. Next route-local work should inspect
+   Q3_K MMQ compute/load internals beyond tile size:
+   `load_tiles_q3_K`, scale/min unpack, accumulator/write-back pressure.
+6. If a candidate is hotspot-positive but runtime-neutral, keep it as research-positive
    and confirm again with a paired control rerun.
-6. If a candidate is runtime-positive, proceed to `runs=3` confirmation before any
+7. If a candidate is runtime-positive, proceed to `runs=3` confirmation before any
    keep/default decision.

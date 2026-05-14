@@ -32,7 +32,9 @@
   - route deltas vs control A/B.
 - [ ] Produce root-cause hypothesis set for `MUL_MAT forward` (memory bound, shape inefficiency, launch granularity, sync pressure).
 - [x] Run micro A/B test for MMVQ Q3_K side center and keep reproducible gain (E013).
-- [ ] Run micro A/B tests for top `MUL_MAT forward` hypothesis and keep only reproducible gains.
+- [x] Run first micro A/B screen for top `MUL_MAT forward` selector/resource hypothesis (E014 negative).
+- [x] Run first deeper Q3_K MMQ geometry A/B and keep reproducible gain (E015).
+- [ ] Continue Q3_K MMQ compute/load micro A/B and keep only reproducible gains.
 - [ ] Move to next center only after `MUL_MAT forward` has a closed trace + hypothesis verdict.
 
 ## Next-step runbook
@@ -86,6 +88,22 @@ Current return status:
 - step 1: done,
 - step 2: done (`c01-resume-r1-resources`),
 - step 3: done (stats against e013 C01-compatible baseline).
+
+## E014 C01 selector/resource screen
+
+- Fresh post-E013 artifact: `build_logs/agent-workload/c01-poste013-r1-resources.server.log`
+- Active steady target: `mul_mat_q_direct|q3_K = 12325.249 ms` (`78.93%` of steady `MUL_MAT forward`).
+- Tested: force-x sweep, post-E013 stream-k retest, `mmq_y=64`, RDNA4 `launch_bounds(..., 1)`.
+- Decision: no keep candidate; temporary code probes reverted and `llama-server` rebuilt.
+- Next: inspect Q3_K MMQ compute/load internals, not more scalar selector sweeps.
+
+## E015 RDNA4 MMQ y64/w4 keep
+
+- Code: RDNA4 MMQ now uses `mmq_y=64` with `nwarps=4`.
+- Paired r3: `c01-e015-control-postrevert-r3` -> `c01-e015-rdna4-y64w4-r3`.
+- Runtime: `9.3974 -> 9.6080 TPS` (`+2.24%`), bootstrap CI `[+0.1855,+0.2368]`.
+- Target trace: `MMQ type=11 ncols_max=192` improved `9949.928 -> 9551.391 ms`.
+- Status: keep; continue C01 from post-E015 baseline.
 
 ## C01 diagnostics toolkit
 
