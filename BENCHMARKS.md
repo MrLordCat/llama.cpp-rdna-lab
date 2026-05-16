@@ -265,25 +265,42 @@ python scripts\agent_workload_bench.py `
 - `--no-disable-thinking` принудительно оставляет thinking включённым (обязательный режим для performance benchmark в этом форке);
 - `--stats-ignore-first-run` печатает отдельные warm-only метрики (без run #1), чтобы не смешивать cold старт и рабочую фазу.
 
-### Политика метрик (cold-first, 2026-05-09)
+### Политика метрик (dual-metric, 2026-05-16)
 
-Для v2/v2-mini в этой ветке основной KPI фиксируется как **cold-first throughput**:
+Для активного performance-трека в этой ветке теперь ведём **две отдельные headline-метрики**, а не одну смешанную:
 
-- измерение: первый измеряемый проход при `--runs 1`;
-- для cold-замера отключать priming pass: `--no-v2-prime-pass`;
-- warm/prime метрики считать диагностическими и публиковать отдельно, без подмены headline-числа.
+1. `Cold-first TPS`
+  - измерение: чистый стартовый прогон на текущем lane;
+  - для cold-замера не использовать priming pass: `--no-v2-prime-pass`;
+  - это главный baseline для default/kernel/runtime изменений.
 
-Почему так:
+2. `Repeated/steady session TPS`
+  - измерение: серия повторяющихся задач на том же lane, где уже виден эффект session reuse/spec coverage;
+  - использовать как отдельный baseline для opt-in speculative/session режимов;
+  - не подменять им cold-first headline.
 
-- в агентном использовании с большим и меняющимся контекстом cold-фаза сильно влияет на реальный UX;
-- warm-only числа показывают потенциал steady-state, но могут завышать ожидаемую скорость для «первого ответа»;
-- ускорение cold-path почти автоматически улучшает и последующую warm-фазу.
+Почему меняем подход:
 
-Рекомендуемый формат отчёта:
+- cold-first по-прежнему лучше отражает UX «первого ответа»;
+- repeated/steady режим теперь тоже важен как отдельный практический сценарий, потому что некоторые плюсы проявляются только на серии связанных запросов;
+- speculative/session выигрыши нельзя честно сравнивать только с cold-first baseline, если они почти не ускоряют prompt/prefill и работают в основном через decode/session effect.
 
-- `Cold first-turn TPS` (headline);
-- `Warm steady-state TPS` (secondary);
-- `Session aggregate TPS` (смешанный показатель для серии запросов).
+Правило отчёта:
+
+- любой speed claim должен явно помечаться как `cold-first` или `repeated/steady`;
+- cold candidate сравнивать только с cold baseline;
+- repeated/steady candidate сравнивать только с repeated/steady baseline;
+- если публикуются оба числа, их держать рядом, а не смешивать в одно headline-значение.
+
+Текущая опорная точка для C01 lane (`quick review_bug,patch_sim`, `ctx=12288`, `b=6144`, `ub=192`, `q4_0/q4_0`, `no-reuse`):
+
+- `Cold-first baseline`: `9.4111 TPS` (`c01-e015-rdna4-y64w4-r3-retest-20260516`)
+- `Repeated/steady clean baseline`: `9.4890 TPS` (`c01-e028-clean-control-r3`)
+- `Repeated/steady opt-in preset`: `10.3689 TPS` (`c01-e028-ngram244864-r6`)
+
+Примечание:
+
+- `ngram-mod 24/48/64` сейчас подтверждён как repeated/steady opt-in win, но не как cold-first default.
 
 ### Batch 4096 / UBatch 512 with stabilized method (2026-05-09)
 

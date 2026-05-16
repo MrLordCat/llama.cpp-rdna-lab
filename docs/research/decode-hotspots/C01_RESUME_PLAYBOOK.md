@@ -109,6 +109,22 @@ Primary center:
    - spec stats: local acceptance `0.581422`, coverage `0.040580`, effective acceptance `0.023594`.
    - Keep as opt-in repeated/steady-task preset only; do not make it the cold-first default.
 
+## Current Metric Contract
+
+- `Cold-first baseline` for C01: `9.4111 TPS`
+   - artifact: `c01-e015-rdna4-y64w4-r3-retest-20260516`
+   - use for default/kernel/runtime claims.
+- `Repeated/steady clean baseline` for C01: `9.4890 TPS`
+   - artifact: `c01-e028-clean-control-r3`
+   - use for session/speculative opt-in claims.
+- `Repeated/steady opt-in reference`: `10.3689 TPS`
+   - artifact: `c01-e028-ngram244864-r6`
+   - keep as opt-in preset, not cold-first default.
+
+Rule:
+- do not compare a repeated/steady speculative candidate directly against the cold-first baseline;
+- every new claim in this lane must say which of the two baselines it targets.
+
 ## Lane Contract (resume baseline)
 
 - model: `models/Qwen3.6-27B-Q3_K_S.gguf`
@@ -164,8 +180,8 @@ GGML_TRACE_MMQ_RESOURCES=1 GGML_TRACE_MMQ_TIMING=1 GGML_TRACE_MMQ_TIMING_SYNC=1 
 3. E013 closed the MMVQ Q3_K side center with a kept narrow policy change.
 4. E015 kept the first direct C01 MMQ policy win after E013.
 5. Continue C01 from E015 as the kept code path. Historical best is `9.6080 TPS`,
-   current clean control is `9.4890 TPS`, and current opt-in ngram confirmation is
-   `10.3689 TPS` for repeated/steady tasks. Q3_K scale-load fusion,
+   current cold-first baseline is `9.4111 TPS`, current repeated/steady clean baseline is
+   `9.4890 TPS`, and current opt-in ngram confirmation is `10.3689 TPS` for repeated/steady tasks. Q3_K scale-load fusion,
    dense staging, GDN chunking (`128/192`), and F32 `GemmEx` are now closed negative branches.
    FATTN is also low-ceiling on the current C01 lane. `ngram-mod 24/48/64` is now a
    confirmed opt-in C01 plus after E028, but not a cold-first default. Force-x

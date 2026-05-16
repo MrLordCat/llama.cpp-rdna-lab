@@ -219,6 +219,17 @@ Current return status:
 - Spec stats: local acceptance `0.581422`, coverage `0.040580`, effective acceptance `0.023594`.
 - Decision: keep as opt-in repeated/steady preset only; not a cold-first default and not a C01 kernel fix.
 
+## Current Metric Policy For C01
+
+- `Cold-first baseline`: `9.4111 TPS` (`c01-e015-rdna4-y64w4-r3-retest-20260516`)
+- `Repeated/steady clean baseline`: `9.4890 TPS` (`c01-e028-clean-control-r3`)
+- `Repeated/steady opt-in reference`: `10.3689 TPS` (`c01-e028-ngram244864-r6`)
+
+Use:
+- kernel/default claims must beat the cold-first baseline,
+- speculative/session opt-in claims must beat the repeated/steady clean baseline,
+- do not compare these two classes through a single mixed headline number.
+
 ## Center documents
 
 - `docs/research/decode-hotspots/C01_mul_mat_forward.md`

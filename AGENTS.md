@@ -118,6 +118,9 @@ cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUIL
 10. Для cold-first speed claims не использовать v2 priming pass: `--v2-prime-pass` допустим только как явно помеченный steady-state probe, не как основной real-scenario результат.
 11. Для RDNA4/ROCm ubatch cliffs сначала проверять allocator/residency path: сравнить default ROCm compute vbuffer chunking против `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1`, и только потом менять GDN/FATTN/MMQ selectors или физический `ubatch`.
 12. Если full trace показывает одинаковые node counts и kernel routes, но GLU/RMS_NORM/ADD/SSM_CONV/MUL_MAT замедляются вместе, считать это memory/layout/residency сигналом; не закрывать задачу меньшим `ubatch` cap без native A/B.
+13. Для активного C01/perf трека вести две раздельные headline-метрики: `cold-first` и `repeated/steady session`; не смешивать их в один baseline.
+14. Для default/kernel claims сравнивать candidate только с cold-first baseline того же lane; speculative/session opt-in claims сравнивать только с repeated/steady baseline того же lane.
+15. В отчётах и документах явно помечать, какой baseline использован: `cold-first baseline` или `repeated/steady baseline`.
 
 Цель: избегать «шума» и держать только воспроизводимые ускорения в `master`.
 
