@@ -151,3 +151,24 @@ cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUIL
 11. Для allocator/layout гипотез документировать negative control: например, `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1` должен возвращать старый slow pocket, иначе причинность не доказана.
 
 Цель: делать исследования воспроизводимыми и понятными даже без глубокого матбэкграунда.
+
+## Context Switch Protocol (Pause/Resume)
+
+Если performance-ветка временно ставится на паузу для другой задачи, перед переключением обязательно:
+
+1. Зафиксировать текущее состояние в `docs/research/decode-hotspots/C01_RESUME_PLAYBOOK.md`:
+    - active lane contract,
+    - current best/baseline,
+    - open hypotheses,
+    - next first command for resume.
+2. Обновить `docs/research/decode-hotspots/DECODE_TRACE_CHECKLIST.md`:
+    - что закрыто,
+    - что осталось в `next`.
+3. Сохранить все новые артефакты в `build_logs/agent-workload/` и сослаться на них в `BENCHMARKS.md`/`RESULTS_LOG.md`, если был measurement.
+4. Не оставлять временные runtime-правки как default без отдельного подтверждения; для спорных изменений оставлять env-gated knob.
+
+Возврат к performance-задаче после паузы:
+
+1. Сначала читать `docs/research/decode-hotspots/C01_RESUME_PLAYBOOK.md`.
+2. Затем проверить `docs/research/decode-hotspots/C01_mul_mat_forward.md` и `docs/research/decode-hotspots/DECODE_TRACE_CHECKLIST.md`.
+3. Повторить baseline/best A/B на той же lane перед новыми правками.

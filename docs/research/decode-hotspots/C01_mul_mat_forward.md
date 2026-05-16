@@ -697,3 +697,257 @@ Decision:
 - `reject`
 - reason: theory-positive but too small in practice; below E015 reference at r1.
 - code reverted and `llama-server` rebuilt.
+
+## C01 prompt/prefill focus recalibration trace (2026-05-14)
+
+Reason:
+- The focus question was revisited using the same C01 comparison bench rather than GUI autotune.
+- The correct framing for this lane is prompt/prefill first: prompt eval dominates wall time, and the active `ncols=192` MMQ bucket is a prompt/prefill shape.
+
+Command:
+
+```bash
+python scripts/agent_workload_bench.py --label focus-c01-current-hotspots-r1 --server-bin build-rocm-vec/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --tasks quick --task-ids review_bug,patch_sim --runs 1 --ctx-size 12288 --batch-size 6144 --ubatch-size 192 --cache-type-k q4_0 --cache-type-v q4_0 --max-tokens 120 --real-context-mode repo-snapshot --no-reuse --background-server-policy fail --task-fail-timeout 0 --trace-preset kernel-full
+```
+
+Artifacts:
+- `build_logs/agent-workload/focus-c01-current-hotspots-r1.server.log`
+- `build_logs/agent-workload/focus-c01-current-hotspots-r1.csv`
+- `build_logs/agent-workload/focus-c01-current-hotspots-r1-analysis.md`
+
+Wall timing:
+- aggregate completion TPS: `6.7990`
+- prompt eval: `26826.35 ms / 14773 tokens = 550.69 tok/s`
+- decode eval: `8399.61 ms / 240 tokens = 28.57 tok/s`
+- prompt share of llama timing: `76.15%`
+
+Fresh hotspot ranking:
+- `CUDA_NODE` total: `22127.070 ms`
+- `CUDA_NODE op=MUL_MAT kind=forward`: `14412.924 ms` (`65.14%`)
+- `MUL_MAT src0=q3_K type=f32`: `11615.341 ms` (`52.49%`)
+- `MMQ`: `9846.201 ms` (`44.50%`)
+- target bucket `MMQ type=11 ncols_max=192`: `9048.863 ms` (`40.89%`)
+- `GATED_DELTA_NET forward`: `1467.855 ms` (`6.63%`)
+- `RMS_NORM fused`: `1063.827 ms` (`4.81%`)
+- `ADD forward`: `824.194 ms` (`3.72%`)
+- `FLASH_ATTN_EXT forward`: `615.449 ms` (`2.78%`)
+
+Phase split:
+- sync-only `CUDA_NODE` prompt phase: `17000.705 ms` (`76.83%`), count `83616`
+- sync-only `CUDA_NODE` decode phase: `4760.101 ms` (`21.51%`), count `26848`
+- outside/reserve: `366.264 ms` (`1.65%`), count `1842`
+
+Prompt-phase target:
+- `CUDA_NODE op=MUL_MAT kind=forward`: `11282.686 ms` (`66.37%` of prompt CUDA_NODE)
+- `MUL_MAT src0=q3_K type=f32`: `9066.495 ms` (`53.33%`)
+- `MMQ`: `7974.079 ms` (`46.90%`)
+- `MMQ type=11 ncols_max=192`: `7490.845 ms` (`44.06%`)
+- next center: `GATED_DELTA_NET forward = 1174.486 ms` (`6.91%`)
+
+Mandatory gates:
+- shape presence gate for qtype `11`, `ncols_max=192`: PASS (`26524` hits)
+- cold/steady split: steady `mul_mat_q_direct|q3_K = 11408.481 ms` (`78.28%` of steady `MUL_MAT forward`)
+- q3 component proxy: steady `compute_core_q3 = 11408.481 ms` (`83.91%`), `fallback_cublas = 2007.167 ms` (`14.76%`), `dequant_load_vec_q3 = 180.025 ms` (`1.32%`)
+
+Decision:
+- keep C01 as the primary focus, with prompt/prefill as the main optimization target.
+- next work should target Q3_K MMQ compute/load internals on `type=11, ncols_max=192, mmq_x=96, mmq_y=64`.
+- do not move the main focus to GUI autotune, ngram speculative, or MMVQ based on current C01 evidence.
+
+## C01 experiment E018: Q3_K prefill scale preload
+
+Idea:
+- In the RDNA4 Q3_K WMMA path, `x_df[i*stride + k0/4]` depends on row and k-fragment but not on `j0`.
+- Candidate cached these scale values in registers once per k-fragment before the `j0` loop, reducing repeated LDS loads in theory.
+
+Analytic screen:
+- Active geometry: `mmq_x=96`, `mmq_y=64`, `tile_C::J=16`, `tile_C::ne=8`, `ntx=1`.
+- `j0` loop iterations: `96 / 16 = 6`.
+- Per thread per k-fragment, x-scale LDS loads could drop from `48` to `8`, at the cost of about `8` extra float registers.
+
+Measured screen:
+- non-trace r1: `c01-e018-q3-scale-preload-r1` -> `9.6317 TPS`.
+- trace r1 compare: `focus-c01-current-hotspots-r1` -> `c01-e018-q3-scale-preload-trace-r1`.
+- `CUDA_NODE`: `22127.070 -> 22498.676 ms` (`+371.606 ms`).
+- `CUDA_NODE op=MUL_MAT kind=forward`: `14412.924 -> 14562.136 ms` (`+149.212 ms`).
+- `MMQ`: `9846.201 -> 9905.244 ms` (`+59.043 ms`).
+- target bucket `MMQ type=11 ncols_max=192`: `9048.863 -> 9103.787 ms` (`+54.924 ms`).
+
+Decision:
+- `reject`
+- reason: target hotspot regressed despite slight non-trace r1 TPS noise.
+- code state: runtime code reverted and `llama-server` rebuilt.
+
+Next C01 direction:
+- avoid adding per-thread register arrays unless the projected limiting-term win is larger.
+- prefer candidates that reduce shared footprint/tile count, remove work from `load_tiles_q3_K`, or alter memory layout without increasing inner-loop register pressure.
+
+## C01 experiment E019: Q3_K load_tiles scale fusion
+
+Idea:
+- Fuse Q3_K scale unpack/store into the first `load_tiles_q3_K` quant-bit load pass for MMA/WMMA paths.
+- Lanes `kqsx=0..3` already participate in the row load and can cover the four scale groups, so the separate scale pass looked removable.
+
+Analytic screen:
+- Active geometry: `mmq_x=96`, `mmq_y=64`, `nwarps=4`, `threads_per_row=16`.
+- The removed pass was one extra traversal over `64` Q3_K rows with `4` scale lanes per row.
+- Expected gain was intentionally small: `0.2-1.0%` if `load_tiles_q3_K` loop overhead was visible.
+
+Measured screen:
+- candidate: `c01-e019-q3-loadtiles-fuse-scales-r1`
+- aggregate completion TPS: `8.2082`
+- E015 reference: `9.6080 TPS`
+- prompt eval TPS mean: `694.15`
+- decode eval TPS mean: `30.465`
+
+Decision:
+- `reject`
+- reason: gross regression in cheap screen, far outside the expected noise band.
+- trace: skipped because the non-trace gate failed.
+- code state: runtime code reverted and `llama-server` rebuilt.
+
+Next C01 direction:
+- do not fuse more scale/min unpack into the first Q3_K quant-load pass without a stronger resource argument.
+- keep looking for changes that reduce shared footprint/tile count or improve scheduling with minimal added per-lane work.
+
+## C01 experiment E020: Q3_K half-scale compact x96
+
+Idea:
+- Store precomputed Q3_K scales in shared memory as `half` and use a Q3-only compact MMA stride (`84 -> 72` ints).
+- The goal was to reduce dynamic shared below `32 KiB` while keeping `mmq_x=96` and the same `2` x tiles for `ncols=192`.
+
+Analytic screen:
+- E015 resource baseline: shared `35712`, regs `160`, `max_blocks_per_sm=1`, waves `4.00`.
+- Projected compact x96 shared: `32640`, below `32768`, with unchanged tile count.
+- Theory gate artifact: `build_logs/agent-workload/c01-e020-q3-halfscale-compact-theory.md`.
+
+Measured result:
+- Runtime r3: `c01-e015-rdna4-y64w4-r3` -> `c01-e020-q3-halfscale-compact-r3`
+- Aggregate TPS: `9.6080 -> 9.6017` (`-0.07%`)
+- Decision stats: bootstrap 95% CI `[-0.0380, +0.0239]` TPS, verdict `inconclusive`.
+- Valid target trace: `c01-e020-q3-halfscale-compact-trace-r1b`.
+- Resource telemetry: shared `35712 -> 32640`, `max_blocks_per_sm=1 -> 2`, occupancy `6.25% -> 12.50%`, waves `4.00 -> 8.00`, regs `160 -> 158`.
+- Target bucket vs E015 trace: `MMQ type=11 ncols_max=192` `9551.391 -> 9451.261 ms` (`-100.130 ms`).
+- Total `MMQ`: `10381.647 -> 10300.173 ms` (`-81.474 ms`).
+
+Decision:
+- `research-positive / no default`
+- reason: the MMQ target improved and the shared-memory theory was confirmed, but aggregate runtime did not beat the current best.
+- code state: runtime code reverted and `llama-server` rebuilt.
+
+Next C01 direction:
+- compact Q3 shared layout alone is not enough.
+- future variants should only revisit this if paired with a scheduling/pre-sync fix or a layout that avoids the non-MMQ slowdowns seen in trace.
+
+## C01 experiment E021: dense Q3 MMQ staging
+
+Idea:
+- Temporarily enable the existing RDNA4 MMQ staging loop for dense `Q3_K`.
+- The gate was env-only in the prototype (`GGML_RDNA4_DENSE_Q3_MMQ_STAGING=1`) and did not change default behavior.
+
+Analytic screen:
+- Current E015 split: Q3 x tile `21504` bytes, Q8 y tile `13824` bytes, misc `384` bytes.
+- Staged projection: `2 * 21504 + 13824 + 384 + 4 = 57220` bytes.
+- It fits `64 KiB`, preserves `mmq_x=96`, and keeps the `2` x-tile count for `ncols=192`.
+- Risk: still above `32 KiB`, so no two-block occupancy; any gain must come from better load scheduling.
+
+Measured screen:
+- reference: `c01-e015-rdna4-y64w4-r3 = 9.6080 TPS`.
+- candidate: `c01-e021-dense-q3-staging-r1 = 8.6216 TPS`.
+- delta: `-10.27%`.
+
+Activation trace:
+- artifact: `build_logs/agent-workload/c01-e021-dense-q3-staging-activation-r1.server.log`.
+- confirmed `rdna4_staging_req=1` and `rdna4_staging_eff=1` on `type=11,ncols_max=192`.
+- per-call `MMQ type=11 ncols_max=192` timing worsened about `25.9%` (`0.447 ms -> 0.563 ms`).
+- `MUL_MAT ne=(17408,192,1,1)` average worsened `0.671 ms -> 0.842 ms`.
+
+Decision:
+- `reject`
+- reason: the active Q3 bucket slowed decisively when staging was actually enabled.
+- code state: runtime code reverted and `llama-server` rebuilt.
+- keep the existing MoE-only staging gate unchanged.
+
+## C01 experiment E023: RDNA4 F32 cuBLAS GemmEx route
+
+Idea:
+- The same C01 trace shows a secondary small-GEMM center: `MUL_MAT f32 ne=(48,192)` from Qwen SSM alpha/beta projections.
+- It uses `cublas_backend`; a cheap RDNA4-only probe checked whether `cublasGemmEx` picks a better rocBLAS path than `cublasSgemm`.
+
+Analytic screen:
+- One SSM alpha/beta GEMM is about `2 * 48 * 192 * 5120 = 94.4M` FLOPs.
+- Baseline target share was about `1.25 s` in the focus trace, so even a `10%` local win would only be roughly `0.6%` wall-time.
+- Gate: keep only if aggregate TPS and the `MUL_MAT f32 ne=(48,192)` target both improve.
+
+Measured screen:
+- reference: `c01-e015-rdna4-y64w4-r3 = 9.6080 TPS`.
+- candidate: `c01-e023-rdna4-f32-gemmex-r1 = 9.42 TPS`.
+- target trace: baseline avg `0.1712 ms`, candidate avg `0.1850 ms` (`+8.1%` slower).
+
+Decision:
+- `reject`
+- reason: both runtime and target timing regressed.
+- code state: env-gated `GemmEx` branch reverted and `llama-server` rebuilt.
+
+Next C01 direction:
+- do not spend more time on the generic F32 cuBLAS route unless a later trace shows a larger F32 share or a concrete rocBLAS shape-specific knob.
+- return to Q3_K MMQ/prefill or a different non-Q3 center only with a larger theoretical ceiling than E023.
+
+## C01 experiment E027: force-x sub-32KiB probe
+
+Fresh return trace:
+- artifact: `build_logs/agent-workload/c01-return-20260516-r1-resources.server.log`
+- trace-overhead TPS: `6.4253`
+- shape gate: `type=11,ncols_max=192` PASS (`26524` hits)
+- active geometry: `mmq_x=96`, `mmq_y=64`, shared `35712`, regs `160`, `max_blocks_per_sm=1`, waves `4.00`
+- steady `MUL_MAT forward`: `mul_mat_q_direct|q3_K = 12171.789 ms` (`78.31%`)
+
+Idea:
+- Try a valid sub-32KiB force-x point to get more active blocks/SM without the E020 half-scale layout.
+- `x72` looked attractive analytically because it would be near `32256` bytes, but RDNA4 WMMA requires x granularity `16`.
+- Trace confirmed `x72` is rejected by selector validation and falls back to `mmq_x=96`.
+- `x64` is valid and below `32 KiB`, but it uses `3` x tiles for `ncols=192` instead of `2`.
+
+Measured screen:
+- `GGML_MMQ_RDNA4_Q3_FORCE_MMQ_X=72`: `9.53 TPS`, but invalid/no-op; trace still shows `mmq_x_best=96`.
+- `GGML_MMQ_RDNA4_Q3_FORCE_MMQ_X=64`: `8.90 TPS` vs current baseline `9.4111 TPS` (`-5.43%`).
+
+Decision:
+- `reject`
+- reason: the only valid below-32KiB force-x point tested (`x64`) is decisively slower, and `x72` is not a valid WMMA tile geometry.
+- code state: no code changes.
+
+Next C01 direction:
+- simple force-x is closed unless tile geometry changes.
+- future Q3_K work needs a real shared layout or scheduling change; otherwise scout the F32 batched/cuBLAS subcenter with a more specific idea than E023 `GemmEx`.
+
+## C01 experiment E028: ngram-mod 24/48/64 confirmation
+
+Context:
+- E026 found `ngram-mod 24/48/64` promising but inconclusive on the current C01 lane.
+- Before this confirmation, quantize/MMF code probes were tried and reverted:
+  - quant MMQ block size `64/32/256` did not beat default `128`.
+  - Q8_1 quant `__float2int_rn` did not beat `roundf`.
+  - RDNA4 F32 MMF threshold `32/64` did not beat cuBLAS.
+
+Measured confirmation:
+- control: `c01-e028-clean-control-r3 = 9.4890 TPS`.
+- candidate: `c01-e028-ngram244864-r6 = 10.3689 TPS`.
+- delta: `+0.8799 TPS` (`+9.27%`).
+- decision stats: bootstrap 95% CI `[+0.5192,+1.3106]` TPS, verdict `positive`.
+- prompt eval: `855.5400 -> 851.3758 TPS` (`0.9951x`).
+- decode eval: `30.1433 -> 45.1508 TPS` (`1.4979x`).
+- spec stats: local acceptance `0.581422`, coverage `0.040580`, effective acceptance `0.023594`.
+
+Decision:
+- `keep as opt-in / no default`
+- reason: the C01 speedup is real in this repeated-task sample, but it comes from sparse speculative coverage rather than a kernel/prefill fix.
+- command:
+
+```bash
+python scripts/agent_workload_bench.py --label c01-e028-ngram244864-r6 --server-bin build-rocm-vec/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --tasks quick --task-ids review_bug,patch_sim --runs 6 --ctx-size 12288 --batch-size 6144 --ubatch-size 192 --cache-type-k q4_0 --cache-type-v q4_0 --max-tokens 120 --real-context-mode repo-snapshot --no-reuse --background-server-policy fail --task-fail-timeout 0 --server-extra "--spec-type ngram-mod --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-max 64"
+```
+
+Next C01 direction:
+- if the goal is immediate practical speed, expose/document this as an opt-in repeated/steady preset.
+- if the goal is default cold-first speed, continue kernel/runtime work; `ngram-mod` should not replace the C01 default while effective acceptance is workload-dependent.

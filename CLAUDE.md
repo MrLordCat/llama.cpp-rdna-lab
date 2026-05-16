@@ -254,6 +254,9 @@ start-gui.bat              # Windows (с проверкой зависимост
 6. Файл `AGENTS.md` из upstream не используется в этом форке (в `.gitignore`)
 7. Сборка ROCm требует Ninja (не Visual Studio generator)
 8. **MSVC detection** имеет 3-уровневую стратегию: PATH → filesystem → Registry
+9. При временном переключении на другую задачу для performance-работ обязательно обновлять:
+  - `docs/research/decode-hotspots/C01_RESUME_PLAYBOOK.md`
+  - `docs/research/decode-hotspots/DECODE_TRACE_CHECKLIST.md`
 
 ---
 

@@ -119,6 +119,19 @@ def main() -> int:
         "weak: saves shared but still one block/SM",
     )
 
+    # RDNA4-only compact layout: keep 64 int quant payload, store the 16
+    # precomputed scales as half, and drop the old +4 int Q3 padding. This
+    # changes the row stride from 84 to 72 ints.
+    x96_half_compact_stride = 2 * MMQ_TILE_NE_K + (MMQ_TILE_NE_K // 2) // 2
+    x96_half_compact_shared = q3_x_bytes(res.mmq_y, x96_half_compact_stride) + q8_y_bytes(res.mmq_x) + misc
+    print_row(
+        "pack q3 scales to half compact x96",
+        x96_half_compact_shared,
+        ntiles(args.ncols, res.mmq_x) / base_tiles,
+        x96_half_compact_shared <= SMEM_HALF,
+        "proceed: can unlock 2 blocks/SM; risk scale conversion + padding change",
+    )
+
     x80_half_shared = q3_x_bytes(res.mmq_y, packed_scale_stride) + q8_y_bytes(80) + misc
     print_row(
         "pack q3 scales + force x80",
@@ -139,8 +152,8 @@ def main() -> int:
     print()
     print("Decision:")
     print("- Do not test x96 half-scale first: it cannot unlock a second block and has conversion risk.")
-    print("- Do not test x80 packing first unless k-step work stalls: it needs a large occupancy win to offset 3 vs 2 x tiles.")
-    print("- Test k-step pairing first because its theoretical blast radius is smaller and it preserves the proven E015 geometry.")
+    print("- Do not test x80 packing first unless compact x96 fails: it needs a large occupancy win to offset 3 vs 2 x tiles.")
+    print("- After k-step pairing failed at runtime, compact x96 is the next plausible Q3_K shared-footprint probe.")
     return 0
 
 

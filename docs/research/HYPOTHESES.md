@@ -52,28 +52,31 @@ Where:
 | H16 | C01 Q3_K MMQ selector/resource pressure | After MMVQ is closed, the active C01 cost is still `mul_mat_q_direct|q3_K`; route-local selector/resource levers may expose a cheap win before deeper kernel work | 0% to +3% if selector-bound; larger only if it points to a deeper q3 compute/load issue | runtime noise and cold-start redistribution can look like gains without target hotspot improvement | fresh post-E013 trace, force/selectors A/B, target bucket timing |
 | H17 | RDNA4 MMQ smaller y tile with fewer warps | `mmq_y=128/nwarps=8` is LDS-heavy on RDNA4 Q3_K; pairing `mmq_y=64` with `nwarps=4` preserves write-back geometry while reducing shared pressure | +1% to +4% on C01 if resource placement dominates | lower occupancy/waves could regress other MMQ-heavy lanes | paired C01 r3 plus target trace |
 | H18 | C01 Q3_K theory gate before code probes | Q3_K MMQ ideas can be cheaply screened by shared-memory split, tile-count ratio, and loop-structure changes before rebuilding kernels | improves experiment yield; avoids low-ceiling probes | simple model can miss compiler/register effects | run `c01_mmq_q3_theory_gate.py`, then only test candidates with a plausible limiting-term change |
+| H19 | RDNA4 F32 cuBLAS GemmEx route | Qwen SSM alpha/beta prompt GEMMs are small F32 `cublas_backend` calls; `GemmEx` can choose a different rocBLAS route than `Sgemm` without changing math | 0% to +1% wall if SSM small-GEMM route-bound | affects all F32 cuBLAS backend GEMMs under the env; route may regress larger F32 shapes | env-gated C01 r1 plus target `MUL_MAT f32 ne=(48,192)` trace |
 
 ## Priority (Start Here)
 
 1. H11 is completed and kept: E008 confirms ROCm compute vbuffer chunking fixes the native `ub904/1024` residency cliff.
-2. H08 remains useful for symptom triage, but caps/planners are now diagnostic tools rather than the preferred final fix when allocator layout can be repaired.
+2. H08 remains useful for symptom triage, but caps/planners are now diagnostic tools rather than the preferred final fix when allocator layout can be repaired. E022/E024 rejected C05 `chunk_size=192` and `chunk_size=128` probes on the current `ub192` C01 lane.
 3. H02 because it can be prototyped quickly in scheduler logic.
-4. H05 because prefill IO is still dominant in prompt-heavy scenarios.
+4. H05 is low-priority on the current C01 lane after E026: FATTN is only `~2.58%` of sync CUDA_NODE time, so a selector/tile probe needs a longer-context or FATTN-heavy lane to have meaningful wall ceiling.
 5. H12 implemented as default Turbo4 hybrid path, but remains a performance-tuning track until the remaining `~7%` active-lane q4 gap is closed.
-6. H13 is the next Stormrage-derived performance idea, but must stay opt-in and RDNA4-gated until MoE A/B proves a win.
+6. H13 remains opt-in and RDNA4-gated. E021 showed that extending the existing staging loop to dense C01 Q3_K is negative (`9.6080 -> 8.6216 TPS`, target avg `+25.9%` slower), so dense Q3 staging should not be promoted without a different staged layout.
 7. H14 to reduce C01 trial noise: verify shape presence before shape-scoped kernel prototypes.
-8. H09 to avoid misleading speculative projections in low-coverage runs.
+8. H09 remains important: E026 showed `ngram-mod 24/48/64` can report `+3.31%` aggregate while coverage is only `0.0167` and the bootstrap verdict is inconclusive. E028 confirmed the same preset as an opt-in C01 win with `10.3689 TPS` vs `9.4890 TPS` (`+9.27%`, positive CI), but coverage is still sparse (`0.040580`) and workload-dependent.
 9. H10 to explain cross-mode speculative regressions with measured overhead.
-10. H01 as a low-risk extension of existing ngram flow.
+10. H01 should be scoped to repeated/steady workloads, not cold-first C01 default. E026 rejected `ngram-simple`, found `n_match=12` neutral, and E028 confirmed `ngram-mod 24/48/64` only as an opt-in repeated/steady preset.
 11. H15 is a narrow follow-up to C02: attempt only env-gated MMVQ Q3/Q4 decode variants and keep/revert by paired runtime + hotspot evidence.
 12. H16 is completed as a negative selector/resource screen: simple force-x, stream-k, launch-bounds, and `mmq_y` probes did not produce a target-positive keep candidate; next C01 step should be deeper Q3_K compute/load specialization.
 13. H17 is completed and kept for RDNA4: `mmq_y=64/nwarps=4` improves C01 paired r3 by `+2.24%` with target hotspot improvement.
-14. H18 is now the required C01 screen for new Q3_K MMQ ideas. Initial gate rejected half-scale as low-ceiling and rejected k-pair8 after r1 (`9.59 TPS` vs E015 `9.6080`).
+14. H18 is now the required C01 screen for new Q3_K MMQ ideas. Initial gate rejected padded half-scale as low-ceiling and rejected k-pair8 after r1 (`9.59 TPS` vs E015 `9.6080`). E020 compact half-scale confirmed the shared/occupancy theory (`35712 -> 32640`, `1 -> 2` blocks/SM) and improved target MMQ timing, but r3 runtime was inconclusive (`9.6080 -> 9.6017`), so no default code was kept.
+15. H19 was rejected in E023: `GemmEx` for RDNA4 F32 SSM calls reduced runtime (`9.6080 -> 9.42 TPS`) and worsened target `MUL_MAT f32 ne=(48,192)` avg timing (`0.1712 -> 0.1850 ms`), so keep `cublasSgemm`.
 
 ## Evidence Snapshot (E006 Retest)
 
 - Supported by measured evidence: H11 as the allocator/residency root cause for the native `ub904/1024` cliff, H08 as a boundary/cliff symptom class, H09.
 - Supported as modeling-next-step: H10.
 - Analytic-only so far: H02.
-- Plausible but not measured yet: H01, H03, H04, H05, H06, H07, H13.
+- Plausible but not measured yet: H03, H04, H06, H07, H13.
+- Measured but not a current cold-first default direction: H01 and H05 after E026.
 - Prototype measured and promoted to default for eligible TKV lanes. Smoke `pp64/tg8` improved `turbo4_0` from `186.69/17.09` fallback to `227.88/24.82` direct. Corrected active-lane `v2-review` at `ub=1024` shows Turbo4 hybrid below q4 but much closer; after specialized `TKV4 set_rows`, `q4_0=11.17 TPS`, `turbo4=10.38 TPS` (`-7.1%`). Mixed opt-in `turbo4/q8_0` measured `10.60 TPS` (`-5.1%`) with larger KV. Diagnostic `ub=192` remains useful only for direct-vs-fallback (`turbo4 direct=6.68`, fallback=3.10 TPS).

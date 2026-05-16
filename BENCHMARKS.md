@@ -2204,3 +2204,122 @@ Practical run:
 
 - Keep: RDNA4 MMQ policy `mmq_y=64/nwarps=4` оставлен как default.
 - Residual risk: это RDNA4-wide MMQ policy, поэтому будущие Q4/Q5/Q6-heavy lanes стоит смотреть на regression, хотя активная Qwen C01 lane улучшилась.
+
+### C01 Prompt/Prefill Focus Recalibration Trace
+
+Проверка фокуса выполнена на той же C01 comparison lane, а не на GUI autotune:
+
+- label: `focus-c01-current-hotspots-r1`
+- lane: `review_bug+patch_sim`, `ctx=12288`, `b=6144`, `ub=192`, `q4_0/q4_0`, `spec=none`, no-reuse, `max_tokens=120`
+- artifact: `build_logs/agent-workload/focus-c01-current-hotspots-r1-analysis.md`
+
+Результат:
+
+- aggregate completion TPS: `6.7990`
+- prompt eval: `26826.35 ms / 14773 tokens = 550.69 tok/s`
+- decode eval: `8399.61 ms / 240 tokens = 28.57 tok/s`
+- trace phase split: prompt `17000.705 ms` (`76.83%` sync-only CUDA_NODE), decode `4760.101 ms` (`21.51%`)
+- `CUDA_NODE op=MUL_MAT kind=forward`: `14412.924 ms` (`65.14%`)
+- `MUL_MAT src0=q3_K type=f32`: `11615.341 ms` (`52.49%`)
+- `MMQ type=11 ncols_max=192`: `9048.863 ms` (`40.89%`)
+- prompt-phase target `MMQ type=11 ncols_max=192`: `7490.845 ms` (`44.06%` of prompt CUDA_NODE)
+- next largest center: `GATED_DELTA_NET forward` at `1467.855 ms` (`6.63%`)
+
+Вывод:
+
+- Главный фокус остаётся C01 / Q3_K MMQ на bucket `type=11, ncols_max=192`, но корректнее считать это prompt/prefill target.
+- Следующий поиск должен идти в Q3_K MMQ compute/load internals (`load_tiles_q3_K`, scale/min unpack, accumulator/write-back pressure), а не в GUI autotune, ngram speculative или MMVQ.
+
+Follow-up E018:
+
+- Candidate: RDNA4 Q3_K WMMA scale preload in registers before the `j0` loop.
+- Non-trace r1: `9.6317 TPS`, but trace target regressed.
+- `MMQ type=11 ncols_max=192`: `9048.863 -> 9103.787 ms` (`+54.924 ms`).
+- Decision: reject and revert; do not use non-trace r1 alone for keep decisions.
+
+Follow-up E019:
+
+- Candidate: fuse Q3_K scale unpack/store into the first `load_tiles_q3_K` quant-bit pass for MMA/WMMA paths.
+- Non-trace r1: `8.2082 TPS` vs E015 reference `9.6080 TPS` (`-14.57%`).
+- Trace was skipped because the cheap screen was decisively negative.
+- Decision: reject and revert; `llama-server` rebuilt after rollback.
+
+Follow-up E020:
+
+- Candidate: RDNA4/Q3_K compact half-scale shared layout at `mmq_x=96`.
+- Theory confirmed: shared `35712 -> 32640`, `max_blocks_per_sm=1 -> 2`, waves `4 -> 8`.
+- Target trace improved vs E015: `MMQ type=11 ncols_max=192` `9551.391 -> 9451.261 ms` (`-100.130 ms`).
+- Runtime r3 did not confirm a win: `9.6080 -> 9.6017 TPS`, bootstrap CI `[-0.0380,+0.0239]`.
+- Decision: research-positive but no default; runtime code reverted and server rebuilt.
+
+Follow-up E021:
+
+- Candidate: temporarily enable the existing RDNA4 MMQ staging loop for dense `Q3_K`.
+- Analytic gate: staged shared footprint for the active x96/y64 bucket is `57220` bytes, so it fits `64 KiB` and keeps `mmq_x=96`.
+- Runtime screen: `c01-e021-dense-q3-staging-r1 = 8.6216 TPS` vs E015 reference `9.6080 TPS` (`-10.27%`).
+- Activation trace confirmed `rdna4_staging_req=1` and `rdna4_staging_eff=1`.
+- Target per-call timing worsened: `MMQ type=11 ncols_max=192` average `0.447 ms -> 0.563 ms` (`+25.9%` slower).
+- Decision: reject; runtime code reverted and server rebuilt. Keep the existing MoE-only staging gate unchanged.
+
+Follow-up E022:
+
+- C05/GDN scouting on the same lane showed the active prompt route is `n_tokens=192`, default `chunk_size=96`, `fast_exp=0`.
+- `GGML_GDN_FAST_EXP=1`: `c05-gdn-fast-exp-r1 = 9.59 TPS`, below E015 reference.
+- `GGML_GDN_CHUNK_SIZE=192`: `c05-gdn-chunk192-r1 = 9.58 TPS`, below E015 reference.
+- Decision: reject; keep default GDN chunk policy and do not repeat these knobs unless a later graph/kernel change shifts the GDN route.
+
+Follow-up E023:
+
+- Candidate: RDNA4-only env-gated F32 cuBLAS `GemmEx` route for Qwen SSM alpha/beta prompt GEMMs.
+- Runtime screen: `c01-e023-rdna4-f32-gemmex-r1 = 9.42 TPS` vs E015 reference `9.6080 TPS` (`-1.96%`).
+- Target trace: `MUL_MAT f32 ne=(48,192)` average worsened `0.1712 ms -> 0.1850 ms` (`+8.1%` slower).
+- Decision: reject; restored `cublasSgemm`, rebuilt `llama-server`, and keep F32 cuBLAS route unchanged.
+
+Follow-up E024:
+
+- Candidate: `GGML_GDN_CHUNK_SIZE=128`, changing the active GDN prompt chunks from `96+96` to `128+64`.
+- Runtime screen: `c01-e024-gdn-chunk128-r1 = 9.43 TPS` vs E015 reference `9.6080 TPS` (`-1.85%`).
+- Decision: reject; no code changes and no trace because the cheap screen failed.
+
+Current-environment retest E025:
+
+- E015 retest: `c01-e015-rdna4-y64w4-r3-retest-20260516 = 9.4111 TPS`, down from old `9.6080 TPS` (`-2.05%`).
+- No-code retests against this new same-session baseline:
+  - `GGML_MMQ_RDNA4_STREAM_K_MIN_NE11=144`: `9.3837 TPS` (`-0.29%`)
+  - `GGML_CUDA_FORCE_MMQ_RUNTIME=1`: `9.3746 TPS` (`-0.39%`)
+  - `GGML_GDN_FAST_EXP=1`: `9.3625 TPS` (`-0.52%`)
+  - `GGML_GDN_CHUNK_SIZE=192`: `9.3485 TPS` (`-0.67%`)
+  - `GGML_GDN_CHUNK_SIZE=128`: `9.3522 TPS` (`-0.63%`)
+- Decision: all no-code retests remain below the current baseline. For same-session comparisons use `9.4111 TPS` unless a fresh E015 retest recovers toward `9.6080 TPS`.
+
+FATTN/ngram trace probe E026:
+
+- Same lane: `Qwen3.6-27B-Q3_K_S`, `ctx=12288`, `b=6144`, `ub=192`, KV `q4_0/q4_0`, `review_bug+patch_sim`, no-reuse, thinking on.
+- FATTN trace artifact: `build_logs/agent-workload/e026-current-fattn-trace-r1.server.log`.
+- `FLASH_ATTN_EXT forward`: `638.004 ms` out of `24758.198 ms` sync CUDA_NODE time (`~2.58%`).
+- Dominant FATTN shape: `ne=(256,24,192,1)`, `607.121 ms`, avg `0.4993 ms`.
+- Path trace shows WMMA F16 config for the active prompt route: `D=256`, `q_rows=192`, `selected_cols=16`.
+- Decision: no current-lane FATTN code probe; even a local `10%` FATTN win is only about `0.25-0.30%` wall.
+- ngram-mod `24/48/64`: `9.7225 TPS` vs same-session baseline `9.4111 TPS` (`+3.31%` aggregate), but bootstrap CI crosses zero and the gain is concentrated in one repeat.
+- ngram stats for `24/48/64`: local acceptance `0.4051`, coverage `0.0167`, effective acceptance `0.00675`.
+- ngram-mod `n_match=12`: `9.4153 TPS` (`+0.04%`), neutral.
+- ngram-simple: `9.3882 TPS` (`-0.24%`), generated zero drafts.
+- Decision: keep ngram-mod `24/48/64` only as opt-in repeated/steady-task candidate; do not make it a cold-first default.
+
+C01 force-x sub-32KiB probe E027:
+
+- Fresh trace artifact: `build_logs/agent-workload/c01-return-20260516-r1-resources.server.log`.
+- Current active Q3 bucket remains `type=11,ncols_max=192,mmq_x=96,mmq_y=64`.
+- Resource state: shared `35712`, regs `160`, `max_blocks_per_sm=1`, waves `4.00`.
+- `x72` analytic idea: projected shared below `32 KiB`, but invalid for RDNA4 WMMA because granularity is `16`; trace confirmed the override did not apply and route stayed at `mmq_x=96`.
+- `GGML_MMQ_RDNA4_Q3_FORCE_MMQ_X=64`: `c01-e027-forcex64-current-r1 = 8.90 TPS` vs current baseline `9.4111 TPS` (`-5.43%`).
+- Decision: reject force-x sub-32KiB path. Valid `x64` loses too much to the extra `3` vs `2` x-tile count; invalid `x72` must not be used.
+
+C01 ngram-mod confirmation E028:
+
+- Clean control: `c01-e028-clean-control-r3 = 9.4890 TPS`.
+- Candidate: `c01-e028-ngram244864-r6 = 10.3689 TPS` with `--spec-type ngram-mod --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-max 64`.
+- Delta: `+0.8799 TPS` (`+9.27%`); bootstrap 95% CI `[+0.5192,+1.3106]` TPS, verdict `positive`.
+- Prompt eval was neutral/slightly lower (`855.5400 -> 851.3758 TPS`), while decode eval improved (`30.1433 -> 45.1508 TPS`, `1.4979x`).
+- Spec stats: local acceptance `0.581422`, coverage `0.040580`, effective acceptance `0.023594`.
+- Decision: real measured C01 opt-in speedup for repeated/steady tasks; do not make it a cold-first default because coverage remains sparse and workload-dependent.

@@ -64,6 +64,50 @@ Primary center:
    - half-scale at `x96` rejected analytically because it stays above `32 KiB` shared,
    - k-pair8 tested after passing the gate but rejected at r1 (`9.59 TPS` vs E015 `9.6080`),
    - temporary code probe was reverted and `llama-server` rebuilt.
+13. E018/E019 Q3_K load/scale probes were rejected:
+   - scale preload regressed target `MMQ type=11 ncols_max=192` (`9048.863 -> 9103.787 ms`),
+   - load_tiles scale fusion regressed runtime (`9.6080 -> 8.2082 TPS`),
+   - both runtime probes were reverted and `llama-server` rebuilt.
+14. E020 Q3_K compact half-scale x96 was research-positive but not kept:
+   - shared `35712 -> 32640`, `max_blocks_per_sm=1 -> 2`, target `9551.391 -> 9451.261 ms`,
+   - runtime r3 was neutral (`9.6080 -> 9.6017 TPS`), so code was reverted.
+15. E021 dense Q3 MMQ staging was rejected:
+   - activation confirmed, but runtime fell to `8.6216 TPS` and target average worsened about `25.9%`.
+16. E022/E024 C05/GDN chunk probes were rejected:
+   - `GGML_GDN_FAST_EXP=1`, `GGML_GDN_CHUNK_SIZE=192`, and `GGML_GDN_CHUNK_SIZE=128`
+     all stayed below the E015 reference.
+17. E023 RDNA4 F32 cuBLAS `GemmEx` route was rejected:
+   - runtime `9.6080 -> 9.42 TPS`,
+   - target `MUL_MAT f32 ne=(48,192)` avg `0.1712 -> 0.1850 ms`,
+   - code reverted and `llama-server` rebuilt.
+18. E025 current-environment retest:
+   - E015 default retested at `9.4111 TPS` vs old `9.6080 TPS`,
+   - no-code retests all stayed below the same-session baseline:
+     `streamk144=9.3837`, `force-MMQ=9.3746`, `GDN fast_exp=9.3625`,
+     `GDN chunk192=9.3485`, `GDN chunk128=9.3522`.
+   - Use `9.4111 TPS` for same-session comparisons unless a fresh baseline recovers.
+19. E026 FATTN/ngram scout:
+   - FATTN is a low-ceiling target on current C01: `FLASH_ATTN_EXT forward` is only
+     `~2.58%` of sync CUDA_NODE time, with WMMA F16 route active for `D=256/q_rows=192`.
+   - `ngram-mod 24/48/64` measured `9.7225 TPS` vs `9.4111 TPS`, but the bootstrap
+     verdict is inconclusive and effective acceptance is only `0.00675`.
+   - `ngram-simple` and `ngram-mod n_match=12` are rejected/neutral for this lane.
+   - Do not promote ngram to cold-first default; keep `24/48/64` only as opt-in
+     repeated/steady-task candidate.
+20. E027 force-x sub-32KiB probe:
+   - fresh C01 return trace preserved the target: `type=11,ncols_max=192`, `mmq_x=96`,
+     `mmq_y=64`, shared `35712`, waves `4.00`.
+   - `x72` is invalid/no-op because RDNA4 WMMA granularity is `16`; trace fell back to `mmq_x=96`.
+   - valid `x64` measured `8.90 TPS` vs current baseline `9.4111 TPS`.
+   - Do not continue force-x sweeps unless tile geometry changes.
+21. E028 C01 ngram-mod confirmation:
+   - clean control r3: `c01-e028-clean-control-r3 = 9.4890 TPS`.
+   - opt-in candidate r6: `c01-e028-ngram244864-r6 = 10.3689 TPS` with
+     `--spec-type ngram-mod --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-max 64`.
+   - delta: `+9.27%`, bootstrap 95% CI `[+0.5192,+1.3106]` TPS, verdict `positive`.
+   - decode eval improved `30.1433 -> 45.1508 TPS`; prompt eval was neutral/slightly lower.
+   - spec stats: local acceptance `0.581422`, coverage `0.040580`, effective acceptance `0.023594`.
+   - Keep as opt-in repeated/steady-task preset only; do not make it the cold-first default.
 
 ## Lane Contract (resume baseline)
 
@@ -119,11 +163,17 @@ GGML_TRACE_MMQ_RESOURCES=1 GGML_TRACE_MMQ_TIMING=1 GGML_TRACE_MMQ_TIMING_SYNC=1 
    runtime `-0.72%` and hotspot-time regression on `MUL_MAT forward` / MMQ q3 bucket.
 3. E013 closed the MMVQ Q3_K side center with a kept narrow policy change.
 4. E015 kept the first direct C01 MMQ policy win after E013.
-5. Continue C01 with a fresh post-E015 control. Next route-local work should inspect
-   Q3_K MMQ compute/load internals beyond tile size:
-   `load_tiles_q3_K`, scale/min unpack, accumulator/write-back pressure.
-   Do not continue force-x sweeps unless a later change alters shared layout or selector math.
-   Run the Q3 theory gate before any new kernel probe.
+5. Continue C01 from E015 as the kept code path. Historical best is `9.6080 TPS`,
+   current clean control is `9.4890 TPS`, and current opt-in ngram confirmation is
+   `10.3689 TPS` for repeated/steady tasks. Q3_K scale-load fusion,
+   dense staging, GDN chunking (`128/192`), and F32 `GemmEx` are now closed negative branches.
+   FATTN is also low-ceiling on the current C01 lane. `ngram-mod 24/48/64` is now a
+   confirmed opt-in C01 plus after E028, but not a cold-first default. Force-x
+   sub-32KiB is closed after E027.
+   Next route-local work should either:
+   - find a Q3_K MMQ idea with a larger modeled ceiling than E018/E020, or
+   - scout a different center only if its current trace share gives a plausible wall-time payoff.
+   Run the Q3 theory gate before any new Q3 kernel probe.
 6. If a candidate is hotspot-positive but runtime-neutral, keep it as research-positive
    and confirm again with a paired control rerun.
 7. If a candidate is runtime-positive, proceed to `runs=3` confirmation before any
