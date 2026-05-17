@@ -1090,6 +1090,31 @@ Next C01 direction:
 - do not revisit F32 SSM through cheap `MMF` routing.
 - continue Q3_K MMQ internals, or move only to centers with a concrete supported route and a larger modeled ceiling.
 
+## C01 experiment E038: H06 Q/K rotation graph fusion screen
+
+Context:
+- After E037 gate, a minimal env-gated graph prototype was tested to fuse Q and K rotation into one path.
+
+Prototype (temporary, reverted):
+- env flag: `GGML_EXPERIMENTAL_QK_ROT_FUSION=1`
+- path: concatenate `q_cur` and `k_cur` on head axis, apply one `ggml_mul_mat_aux`, split back with `ggml_view_4d`.
+
+Measured screen (`runs=1`, same C01 lane):
+- control: `c01-e038-h06-control-r1 = 11.2031 TPS`
+- candidate: `c01-e038-h06-fused-r1 = 11.1688 TPS`
+- delta: `-0.31%`
+- prompt eval mean: `835.05 -> 832.29 tok/s`
+- decode eval mean: `29.515 -> 29.44 tok/s`
+
+Decision:
+- `reject`
+- reason: negative runtime screen on target lane.
+- code state: reverted and rebuilt.
+
+Next H06 direction:
+- do not continue this graph-level concat/split variant.
+- if H06 is revisited, target kernel-level QKV/RoPE integration rather than graph-level concat overhead.
+
 ## C01 experiment E036: E020 pre-sync companion + H06 gate snapshot
 
 Context:
