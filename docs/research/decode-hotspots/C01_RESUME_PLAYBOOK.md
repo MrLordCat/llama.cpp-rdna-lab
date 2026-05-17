@@ -160,7 +160,7 @@ Rule:
 ## Lane Contract (resume baseline)
 
 - model: `models/Qwen3.6-27B-Q3_K_S.gguf`
-- tasks: `review_bug,patch_sim`
+- tasks: `triage_diff,review_bug`
 - ctx: `12288`
 - batch: `6144`
 - ubatch: `192`
@@ -192,8 +192,11 @@ python scripts/research/decision_stats.py --baseline <base.csv> --candidate <can
 ## First Command To Resume C01
 
 ```bash
-GGML_TRACE_MMQ_RESOURCES=1 GGML_TRACE_MMQ_TIMING=1 GGML_TRACE_MMQ_TIMING_SYNC=1 python scripts/agent_workload_bench.py --label c01-resume-r1-resources --server-bin build-rocm-vec/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --tasks quick --task-ids review_bug,patch_sim --runs 1 --ctx-size 12288 --batch-size 6144 --ubatch-size 192 --cache-type-k q4_0 --cache-type-v q4_0 --max-tokens 120 --real-context-mode repo-snapshot --no-reuse --background-server-policy fail --task-fail-timeout 0 --trace-preset kernel-full
+GGML_TRACE_MMQ_RESOURCES=1 GGML_TRACE_MMQ_TIMING=1 GGML_TRACE_MMQ_TIMING_SYNC=1 python scripts/agent_workload_bench.py --label c01-resume-r1-resources --server-bin build-rocm-vec/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --tasks quick --task-ids triage_diff,review_bug --runs 1 --ctx-size 12288 --batch-size 6144 --ubatch-size 192 --cache-type-k q4_0 --cache-type-v q4_0 --max-tokens 120 --real-context-mode repo-snapshot --no-reuse --background-server-policy fail --task-fail-timeout 0 --trace-preset kernel-full
 ```
+
+Note:
+- historical references to `review_bug,patch_sim` in older experiment entries remain for reproducibility only.
 
 ## Decision Rule (unchanged)
 

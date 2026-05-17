@@ -140,6 +140,11 @@ Current return status:
 - Cold/steady split: steady `mul_mat_q_direct|q3_K` is `11408.481 ms` (`78.28%` of steady `MUL_MAT forward`).
 - Decision: keep C01 as the main focus, but frame it as prompt/prefill first. Next work should inspect Q3_K MMQ compute/load internals, not GUI autotune, ngram, or MMVQ.
 
+## Current quick-bench contract (2026-05-17)
+
+- Active quick task pair for C01 and nearby lanes: `triage_diff,review_bug`.
+- Historical mentions of `review_bug,patch_sim` in this checklist are archived experiment context, not the current default.
+
 ## C01 diagnostics toolkit
 
 - shape gate: `python scripts/research/c01_shape_presence_gate.py ...`

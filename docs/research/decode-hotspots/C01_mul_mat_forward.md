@@ -3,6 +3,10 @@
 Quick return anchor:
 - `docs/research/decode-hotspots/C01_RESUME_PLAYBOOK.md`
 
+Current contract note (2026-05-17):
+- quick benchmark task pair is `triage_diff,review_bug`.
+- older `review_bug,patch_sim` references in this file are historical experiment context only.
+
 ## Resume checkpoint after chatflow detour (2026-05-13)
 
 Fresh resume run (lane contract from playbook):

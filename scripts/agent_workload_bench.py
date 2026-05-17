@@ -134,33 +134,6 @@ The GUI runs on Windows and Linux. Users may pass quoted args like:
 
 Task: identify the bug, give a minimal fix, and mention one edge case. Keep it concise.""",
     },
-    {
-        "id": "rocm_log_plan",
-        "title": "ROCm build-log diagnosis",
-        "prompt": """A Windows ROCm llama.cpp build for RX 9070 XT fails:
-
-lld-link: error: undefined symbol: __kmpc_fork_call
-CMakeCache.txt contains GGML_OPENMP:BOOL=ON
-HIP SDK path is C:\\Program Files\\AMD\\ROCm\\7.1
-GPU target should be gfx1201
-
-Task: propose the next commands/settings for a GUI build manager. Keep it as a short numbered list.""",
-    },
-    {
-        "id": "patch_sim",
-        "title": "Small patch simulation",
-        "prompt": """Write a tiny unified diff for this function so MTP is disabled when vision is enabled:
-
-def server_extra_args(vision_enabled, mtp_enabled):
-    args = []
-    if mtp_enabled:
-        args += ["--spec-type", "mtp", "--spec-draft-n-max", "3"]
-    if vision_enabled:
-        args += ["--mmproj", "mmproj.gguf"]
-    return args
-
-Expected behavior: if both are true, raise ValueError. Return only the diff.""",
-    },
 ]
 
 
@@ -1100,6 +1073,51 @@ def infer_spec_mode(server_extra: str) -> str:
     return "none"
 
 
+def required_local_speedup(target_share: float, target_total_speedup: float) -> float | None:
+    denom = (1.0 / target_total_speedup) - (1.0 - target_share)
+    if denom <= 0.0:
+        return None
+    return target_share / denom
+
+
+def run_preflight_gate(args: argparse.Namespace) -> tuple[bool, str]:
+    share = float(getattr(args, "preflight_share", 0.0))
+    if share <= 0.0:
+        return True, ""
+
+    if share >= 1.0:
+        return False, "preflight-share must be in (0,1)"
+
+    goal = float(getattr(args, "preflight_goal_total_speedup", 1.01))
+    if goal <= 1.0:
+        return False, "preflight-goal-total-speedup must be > 1.0"
+
+    candidate = float(getattr(args, "preflight_candidate_local_speedup", 1.0))
+    if candidate <= 0.0:
+        return False, "preflight-candidate-local-speedup must be > 0"
+
+    req = required_local_speedup(share, goal)
+    if req is None:
+        return False, "preflight goal is impossible for the provided share"
+
+    req_gain_pct = (req - 1.0) * 100.0
+    cand_gain_pct = (candidate - 1.0) * 100.0
+    passed = candidate >= req
+
+    print(
+        "[preflight] "
+        f"share={share:.6f} goal_total={goal:.4f} "
+        f"required_local={req:.4f} ({req_gain_pct:.2f}%) "
+        f"candidate_local={candidate:.4f} ({cand_gain_pct:.2f}%) "
+        f"verdict={'PASS' if passed else 'FAIL'}"
+    )
+
+    if not passed and bool(getattr(args, "preflight_enforce", False)):
+        return False, "preflight ceiling gate failed and --preflight-enforce is set"
+
+    return True, ""
+
+
 def normalize_spec_mode(value: str) -> str:
     value = value.strip().lower()
     if value in {"mtp", "ngram-mod", "draft", "none", "eagle", "eagle3"}:
@@ -1763,6 +1781,30 @@ def parse_args() -> argparse.Namespace:
         help="mark task as failed if wall time exceeds this threshold in seconds; 0 disables",
     )
     parser.add_argument(
+        "--preflight-share",
+        type=float,
+        default=0.0,
+        help="target center wall share in (0,1); 0 disables preflight ceiling gate",
+    )
+    parser.add_argument(
+        "--preflight-goal-total-speedup",
+        type=float,
+        default=1.02,
+        help="desired end-to-end speedup for preflight gate, e.g. 1.02 for +2%%",
+    )
+    parser.add_argument(
+        "--preflight-candidate-local-speedup",
+        type=float,
+        default=1.0,
+        help="estimated candidate local speedup for the target center, e.g. 1.06",
+    )
+    parser.add_argument(
+        "--preflight-enforce",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="abort before benchmark run when preflight gate fails",
+    )
+    parser.add_argument(
         "--no-reuse",
         action="store_true",
         help="disable llama-server prompt cache and context checkpoints for cold prompt-heavy measurements",
@@ -2005,6 +2047,11 @@ def main() -> int:
             f"Real context injection: mode=repo-snapshot chars={chars} files={files} "
             f"requested={requested_chars} safe_cap={safe_char_cap} effective={effective_chars}"
         )
+
+    preflight_ok, preflight_error = run_preflight_gate(args)
+    if not preflight_ok:
+        print(f"ERROR: {preflight_error}")
+        return 6
 
     if not args.autotune:
         try:

@@ -320,7 +320,7 @@ python scripts\agent_workload_bench.py `
 - repeated/steady candidate сравнивать только с repeated/steady baseline;
 - если публикуются оба числа, их держать рядом, а не смешивать в одно headline-значение.
 
-Текущая опорная точка для C01 lane (`quick review_bug,patch_sim`, `ctx=12288`, `b=6144`, `ub=192`, `q4_0/q4_0`, `no-reuse`):
+Текущая опорная точка для C01 lane (`quick triage_diff,review_bug`, `ctx=12288`, `b=6144`, `ub=192`, `q4_0/q4_0`, `no-reuse`):
 
 - `Cold-first baseline`: `9.4111 TPS` (`c01-e015-rdna4-y64w4-r3-retest-20260516`)
 - `Repeated/steady clean baseline`: `9.4890 TPS` (`c01-e028-clean-control-r3`)
@@ -329,6 +329,8 @@ python scripts\agent_workload_bench.py `
 Примечание:
 
 - `ngram-mod 24/48/64` сейчас подтверждён как repeated/steady opt-in win, но не как cold-first default.
+- С `2026-05-17` quick benchmark contract упрощён до двух задач: `triage_diff,review_bug`.
+- Упоминания `review_bug,patch_sim` ниже в этом файле относятся к историческим экспериментам и не являются текущим default-контрактом.
 
 ### Batch 4096 / UBatch 512 with stabilized method (2026-05-09)
 
