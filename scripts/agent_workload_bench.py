@@ -804,7 +804,7 @@ def write_results(
         artifacts["jsonl_file"] = jsonl_path.name
 
     fieldnames = [
-        "label", "task_id", "title", "wall_s", "prompt_tokens",
+        "label", "run", "task_id", "title", "wall_s", "prompt_tokens",
         "completion_tokens", "total_tokens", "completion_tps_wall",
         "response_chars", "error", "hard_timeout", "terminated_server",
     ]
@@ -834,6 +834,21 @@ def write_results(
             print(f"Task TPS stdev: {statistics.pstdev(tps_values):.4f}")
 
     if stats_ignore_first_run:
+        cold_rows = [row for row in rows if int(row.get("run") or 0) == 1]
+        if cold_rows:
+            cold_completion = sum(row.get("completion_tokens") or 0 for row in cold_rows)
+            cold_wall = sum(row.get("wall_s") or 0.0 for row in cold_rows)
+            cold_tps_values = [float(row["completion_tps_wall"]) for row in cold_rows if row.get("completion_tps_wall") is not None]
+
+            print("Cold-only stats (run #1):")
+            if cold_wall > 0 and cold_completion > 0:
+                print(f"Cold-only aggregate completion TPS: {cold_completion / cold_wall:.2f}")
+            if cold_tps_values:
+                print(f"Cold-only mean task TPS: {statistics.mean(cold_tps_values):.2f}")
+                print(f"Cold-only median task TPS: {statistics.median(cold_tps_values):.2f}")
+                if len(cold_tps_values) > 1:
+                    print(f"Cold-only task TPS stdev: {statistics.pstdev(cold_tps_values):.4f}")
+
         warm_rows = [row for row in rows if int(row.get("run") or 0) > 1]
         if warm_rows:
             warm_completion = sum(row.get("completion_tokens") or 0 for row in warm_rows)

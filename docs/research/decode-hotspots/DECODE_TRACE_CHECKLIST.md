@@ -36,6 +36,7 @@
 - [x] Run first deeper Q3_K MMQ geometry A/B and keep reproducible gain (E015).
 - [x] Scout FATTN and ngram after current-environment retest (E026).
 - [x] Close simple force-x sub-32KiB probe (E027 negative/invalid).
+- [x] Scout F32 SSM alternate MMF route (E032 no-activation; current RDNA4 MMF cannot cheaply target F32 SSM).
 - [ ] Continue Q3_K MMQ compute/load micro A/B and keep only reproducible gains.
 - [ ] Move to next center only after `MUL_MAT forward` has a closed trace + hypothesis verdict.
 
@@ -221,14 +222,52 @@ Current return status:
 
 ## Current Metric Policy For C01
 
-- `Cold-first baseline`: `9.4111 TPS` (`c01-e015-rdna4-y64w4-r3-retest-20260516`)
-- `Repeated/steady clean baseline`: `9.4890 TPS` (`c01-e028-clean-control-r3`)
+- `Cold-first baseline`: quote `run == 1`; latest same-session split is `9.47 TPS`
+  (`c01-e030-clean-split-r2`).
+- `Repeated/steady clean baseline`: quote `run > 1`; latest same-session split is
+  `9.45 TPS` (`c01-e030-clean-split-r2`), with historical repeated clean `9.4890 TPS`
+  (`c01-e028-clean-control-r3` all-runs aggregate).
 - `Repeated/steady opt-in reference`: `10.3689 TPS` (`c01-e028-ngram244864-r6`)
 
 Use:
 - kernel/default claims must beat the cold-first baseline,
 - speculative/session opt-in claims must beat the repeated/steady clean baseline,
-- do not compare these two classes through a single mixed headline number.
+- do not compare these two classes through a single mixed headline number,
+- all-runs aggregate is allowed only when clearly labeled as mixed/session aggregate.
+
+## E029 cold-first ngram recheck
+
+- First `r1` pair was inconclusive (`9.4381 -> 9.4476 TPS`, `+0.10%`).
+- Powered `r3` pair is positive: `9.3031 -> 10.0948 TPS` (`+8.51%`), bootstrap CI `[+0.2943,+1.3488]` TPS.
+- Extended `r6` pair confirms it: `9.2468 -> 10.2456 TPS` (`+10.80%`), bootstrap CI `[+0.6980,+1.3441]` TPS.
+- Improvement is decode-led (`29.685 -> 42.973 tok/s mean`) while prompt stays neutral/slightly lower.
+- Decision: keep `ngram-mod 24/48/64` as explicit opt-in accelerated profile; keep clean `spec=none` as default for kernel/default claims.
+
+## E030 cold/warm metric split
+
+- Bench infrastructure now writes `run` to CSV and prints cold-only run #1 stats with
+  `--stats-ignore-first-run`.
+- Same-session split:
+  - clean: `9.4569` all / `9.47` cold / `9.45` warm TPS.
+  - `ngram-mod 24/48/64`: `10.0476` all / `9.46` cold / `10.72` warm TPS.
+- Decision:
+  - ngram remains a warm/session opt-in accelerator, not a cold-first default win.
+  - E029 all-runs aggregate should not be described as pure cold-first.
+- Adjacent no-code checks:
+  - server warmup did not improve cold/warm,
+  - `ubatch=224` regressed to `8.03 TPS`,
+  - `ubatch=160` regressed to `8.88 TPS`.
+
+## E031 Q4_K force-x sub-32KiB probe
+
+- Secondary `Q4_K` MMQ bucket is measurable but small:
+  `mul_mat_q_direct|q4_K = 964.363 ms` (`6.17%` of steady `MUL_MAT forward`).
+- Resource state for `type=12,ncols_max=192`: `mmq_x=96`, shared `33664`, regs `200`,
+  `max_blocks_per_sm=1`.
+- Temporary `GGML_MMQ_RDNA4_Q4_FORCE_MMQ_X=80` regressed:
+  `9.4522 -> 9.4026 TPS`, decision stats negative.
+- Decision: reject; code reverted and server rebuilt.
+- Next: do not continue Q4 force-x unless the active ncols/tile geometry changes.
 
 ## Center documents
 

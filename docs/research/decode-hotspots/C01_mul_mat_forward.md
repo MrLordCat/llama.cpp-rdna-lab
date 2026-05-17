@@ -951,3 +951,141 @@ python scripts/agent_workload_bench.py --label c01-e028-ngram244864-r6 --server-
 Next C01 direction:
 - if the goal is immediate practical speed, expose/document this as an opt-in repeated/steady preset.
 - if the goal is default cold-first speed, continue kernel/runtime work; `ngram-mod` should not replace the C01 default while effective acceptance is workload-dependent.
+
+## C01 experiment E029: cold-first recheck for ngram-mod 24/48/64
+
+Context:
+- After E028, the same ngram profile was still treated as repeated/steady opt-in.
+- A strict cold-first gate was required because the first `r1` pair was inconclusive (`+0.10%`, CI crossing zero).
+
+Measured cold gate:
+- `r1` probe:
+	- control: `c01-e029-cold-control-r1 = 9.4381 TPS`
+	- candidate: `c01-e029-cold-ngram244864-r1 = 9.4476 TPS`
+	- decision stats: `inconclusive`.
+- powered `r3` pair:
+	- control: `c01-e029-cold-control-r3 = 9.3031 TPS`
+	- candidate: `c01-e029-cold-ngram244864-r3 = 10.0948 TPS`
+	- delta: `+0.7918 TPS` (`+8.51%`).
+	- bootstrap 95% CI: `[+0.2943,+1.3488]` TPS.
+	- verdict: `positive`.
+- extended `r6` pair:
+	- control: `c01-e029-cold-control-r6 = 9.2468 TPS`
+	- candidate: `c01-e029-cold-ngram244864-r6 = 10.2456 TPS`
+	- delta: `+0.9988 TPS` (`+10.80%`).
+	- bootstrap 95% CI: `[+0.6980,+1.3441]` TPS.
+	- verdict: `positive`.
+- phase clue:
+	- prompt eval remains neutral/slightly lower (`839.27 -> 835.29 tok/s` mean),
+	- decode eval improves strongly (`29.69 -> 42.97 tok/s` mean), with higher variance.
+- speculative log stats (`spec_log_stats.py`):
+	- `gen_drafts=4`, `acc_drafts=4`,
+	- `gen_tokens=246`, `acc_tokens=218`,
+	- `token_accept_ratio=0.8862`.
+
+Decision:
+- `keep as opt-in accelerated profile`
+- reason: cold-first gate is now positive on powered A/B, but improvement remains speculative-driven and variance-sensitive.
+- default policy: keep `spec=none` as conservative default; allow `ngram-mod 24/48/64` as documented opt-in accelerator for this lane.
+
+Next C01 direction:
+- for kernel-default claims, continue no-spec (`spec=none`) runtime/kernel work and compare only against cold clean baseline.
+- for practical speed mode, maintain `ngram-mod 24/48/64` as an explicit opt-in profile and continue tracking coverage/acceptance stability.
+
+## C01 experiment E030: cold/warm metric split
+
+Context:
+- Measurement policy changed to track true cold run #1 and warm/repeated rows separately.
+- E029 `r6` headline was an all-runs aggregate, so it mixed the first cold request with later repeated requests.
+
+Bench infrastructure update:
+- `scripts/agent_workload_bench.py` now writes `run` to per-run CSV.
+- `--stats-ignore-first-run` now prints both:
+  - cold-only stats for `run == 1`,
+  - warm-only stats for `run > 1`.
+
+Fresh same-session split:
+- clean `c01-e030-clean-split-r2`:
+  - all: `9.4569 TPS`,
+  - cold run #1: `9.47 TPS`,
+  - warm excluding run #1: `9.45 TPS`.
+- `ngram-mod 24/48/64` `c01-e030-ngram244864-split-r2`:
+  - all: `10.0476 TPS`,
+  - cold run #1: `9.46 TPS`,
+  - warm excluding run #1: `10.72 TPS`.
+
+Spec stats:
+- local acceptance `0.868852`,
+- coverage `0.011236`,
+- effective acceptance `0.009762`.
+
+Decision:
+- `ngram-mod 24/48/64` remains a practical warm/session opt-in accelerator.
+- It is not a cold-first default/kernel win on the corrected metric because cold run #1 is neutral.
+- New C01 default claims must report `run == 1`; speculative/session claims must report `run > 1`.
+
+Adjacent checks:
+- server warmup enabled (`--no-no-warmup`) did not improve split metrics.
+- `ubatch=224` and `ubatch=160` regressed, so the current `ubatch=192` remains the local lane setting.
+
+Next C01 direction:
+- continue no-spec Q3_K MMQ prefill work for cold-first speed.
+- do not widen into GUI autotune-style parameter sweeps unless a fresh trace shows the bottleneck moved.
+
+## C01 experiment E031: Q4_K force-x sub-32KiB probe
+
+Context:
+- Fresh E030 resource trace showed a small secondary `Q4_K` MMQ center:
+  `mul_mat_q_direct|q4_K = 964.363 ms` (`6.17%` of steady `MUL_MAT forward`).
+- Resource telemetry for `type=12,ncols_max=192`:
+  `mmq_x=96`, `mmq_y=64`, shared `33664`, regs `200`, `max_blocks_per_sm=1`.
+
+Analytic screen:
+- `x80` should reduce shared memory below the 32 KiB boundary and may allow `2` blocks/SM.
+- It also changes `ncols=192` from `2` x tiles to `3`, so the expected wall ceiling is small and risk is high.
+
+Measured screen:
+- same-build control: `c01-e031-q4force-control-r1 = 9.4522 TPS`.
+- candidate: temporary env-gated `GGML_MMQ_RDNA4_Q4_FORCE_MMQ_X=80`,
+  `c01-e031-q4force-x80-r1 = 9.4026 TPS`.
+- decision stats: bootstrap 95% CI `[-0.0591,-0.0400]`, verdict `negative`.
+- prompt eval regressed `853.885 -> 846.515 tok/s`; decode was unchanged.
+
+Decision:
+- `reject`
+- reason: the x-tile count penalty dominates any possible residency benefit.
+- code state: temporary runtime code reverted and `llama-server` rebuilt.
+
+Next C01 direction:
+- do not continue Q4 force-x sub-32KiB on this lane.
+- return to Q3_K MMQ internals or scout a different center only if trace share and modelled ceiling are larger.
+
+## C01 experiment E032: F32 MMF wide SSM probe
+
+Context:
+- E030 shape split showed a large secondary F32 cuBLAS SSM shape:
+  `src0=(5120,48,1,1)`, `src1=(5120,192,1,1)`, `dst=(48,192,1,1)`,
+  steady `1294.385 ms`.
+- E023 had already rejected `cublasGemmEx`, so this probe tried a different route:
+  no-id tiled `MMF` for `ncols_dst > 16`, guarded by `GGML_CUDA_RDNA4_F32_MMF_WIDE`.
+
+Measured screen:
+- trace control: `c01-e032-mmfwide-control-r1 = 6.3561 TPS`.
+- trace candidate: `c01-e032-mmfwide-candidate-r1 = 6.4398 TPS`.
+- decision stats were positive on trace wall time, but the route activation gate failed.
+
+Activation/root-cause check:
+- target SSM rows stayed on `cublas_backend`; only existing tiny `ncols=2` rows used `mul_mat_vec_f_direct`.
+- RDNA4 `MMF` is not a cheap F32 target in this code path:
+  `AMD_WMMA_AVAILABLE` `mul_mat_f` supports `half2`/`nv_bfloat162`, while F32 `should_use_mmf`
+  depends on `amd_mfma_available`.
+- SSM also has `src0_ne[1]=48`, which does not satisfy the current `MMF_ROWS_PER_BLOCK=32` divisibility gate.
+
+Decision:
+- `reject / no-activation`
+- reason: the intended F32 SSM route cannot activate on current RDNA4 MMF without a real new F32 kernel design.
+- code state: prototype reverted and `llama-server` rebuilt.
+
+Next C01 direction:
+- do not revisit F32 SSM through cheap `MMF` routing.
+- continue Q3_K MMQ internals, or move only to centers with a concrete supported route and a larger modeled ceiling.

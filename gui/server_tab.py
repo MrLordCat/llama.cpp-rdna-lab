@@ -15,6 +15,11 @@ from PyQt6.QtCore import Qt
 from threads import ServerThread
 
 
+DEFAULT_NGRAM_MATCH = 24
+DEFAULT_NGRAM_MIN = 48
+DEFAULT_NGRAM_MAX = 64
+
+
 class ServerTabWidget(QWidget):
     """Tab for launching llama-server"""
     
@@ -275,21 +280,21 @@ class ServerTabWidget(QWidget):
         self.server_ngram_min = QSpinBox()
         self.server_ngram_min.setMinimum(1)
         self.server_ngram_min.setMaximum(512)
-        self.server_ngram_min.setValue(1)
+        self.server_ngram_min.setValue(DEFAULT_NGRAM_MIN)
         ngram_layout.addWidget(self.server_ngram_min)
 
         ngram_layout.addWidget(QLabel("Match:"))
         self.server_ngram_match = QSpinBox()
         self.server_ngram_match.setMinimum(1)
         self.server_ngram_match.setMaximum(512)
-        self.server_ngram_match.setValue(80)
+        self.server_ngram_match.setValue(DEFAULT_NGRAM_MATCH)
         ngram_layout.addWidget(self.server_ngram_match)
 
         ngram_layout.addWidget(QLabel("Max:"))
         self.server_ngram_max = QSpinBox()
         self.server_ngram_max.setMinimum(1)
         self.server_ngram_max.setMaximum(512)
-        self.server_ngram_max.setValue(128)
+        self.server_ngram_max.setValue(DEFAULT_NGRAM_MAX)
         ngram_layout.addWidget(self.server_ngram_max)
         ngram_layout.addStretch()
         spec_layout.addLayout(ngram_layout)
@@ -633,6 +638,12 @@ class ServerTabWidget(QWidget):
 
         if spec_type == "ngram-mod":
             self.server_spec_type_combo.setCurrentText("ngram-mod")
+            if ngram_min is None:
+                ngram_min = DEFAULT_NGRAM_MIN
+            if ngram_match is None:
+                ngram_match = DEFAULT_NGRAM_MATCH
+            if ngram_max is None:
+                ngram_max = DEFAULT_NGRAM_MAX
         elif spec_type == "mtp":
             self.server_spec_type_combo.setCurrentText("mtp")
         elif spec_type == "draft":
@@ -735,10 +746,22 @@ class ServerTabWidget(QWidget):
             except ValueError:
                 extra_tokens = extra_args.split()
 
+        def extra_has_flag(flag: str) -> bool:
+            return any(tok == flag or tok.startswith(f"{flag}=") for tok in extra_tokens)
+
+        def extra_value(flag: str) -> str | None:
+            for i, tok in enumerate(extra_tokens):
+                if tok == flag and i + 1 < len(extra_tokens):
+                    return extra_tokens[i + 1].strip().lower()
+                if tok.startswith(f"{flag}="):
+                    return tok.split("=", 1)[1].strip().lower()
+            return None
+
         # Avoid duplicate speculative flags when preset already supplies them via Extra Arguments.
         has_spec_in_extra = any(tok.startswith("--spec-") or tok == "--spec-type" for tok in extra_tokens)
 
         spec_type = self.server_spec_type_combo.currentText().strip().lower()
+        extra_spec_type = extra_value("--spec-type")
         if not has_spec_in_extra:
             if spec_type == "mtp":
                 command.extend(["--spec-type", "mtp", "--spec-draft-n-max", str(self.server_spec_draft_n_max.value())])
@@ -753,6 +776,13 @@ class ServerTabWidget(QWidget):
                     "--spec-ngram-mod-n-min", str(self.server_ngram_min.value()),
                     "--spec-ngram-mod-n-max", str(self.server_ngram_max.value()),
                 ])
+        elif spec_type == "ngram-mod" or extra_spec_type == "ngram-mod":
+            if not extra_has_flag("--spec-ngram-mod-n-match"):
+                command.extend(["--spec-ngram-mod-n-match", str(self.server_ngram_match.value())])
+            if not extra_has_flag("--spec-ngram-mod-n-min"):
+                command.extend(["--spec-ngram-mod-n-min", str(self.server_ngram_min.value())])
+            if not extra_has_flag("--spec-ngram-mod-n-max"):
+                command.extend(["--spec-ngram-mod-n-max", str(self.server_ngram_max.value())])
 
         if self.server_flash_attn_check.isChecked():
             command.extend(["--flash-attn", "on"])
@@ -1098,9 +1128,9 @@ class ServerTabWidget(QWidget):
         self.server_spec_type_combo.setCurrentText(settings.value("server/spec_type", "None"))
         self.server_spec_draft_n.setValue(int(settings.value("server/spec_draft_n", 5)))
         self.server_spec_draft_n_max.setValue(int(settings.value("server/spec_draft_n_max", 3)))
-        self.server_ngram_min.setValue(int(settings.value("server/spec_ngram_min", 1)))
-        self.server_ngram_match.setValue(int(settings.value("server/spec_ngram_match", 80)))
-        self.server_ngram_max.setValue(int(settings.value("server/spec_ngram_max", 128)))
+        self.server_ngram_min.setValue(int(settings.value("server/spec_ngram_min", DEFAULT_NGRAM_MIN)))
+        self.server_ngram_match.setValue(int(settings.value("server/spec_ngram_match", DEFAULT_NGRAM_MATCH)))
+        self.server_ngram_max.setValue(int(settings.value("server/spec_ngram_max", DEFAULT_NGRAM_MAX)))
 
         self.server_flash_attn_check.setChecked(settings.value("server/flash_attn", True, type=bool))
         self.server_no_warmup_check.setChecked(settings.value("server/no_warmup", True, type=bool))

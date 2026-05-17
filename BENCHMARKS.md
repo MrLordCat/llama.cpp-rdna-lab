@@ -33,6 +33,34 @@ build_logs\agent-workload\<label>.server.log
 
 Для коротких агентных ответов runner по умолчанию добавляет `--chat-template-kwargs {"enable_thinking":false,"preserve_thinking":false}`. Это можно отключить флагом `--no-disable-thinking`.
 
+## Non-C01 acceleration scan + GUI ngram preset (2026-05-16)
+
+После закрытия нескольких C01-кандидатов выполнен короткий gate по другим направлениям:
+
+- H12 TurboKV/WHT: `turbo4/q8_0` trace `9.23 TPS` против q4 trace `9.58 TPS`; `TURBO_WHT` занимает всего `2.531 ms` за run, поэтому WHT fusion не выглядит перспективным первым патчем.
+- RDNA4 graph optimizer: `GGML_CUDA_GRAPH_OPT=1` + `GGML_CUDA_ALLOW_RDNA4_GRAPH_OPT=1` дал `10.98 TPS`, но тот же no-trace control дал `11.00 TPS`; дефолт не меняем.
+- MoE35B smoke: q4 MoE `tg128=101.01 tok/s`, staging probe `102.75 tok/s` без чёткой route-активации; оставлено как будущий MMQ-route trace, не как keep.
+
+Практическая фича из подтверждённого ускорения: GUI `Launch Server` теперь использует проверенные ngram knobs `match=24, min=48, max=64` для opt-in `ngram-mod`. Если preset содержит только `--spec-type ngram-mod`, GUI дополняет команду недостающими `--spec-ngram-mod-*` параметрами. Conservative default остаётся `spec=None`.
+
+### Follow-up: MoE MMQ route scan (2026-05-17)
+
+E034 проверил отдельную MoE-ветку на `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`.
+
+- Routed MoE experts (`IQ2_S/IQ3_XXS/IQ4_XS`) уже идут через `mul_mat_q_direct`.
+- Shared expert и attention/linear `q6_K` на prompt batch идут через backend route.
+- `GGML_CUDA_FORCE_MMQ_RUNTIME=1` дал сильный `pp512` spike (`1362.66 tok/s`), но `pp2048` просел (`3134.28 tok/s`) и прогон не завершился; после этого потребовался reboot, поэтому broad force-MMQ считается unsafe.
+- RDNA4 MoE staging реально активируется (`rdna4_staging_eff=1`) и почти упирается в LDS (`~58-62 KiB` из `64 KiB`), но throughput смешанный: короткий `p512` может быть около neutral/positive, `p2048` регрессит.
+- Scoped `MAX_NCOLS=512` prototype после rebuild не подтвердился: control `pp512=674.33`, `pp2048=3537.34`, `tg128=101.70`; candidate `pp512=655.51`, `pp2048=3455.64`, `tg128=99.78`.
+
+Итог: code change откатан, default не меняется. Для будущей работы перспективнее не staging, а узкий shape-scoped force-MMQ/selector только для конкретных shared-expert `q6_K` форм, с обязательным guard против `p2048+` regression/hang.
+
+E035 проверил этот follow-up:
+
+- Broad `Q6_K` gate `ne11<=512` подтвердил реальный short-prompt сигнал: `pp512=1327.10 tok/s` против `670.38`, но `pp2048` рухнул `3539.89 -> 2214.66`.
+- Shared-expert-only gate (`ffn_gate`, `ffn_up`, `ffn_shexp`) не сработал: `pp512=606.46` против `667.38`.
+- Оба code prototype откатаны. Вывод: источник broad-Q6 spike не в shared-expert именах; перед новой selector-правкой нужен route-delta trace именно broad-Q6 на `p512` и negative control на `p2048`.
+
 ## TurboKV direct FlashAttention smoke (2026-05-13)
 
 Это короткий технический smoke для guarded prototype `GGML_TKV_DIRECT_FATTN=1`, а не финальный target-lane speed claim. Полный артефакт с командами и числами: `build_logs/agent-workload/e009-tkv-direct-fattn-smoke-20260513.md`.
@@ -2340,3 +2368,40 @@ C01 ngram-mod confirmation E028:
 - Prompt eval was neutral/slightly lower (`855.5400 -> 851.3758 TPS`), while decode eval improved (`30.1433 -> 45.1508 TPS`, `1.4979x`).
 - Spec stats: local acceptance `0.581422`, coverage `0.040580`, effective acceptance `0.023594`.
 - Decision: real measured C01 opt-in speedup for repeated/steady tasks; do not make it a cold-first default because coverage remains sparse and workload-dependent.
+
+C01 cold/warm metric split E030:
+
+- Bench infrastructure now records `run` in CSV and prints cold-only run #1 stats when `--stats-ignore-first-run` is used.
+- Fresh same-session clean split: `c01-e030-clean-split-r2 = 9.4569 TPS` all / `9.47 TPS` cold / `9.45 TPS` warm.
+- Fresh same-session ngram split: `c01-e030-ngram244864-split-r2 = 10.0476 TPS` all / `9.46 TPS` cold / `10.72 TPS` warm.
+- Correct interpretation: `ngram-mod 24/48/64` is warm/session-positive and cold-neutral, not a cold-first default win.
+- Adjacent checks:
+  - server warmup enabled did not improve split metrics,
+  - `ubatch=224` regressed to `8.03 TPS`,
+  - `ubatch=160` regressed to `8.88 TPS`.
+- Fresh resource trace `c01-e030-resume-r1-resources` confirms C01 remains the main no-spec target:
+  `Q3_K type=11,ncols_max=192`, steady `mul_mat_q_direct|q3_K = 12268.144 ms`
+  (`78.52%` of steady `MUL_MAT forward`), geometry `mmq_x=96/mmq_y=64`.
+
+C01 Q4_K force-x sub-32KiB E031:
+
+- Secondary target from E030 trace: `mul_mat_q_direct|q4_K = 964.363 ms`
+  (`6.17%` of steady `MUL_MAT forward`).
+- Theory: `Q4_K type=12,ncols_max=192` at `mmq_x=96` uses shared `33664` bytes; forcing
+  `mmq_x=80` should drop below 32 KiB but changes `ncols=192` from `2` to `3` x tiles.
+- Same-build control: `c01-e031-q4force-control-r1 = 9.4522 TPS`.
+- Candidate: temporary `GGML_MMQ_RDNA4_Q4_FORCE_MMQ_X=80`,
+  `c01-e031-q4force-x80-r1 = 9.4026 TPS`.
+- Decision: reject; code reverted and `llama-server` rebuilt. The tile-count penalty dominates.
+
+C01 F32 MMF wide SSM probe E032:
+
+- Target from E030 trace: F32 SSM `MUL_MAT` shape `src0=(5120,48)`, `src1=(5120,192)`,
+  steady `1294.385 ms`.
+- Candidate: temporary env-gated no-id tiled `MMF` route, `GGML_CUDA_RDNA4_F32_MMF_WIDE=1`.
+- Trace control: `c01-e032-mmfwide-control-r1 = 6.3561 TPS`.
+- Trace candidate: `c01-e032-mmfwide-candidate-r1 = 6.4398 TPS`.
+- Decision: reject/no-activation. The target SSM rows stayed on `cublas_backend`; RDNA4 `MMF`
+  does not provide a cheap F32 path here (`AMD_WMMA` supports half/bf16 MMF, F32 needs MFMA),
+  and the SSM row count `48` also misses the current `MMF_ROWS_PER_BLOCK=32` gate.
+  Prototype code was reverted and `llama-server` rebuilt.
