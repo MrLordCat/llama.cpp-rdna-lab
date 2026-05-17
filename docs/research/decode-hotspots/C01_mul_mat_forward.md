@@ -1089,3 +1089,40 @@ Decision:
 Next C01 direction:
 - do not revisit F32 SSM through cheap `MMF` routing.
 - continue Q3_K MMQ internals, or move only to centers with a concrete supported route and a larger modeled ceiling.
+
+## C01 experiment E036: E020 pre-sync companion + H06 gate snapshot
+
+Context:
+- E020 (`half-scale compact x96`) improved the target MMQ q3 bucket, but end-to-end runtime remained neutral.
+- This follow-up compares E015 vs E020 trace timing fields inside the same bucket to explain where the gain was absorbed.
+
+Trace pair and filter:
+- baseline: `build_logs/agent-workload/c01-e015-rdna4-y64w4-trace-r1.server.log`
+- candidate: `build_logs/agent-workload/c01-e020-q3-halfscale-compact-trace-r1b.server.log`
+- rows: `mul_mat_q_case: timing type=11 ... ncols_max=192`
+
+Aggregated bucket metrics (`count=26524` in both runs):
+- E015: `pre_sync=1282.705`, `enqueue=135.698`, `sync=9446.242`, `total=9579.561` ms.
+- E020: `pre_sync=1476.664`, `enqueue=153.422`, `sync=9326.433`, `total=9479.791` ms.
+- delta (`E020-E015`):
+	- `pre_sync: +193.959 ms`
+	- `enqueue: +17.724 ms`
+	- `sync: -119.809 ms`
+	- `total: -99.770 ms`
+
+Interpretation:
+- The compact layout helped kernel-side sync, but a larger pre-sync tax consumed most of that win.
+- This explains why E020 stayed runtime-neutral despite target hotspot improvement.
+
+H06 gate snapshot (same-session trace-based ceiling):
+- source: `build_logs/agent-workload/decode-trace-current-ctx12288-ub192-r1.server.log`
+- total `GGML_TRACE_CUDA_NODE_TIMING`: `3303.800 ms`
+- attention/QKV/RoPE-related node-name slice (`rope|rot|attn|q_|k_|v_|wq|wk|wv|query|key|value`):
+	- `575.093 ms` (`17.41%` share)
+- rough ceiling on current lane:
+	- 10% gain inside this slice -> `~+1.74%` CUDA_NODE
+	- 20% gain inside this slice -> `~+3.48%` CUDA_NODE
+
+Decision:
+- Keep E020 reverted as default.
+- Promote H06 from backlog to active next implementation gate (largest remaining plausible multi-percent center).
