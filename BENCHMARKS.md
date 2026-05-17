@@ -1600,6 +1600,25 @@ python scripts\agent_workload_bench.py `
 - в текущем локальном сочетании модель/квант/железо MTP-путь **непригоден** как ускорение;
 - держим его как проверенный тупик до появления более лёгкого/лучше совместимого MTP-конфига.
 
+#### 2026-05-17: upstream-style target-context MTP
+
+Портирована полезная upstream-идея: MTP context теперь по умолчанию создаётся из уже загруженной target model (`ctx_type=MTP`), а не через повторную загрузку отдельной MTP head model. Старый `override_arch=qwen35_mtp/qwen35moe_mtp` путь оставлен как аварийный opt-out через `LLAMA_MTP_FORCE_LEGACY_HEAD_LOAD=1`.
+
+Smoke:
+
+- `mtp-upideas-default-targetctx-quick-r1`: `30.72 TPS`, MTP активирован, второй ROCm model buffer не загружается.
+- `mtp-upideas-legacy-quick-r1`: `30.89 TPS`, legacy path активирован, дополнительно грузит ROCm model buffer `1200.41 MiB`.
+
+Real-context `v2-mini`, `ctx=12288`, `b=1024`, `ub=128`, KV `q4_0/q4_0`, `max_tokens=120`, no-reuse:
+
+| Label | Mode | Aggregate TPS | Prompt eval | Decode eval | Вывод |
+| --- | --- | ---: | ---: | ---: | --- |
+| `mtp-upideas-realctx-none-r1` | no spec | `8.8052` | `798.14 tok/s` | `30.14 tok/s` | baseline |
+| `mtp-upideas-realctx-oldpath-d1-r1` | MTP legacy load | `7.8669` | `626.67 tok/s` | `40.52 tok/s` | decode быстрее, wall хуже |
+| `mtp-upideas-realctx-targetctx-d1-r1` | MTP target context | `7.9709` | `635.74 tok/s` | `40.63 tok/s` | чуть лучше legacy, wall всё ещё хуже baseline |
+
+Итог: target-context MTP стоит оставить как default, потому что он убирает лишнюю загрузку примерно `1.2 GiB` ROCm model buffer и не ухудшает decode относительно legacy. Но MTP всё ещё не является cold-first ускорением на текущем prompt-heavy workload: прирост decode не покрывает падение prompt eval.
+
 ### 5. Альтернативные ngram-режимы (без изменений кода)
 
 Проверены на том же профиле:

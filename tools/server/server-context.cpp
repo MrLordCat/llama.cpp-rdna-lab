@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cinttypes>
+#include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <memory>
 #include <filesystem>
@@ -35,6 +37,11 @@
 using json = nlohmann::ordered_json;
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+
+static bool server_env_enabled(const char * name) {
+    const char * value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
 
 static void server_prompt_checkpoint_update(server_prompt_checkpoint & ckpt, llama_context * ctx, int id, int64_t n_tokens, llama_pos pos_min = -1, llama_pos pos_max = -1) {
     if (pos_min == -1) {
@@ -813,33 +820,7 @@ private:
             params_base.speculative.draft.cparams.n_rs_seq = 0;
         }
 
-        //TODO: generalize if this is ok, we should load <arch_name>_mtp arch?
         if (params_base.speculative.type == COMMON_SPECULATIVE_TYPE_MTP) {
-            char trunk_arch[64] = {0};
-            llama_model_meta_val_str(model, "general.architecture", trunk_arch, sizeof(trunk_arch));
-
-            const char * mtp_arch = nullptr;
-            if (std::string(trunk_arch) == "qwen35moe") {
-                mtp_arch = "qwen35moe_mtp";
-            } else if (std::string(trunk_arch) == "qwen35") {
-                mtp_arch = "qwen35_mtp";
-            } else {
-                SRV_ERR("MTP not supported for trunk architecture '%s'\n", trunk_arch);
-                return false;
-            }
-
-            SRV_INF("loading MTP head from '%s' (override_arch=%s)\n",
-                    params_base.model.path.c_str(), mtp_arch);
-
-            auto mparams_mtp = common_model_params_to_llama(params_base);
-            mparams_mtp.override_arch = mtp_arch;
-
-            model_mtp.reset(llama_model_load_from_file(params_base.model.path.c_str(), mparams_mtp));
-            if (model_mtp == nullptr) {
-                SRV_ERR("failed to load MTP head from '%s'\n", params_base.model.path.c_str());
-                return false;
-            }
-
             if (params_base.n_parallel > 1) {
                 SRV_ERR("MTP currently supports only n_parallel=1; got %d\n", params_base.n_parallel);
                 return false;
@@ -848,9 +829,45 @@ private:
             auto cparams_mtp = common_context_params_to_llama(params_base);
             cparams_mtp.n_ctx     = llama_n_ctx_seq(ctx);
             cparams_mtp.n_seq_max = 1;
-            cparams_mtp.n_rs_seq = 0;
+            cparams_mtp.n_rs_seq  = 0;
 
-            params_base.speculative.mtp.model   = model_mtp.get();
+            if (!server_env_enabled("LLAMA_MTP_FORCE_LEGACY_HEAD_LOAD")) {
+                SRV_INF("creating MTP head context from target model '%s' (ctx_type=MTP)\n",
+                        params_base.model.path.c_str());
+
+                cparams_mtp.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+                params_base.speculative.mtp.model = model;
+            } else {
+                SRV_WRN("%s\n", "LLAMA_MTP_FORCE_LEGACY_HEAD_LOAD is set; using legacy MTP head reload path");
+
+                char trunk_arch[64] = {0};
+                llama_model_meta_val_str(model, "general.architecture", trunk_arch, sizeof(trunk_arch));
+
+                const char * mtp_arch = nullptr;
+                if (std::string(trunk_arch) == "qwen35moe") {
+                    mtp_arch = "qwen35moe_mtp";
+                } else if (std::string(trunk_arch) == "qwen35") {
+                    mtp_arch = "qwen35_mtp";
+                } else {
+                    SRV_ERR("MTP not supported for trunk architecture '%s'\n", trunk_arch);
+                    return false;
+                }
+
+                SRV_INF("loading MTP head from '%s' (override_arch=%s)\n",
+                        params_base.model.path.c_str(), mtp_arch);
+
+                auto mparams_mtp = common_model_params_to_llama(params_base);
+                mparams_mtp.override_arch = mtp_arch;
+
+                model_mtp.reset(llama_model_load_from_file(params_base.model.path.c_str(), mparams_mtp));
+                if (model_mtp == nullptr) {
+                    SRV_ERR("failed to load MTP head from '%s'\n", params_base.model.path.c_str());
+                    return false;
+                }
+
+                params_base.speculative.mtp.model = model_mtp.get();
+            }
+
             params_base.speculative.mtp.cparams = cparams_mtp;
 
             if (params_base.n_cache_reuse) {

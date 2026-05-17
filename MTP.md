@@ -1,6 +1,6 @@
 # MTP / Multi-Token Prediction Notes
 
-Дата среза: 2026-05-07.
+Дата среза: 2026-05-17.
 
 ## Что такое MTP
 
@@ -10,7 +10,7 @@ MTP, Multi-Token Prediction, это вариант speculative decoding, где 
 
 ## Статус в llama.cpp
 
-На момент проверки MTP поддержка не находится в текущем локальном дереве форка как стабильная функция.
+MTP поддержка в этом форке уже присутствует как experimental text-only path для Qwen3.6 MTP-enabled GGUF.
 
 Актуальная upstream работа:
 
@@ -24,12 +24,19 @@ PR заявляет поддержку MTP heads и тесты на Qwen3.6 27B 
 
 ## Статус в этом форке
 
-Локальный поиск показал:
+Локально реализовано:
 
-- `common/speculative.cpp` поддерживает `draft`, `eagle3`, `ngram_simple`, `ngram_map_k`, `ngram_map_k4v`, `ngram_mod`, `ngram_cache`.
-- `common/arg.cpp` не содержит `mtp` в списке `--spec-type`.
-- `src/llama-model.cpp` содержит комментарии про NextN/MTP tensors как сохранённые, но не используемые runtime-логикой.
-- GUI имеет поле `Extra Arguments`, но передача `--spec-type mtp` в текущую локальную сборку приведёт к ошибке, пока не подтянут код PR/commit с MTP.
+- `--spec-type mtp` и совместимый alias `--spec-type draft-mtp`;
+- Qwen3.5/Qwen3.6 MTP graph для dense и MoE вариантов;
+- MTP context type (`LLAMA_CONTEXT_TYPE_MTP`) для построения только MTP decoder graph;
+- server integration с text-only MTP и `set_mtp: MTP draft head registered`;
+- default MTP path теперь создаёт MTP context из уже загруженной target model, без повторной загрузки MTP head model buffer.
+
+Legacy-путь с повторной загрузкой MTP head через `override_arch=qwen35_mtp/qwen35moe_mtp` сохранён как аварийный opt-out:
+
+```powershell
+$env:LLAMA_MTP_FORCE_LEGACY_HEAD_LOAD = "1"
+```
 
 ## Как понять, что MTP уже можно включать
 
@@ -45,9 +52,9 @@ rg -n "COMMON_SPECULATIVE_TYPE_MTP|spec.*mtp|--spec-type.*mtp|MTP Support" commo
 build-rocm\bin\Release\llama-server.exe --help | Select-String -Pattern "spec-type|mtp"
 ```
 
-MTP можно считать доступным только если help явно показывает `mtp` как допустимый `--spec-type`, а сервер стартует с MTP-enabled GGUF.
+MTP можно считать доступным только если help явно показывает `mtp` или `draft-mtp` как допустимый `--spec-type`, а сервер стартует с MTP-enabled GGUF.
 
-## Пример команды после подтягивания MTP
+## Пример команды
 
 ```powershell
 build-rocm\bin\Release\llama-server.exe `

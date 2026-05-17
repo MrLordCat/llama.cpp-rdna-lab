@@ -15,7 +15,6 @@ void llama_model_qwen35::load_arch_hparams(llama_model_loader & ml) {
     // NextN/MTP (Qwen3.5/3.6): extra decoder block appended beyond the main stack
     ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.nextn_predict_layers, false);
     GGML_ASSERT(hparams.nextn_predict_layers < hparams.n_layer && "nextn_predict_layers must be < n_layer");
-    hparams.n_layer_kv_from_start = hparams.n_layer - hparams.nextn_predict_layers;
 
     // Mark recurrent layers (linear attention layers). MTP layers are dense
     // attention-only and must be flagged non-recurrent.
@@ -104,6 +103,9 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader &) {
 }
 
 std::unique_ptr<llm_graph_context> llama_model_qwen35::build_arch_graph(const llm_graph_params & params) const {
+    if (params.gtype == LLM_GRAPH_TYPE_DECODER_MTP) {
+        return std::make_unique<llama_model_qwen35_mtp::graph>(*this, params);
+    }
     return std::make_unique<graph>(*this, params);
 }
 

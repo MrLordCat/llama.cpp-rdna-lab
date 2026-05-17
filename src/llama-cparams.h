@@ -16,6 +16,8 @@ struct llama_cparams {
     int32_t  n_threads;       // number of threads to use for generation
     int32_t  n_threads_batch; // number of threads to use for batch processing
 
+    enum llama_context_type ctx_type;
+
     float rope_freq_base;
     float rope_freq_scale;
 
