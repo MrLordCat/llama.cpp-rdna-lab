@@ -154,6 +154,13 @@ Run E053 as a no-code selection gate:
 Most likely first code branch after E053:
 - `Q3_K dequant/layout`, because it has the largest measured remaining share and the simple rejected variants do not exhaust the design space.
 
+E053 result:
+- Completed on 2026-05-18 as `docs/research/experiments/E053_post_c01_selection_gate.md`.
+- Trace-off control: `prefill-e053-control-r1 = 11.7681 TPS`.
+- Split timing repeated the stable Q3_K dequant-heavy signature: Q3_K `src0 32.66%`, `src1 6.85%`, `GEMM 60.49%`; Q3_K `6144x5120@ncols2048` stayed `78.23% src0`.
+- Kernel-full large-prompt shares: `MUL_MAT 64.50%`, Q3_K `MUL_MAT 54.21%`, `GATED_DELTA_NET 14.76%`, H06 QKV/RoPE-adjacent `18.48%`.
+- Decision: proceed first to P1 only with a stricter local-gain gate. A dequant-only candidate needs roughly `>=25%` local improvement to clear `+2%` aggregate TPS; smaller ideas should be rejected analytically before coding.
+
 ## Quick No-Go Map
 
 Do not start with:
