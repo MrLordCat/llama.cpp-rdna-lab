@@ -1695,6 +1695,7 @@ static const cublas_force_compute_type & ggml_cuda_cublas_get_force_compute_type
 
 struct cublas_split_timing_config {
     bool enabled = false;
+    bool detail = false;
     int64_t min_ncols = 256;
 };
 
@@ -1702,7 +1703,8 @@ static const cublas_split_timing_config & ggml_cuda_cublas_get_split_timing_conf
     static const cublas_split_timing_config config = [] {
         cublas_split_timing_config result;
 
-        result.enabled = getenv("GGML_TRACE_CUBLAS_SPLIT_TIMING") != nullptr;
+        result.detail = getenv("GGML_TRACE_CUBLAS_SPLIT_DETAIL") != nullptr;
+        result.enabled = getenv("GGML_TRACE_CUBLAS_SPLIT_TIMING") != nullptr || result.detail;
 
         if (const char * env = getenv("GGML_TRACE_CUBLAS_SPLIT_TIMING_MIN_NCOLS")) {
             result.min_ncols = std::max<int64_t>(0, std::atoll(env));
@@ -1710,8 +1712,8 @@ static const cublas_split_timing_config & ggml_cuda_cublas_get_split_timing_conf
 
         if (result.enabled) {
             GGML_LOG_INFO(
-                "Detected GGML_TRACE_CUBLAS_SPLIT_TIMING min_ncols=%lld\n",
-                (long long) result.min_ncols);
+                "Detected GGML_TRACE_CUBLAS_SPLIT_TIMING min_ncols=%lld detail=%d\n",
+                (long long) result.min_ncols, result.detail ? 1 : 0);
         }
 
         return result;
@@ -1842,25 +1844,51 @@ static void ggml_cuda_op_mul_mat_cublas(
     } else if (fast_fp16_hardware_available(cc) && use_fp16) {
         // convert src0 and src1 to fp16, multiply as fp16, convert dst to fp32
         ggml_cuda_pool_alloc<half> src0_as_f16(ctx.pool(id));
+        double src0_alloc_ms = 0.0;
+        double src0_convert_ms = 0.0;
         if (src0->type != GGML_TYPE_F16) {
             const to_fp16_cuda_t to_fp16_cuda = ggml_get_to_fp16_cuda(src0->type);
             GGML_ASSERT(to_fp16_cuda != nullptr);
             size_t ne = row_diff*ne00;
-            src0_as_f16.alloc(ne);
+            if (split_timing_config.detail) {
+                const auto src0_alloc_start = std::chrono::high_resolution_clock::now();
+                src0_as_f16.alloc(ne);
+                const auto src0_alloc_end = std::chrono::high_resolution_clock::now();
+                src0_alloc_ms = std::chrono::duration<double, std::milli>(src0_alloc_end - src0_alloc_start).count();
+                trace_stage_start = std::chrono::high_resolution_clock::now();
+            } else {
+                src0_as_f16.alloc(ne);
+            }
             to_fp16_cuda(src0_dd_i, src0_as_f16.get(), ne, stream);
+            if (split_timing_config.detail) {
+                src0_convert_ms = trace_stage_ms(true);
+            }
         }
-        const double src0_ms = trace_stage_ms(src0->type != GGML_TYPE_F16);
+        const double src0_ms = split_timing_config.detail ? src0_alloc_ms + src0_convert_ms : trace_stage_ms(src0->type != GGML_TYPE_F16);
         const half * src0_ptr = src0->type == GGML_TYPE_F16 ? (const half *) src0_dd_i : src0_as_f16.get();
 
         ggml_cuda_pool_alloc<half> src1_as_f16(ctx.pool(id));
+        double src1_alloc_ms = 0.0;
+        double src1_convert_ms = 0.0;
         if (src1->type != GGML_TYPE_F16) {
             const to_fp16_cuda_t to_fp16_cuda = ggml_get_to_fp16_cuda(src1->type);
             GGML_ASSERT(to_fp16_cuda != nullptr);
             size_t ne = src1_ncols*ne10;
-            src1_as_f16.alloc(ne);
+            if (split_timing_config.detail) {
+                const auto src1_alloc_start = std::chrono::high_resolution_clock::now();
+                src1_as_f16.alloc(ne);
+                const auto src1_alloc_end = std::chrono::high_resolution_clock::now();
+                src1_alloc_ms = std::chrono::duration<double, std::milli>(src1_alloc_end - src1_alloc_start).count();
+                trace_stage_start = std::chrono::high_resolution_clock::now();
+            } else {
+                src1_as_f16.alloc(ne);
+            }
             to_fp16_cuda(src1_ddf_i, src1_as_f16.get(), ne, stream);
+            if (split_timing_config.detail) {
+                src1_convert_ms = trace_stage_ms(true);
+            }
         }
-        const double src1_ms = trace_stage_ms(src1->type != GGML_TYPE_F16);
+        const double src1_ms = split_timing_config.detail ? src1_alloc_ms + src1_convert_ms : trace_stage_ms(src1->type != GGML_TYPE_F16);
         const half * src1_ptr = src1->type == GGML_TYPE_F16 ? (const half *) src1_ddf_i : src1_as_f16.get();
 
         CUBLAS_CHECK(cublasSetStream(ctx.cublas_handle(id), stream));
@@ -1884,11 +1912,20 @@ static void ggml_cuda_op_mul_mat_cublas(
                         CUBLAS_GEMM_DEFAULT_TENSOR_OP));
             const double gemm_ms = trace_stage_ms(true);
             if (trace_split_timing) {
-                GGML_LOG_INFO(
-                    "GGML_TRACE_CUBLAS_SPLIT_TIMING: path=fp16 compute=32f dst=%s src0_type=%s src1_type=%s dev=%d cc=%d row_diff=%lld ne00=%lld ne10=%lld ncols=%lld ldc=%lld src0_ms=%.3f src1_ms=%.3f gemm_ms=%.3f dst_ms=0.000 sum_ms=%.3f capture=%d\n",
-                    dst->name, ggml_type_name(src0->type), ggml_type_name(src1->type), id, cc,
-                    (long long) row_diff, (long long) ne00, (long long) ne10, (long long) src1_ncols, (long long) ldc,
-                    src0_ms, src1_ms, gemm_ms, src0_ms + src1_ms + gemm_ms, trace_capture_active);
+                if (split_timing_config.detail) {
+                    GGML_LOG_INFO(
+                        "GGML_TRACE_CUBLAS_SPLIT_TIMING: path=fp16 compute=32f dst=%s src0_type=%s src1_type=%s dev=%d cc=%d row_diff=%lld ne00=%lld ne10=%lld ncols=%lld ldc=%lld src0_ms=%.3f src1_ms=%.3f gemm_ms=%.3f dst_ms=0.000 sum_ms=%.3f src0_alloc_ms=%.3f src0_convert_ms=%.3f src1_alloc_ms=%.3f src1_convert_ms=%.3f capture=%d\n",
+                        dst->name, ggml_type_name(src0->type), ggml_type_name(src1->type), id, cc,
+                        (long long) row_diff, (long long) ne00, (long long) ne10, (long long) src1_ncols, (long long) ldc,
+                        src0_ms, src1_ms, gemm_ms, src0_ms + src1_ms + gemm_ms,
+                        src0_alloc_ms, src0_convert_ms, src1_alloc_ms, src1_convert_ms, trace_capture_active);
+                } else {
+                    GGML_LOG_INFO(
+                        "GGML_TRACE_CUBLAS_SPLIT_TIMING: path=fp16 compute=32f dst=%s src0_type=%s src1_type=%s dev=%d cc=%d row_diff=%lld ne00=%lld ne10=%lld ncols=%lld ldc=%lld src0_ms=%.3f src1_ms=%.3f gemm_ms=%.3f dst_ms=0.000 sum_ms=%.3f capture=%d\n",
+                        dst->name, ggml_type_name(src0->type), ggml_type_name(src1->type), id, cc,
+                        (long long) row_diff, (long long) ne00, (long long) ne10, (long long) src1_ncols, (long long) ldc,
+                        src0_ms, src1_ms, gemm_ms, src0_ms + src1_ms + gemm_ms, trace_capture_active);
+                }
             }
         } else {
             ggml_cuda_pool_alloc<half> dst_f16(ctx.pool(id), row_diff*src1_ncols);
@@ -1910,11 +1947,20 @@ static void ggml_cuda_op_mul_mat_cublas(
             to_fp32_cuda(dst_f16.get(), dst_dd_i, row_diff*src1_ncols, stream);
             const double dst_ms = trace_stage_ms(true);
             if (trace_split_timing) {
-                GGML_LOG_INFO(
-                    "GGML_TRACE_CUBLAS_SPLIT_TIMING: path=fp16 compute=16f dst=%s src0_type=%s src1_type=%s dev=%d cc=%d row_diff=%lld ne00=%lld ne10=%lld ncols=%lld ldc=%lld src0_ms=%.3f src1_ms=%.3f gemm_ms=%.3f dst_ms=%.3f sum_ms=%.3f capture=%d\n",
-                    dst->name, ggml_type_name(src0->type), ggml_type_name(src1->type), id, cc,
-                    (long long) row_diff, (long long) ne00, (long long) ne10, (long long) src1_ncols, (long long) ldc,
-                    src0_ms, src1_ms, gemm_ms, dst_ms, src0_ms + src1_ms + gemm_ms + dst_ms, trace_capture_active);
+                if (split_timing_config.detail) {
+                    GGML_LOG_INFO(
+                        "GGML_TRACE_CUBLAS_SPLIT_TIMING: path=fp16 compute=16f dst=%s src0_type=%s src1_type=%s dev=%d cc=%d row_diff=%lld ne00=%lld ne10=%lld ncols=%lld ldc=%lld src0_ms=%.3f src1_ms=%.3f gemm_ms=%.3f dst_ms=%.3f sum_ms=%.3f src0_alloc_ms=%.3f src0_convert_ms=%.3f src1_alloc_ms=%.3f src1_convert_ms=%.3f capture=%d\n",
+                        dst->name, ggml_type_name(src0->type), ggml_type_name(src1->type), id, cc,
+                        (long long) row_diff, (long long) ne00, (long long) ne10, (long long) src1_ncols, (long long) ldc,
+                        src0_ms, src1_ms, gemm_ms, dst_ms, src0_ms + src1_ms + gemm_ms + dst_ms,
+                        src0_alloc_ms, src0_convert_ms, src1_alloc_ms, src1_convert_ms, trace_capture_active);
+                } else {
+                    GGML_LOG_INFO(
+                        "GGML_TRACE_CUBLAS_SPLIT_TIMING: path=fp16 compute=16f dst=%s src0_type=%s src1_type=%s dev=%d cc=%d row_diff=%lld ne00=%lld ne10=%lld ncols=%lld ldc=%lld src0_ms=%.3f src1_ms=%.3f gemm_ms=%.3f dst_ms=%.3f sum_ms=%.3f capture=%d\n",
+                        dst->name, ggml_type_name(src0->type), ggml_type_name(src1->type), id, cc,
+                        (long long) row_diff, (long long) ne00, (long long) ne10, (long long) src1_ncols, (long long) ldc,
+                        src0_ms, src1_ms, gemm_ms, dst_ms, src0_ms + src1_ms + gemm_ms + dst_ms, trace_capture_active);
+                }
             }
         }
     } else {
