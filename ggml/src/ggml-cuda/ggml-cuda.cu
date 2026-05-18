@@ -1693,6 +1693,60 @@ static const cublas_force_compute_type & ggml_cuda_cublas_get_force_compute_type
     return compute_type;
 }
 
+struct cublas_split_timing_config {
+    bool enabled = false;
+    int64_t min_ncols = 256;
+};
+
+static const cublas_split_timing_config & ggml_cuda_cublas_get_split_timing_config() {
+    static const cublas_split_timing_config config = [] {
+        cublas_split_timing_config result;
+
+        result.enabled = getenv("GGML_TRACE_CUBLAS_SPLIT_TIMING") != nullptr;
+
+        if (const char * env = getenv("GGML_TRACE_CUBLAS_SPLIT_TIMING_MIN_NCOLS")) {
+            result.min_ncols = std::max<int64_t>(0, std::atoll(env));
+        }
+
+        if (result.enabled) {
+            GGML_LOG_INFO(
+                "Detected GGML_TRACE_CUBLAS_SPLIT_TIMING min_ncols=%lld\n",
+                (long long) result.min_ncols);
+        }
+
+        return result;
+    }();
+
+    return config;
+}
+
+static double ggml_cuda_cublas_split_timing_sync_elapsed(
+        cudaStream_t stream,
+        const std::chrono::high_resolution_clock::time_point & start,
+        bool & sync_applied,
+        int & capture_active) {
+    sync_applied = false;
+    capture_active = 0;
+
+#ifdef GGML_USE_HIP
+    hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+    CUDA_CHECK(hipStreamIsCapturing(stream, &capture_status));
+    capture_active = capture_status != hipStreamCaptureStatusNone;
+#else
+    cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+    CUDA_CHECK(cudaStreamIsCapturing(stream, &capture_status));
+    capture_active = capture_status != cudaStreamCaptureStatusNone;
+#endif
+
+    if (!capture_active) {
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        sync_applied = true;
+    }
+
+    const auto end = std::chrono::high_resolution_clock::now();
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
 static void ggml_cuda_op_mul_mat_cublas(
     ggml_backend_cuda_context & ctx,
     const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const char * src0_dd_i, const float * src1_ddf_i,
@@ -1717,6 +1771,25 @@ static void ggml_cuda_op_mul_mat_cublas(
     int64_t ldc = id == ctx.device ? ne0 : row_diff;
 
     const int cc = ggml_cuda_info().devices[id].cc;
+    const auto & split_timing_config = ggml_cuda_cublas_get_split_timing_config();
+    const bool trace_split_timing = split_timing_config.enabled && src1_ncols >= split_timing_config.min_ncols;
+    int trace_capture_active = 0;
+    auto trace_stage_start = trace_split_timing ?
+        std::chrono::high_resolution_clock::now() :
+        std::chrono::high_resolution_clock::time_point{};
+    auto trace_stage_ms = [&](const bool stage_enabled) -> double {
+        if (!trace_split_timing || !stage_enabled) {
+            return 0.0;
+        }
+
+        bool sync_applied = false;
+        int capture_active = 0;
+        const double elapsed_ms = ggml_cuda_cublas_split_timing_sync_elapsed(stream, trace_stage_start, sync_applied, capture_active);
+        GGML_UNUSED(sync_applied);
+        trace_capture_active |= capture_active;
+        trace_stage_start = std::chrono::high_resolution_clock::now();
+        return elapsed_ms;
+    };
 
     const bool supports_bf16 = GGML_CUDA_CC_IS_NVIDIA(cc) || GGML_CUDA_CC_IS_AMD(cc) ||
         (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_QY2);
@@ -1737,6 +1810,7 @@ static void ggml_cuda_op_mul_mat_cublas(
             src1_as_bf16.alloc(ne);
             to_bf16_cuda(src1_ddf_i, src1_as_bf16.get(), ne, stream);
         }
+        const double src1_ms = trace_stage_ms(src1->type != GGML_TYPE_BF16);
         const nv_bfloat16 * src1_ptr = src1->type == GGML_TYPE_BF16 ? (const nv_bfloat16 *) src1_ddf_i : src1_as_bf16.get();
         const nv_bfloat16 * src0_ptr = (const nv_bfloat16 *)src0_dd_i;
         ggml_cuda_pool_alloc<nv_bfloat16> dst_bf16(ctx.pool(id), row_diff*src1_ncols);
@@ -1753,9 +1827,18 @@ static void ggml_cuda_op_mul_mat_cublas(
                     &beta_f32,   dst_bf16.get(), CUDA_R_16BF, ldc,
                     CUBLAS_COMPUTE_32F,
                     CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+        const double gemm_ms = trace_stage_ms(true);
 
         const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(GGML_TYPE_BF16);
         to_fp32_cuda(dst_bf16.get(), dst_dd_i, row_diff*src1_ncols, stream);
+        const double dst_ms = trace_stage_ms(true);
+        if (trace_split_timing) {
+            GGML_LOG_INFO(
+                "GGML_TRACE_CUBLAS_SPLIT_TIMING: path=bf16 compute=32f dst=%s src0_type=%s src1_type=%s dev=%d cc=%d row_diff=%lld ne00=%lld ne10=%lld ncols=%lld ldc=%lld src0_ms=0.000 src1_ms=%.3f gemm_ms=%.3f dst_ms=%.3f sum_ms=%.3f capture=%d\n",
+                dst->name, ggml_type_name(src0->type), ggml_type_name(src1->type), id, cc,
+                (long long) row_diff, (long long) ne00, (long long) ne10, (long long) src1_ncols, (long long) ldc,
+                src1_ms, gemm_ms, dst_ms, src1_ms + gemm_ms + dst_ms, trace_capture_active);
+        }
     } else if (fast_fp16_hardware_available(cc) && use_fp16) {
         // convert src0 and src1 to fp16, multiply as fp16, convert dst to fp32
         ggml_cuda_pool_alloc<half> src0_as_f16(ctx.pool(id));
@@ -1766,6 +1849,7 @@ static void ggml_cuda_op_mul_mat_cublas(
             src0_as_f16.alloc(ne);
             to_fp16_cuda(src0_dd_i, src0_as_f16.get(), ne, stream);
         }
+        const double src0_ms = trace_stage_ms(src0->type != GGML_TYPE_F16);
         const half * src0_ptr = src0->type == GGML_TYPE_F16 ? (const half *) src0_dd_i : src0_as_f16.get();
 
         ggml_cuda_pool_alloc<half> src1_as_f16(ctx.pool(id));
@@ -1776,6 +1860,7 @@ static void ggml_cuda_op_mul_mat_cublas(
             src1_as_f16.alloc(ne);
             to_fp16_cuda(src1_ddf_i, src1_as_f16.get(), ne, stream);
         }
+        const double src1_ms = trace_stage_ms(src1->type != GGML_TYPE_F16);
         const half * src1_ptr = src1->type == GGML_TYPE_F16 ? (const half *) src1_ddf_i : src1_as_f16.get();
 
         CUBLAS_CHECK(cublasSetStream(ctx.cublas_handle(id), stream));
@@ -1797,6 +1882,14 @@ static void ggml_cuda_op_mul_mat_cublas(
                         &beta,   dst_dd_i, CUDA_R_32F, ldc,
                         CUBLAS_COMPUTE_32F,
                         CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+            const double gemm_ms = trace_stage_ms(true);
+            if (trace_split_timing) {
+                GGML_LOG_INFO(
+                    "GGML_TRACE_CUBLAS_SPLIT_TIMING: path=fp16 compute=32f dst=%s src0_type=%s src1_type=%s dev=%d cc=%d row_diff=%lld ne00=%lld ne10=%lld ncols=%lld ldc=%lld src0_ms=%.3f src1_ms=%.3f gemm_ms=%.3f dst_ms=0.000 sum_ms=%.3f capture=%d\n",
+                    dst->name, ggml_type_name(src0->type), ggml_type_name(src1->type), id, cc,
+                    (long long) row_diff, (long long) ne00, (long long) ne10, (long long) src1_ncols, (long long) ldc,
+                    src0_ms, src1_ms, gemm_ms, src0_ms + src1_ms + gemm_ms, trace_capture_active);
+            }
         } else {
             ggml_cuda_pool_alloc<half> dst_f16(ctx.pool(id), row_diff*src1_ncols);
 
@@ -1811,9 +1904,18 @@ static void ggml_cuda_op_mul_mat_cublas(
                         &beta_f16,  dst_f16.get(), CUDA_R_16F, ldc,
                         CUBLAS_COMPUTE_16F,
                         CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+            const double gemm_ms = trace_stage_ms(true);
 
             const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(GGML_TYPE_F16);
             to_fp32_cuda(dst_f16.get(), dst_dd_i, row_diff*src1_ncols, stream);
+            const double dst_ms = trace_stage_ms(true);
+            if (trace_split_timing) {
+                GGML_LOG_INFO(
+                    "GGML_TRACE_CUBLAS_SPLIT_TIMING: path=fp16 compute=16f dst=%s src0_type=%s src1_type=%s dev=%d cc=%d row_diff=%lld ne00=%lld ne10=%lld ncols=%lld ldc=%lld src0_ms=%.3f src1_ms=%.3f gemm_ms=%.3f dst_ms=%.3f sum_ms=%.3f capture=%d\n",
+                    dst->name, ggml_type_name(src0->type), ggml_type_name(src1->type), id, cc,
+                    (long long) row_diff, (long long) ne00, (long long) ne10, (long long) src1_ncols, (long long) ldc,
+                    src0_ms, src1_ms, gemm_ms, dst_ms, src0_ms + src1_ms + gemm_ms + dst_ms, trace_capture_active);
+            }
         }
     } else {
         ggml_cuda_pool_alloc<float> src0_ddq_as_f32(ctx.pool(id));
@@ -1825,12 +1927,14 @@ static void ggml_cuda_op_mul_mat_cublas(
             src0_ddq_as_f32.alloc(row_diff*ne00);
             to_fp32_cuda(src0_dd_i, src0_ddq_as_f32.get(), row_diff*ne00, stream);
         }
+        const double src0_ms = trace_stage_ms(src0->type != GGML_TYPE_F32);
         if (src1->type != GGML_TYPE_F32) {
             const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(src1->type);
             GGML_ASSERT(to_fp32_cuda != nullptr);
             src1_ddq_as_f32.alloc(src1_ncols*ne10);
             to_fp32_cuda(src1_ddf_i, src1_ddq_as_f32.get(), src1_ncols*ne10, stream);
         }
+        const double src1_ms = trace_stage_ms(src1->type != GGML_TYPE_F32);
 
         const float * src0_ddf_i = src0->type == GGML_TYPE_F32 ? (const float *) src0_dd_i : src0_ddq_as_f32.get();
         const float * src1_ddf1_i = src1->type == GGML_TYPE_F32 ? (const float *) src1_ddf_i : src1_ddq_as_f32.get();
@@ -1845,6 +1949,14 @@ static void ggml_cuda_op_mul_mat_cublas(
                     &alpha, src0_ddf_i,  ne00,
                             src1_ddf1_i, ne10,
                     &beta,  dst_dd_i,    ldc));
+        const double gemm_ms = trace_stage_ms(true);
+        if (trace_split_timing) {
+            GGML_LOG_INFO(
+                "GGML_TRACE_CUBLAS_SPLIT_TIMING: path=f32 compute=32f dst=%s src0_type=%s src1_type=%s dev=%d cc=%d row_diff=%lld ne00=%lld ne10=%lld ncols=%lld ldc=%lld src0_ms=%.3f src1_ms=%.3f gemm_ms=%.3f dst_ms=0.000 sum_ms=%.3f capture=%d\n",
+                dst->name, ggml_type_name(src0->type), ggml_type_name(src1->type), id, cc,
+                (long long) row_diff, (long long) ne00, (long long) ne10, (long long) src1_ncols, (long long) ldc,
+                src0_ms, src1_ms, gemm_ms, src0_ms + src1_ms + gemm_ms, trace_capture_active);
+        }
     }
 
     GGML_UNUSED_VARS(dst, src1_ddq_i, src1_padded_row_size);

@@ -1155,3 +1155,37 @@ H06 gate snapshot (same-session trace-based ceiling):
 Decision:
 - Keep E020 reverted as default.
 - Promote H06 from backlog to active next implementation gate (largest remaining plausible multi-percent center).
+
+## C01 experiment E052: H21 hipBLASLt Stream-K route gate
+
+Context:
+- A no-code environment gate was run after RDNA4 docs review to test whether hipBLASLt/Stream-K can improve the active C01 lane.
+- Lane contract (unchanged): `tasks=triage_diff,review_bug`, `ctx=12288`, `b=6144`, `ub=192`, `q4_0/q4_0`, `spec=none`, `no-reuse`, thinking on, `runs=1`.
+
+Measured screen (`build-rocm-vec`, same lane):
+- control: `c01-h21-hipblaslt-control-r1 = 9.3660 TPS`
+- `ROCBLAS_USE_HIPBLASLT=1`: `c01-h21-hipblaslt-on-r1 = 9.2753 TPS` (`-0.97%`)
+- `ROCBLAS_USE_HIPBLASLT=1 TENSILE_SOLUTION_SELECTION_METHOD=2`:
+	`c01-h21-hipblaslt-sel2-r1 = 9.2692 TPS` (`-1.03%`)
+- `... + TENSILE_STREAMK_FIXED_GRID=64`:
+	`c01-h21-hipblaslt-sel2-grid64-r1 = 9.2741 TPS` (`-0.98%`)
+- `... + TENSILE_STREAMK_MAX_CUS=32`:
+	`c01-h21-hipblaslt-sel2-maxcus32-r1 = 9.2515 TPS` (`-1.22%`)
+
+Activation check:
+- diagnostic run with `HIPBLASLT_LOG_LEVEL=4 HIPBLASLT_LOG_MASK=127`:
+	`c01-h21-hipblaslt-sel2-log-r1 = 9.2672 TPS` (`-1.05%`).
+- server log shows hipBLASLt initialization (`HIPBLASLT_TENSILE_LIBPATH ...`), but no route-level per-GEMM evidence appeared in this lane log.
+
+Decision:
+- `reject`
+- reason: all tested hipBLASLt/Stream-K env combinations are consistently below fresh control on the target C01 lane.
+- code state: no code changes.
+
+Artifacts:
+- `build_logs/agent-workload/c01-h21-hipblaslt-control-r1.*`
+- `build_logs/agent-workload/c01-h21-hipblaslt-on-r1.*`
+- `build_logs/agent-workload/c01-h21-hipblaslt-sel2-r1.*`
+- `build_logs/agent-workload/c01-h21-hipblaslt-sel2-grid64-r1.*`
+- `build_logs/agent-workload/c01-h21-hipblaslt-sel2-maxcus32-r1.*`
+- `build_logs/agent-workload/c01-h21-hipblaslt-sel2-log-r1.*`

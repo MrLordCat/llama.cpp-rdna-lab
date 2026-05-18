@@ -2426,3 +2426,21 @@ C01 F32 MMF wide SSM probe E032:
   does not provide a cheap F32 path here (`AMD_WMMA` supports half/bf16 MMF, F32 needs MFMA),
   and the SSM row count `48` also misses the current `MMF_ROWS_PER_BLOCK=32` gate.
   Prototype code was reverted and `llama-server` rebuilt.
+
+Prefill ubatch recenter E045:
+
+- Current cold-first prefill lane: `Qwen3.6-27B-Q3_K_S`, `ctx=12288`, `batch=6144`, KV `q4_0/q4_0`, `triage_diff,review_bug`, no-reuse, no prime, thinking on, `--spec-type none --cache-ram 0 --ctx-checkpoints 0`.
+- Fresh baseline at `ubatch=1024`: `prefill-current-ub1024-base-r3 = 11.4240 TPS`, prompt eval `1146.9633 tok/s`, decode eval `29.9683 tok/s`.
+- Confirmed candidate at `ubatch=2048`: `prefill-current-ub2048-base-r3 = 11.6534 TPS`, prompt eval `1197.5567 tok/s`, decode eval `29.4850 tok/s`.
+- Delta: aggregate `+2.01%`, prompt eval `+4.41%`, decode eval `-1.61%`; keep `ubatch=2048` as the current prefill-search baseline.
+- Sweep notes:
+  - `ub1280=11.53`, `ub1536=11.64`, `ub2048=11.74` r1, `ub3072=11.67`, `ub6144=1.19`.
+  - `batch=4096/8192/12288` with `ub2048` did not beat `batch=6144`.
+  - E047 rechecked GDN chunking at `ubatch=2048`: default `128` stayed best (`11.82 TPS`); `256=11.73`, `512=11.45`, `1024=11.48`, `2048=11.45`, so larger chunks are rejected.
+  - E046 rejected `GGML_CUDA_FORCE_CUBLAS_COMPUTE_16F=1` (`11.7908 -> 11.4146 TPS`, prompt `1205.145 -> 1145.945 tok/s`).
+  - E048 rejected `ROCBLAS_USE_HIPBLASLT=1` as noise (`11.5443 -> 11.5557 TPS`, prompt `1179.855 -> 1180.290 tok/s`).
+  - E049 added env-gated `GGML_TRACE_CUBLAS_SPLIT_TIMING`; diagnostic trace shows Q3_K large calls at `src0 32.29%`, `src1 6.74%`, `GEMM 60.97%`. The Q3_K `6144x5120@ncols2048` shape is dequant-heavy: `1839.27 ms`, with `src0 1438.91 ms` (`78.23%`). Trace-off sanity after the patch: `prefill-e049-posttrace-default-r1 = 11.92 TPS` (r1 smoke, not a new baseline).
+  - E050 rejected a shape-specific MMQ direction before coding: forced-MMQ for that target shape was `2529.35 ms` (`+37.52%` slower than cuBLAS split), and broad forced-MMQ trace stayed slow at `10.05 TPS`.
+  - E051 tested and reverted an env-gated Q3_K fp16 dequant 128-thread variant: `prefill-e051-q3dequant128-r1 = 11.46 TPS`, below both the `11.6534` r3 baseline and `11.92` same-session default smoke.
+  - `GGML_GDN_FAST_EXP=1` and broad `GGML_CUDA_FORCE_MMQ_RUNTIME=1` were also rejected on this lane.
+- Trace note: `ub2048` large prefill routes Q3_K through `cublas_backend`, not the old `MMQ type=11,ncols_max=192` bucket; future code probes should be selected against this larger-shape route.
