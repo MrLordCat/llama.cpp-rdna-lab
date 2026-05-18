@@ -14,7 +14,7 @@
 
 | Priority | Center | sum_ms | count | avg_ms | Status |
 | --- | --- | ---: | ---: | ---: | --- |
-| P1 | CUDA_NODE `MUL_MAT kind=forward` | 1717.322 | 8454 | 0.203 | in progress |
+| P1 | CUDA_NODE `MUL_MAT kind=forward` | 1717.322 | 8454 | 0.203 | closed as active branch (2026-05-18) |
 | P2 | MMVQ `type=11/q3_K ncols_dst=1` | 339.110 | 4618 | 0.073 | done: E013 kept RDNA4 Q3_K `nwarps=2` |
 | P3 | CUDA_NODE `MUL_MAT kind=fused` | 326.936 | 2298 | 0.142 | queued |
 | P4 | CUDA_NODE `RMS_NORM kind=fused` | 209.981 | 4389 | 0.048 | queued |
@@ -26,25 +26,25 @@
 - [x] Build hotspot ranking by `sum(total_ms)`.
 - [x] Create one document per center.
 - [x] Start deep trace from `MUL_MAT forward`.
-- [ ] Complete full sub-trace map for `MUL_MAT forward`:
+- [x] Complete full sub-trace map for `MUL_MAT forward` (closed for current branch):
   - top node names,
   - top tensor shapes (`ne`),
   - route deltas vs control A/B.
-- [ ] Produce root-cause hypothesis set for `MUL_MAT forward` (memory bound, shape inefficiency, launch granularity, sync pressure).
+- [x] Produce root-cause hypothesis set for `MUL_MAT forward` (memory bound, shape inefficiency, launch granularity, sync pressure).
 - [x] Run micro A/B test for MMVQ Q3_K side center and keep reproducible gain (E013).
 - [x] Run first micro A/B screen for top `MUL_MAT forward` selector/resource hypothesis (E014 negative).
 - [x] Run first deeper Q3_K MMQ geometry A/B and keep reproducible gain (E015).
 - [x] Scout FATTN and ngram after current-environment retest (E026).
 - [x] Close simple force-x sub-32KiB probe (E027 negative/invalid).
 - [x] Scout F32 SSM alternate MMF route (E032 no-activation; current RDNA4 MMF cannot cheaply target F32 SSM).
-- [ ] Continue Q3_K MMQ compute/load micro A/B and keep only reproducible gains.
-- [ ] Move to next center only after `MUL_MAT forward` has a closed trace + hypothesis verdict.
+- [x] Continue Q3_K MMQ compute/load micro A/B and keep only reproducible gains (closed; no remaining low/medium-risk C01 candidate).
+- [x] Move to next center only after `MUL_MAT forward` has a closed trace + hypothesis verdict.
 
 ## Next-step runbook
 
-1. Work inside `C01_mul_mat_forward.md` until trace is complete.
-2. Promote only candidates with stable gain on same lane.
-3. Re-run baseline control after every promising candidate.
+1. Treat C01 as closed for current-bench TPS work.
+2. Reopen only if a fresh trace changes the C01 shape/route mix, or a new Q3/MMQ design passes a `>=2%` wall-ceiling preflight and is not a duplicate reject.
+3. Select the next branch from the accumulated docs/experiments scan before editing code.
 
 ## Latest Resume Checkpoint (2026-05-13)
 
@@ -138,7 +138,8 @@ Current return status:
 - Prompt-phase top target: `MMQ type=11 ncols_max=192 = 7490.845 ms` (`44.06%` of prompt CUDA_NODE).
 - Shape gate remains PASS for Q3_K `ncols_max=192` (`26524` hits).
 - Cold/steady split: steady `mul_mat_q_direct|q3_K` is `11408.481 ms` (`78.28%` of steady `MUL_MAT forward`).
-- Decision: keep C01 as the main focus, but frame it as prompt/prefill first. Next work should inspect Q3_K MMQ compute/load internals, not GUI autotune, ngram, or MMVQ.
+- Decision at the time: keep C01 as the main focus, but frame it as prompt/prefill first. Next work should inspect Q3_K MMQ compute/load internals, not GUI autotune, ngram, or MMVQ.
+- Superseded by 2026-05-18 closeout: C01 is closed as the active branch; next work should be selected from the docs/experiment scan.
 
 ## Current quick-bench contract (2026-05-17)
 

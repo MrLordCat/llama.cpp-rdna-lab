@@ -7,6 +7,16 @@ This file is the fast handoff anchor when C01 work is paused and later resumed.
 Primary center:
 - `CUDA_NODE op=MUL_MAT kind=forward`
 
+## Closed Status (2026-05-18)
+
+C01 is closed as the active default research branch for the current bench.
+
+Use this playbook only if C01 is intentionally reopened. Reopen requires one of:
+- a fresh current-bench trace showing a materially different `MUL_MAT forward` shape/route mix than the documented Q3_K `ncols_max=192` center,
+- or a new Q3/MMQ design with modeled wall-time ceiling above `2%`, clear route activation evidence, and no overlap with the rejected E016-E027/E031/E032/E052 branches.
+
+Default next work should come from the repo-wide docs/experiment scan, not from continuing C01 by inertia.
+
 ## Active Goals (next return)
 
 1. Keep C01 decisions causal and reproducible (not trial-and-error).
@@ -205,29 +215,15 @@ Note:
   - hotspot-positive in target expensive place.
 - Keep env knob if signal is promising but not yet confirmed.
 
-## Immediate Next Step (after latest resume gate)
+## Closed Branch Policy (2026-05-18)
 
-1. `GGML_MMQ_RDNA4_STREAM_K_MIN_NE11=144` has now failed `runs=3` confirmation
-   (`c01-next-control-r3` vs `c01-next-streamk144-r3`, `-1.37%`, negative verdict),
-   so do not use it as acceleration direction.
-2. `GGML_CUDA_FORCE_MMQ_RUNTIME=1` is also rejected for this lane:
+1. `GGML_MMQ_RDNA4_STREAM_K_MIN_NE11=144` failed `runs=3` confirmation
+   (`c01-next-control-r3` vs `c01-next-streamk144-r3`, `-1.37%`, negative verdict).
+2. `GGML_CUDA_FORCE_MMQ_RUNTIME=1` is rejected for this lane:
    runtime `-0.72%` and hotspot-time regression on `MUL_MAT forward` / MMQ q3 bucket.
 3. E013 closed the MMVQ Q3_K side center with a kept narrow policy change.
-4. E015 kept the first direct C01 MMQ policy win after E013.
-5. Continue C01 from E015 as the kept code path. Historical best is `9.6080 TPS`,
-   current cold-first split baseline is `9.47 TPS`, current repeated/steady clean baseline is
-   `9.45-9.49 TPS`, and current opt-in ngram confirmation is `10.37-10.72 TPS` for repeated/steady tasks. Q3_K scale-load fusion,
-   dense staging, GDN chunking (`128/192`), and F32 `GemmEx` are now closed negative branches.
-   FATTN is also low-ceiling on the current C01 lane. `ngram-mod 24/48/64` is now a
-   confirmed opt-in C01 plus after E028, but not a cold-first default. Force-x
-   sub-32KiB is closed for Q3 after E027 and for Q4 after E031. F32 SSM cheap
-   `MMF` routing is closed after E032 because the target stays on `cublas_backend`;
-   current RDNA4 `MMF` has no cheap F32 WMMA route and the SSM shape misses the rows-per-block gate.
-   Next route-local work should either:
-   - find a Q3_K MMQ idea with a larger modeled ceiling than E018/E020, or
-   - scout a different center only if its current trace share gives a plausible wall-time payoff.
-   Run the Q3 theory gate before any new Q3 kernel probe.
-6. If a candidate is hotspot-positive but runtime-neutral, keep it as research-positive
-   and confirm again with a paired control rerun.
-7. If a candidate is runtime-positive, proceed to `runs=3` confirmation before any
-   keep/default decision.
+4. E015 kept the direct C01 MMQ policy win after E013.
+5. E016-E027/E031/E032/E052 close the follow-up C01 queue: force-x, Q3/Q4 layout/load probes,
+   dense staging, GDN chunking, F32 SSM route experiments, and hipBLASLt/Stream-K env gates.
+6. `ngram-mod 24/48/64` remains a useful opt-in repeated/steady profile, but it is not a C01 kernel/default fix.
+7. Do not start another C01 code probe unless the reopen conditions in `Closed Status` are met.

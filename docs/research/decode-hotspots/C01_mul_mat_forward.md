@@ -7,6 +7,13 @@ Current contract note (2026-05-17):
 - quick benchmark task pair is `triage_diff,review_bug`.
 - older `review_bug,patch_sim` references in this file are historical experiment context only.
 
+Current closeout note (2026-05-18):
+- C01 (`MUL_MAT forward`) is closed as the active default research branch for the current bench.
+- Kept code/policy wins remain E013 (`Q3_K` MMVQ `nwarps=2`) and E015 (RDNA4 MMQ `mmq_y=64,nwarps=4`); `ngram-mod 24/48/64` remains an opt-in session accelerator, not a C01 kernel/default fix.
+- The direct C01 continuation queue is exhausted for low/medium-risk ideas: scalar selector sweeps, force-MMQ, Stream-K knobs, Q3/Q4 force-x, Q3 scale/load fusion, dense staging, F32 SSM MMF/GemmEx, and hipBLASLt/Stream-K env gates are closed negative or neutral.
+- Reopen C01 only if a fresh current-bench trace shows a materially changed shape mix, or a new Q3/MMQ design passes a preflight wall-ceiling gate (`>=2%` wall target with clear route activation and no known duplicate reject).
+- Next acceleration work should start from the repo-wide research/docs scan and choose a non-C01 or higher-ceiling target before editing code.
+
 ## Resume checkpoint after chatflow detour (2026-05-13)
 
 Fresh resume run (lane contract from playbook):
@@ -1154,7 +1161,7 @@ H06 gate snapshot (same-session trace-based ceiling):
 
 Decision:
 - Keep E020 reverted as default.
-- Promote H06 from backlog to active next implementation gate (largest remaining plausible multi-percent center).
+- H06 was promoted from backlog at this point, but this is superseded by the 2026-05-18 C01 closeout; new work should be selected from the repo-wide docs scan, not by continuing C01 inertia.
 
 ## C01 experiment E052: H21 hipBLASLt Stream-K route gate
 
@@ -1189,3 +1196,21 @@ Artifacts:
 - `build_logs/agent-workload/c01-h21-hipblaslt-sel2-grid64-r1.*`
 - `build_logs/agent-workload/c01-h21-hipblaslt-sel2-maxcus32-r1.*`
 - `build_logs/agent-workload/c01-h21-hipblaslt-sel2-log-r1.*`
+
+## C01 branch closeout (2026-05-18)
+
+Final status:
+- `closed as active branch` for current-bench TPS work.
+- reason: the branch produced the stable kept changes it could justify, then repeated trace/runtime gates converged on negative or low-ceiling results.
+- current useful outputs:
+	- kept RDNA4 Q3_K decode/MMQ policies from E013/E015,
+	- corrected cold/warm metric policy from E030,
+	- explicit opt-in speculative profile from E028-E030,
+	- a documented reject map through E052 to prevent rediscovery.
+
+Reopen conditions:
+- current bench shape mix changes enough that `MUL_MAT forward` no longer matches the documented Q3_K `ncols_max=192` center,
+- or a new design has a modeled wall-time ceiling above `2%`, passes activation preflight, and is not a duplicate of E016-E027/E031/E032/E052.
+
+Next branch selection:
+- use the accumulated docs/experiments scan to pick a higher-ceiling target under the current bench before the next code probe.
