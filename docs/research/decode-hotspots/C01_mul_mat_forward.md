@@ -14,6 +14,12 @@ Current closeout note (2026-05-18):
 - Reopen C01 only if a fresh current-bench trace shows a materially changed shape mix, or a new Q3/MMQ design passes a preflight wall-ceiling gate (`>=2%` wall target with clear route activation and no known duplicate reject).
 - Next acceleration work should start from the repo-wide research/docs scan and choose a non-C01 or higher-ceiling target before editing code.
 
+Archive note (2026-05-18):
+
+- Performance R&D is now archived in `docs/research/PERFORMANCE_ARCHIVE_2026-05-18.md`.
+- Do not resume C01 from this file alone; use the archive resume protocol first.
+
+
 ## Resume checkpoint after chatflow detour (2026-05-13)
 
 Fresh resume run (lane contract from playbook):

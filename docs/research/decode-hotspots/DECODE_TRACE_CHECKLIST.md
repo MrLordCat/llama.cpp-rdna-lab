@@ -1,5 +1,7 @@
 # Prompt/Decode Speed - Trace Checklist (Current Focus)
 
+Archive status: performance R&D is paused in `docs/research/PERFORMANCE_ARCHIVE_2026-05-18.md`. This checklist is historical unless C01 is deliberately reopened through the archive resume protocol.
+
 ## Baseline profile (current route)
 
 - Lane: `tasks=quick`, `ctx=12288`, `b=6144`, `ub=192`, `q4_0/q4_0`, `spec=none`, `no-reuse`, `max_tokens=256`.

@@ -33,6 +33,27 @@ build_logs\agent-workload\<label>.server.log
 
 Для коротких агентных ответов runner по умолчанию добавляет `--chat-template-kwargs {"enable_thinking":false,"preserve_thinking":false}`. Это можно отключить флагом `--no-disable-thinking`.
 
+## Performance R&D archive closeout (2026-05-18)
+
+Текущий Qwen3.6/RDNA4 acceleration cycle заархивирован. Главный якорь для возврата: `docs/research/PERFORMANCE_ARCHIVE_2026-05-18.md`.
+
+Финальная no-spec cold-first lane:
+
+- `models/Qwen3.6-27B-Q3_K_S.gguf`
+- ROCm/HIP `build-rocm-vec`, `gfx1201`
+- `tasks quick`, `task_ids=triage_diff,review_bug`
+- `ctx=12288`, `batch=6144`, `ubatch=2048`, KV `q4_0/q4_0`
+- `--spec-type none`, no reuse, thinking on, no v2 prime pass
+
+Reference controls:
+
+- E045 current-lane r3: `11.6534 TPS`, prompt eval `1197.5567 tok/s`.
+- E053 trace-off control: `11.7681 TPS`.
+- E056 control r3: `11.6726 TPS`.
+- E058 control r3: `11.6132 TPS`.
+
+Итог: после E053-E059 нет активного low/medium-risk speedup-кандидата. Kept wins остаются в коде/GUI, а новые попытки начинать только через archive resume protocol: новый upstream/RDNA4 сигнал, MTP-enabled GGUF, изменившийся route mix или дизайн с `>=2%` modeled wall ceiling.
+
 ## Non-C01 acceleration scan + GUI ngram preset (2026-05-16)
 
 После закрытия нескольких C01-кандидатов выполнен короткий gate по другим направлениям:

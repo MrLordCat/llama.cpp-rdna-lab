@@ -1,5 +1,7 @@
 # Post-C01 Acceleration Scan (2026-05-18)
 
+Archive update: after E053-E059 and external RDNA4 research, the current acceleration cycle is archived in `docs/research/PERFORMANCE_ARCHIVE_2026-05-18.md`. The remaining targets below are parked leads, not an active work queue.
+
 ## Scope
 
 This scan closes the C01-default mindset and re-reads the accumulated local research docs for remaining TPS potential on the current bench.
@@ -136,6 +138,8 @@ Gate before work:
 - for MTP, require an MTP-enabled GGUF and compare aggregate wall time, not only TG.
 
 ## Recommended Next Experiment
+
+Archived decision: no next experiment is currently recommended by default. The section below records the historical E053 selection path that was completed before archive closeout.
 
 Run E053 as a no-code selection gate:
 

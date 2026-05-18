@@ -11,6 +11,8 @@ Primary center:
 
 C01 is closed as the active default research branch for the current bench.
 
+Repository-wide performance work is archived in `docs/research/PERFORMANCE_ARCHIVE_2026-05-18.md`. Read that file before using this playbook.
+
 Use this playbook only if C01 is intentionally reopened. Reopen requires one of:
 - a fresh current-bench trace showing a materially different `MUL_MAT forward` shape/route mix than the documented Q3_K `ncols_max=192` center,
 - or a new Q3/MMQ design with modeled wall-time ceiling above `2%`, clear route activation evidence, and no overlap with the rejected E016-E027/E031/E032/E052 branches.

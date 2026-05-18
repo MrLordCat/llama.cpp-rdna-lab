@@ -1,5 +1,11 @@
 # Research Hub: Next Efficiency Wave
 
+## Archive Status
+
+The current Qwen3.6/RDNA4 acceleration cycle is archived as of 2026-05-18. Start with `PERFORMANCE_ARCHIVE_2026-05-18.md` before reopening any performance work.
+
+No active default speedup branch remains. Parked leads are H28 selector parity, H29 gfx12 direct quantized prefill design, future MTP with an MTP-enabled GGUF, and any new upstream/RDNA4 evidence that changes the current route mix.
+
 This folder is a local R&D workspace for ideas beyond current ngram speculative decoding and Flash Attention baselines.
 
 ## Goal
@@ -29,6 +35,7 @@ Primary lane (project policy):
 ## Structure
 
 - HYPOTHESES.md: prioritized candidate ideas and why they might work
+- PERFORMANCE_ARCHIVE_2026-05-18.md: final pause/archive summary for the current cycle
 - EXPERIMENT_TEMPLATE.md: standard template for each experiment
 - RESULTS_LOG.md: compact ledger of executed experiments
 - R0_post_ngram_flashattention.md: first deep-dive note with concrete discovery directions
@@ -100,6 +107,10 @@ python scripts/research/spec_effective_acceptance.py \
 ```
 
 ## Current Status
+
+- E059 external RDNA4 research completed: `experiments/E059_external_rdna4_llama_research.md`.
+- Current acceleration cycle archived: `PERFORMANCE_ARCHIVE_2026-05-18.md`.
+- Do not continue low/medium-risk local probing by inertia; reopen only via the archive protocol.
 
 - E001 analytic gate completed: `experiments/E001_H02_analytic_gate.md`
 - E002 measured ubatch cliff completed: `experiments/E002_H08_measured_ubatch_cliff.md`

@@ -2,6 +2,14 @@
 
 Дата среза: 2026-05-07.
 
+## ОБНОВЛЕНИЕ 2026-05-18: текущий acceleration cycle заархивирован
+
+- Активная no-spec cold-first lane остановлена на `Qwen3.6-27B-Q3_K_S`, `ctx=12288`, `batch=6144`, `ubatch=2048`, KV `q4_0/q4_0`, `triage_diff,review_bug`, thinking on, no reuse.
+- Последние reference controls: E045 `11.6534 TPS`, E053 `11.7681 TPS`, E056 `11.6726 TPS`, E058 `11.6132 TPS`.
+- E053-E059 закрыли простые продолжения: broad/shape MMQ для `Q3_K ne11=2048`, compute16, hipBLASLt/Stream-K env sweeps, GDN chunking, Q3_K 128-thread/half2/unroll4 conversion variants.
+- Главный архивный документ: `docs/research/PERFORMANCE_ARCHIVE_2026-05-18.md`.
+- Возобновлять работу только при новом upstream/RDNA4 сигнале, MTP-enabled GGUF, изменившемся route mix или новой high-ceiling design gate идее.
+
 ## ОБНОВЛЕНИЕ 2026-05-10: стартовая точка <16k теперь главный performance target
 
 - После prompt-heavy context-wall проверки активный фокус смещён на стартовую точку ниже `16k` (текущий reference `ctx=12288`).

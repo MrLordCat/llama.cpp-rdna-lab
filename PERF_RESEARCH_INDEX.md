@@ -1,14 +1,22 @@
 # Performance Research Index
 
-Local navigation map for aggressive Qwen3.6 ROCm performance work in this fork. This is not upstream llama.cpp documentation; it is a working map for experiments on the active prompt-heavy non-MTP lane.
+Local navigation map for Qwen3.6 ROCm performance work in this fork. This is not upstream llama.cpp documentation.
 
-## Active Lane
+## Archived Status
+
+The current acceleration cycle is archived as of 2026-05-18.
+
+Start here before resuming: `docs/research/PERFORMANCE_ARCHIVE_2026-05-18.md`.
+
+Final practical no-spec lane:
 
 - Model: `models/Qwen3.6-27B-Q3_K_S.gguf`.
 - Backend: ROCm/HIP, target `gfx1201`, preferred build `build-rocm-vec`.
-- Workload: `scripts/agent_workload_bench.py --tasks v2-review --ctx-size 12288 --batch-size 6144 --ubatch-size 192 --cache-type-k q4_0 --cache-type-v q4_0 --real-context-mode repo-snapshot --no-reuse --no-disable-thinking --max-tokens 120`.
-- Current practical best: about `8.46-8.53 TPS`; changes below 1% are noise and do not count.
-- Breakthrough threshold: at least 10% over the `ub192` peak, preferably `>=9.35 TPS` on a comparable run.
+- Workload: `scripts/agent_workload_bench.py --tasks quick --task-ids triage_diff,review_bug --ctx-size 12288 --batch-size 6144 --ubatch-size 2048 --cache-type-k q4_0 --cache-type-v q4_0 --real-context-mode repo-snapshot --no-reuse --no-v2-prime-pass --no-disable-thinking --max-tokens 120 --server-extra "--spec-type none --cache-ram 0 --ctx-checkpoints 0"`.
+- Reference controls: E045 `11.6534 TPS`, E053 `11.7681 TPS`, E056 `11.6726 TPS`, E058 `11.6132 TPS`.
+- Same-session r3 `~0.5-1.5%` wins may matter as stackable opt-in gains, but no current candidate survived that bar.
+
+Reopen only for a new upstream signal, changed benchmark/model/route mix, MTP-enabled GGUF, or a new design with a modeled `>=2%` wall ceiling.
 
 ## Subsystem Docs
 
@@ -46,6 +54,7 @@ Local navigation map for aggressive Qwen3.6 ROCm performance work in this fork. 
 
 ## Known No-Go Areas
 
+- Current archived lane: broad or shape-specific MMQ for Q3_K `ne11=2048`, Q3_K 128-thread dequant, simple half2/unroll store variants, compute16, generic hipBLASLt/Stream-K env sweeps, and GDN chunk-size sweeps.
 - Disabling fused GDN chunked prefill hangs at the first large prompt batch on `ub192`.
 - `GGML_GDN_CHUNK_SIZE` sweeps around `ub192` were noise only.
 - `GGML_CUDA_DISABLE_FUSION=1`, `--backend-sampling`, `build-rocm-exp`, `build-rocm-compare`, and KV `q8_0/q8_0` regressed on the active lane.
