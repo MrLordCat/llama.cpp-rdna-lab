@@ -290,7 +290,10 @@ class BuildVersionRegistry:
 
             if build_dir.exists():
                 new_server_bin = self._find_server_bin(build_dir)
-                new_status = "archived" if record.get("status") == "archived" else "ready"
+                if new_server_bin:
+                    new_status = "archived" if old_status == "archived" and old_server_bin else "ready"
+                else:
+                    new_status = "archived"
             else:
                 new_server_bin = ""
                 new_status = "archived"
@@ -298,6 +301,9 @@ class BuildVersionRegistry:
             if old_server_bin != new_server_bin or old_status != new_status:
                 record["server_bin"] = new_server_bin
                 record["status"] = new_status
+                if new_server_bin:
+                    record["backend"] = self._detect_backend_from_cache(build_dir)
+                    record["source_ref"] = source_ref
                 record["updated_at"] = self._now()
                 changed = True
 

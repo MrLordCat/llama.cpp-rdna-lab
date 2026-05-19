@@ -3585,7 +3585,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
-        {"--spec-type"}, "[none|mtp|draft-mtp|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod]",
+        {"--spec-type"}, "[none|mtp|draft-mtp|ngram-mtp|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod]",
         string_format("type of speculative decoding to use when no draft model is provided (default: %s)\n",
             common_speculative_type_to_str(params.speculative.type).c_str()),
         [](common_params & params, const std::string & value) {
@@ -3593,6 +3593,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NONE;
             } else if (value == "mtp" || value == "draft-mtp") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_MTP;
+            } else if (value == "ngram-mtp" || value == "ngram_mtp") {
+                params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_MTP;
             } else if (value == "ngram-cache") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_CACHE;
             } else if (value == "ngram-simple") {

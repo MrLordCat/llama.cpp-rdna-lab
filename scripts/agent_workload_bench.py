@@ -1121,7 +1121,7 @@ def run_preflight_gate(args: argparse.Namespace) -> tuple[bool, str]:
 
 def normalize_spec_mode(value: str) -> str:
     value = value.strip().lower()
-    if value in {"mtp", "ngram-mod", "draft", "none", "eagle", "eagle3"}:
+    if value in {"mtp", "ngram-mtp", "ngram-mod", "draft", "none", "eagle", "eagle3"}:
         return value
     if value.startswith("eagle3"):
         return "eagle3"
@@ -2327,6 +2327,12 @@ def main() -> int:
                                 extra_bits.append(f"--spec-ngram-mod-n-min {args.autotune_ngram_min}")
                                 extra_bits.append(f"--spec-ngram-mod-n-match {args.autotune_ngram_match}")
                                 extra_bits.append(f"--spec-ngram-mod-n-max {args.autotune_ngram_max}")
+                            elif spec_mode == "ngram-mtp":
+                                extra_bits.append("--spec-type ngram-mtp")
+                                extra_bits.append(f"--spec-ngram-mod-n-min {args.autotune_ngram_min}")
+                                extra_bits.append(f"--spec-ngram-mod-n-match {args.autotune_ngram_match}")
+                                extra_bits.append(f"--spec-ngram-mod-n-max {args.autotune_ngram_max}")
+                                extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")
                             elif spec_mode == "mtp":
                                 extra_bits.append("--spec-type mtp")
                                 extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")

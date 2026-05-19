@@ -362,7 +362,7 @@ struct server_slot {
                 GGML_ASSERT(spec_i_batch.empty());
 
                 // generate a new draft
-                spec_draft = common_speculative_draft(spec.get(), params_spec, tokens, sampled);
+                spec_draft = common_speculative_draft(spec.get(), params_spec, tokens, sampled, n_draft_max);
                 n_draft_total += spec_draft.size();
 
                 if (spec_draft.size() > (size_t) n_draft_max) {
@@ -820,7 +820,8 @@ private:
             params_base.speculative.draft.cparams.n_rs_seq = 0;
         }
 
-        if (params_base.speculative.type == COMMON_SPECULATIVE_TYPE_MTP) {
+        if (params_base.speculative.type == COMMON_SPECULATIVE_TYPE_MTP ||
+            params_base.speculative.type == COMMON_SPECULATIVE_TYPE_NGRAM_MTP) {
             if (params_base.n_parallel > 1) {
                 SRV_ERR("MTP currently supports only n_parallel=1; got %d\n", params_base.n_parallel);
                 return false;
@@ -980,7 +981,8 @@ private:
 
             // try speculative decoding
             if (ctx_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_NO) {
-                slot.is_mtp_enabled = params_base.speculative.type == COMMON_SPECULATIVE_TYPE_MTP;
+                slot.is_mtp_enabled = params_base.speculative.type == COMMON_SPECULATIVE_TYPE_MTP ||
+                                      params_base.speculative.type == COMMON_SPECULATIVE_TYPE_NGRAM_MTP;
                 slot.spec.reset(common_speculative_init(params_base.speculative, slot.ctx));
 
                 if (slot.spec) {

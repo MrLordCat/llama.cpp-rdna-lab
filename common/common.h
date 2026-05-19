@@ -160,6 +160,7 @@ enum common_speculative_type {
     COMMON_SPECULATIVE_TYPE_DRAFT,         // draft model
     COMMON_SPECULATIVE_TYPE_EAGLE3,        // eagle draft model
     COMMON_SPECULATIVE_TYPE_MTP,           // multi-token prediction
+    COMMON_SPECULATIVE_TYPE_NGRAM_MTP,     // ngram self-speculative decoding with MTP fallback
     COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE,  // simple self-speculative decoding
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K,   // self-speculative decoding with n-gram keys only
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V, // self-speculative decoding with n-gram keys and 4 m-gram values
@@ -354,7 +355,7 @@ struct common_params_speculative_mtp {
 };
 
 struct common_params_speculative {
-    // TODO: become a vector in order to support "chains of speculators"
+    // TODO: become a vector in order to support configurable chains of speculators
     common_speculative_type type = COMMON_SPECULATIVE_TYPE_NONE;
 
     common_params_speculative_draft draft;

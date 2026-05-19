@@ -33,6 +33,213 @@ build_logs\agent-workload\<label>.server.log
 
 Для коротких агентных ответов runner по умолчанию добавляет `--chat-template-kwargs {"enable_thinking":false,"preserve_thinking":false}`. Это можно отключить флагом `--no-disable-thinking`.
 
+## H03 ngram+MTP chain smoke (2026-05-19)
+
+Добавлен экспериментальный `--spec-type ngram-mtp`: в одном server run сначала пробуется `ngram-mod`, затем MTP fallback. Это opt-in режим для проверки совместимости двух speculative источников, не новый default.
+
+Мини-smoke: `Qwen3.6-27B-Q4_K_S`, `build-rocm-vec/bin/llama-server.exe`, `ctx=12288`, `b=4096`, `ub=512`, `q4_0/q4_0`, `max_tokens=64`, `runs=1`, no reuse, no v2 prime, thinking on.
+
+| Spec mode | Aggregate TPS | Draft stats |
+| --- | ---: | --- |
+| `ngram-mod` | `10.91` | ngram generated `0` draft tokens on `triage_diff` |
+| `mtp` | `13.53` | MTP accepted `46/48`, acceptance `0.95833` |
+| `ngram-mtp` | `13.54` | ngram generated `0`; MTP fallback accepted `46/48`, acceptance `0.95833` |
+
+Итог: режим жизнеспособен и корректно включает MTP fallback после ngram miss. На этом prompt ngram coverage нулевая, поэтому результат равен чистому MTP в пределах шума. Оставляем как experimental opt-in и ищем ngram-friendly/longer-session проверку перед любым default claim.
+
+Артефакты:
+- `build_logs/agent-workload/hybrid-spec-ngram-mtp-fallback-smoke-autotune-summary.csv`
+- `build_logs/agent-workload/hybrid-spec-ngram-mtp-fallback-smoke-cfg03.server.log`
+- `docs/research/experiments/E060_H03_ngram_mtp_chain_smoke.md`
+
+## Vulkan vs ROCm mini A/B (2026-05-19)
+
+Собран Vulkan server: `build-vulkan/bin/llama-server.exe`, Release/Ninja, `GGML_VULKAN=ON`, Vulkan SDK `1.4.313.1`, AMD driver API `1.4.344`. Важно для запуска этой MinGW-сборки: `C:\Strawberry\c\bin` должен быть в `PATH` перед MSYS2 `/mingw64/bin`, иначе Windows может подхватить несовместимые runtime DLL и `llama-server.exe --help` завершается кодом `127`.
+
+Оба backend прошли full-offload sanity: `65/65` слоёв на GPU, `q4_0/q4_0`, `flash-attn=on`, `spec=none`, no reuse, thinking on, `ctx=12288`, `b=4096`, `ub=512`, модель `Qwen3.6-27B-Q3_K_S.gguf`.
+
+### Prompt-heavy mini (`repo-snapshot`)
+
+`tasks=quick`, `task=triage_diff`, `runs=1`, 7489 prompt tokens, 64 generated tokens.
+
+| Backend | Wall TPS | Prompt eval TPS | Decode eval TPS | Result |
+| --- | ---: | ---: | ---: | --- |
+| ROCm `build-rocm-vec` | `6.3327` | `960.26` | `28.32` | baseline |
+| Vulkan `build-vulkan` | `4.2206` | `573.93` | `30.85` | `-33.4%` wall; decode `+8.9%` |
+
+Итог для текущего target lane: Vulkan не заменяет ROCm. Decode чуть быстрее, но prefill сильно медленнее, а cold prompt-heavy wall time проигрывает.
+
+### Decode-biased sanity
+
+Тот же task без `repo-snapshot`, 159 prompt tokens, 128 generated tokens.
+
+| Backend | Wall TPS | Prompt eval TPS | Decode eval TPS | Result |
+| --- | ---: | ---: | ---: | --- |
+| ROCm `build-rocm-vec` | `27.9781` | `776.05` | `29.42` | baseline |
+| Vulkan `build-vulkan` | `35.2850` | `518.83` | `38.81` | `+26.1%` wall; decode `+31.9%` |
+
+Итог: наблюдение “Vulkan быстрее” подтверждается для decode-heavy формы, но не для нашего активного prompt-heavy сценария. Оставляем ROCm default, Vulkan использовать как opt-in/backend comparison для decode-heavy профилей.
+
+Артефакты:
+- `build_logs/agent-workload/e061-rocm-mini-ctx12288-q3ks.diagnostics.md`
+- `build_logs/agent-workload/e061-vulkan-mini-ctx12288-q3ks.diagnostics.md`
+- `build_logs/agent-workload/e061-rocm-decode-mini-q3ks.diagnostics.md`
+- `build_logs/agent-workload/e061-vulkan-decode-mini-q3ks.diagnostics.md`
+- `docs/research/experiments/E061_vulkan_rocm_mini_ab.md`
+
+## Vulkan prefill research follow-up (2026-05-19)
+
+Почему Vulkan медленнее на prompt-heavy lane: это не общий проигрыш backend, а конкретно prefill/K-quant path. Локальный Vulkan на Windows AMD proprietary driver показывает сильный decode, но prompt eval остаётся ниже ROCm. В коде Vulkan large matmul tile для AMD proprietary driver отключён, `Q3_K/Q6_K` MMVQ выключен из-за 2-byte alignment concerns, а upstream сейчас обсуждает сразу несколько repack/transpose/alignment PR.
+
+Ключевые external leads:
+- `ggml-org/llama.cpp#20934`: внешний RX 7900 XTX отчёт совпадает с нашей картиной - Vulkan быстрее в tg, ROCm быстрее в pp.
+- `ggml-org/llama.cpp#22970`: open PR transposes K-quant A-matrix layout; reported RDNA4 prompt gains `+4%..+11%`, Q6_K microshape `+15.2%`.
+- `ggml-org/llama.cpp#22951` и `#21024`: Q3_K/Q6_K alignment/repack work; потенциально важно для `Q3_K_S`, но результаты зависят от устройства.
+- `ggml-org/llama.cpp#23106`: large `MUL_MAT_ID` tile на AMD был отключён намеренно из-за regression risk; это не главный dense prefill path.
+
+Локальный no-code A/B на том же prompt-heavy task (`triage_diff`, `repo-snapshot`, 7489 prompt tokens, 64 generated):
+
+| Backend / env | Wall TPS | Prompt eval TPS | Decode eval TPS | Итог |
+| --- | ---: | ---: | ---: | --- |
+| ROCm E061 baseline | `6.3327` | `960.26` | `28.32` | baseline |
+| Vulkan E061 initial | `4.2206` | `573.93` | `30.85` | initial |
+| Vulkan default rerun | `4.5539` | `607.78` | `38.32` | same-session control |
+| Vulkan `GGML_VK_FORCE_MMVQ=1` | `4.6383` | `619.79` | `38.20` | small prefill gain |
+| Vulkan `GGML_VK_DISABLE_MMVQ=1` | `4.7172` | `639.81` | `35.15` | best Vulkan prompt-heavy probe |
+
+`GGML_VK_DISABLE_MMVQ=1` даёт примерно `+3.6%` к wall против same-session Vulkan rerun и `+5.3%` к prompt eval, но всё ещё проигрывает ROCm примерно `25.5%` wall и `33.4%` prompt eval. Decode-biased sanity при этом слегка ниже default (`34.67` против `35.2850` wall TPS), поэтому это не универсальный default.
+
+Матрица `batch/ubatch` с `GGML_VK_DISABLE_MMVQ=1` не нашла лучшего Vulkan prefill shape: `b=4096,ub=512` остался лучшим из проверенных (`pp4096=632.96`, `pp8192=609.12`).
+
+Итог: Vulkan можно ускорить флагом для prompt-heavy opt-in сравнений, но не до уровня ROCm. Для настоящего кода следующий разумный шаг - guarded/minimal port K-quant transpose/repack/alignment идеи (`#22970` или более узкий Q3_K/Q6_K probe), с correctness test и тем же E061/E062 benchmark contract.
+
+Артефакты:
+- `build_logs/agent-workload/e062-vulkan-default-rerun-ctx12288-q3ks.diagnostics.md`
+- `build_logs/agent-workload/e062-vulkan-disable-mmvq-ctx12288-q3ks.diagnostics.md`
+- `build_logs/agent-workload/e062-vulkan-disable-mmvq-b-ub-matrix.md`
+- `docs/research/experiments/E062_vulkan_prefill_research.md`
+
+## Vulkan prefill code probes to ROCm level (2026-05-19)
+
+После E062 были проверены три code-level кандидата на той же cold prompt-heavy lane (`triage_diff`, repo-snapshot, 7489 prompt tokens, 64 generated, `ctx=12288`, `q4_0/q4_0`, `flash-attn=on`, `spec=none`, no reuse, thinking on).
+
+### E063: K-quant transpose-A
+
+Upstream `#22970` был применён как opt-in `GGML_VK_TRANSPOSE_A=1`, затем откатан после A/B. Для текущей `Q3_K_S` модели результат отрицательный: full workload `4.3765` wall TPS против E062 best `4.7172`. Причина ожидаемая: patch в основном покрывает Q4_K/Q5_K/Q6_K transpose pipelines, а активный bottleneck здесь Q3_K.
+
+### E064: AMD proprietary large matmul tile
+
+Добавлен guarded knob `GGML_VK_FORCE_AMD_LARGE_MATMUL=1`. Он включает large matmul tile path и AMD tuned `l_warptile` даже на AMD proprietary Vulkan driver, где upstream default оставляет large tile выключенным.
+
+| Vulkan config | Runs | b/ub | Wall TPS | Prompt eval TPS | Decode eval TPS |
+| --- | ---: | --- | ---: | ---: | ---: |
+| E062 `GGML_VK_DISABLE_MMVQ=1` | 1 | 4096/512 | `4.7172` | `639.81` | `35.15` |
+| `GGML_VK_FORCE_AMD_LARGE_MATMUL=1` | 1 | 4096/512 | `5.6963` | `786.43` | `38.30` |
+| `GGML_VK_FORCE_AMD_LARGE_MATMUL=1 GGML_VK_DISABLE_MMVQ=1` | 1 | 4096/512 | `6.2619` | `885.69` | `37.10` |
+| same combo | 3 | 4096/512 | `6.18` | n/a | n/a |
+
+E064 nearly reached ROCm but did not reliably exceed it. The large-tile path stays opt-in because upstream disabled it for AMD proprietary driver regression risk on other devices.
+
+### E065: Q3_K/Q6_K alignment plus large tile
+
+Applied upstream `#22951`: Vulkan-specific padded device size for Q3_K/Q6_K, padded tensor offset accounting, adjusted shader layout/loads, and re-enabled Q3_K/Q6_K MMVQ eligibility. Combined with `GGML_VK_FORCE_AMD_LARGE_MATMUL=1`, the best confirmed shape is `b=4096,ub=1024` with default MMVQ.
+
+| Backend / config | Runs | b/ub | Wall TPS | Prompt eval TPS | Decode eval TPS | Result |
+| --- | ---: | --- | ---: | ---: | ---: | --- |
+| ROCm E061 baseline | 1 | 4096/512 | `6.3327` | `960.26` | `28.32` | historical reference |
+| ROCm same-session control | 3 | 4096/1024 | `7.3868` aggregate / `7.49` median | `1173.2367` | `28.62` | current fair target |
+| Vulkan E061 initial | 1 | 4096/512 | `4.2206` | `573.93` | `30.85` | initial Vulkan |
+| Vulkan E065 `GGML_VK_FORCE_AMD_LARGE_MATMUL=1` | 3 | 4096/1024 | `6.4180` aggregate / `6.38` median | `897.63` | `40.35` | `+1.35%` vs E061; `-13.1%` vs fresh ROCm |
+
+Итог: E065 впервые превысил старый E061 ROCm reference и сильно поднял Vulkan относительно E064, но свежий same-session ROCm `b4096/ub1024` r3 остаётся впереди. Vulkan decode заметно быстрее (`40.35` vs `28.62`), но prompt eval всё ещё ниже ROCm (`897.63` vs `1173.2367`), поэтому активная cold prompt-heavy цель ещё не достигнута.
+
+Рекомендуемый E065 validation profile:
+
+```powershell
+$env:GGML_VK_FORCE_AMD_LARGE_MATMUL = "1"
+python scripts\agent_workload_bench.py --tasks quick --task-ids triage_diff --runs 3 --server-bin build-vulkan\bin\llama-server.exe --model models\Qwen3.6-27B-Q3_K_S.gguf --gpu-layers=-1 --parallel 1 --ctx-size 12288 --batch-size 4096 --ubatch-size 1024 --cache-type-k q4_0 --cache-type-v q4_0 --flash-attn --no-disable-thinking --max-tokens 64 --real-context-mode repo-snapshot --no-reuse --no-v2-prime-pass --server-extra "--spec-type none"
+```
+
+Следующий шаг перед promotion: дополнительные Vulkan prefill изменения, decode-biased sanity after E065, and a second prompt-heavy task. Until then, treat this as an opt-in RDNA4/Vulkan acceleration profile, not a universal Vulkan default.
+
+### E066: chunked GATED_DELTA_NET probe
+
+Upstream `#20377` chunked GDN idea was tested as a temporary env-gated prototype (`GGML_VK_GDN_CHUNKED=1`) on top of E065. It built and ran, but regressed the active lane, so the code was reverted.
+
+| Vulkan config | Runs | b/ub | Wall TPS | Prompt eval TPS | Decode eval TPS | Result |
+| --- | ---: | --- | ---: | ---: | ---: | --- |
+| E065 large tile + Q3_K alignment | 3 | 4096/1024 | `6.4180` | `897.63` | `40.35` | reference |
+| E066 `GGML_VK_GDN_CHUNKED=1` | 1 | 4096/1024 | `5.4760` | `745.49` | `40.33` | `-14.7%`; reject/revert |
+
+Итог: chunked GDN is not a useful lever for this Qwen3.6-27B prompt-heavy Vulkan lane right now. Keep the E065 path, continue searching in the remaining prefill bottleneck.
+
+### E067: Q3_K packed32 matmul load probe
+
+E067 used `GGML_VK_PERF_LOGGER=1` to profile the E065 path. The trace showed that prompt chunks are dominated by large Q3_K `MUL_MAT`, especially shapes such as `m=17408,n=1024,k=5120` and `m=5120,n=1024,k=17408`. A narrow shader probe changed the non-coopmat2 Q3_K `mul_mm_funcs.glsl` branch to use padded 32-bit loads for scales, hmask, and quants.
+
+The cheap pp7488 gate regressed from restored E065 `875.25 tok/s` to `836.22 tok/s`, so the shader change was reverted. Wider loads were not enough to offset extra shift/register pressure.
+
+### E068: AMD large matmul WN tile tuning reaches ROCm level
+
+E068 kept the E064/E065 guarded large matmul path but added an experimental runtime selector:
+
+```powershell
+$env:GGML_VK_FORCE_AMD_LARGE_MATMUL = "1"
+$env:GGML_VK_AMD_LARGE_MATMUL_VARIANT = "wm32-wn32"
+```
+
+This only affects the opt-in AMD large matmul path. Default Vulkan behavior is unchanged.
+
+Key pp7488 gates (`b=4096,ub=1024`, `q4_0/q4_0`, FlashAttention on):
+
+| Vulkan config | pp7488 tok/s |
+| --- | ---: |
+| restored E065 default | `875.25` |
+| `block128` | `900.32` |
+| `wn32` | `981.28` |
+| `wn16` | `1039.53` |
+| `wm32-wn32` | `1035.80` |
+
+Confirmed active-lane result:
+
+| Backend / config | Runs | b/ub | Wall TPS | Prompt eval TPS | Decode eval TPS | Result |
+| --- | ---: | --- | ---: | ---: | ---: | --- |
+| ROCm same-session control | 3 | 4096/1024 | `7.3868` aggregate / `7.49` median | `1173.2367` | `28.62` | current fair target |
+| Vulkan E065 large + Q3_K align | 3 | 4096/1024 | `6.4180` aggregate / `6.38` median | `897.63` | `40.35` | previous Vulkan best |
+| Vulkan E068 `wm32-wn32` | 3 | 4096/1024 | `7.6446` aggregate / `7.58` median | `1110.0867` | `40.40` | `+3.5%` aggregate vs ROCm; `+19.1%` vs E065 |
+
+Итог: Vulkan now exceeds the same-session ROCm wall-TPS target on this exact cold prompt-heavy lane when the RDNA4 opt-in tile variant is enabled. ROCm still has higher raw prompt eval (`1173` vs `1110 tok/s`), but Vulkan's decode path is much faster (`40.40` vs `28.62 tok/s`), so wall TPS wins. Keep this as an RDNA4/Vulkan opt-in profile until a second prompt-heavy task and decode-biased sanity are checked.
+
+### E069: decode-focused MMVQ probe
+
+After E068, a decode-biased run with the same `wm32-wn32` profile reached `39.1935` wall TPS and `40.75` decode eval TPS at 256 generated tokens. `GGML_VK_PERF_LOGGER=1` is too intrusive for speed claims, but it clearly places the remaining decode cost in Q3_K MMVQ, not in FlashAttention or GDN:
+
+| Decode hot center | Approx per-token total |
+| --- | ---: |
+| `MUL_MAT_VEC q3_K m=17408 n=1 k=5120` | `8.7-9.1 ms` |
+| `MUL_MAT_ADD MUL_MAT_VEC q3_K m=5120 n=1 k=17408` | `4.7-4.9 ms` |
+| `MUL_MAT_VEC q6_K m=248320 n=1 k=5120` | `1.66-1.68 ms` |
+| `GATED_DELTA_NET` | `0.32-0.34 ms` |
+| `FLASH_ATTN_EXT` | `0.24-0.27 ms` |
+
+Cheap knobs did not expose a keep candidate: `GGML_VK_FORCE_MMVQ=1` was neutral (`37.86` vs `37.76` r1), while `GGML_VK_DISABLE_MMVQ=1` and `GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1` regressed to `34.25` and `33.92`. Temporary code probes for large DMMV workgroups and integer K-quant rows-per-workgroup also regressed (`33.16-35.56`). A Q3_K packed32 scale-load shader rewrite was stable but only noise-positive (`37.96` r3 vs baseline `37.91`, baseline median slightly higher), so it was reverted.
+
+Итог: pure decode has a real hotspot and therefore future potential, but E069 found no safe small implementation to keep. The next decode work should be deeper Q3_K MMVQ specialization rather than route forcing or simple scale-load repacking.
+
+Артефакты:
+- `docs/research/experiments/E063_vulkan_transpose_a_probe.md`
+- `docs/research/experiments/E064_vulkan_amd_large_matmul_probe.md`
+- `docs/research/experiments/E065_vulkan_q3k_alignment_rocm_level.md`
+- `build_logs/agent-workload/e065-vulkan-q3k-align-large-mmvq-default-b4096-ub1024-ctx12288-q3ks-r3.diagnostics.md`
+- `build_logs/agent-workload/e065-rocm-control-b4096-ub1024-ctx12288-q3ks-r3.diagnostics.md`
+- `docs/research/experiments/E066_vulkan_gdn_chunked_probe.md`
+- `build_logs/agent-workload/e066-vulkan-gdnchunk-large-b4096-ub1024-ctx12288-q3ks.diagnostics.md`
+- `docs/research/experiments/E067_vulkan_q3k_packed32_matmul_probe.md`
+- `docs/research/experiments/E068_vulkan_amd_large_matmul_tile_tuning.md`
+- `build_logs/agent-workload/e068-vulkan-large-wm32-wn32-b4096-ub1024-ctx12288-q3ks-r3.diagnostics.md`
+- `docs/research/experiments/E069_vulkan_decode_mmvq_probe.md`
+- `build_logs/agent-workload/e069-vulkan-decode-q3scale-packed32-128-r3.diagnostics.md`
+
 ## TurboKV direct FlashAttention smoke (2026-05-13)
 
 Это короткий технический smoke для guarded prototype `GGML_TKV_DIRECT_FATTN=1`, а не финальный target-lane speed claim. Полный артефакт с командами и числами: `build_logs/agent-workload/e009-tkv-direct-fattn-smoke-20260513.md`.

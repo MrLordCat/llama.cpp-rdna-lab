@@ -255,7 +255,7 @@ class BenchmarkTabWidget(QWidget):
 
         single_row1.addWidget(QLabel("Spec:"))
         self.spec_combo = QComboBox()
-        self.spec_combo.addItems(["none", "ngram-mod", "mtp"])
+        self.spec_combo.addItems(["none", "ngram-mod", "mtp", "ngram-mtp"])
         self.spec_combo.setCurrentText("none")
         single_row1.addWidget(self.spec_combo)
         single_layout.addLayout(single_row1)
@@ -405,6 +405,7 @@ class BenchmarkTabWidget(QWidget):
             ("draft", False, "Draft speculative mode when supported"),
             ("eagle3", False, "Eagle3 speculative mode when supported"),
             ("mtp", False, "MTP mode; requires server + MTP model support"),
+            ("ngram-mtp", False, "Experimental ngram first, MTP fallback mode"),
         ]:
             checkbox = QCheckBox(mode)
             checkbox.setChecked(enabled)
@@ -808,6 +809,15 @@ class BenchmarkTabWidget(QWidget):
 
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         label = f"gui-bench-{model.stem}-{stamp}"
+        spec_mode = self.spec_combo.currentText()
+        spec_extra = [f"--spec-type {spec_mode}"]
+        if spec_mode in {"ngram-mod", "ngram-mtp"}:
+            spec_extra.append("--spec-ngram-mod-n-min 48")
+            spec_extra.append("--spec-ngram-mod-n-match 24")
+            spec_extra.append("--spec-ngram-mod-n-max 64")
+        if spec_mode in {"mtp", "ngram-mtp"}:
+            spec_extra.append("--spec-draft-n-max 3")
+
         command = [
             sys.executable,
             "scripts/agent_workload_bench.py",
@@ -848,7 +858,7 @@ class BenchmarkTabWidget(QWidget):
             "--background-server-policy",
             "fail",
             "--server-extra",
-            f"--spec-type {self.spec_combo.currentText()}",
+            " ".join(spec_extra),
         ]
 
         bench_env = self._bench_env_overrides()
@@ -1151,7 +1161,7 @@ class BenchmarkTabWidget(QWidget):
         return [name for name in ordered if name in self.autotune_kv_checks and self.autotune_kv_checks[name].isChecked()]
 
     def _selected_autotune_spec_values(self) -> list[str]:
-        ordered = ["none", "ngram-mod", "draft", "eagle3", "mtp"]
+        ordered = ["none", "ngram-mod", "draft", "eagle3", "mtp", "ngram-mtp"]
         return [name for name in ordered if name in self.autotune_spec_checks and self.autotune_spec_checks[name].isChecked()]
 
     @staticmethod
@@ -1361,7 +1371,7 @@ class BenchmarkTabWidget(QWidget):
         mtp_compatible = model_supports_mtp(model)
 
         def is_mode_model_compatible(mode: str) -> bool:
-            if mode != "mtp":
+            if mode not in {"mtp", "ngram-mtp"}:
                 return True
             return mtp_compatible
 
@@ -1381,7 +1391,7 @@ class BenchmarkTabWidget(QWidget):
         if not spec_type_modes:
             spec_type_modes = ["none", "ngram-mod"]
 
-        supported_order = ["none", "ngram-mod", "mtp", "eagle3", "eagle"]
+        supported_order = ["none", "ngram-mod", "mtp", "ngram-mtp", "eagle3", "eagle"]
         resolved: list[str] = []
         for mode in supported_order:
             if mode in spec_type_modes:
@@ -1397,8 +1407,8 @@ class BenchmarkTabWidget(QWidget):
                 if fallback_ngram not in resolved:
                     resolved.append(fallback_ngram)
 
-        if "mtp" in resolved and not is_mode_model_compatible("mtp"):
-            resolved = [mode for mode in resolved if mode != "mtp"]
+        if not mtp_compatible:
+            resolved = [mode for mode in resolved if mode not in {"mtp", "ngram-mtp"}]
 
         unique: list[str] = []
         seen: set[str] = set()

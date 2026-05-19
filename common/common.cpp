@@ -1507,7 +1507,8 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     {
         // enable partial rollback only for MTP, each recurrent slot requires memory
         // and MTP uses max 3-4 slots vs other techniques
-        const bool has_mtp_spec = params.speculative.type == COMMON_SPECULATIVE_TYPE_MTP;
+        const bool has_mtp_spec = params.speculative.type == COMMON_SPECULATIVE_TYPE_MTP ||
+                      params.speculative.type == COMMON_SPECULATIVE_TYPE_NGRAM_MTP;
         cparams.n_rs_seq = has_mtp_spec ? (uint32_t) params.speculative.draft.n_max : 0u;
     }
     cparams.n_batch           = params.n_batch;

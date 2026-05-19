@@ -1255,7 +1255,7 @@ class BuildTabWidget(QWidget):
         if not spec_type_modes:
             spec_type_modes = ["none", "ngram-mod"]
 
-        supported_order = ["none", "ngram-mod", "mtp", "eagle3", "eagle"]
+        supported_order = ["none", "ngram-mod", "mtp", "ngram-mtp", "eagle3", "eagle"]
 
         resolved: list[str] = []
         for mode in supported_order:
@@ -1272,8 +1272,8 @@ class BuildTabWidget(QWidget):
                 if fallback_ngram not in resolved:
                     resolved.append(fallback_ngram)
 
-        if "mtp" in resolved and not model_supports_mtp(model_path):
-            resolved = [mode for mode in resolved if mode != "mtp"]
+        if not model_supports_mtp(model_path):
+            resolved = [mode for mode in resolved if mode not in {"mtp", "ngram-mtp"}]
 
         unique: list[str] = []
         seen: set[str] = set()

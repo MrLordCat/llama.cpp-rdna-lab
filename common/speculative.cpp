@@ -23,6 +23,7 @@ const std::vector<enum common_speculative_type> common_speculative_types = {
     COMMON_SPECULATIVE_TYPE_DRAFT,
     COMMON_SPECULATIVE_TYPE_EAGLE3,
     COMMON_SPECULATIVE_TYPE_MTP,
+    COMMON_SPECULATIVE_TYPE_NGRAM_MTP,
     COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE,
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K,
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V,
@@ -36,6 +37,8 @@ const std::map<std::string, enum common_speculative_type> common_speculative_typ
     {"eagle3",        COMMON_SPECULATIVE_TYPE_EAGLE3},
     {"mtp",           COMMON_SPECULATIVE_TYPE_MTP},
     {"draft-mtp",     COMMON_SPECULATIVE_TYPE_MTP},
+    {"ngram_mtp",     COMMON_SPECULATIVE_TYPE_NGRAM_MTP},
+    {"ngram-mtp",     COMMON_SPECULATIVE_TYPE_NGRAM_MTP},
     {"ngram_simple",  COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE},
     {"ngram-simple",  COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE},
     {"ngram_map_k",   COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K},
@@ -1153,6 +1156,7 @@ std::string common_speculative_type_to_str(enum common_speculative_type type) {
         case COMMON_SPECULATIVE_TYPE_DRAFT:         return "draft";
         case COMMON_SPECULATIVE_TYPE_EAGLE3:        return "eagle3";
         case COMMON_SPECULATIVE_TYPE_MTP:           return "mtp";
+        case COMMON_SPECULATIVE_TYPE_NGRAM_MTP:     return "ngram_mtp";
         case COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE:  return "ngram_simple";
         case COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K:   return "ngram_map_k";
         case COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V: return "ngram_map_k4v";
@@ -1185,7 +1189,7 @@ common_speculative * common_speculative_init(
     }
 
     llama_context * ctx_mtp = nullptr;
-    if (params.type == COMMON_SPECULATIVE_TYPE_MTP) {
+    if (params.type == COMMON_SPECULATIVE_TYPE_MTP || params.type == COMMON_SPECULATIVE_TYPE_NGRAM_MTP) {
         ctx_mtp = llama_init_from_model(params.mtp.model, params.mtp.cparams);
         if (ctx_mtp == nullptr) {
             LOG_ERR("%s", "failed to create MTP context\n");
@@ -1201,13 +1205,15 @@ common_speculative * common_speculative_init(
     {
         bool has_draft = !params.draft.mparams.path.empty();
         bool has_draft_eagle3 = false; // TODO PR-18039: if params.speculative.eagle3
-        bool has_mtp = (params.type == COMMON_SPECULATIVE_TYPE_MTP) && (ctx_mtp != nullptr);
+        bool has_mtp = (params.type == COMMON_SPECULATIVE_TYPE_MTP || params.type == COMMON_SPECULATIVE_TYPE_NGRAM_MTP) &&
+                   (ctx_mtp != nullptr);
 
         bool has_ngram_cache   = (params.type == COMMON_SPECULATIVE_TYPE_NGRAM_CACHE);
         bool has_ngram_simple  = (params.type == COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
         bool has_ngram_map_k   = (params.type == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
         bool has_ngram_map_k4v = (params.type == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V);
-        bool has_ngram_mod     = (params.type == COMMON_SPECULATIVE_TYPE_NGRAM_MOD);
+        bool has_ngram_mod     = (params.type == COMMON_SPECULATIVE_TYPE_NGRAM_MOD ||
+                      params.type == COMMON_SPECULATIVE_TYPE_NGRAM_MTP);
 
         // In a more complex implementation we could use the same implementation but with different parameters.
         // This was initially used in PR-18471 but removed to simplify the code.
@@ -1280,6 +1286,8 @@ common_speculative * common_speculative_init(
                     config.type, ctx_tgt, ctx_mtp));
                 break;
             }
+            case COMMON_SPECULATIVE_TYPE_NGRAM_MTP:
+                break;
             case COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE: {
                 common_ngram_map ngram_map = get_common_ngram_map(config.type, config.params.ngram_simple);
 
@@ -1357,25 +1365,34 @@ llama_tokens common_speculative_draft(
         common_speculative * spec,
         const common_params_speculative & params,
         const llama_tokens & prompt_tgt, // specified in target model vocab
-        llama_token id_last) {
+    llama_token id_last,
+    int32_t n_draft_max) {
     llama_tokens result;
 
     spec->curr_impl = nullptr; // reset current implementation
 
     for (auto & impl : spec->impls) {
+        const int n_min = impl->n_min(params);
+        if (n_draft_max < n_min) {
+            LOG_DBG("%s: skipping impl %s, max draft %d < min %d\n", __func__,
+                    common_speculative_type_to_str(impl.get()->type).c_str(), n_draft_max, n_min);
+            continue;
+        }
+
         {
             common_time_meas tm(impl->t_draft_us, !impl->gen_perf);
             impl->draft(params, prompt_tgt, id_last, result);
             impl->n_call_draft++;
         }
 
-        {
-            const int n_min = impl->n_min(params);
+        if (!result.empty() && (int) result.size() > n_draft_max) {
+            LOG_DBG("%s: truncating draft from %d to max %d\n", __func__, (int) result.size(), n_draft_max);
+            result.resize(n_draft_max);
+        }
 
-            if (!result.empty() && (int) result.size() < n_min) {
-                LOG_DBG("%s: ignoring small draft: %d < %d\n", __func__, (int) result.size(), n_min);
-                result.clear();
-            }
+        if (!result.empty() && (int) result.size() < n_min) {
+            LOG_DBG("%s: ignoring small draft: %d < %d\n", __func__, (int) result.size(), n_min);
+            result.clear();
         }
 
         if (!result.empty()) {
@@ -1433,12 +1450,12 @@ int32_t common_speculative_n_min(const common_speculative * spec, const common_p
         return 0;
     }
 
-    int32_t n_min = 0;
+    int32_t n_min = INT32_MAX;
     for (const auto & impl : spec->impls) {
-        n_min = std::max(n_min, impl->n_min(params));
+        n_min = std::min(n_min, impl->n_min(params));
     }
 
-    return n_min;
+    return n_min == INT32_MAX ? 0 : n_min;
 }
 
 void common_speculative_print_stats(const common_speculative * spec) {
