@@ -116,8 +116,8 @@ class LlamaCppGUI(QMainWindow):
         self.tabs.addTab(self.server_tab, "🚀 Launch Server")
         self.tabs.addTab(self.inference_tab, "⚡ Inference")
         self.tabs.addTab(self.download_tab, "📥 Download Models")
-        self.tabs.addTab(self.build_tab, "🔧 Build & Setup")
-        self.tabs.addTab(self.benchmark_tab, "📈 Bench & Autotune")
+        self.tabs.addTab(self.build_tab, "🔧 Build and Setup")
+        self.tabs.addTab(self.benchmark_tab, "📈 Bench and Autotune")
         self.tabs.addTab(self.builds_info_tab, "📋 Installed Builds")
         self.tabs.addTab(self.hardware_tab, "💻 System Info")
         self.tabs.currentChanged.connect(self.on_tab_changed)
@@ -148,12 +148,12 @@ class LlamaCppGUI(QMainWindow):
             return []
         return self.build_registry.list_builds()
 
-    def refresh_build_registry(self) -> int:
+    def refresh_build_registry(self, persist_benchmark_stats: bool = False) -> int:
         """Rescan filesystem and sync build registry with existing build directories."""
         if not hasattr(self, "build_registry"):
             return 0
         imported = self.build_registry.sync_with_existing_builds()
-        self.build_registry.update_benchmark_stats_from_history()
+        self.build_registry.update_benchmark_stats_from_history(persist=persist_benchmark_stats)
         return imported
     
     def refresh_models_list(self):

@@ -1794,29 +1794,6 @@ class LlamaCppGUI(QMainWindow):
         normalized = model_path.name.lower().replace("_", "-").replace(".", "-")
         return "mtp" in normalized or "nextn" in normalized
 
-    def _server_supports_spec_type(self, server_path: Path, spec_type: str) -> bool:
-        """Check whether a llama-server binary advertises support for a speculative type."""
-        if spec_type == "none":
-            return True
-
-        try:
-            result = subprocess.run(
-                [str(server_path), "--help"],
-                capture_output=True,
-                text=True,
-                cwd=server_path.parent,
-                timeout=20,
-            )
-            help_text = (result.stdout or "") + "\n" + (result.stderr or "")
-        except Exception:
-            return False
-
-        spec_type_lc = spec_type.lower()
-        for line in help_text.lower().splitlines():
-            if "--spec-type" in line and spec_type_lc in line:
-                return True
-        return False
-
     def _looks_like_vision_model(self, model_path: Path) -> bool:
         """Detect common local VLM filenames when no mmproj is present yet."""
         name = model_path.name.lower()
@@ -2053,7 +2030,6 @@ class LlamaCppGUI(QMainWindow):
         backend_idx = self.server_backend_combo.currentIndex()
         backend_names = ["CPU", "CUDA", "Metal", "Vulkan", "ROCm"]
         selected_backend = backend_names[backend_idx] if backend_idx < len(backend_names) else "CPU"
-        spec_type = self._get_server_speculative_type()
         
         # Find the right build directory for selected backend
         build_dir = self.get_build_dir_for_backend(selected_backend if backend_idx > 0 else None)
@@ -2069,13 +2045,7 @@ class LlamaCppGUI(QMainWindow):
         # For ROCm, also check known variant build dirs in priority order
         # (dual-sched wmma build takes priority over generic vec build)
         if selected_backend == "ROCm":
-            rocm_variants = [
-                "build-rocm-wmma",
-                "build-rocm-upstream-stock",
-                "build-rocm-vec",
-                "build-rocm-exp",
-                "build-rocm-compare",
-            ]
+            rocm_variants = ["build-rocm-wmma", "build-rocm-vec", "build-rocm-exp", "build-rocm-compare"]
             for variant in rocm_variants:
                 vdir = self.project_root / variant
                 possible_paths.extend([
@@ -2094,31 +2064,13 @@ class LlamaCppGUI(QMainWindow):
         
         llama_server = None
         used_build_dir = None
-        skipped_for_spec = []
         for path in possible_paths:
             if path.exists():
-                if spec_type != "none" and not self._server_supports_spec_type(path, spec_type):
-                    skipped_for_spec.append(path)
-                    continue
                 llama_server = path
                 used_build_dir = path.parent.parent if path.parent.name == "bin" else path.parent.parent.parent
                 break
         
         if not llama_server:
-            if spec_type != "none" and skipped_for_spec:
-                skipped_names = "\n".join([f"  • {p}" for p in skipped_for_spec[:5]])
-                if len(skipped_for_spec) > 5:
-                    skipped_names += f"\n  • ... and {len(skipped_for_spec) - 5} more"
-
-                QMessageBox.warning(
-                    self,
-                    f"{spec_type.upper()} Not Supported by Detected Builds",
-                    f"Speculative mode '{spec_type}' is selected, but the detected llama-server builds do not advertise it in --help.\n\n"
-                    f"Checked binaries:\n{skipped_names}\n\n"
-                    "Build/select a llama-server that includes this speculative mode, then retry."
-                )
-                return
-
             # Show helpful error with available builds
             available = self.get_available_builds()
             if available:
@@ -2173,6 +2125,7 @@ class LlamaCppGUI(QMainWindow):
             "--ubatch-size", str(self.server_ubatch_slider.value() * 32),
         ]
 
+        spec_type = self._get_server_speculative_type()
         if spec_type == "mtp":
             if self.server_vision_checkbox.isChecked():
                 QMessageBox.warning(

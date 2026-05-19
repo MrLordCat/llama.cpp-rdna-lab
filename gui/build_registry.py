@@ -24,6 +24,14 @@ class BuildVersionRegistry:
     def history_csv_path(self) -> Path:
         return self.project_root / "build_logs" / "agent-workload" / "BENCH_HISTORY.csv"
 
+    @property
+    def history_csv_paths(self) -> list[Path]:
+        history_dir = self.project_root / "build_logs" / "agent-workload"
+        return [
+            history_dir / "BENCH_HISTORY.csv",
+            history_dir / "BENCH_HISTORY_V2.csv",
+        ]
+
     def _load(self) -> None:
         if self.registry_path.exists():
             try:
@@ -297,19 +305,24 @@ class BuildVersionRegistry:
             self._save()
         return imported
 
-    def update_benchmark_stats_from_history(self) -> int:
-        """Refresh per-build benchmark maxima from BENCH_HISTORY.csv."""
-        if not self.history_csv_path.exists():
+    def update_benchmark_stats_from_history(self, persist: bool = True) -> int:
+        """Refresh per-build benchmark maxima from available history CSV files."""
+        history_paths = [path for path in self.history_csv_paths if path.exists()]
+        if not history_paths:
             return 0
 
         history_rows: list[dict[str, str]] = []
-        try:
-            with self.history_csv_path.open("r", encoding="utf-8", newline="") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    if isinstance(row, dict):
-                        history_rows.append({k: str(v) for k, v in row.items()})
-        except Exception:
+        for history_path in history_paths:
+            try:
+                with history_path.open("r", encoding="utf-8", newline="") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        if isinstance(row, dict):
+                            history_rows.append({k: str(v) for k, v in row.items()})
+            except Exception:
+                continue
+
+        if not history_rows:
             return 0
 
         updated = 0
@@ -318,12 +331,14 @@ class BuildVersionRegistry:
             best_non = None
             best_mtp = None
             last_ts = ""
+            matched_history = False
 
             for row in history_rows:
                 if str(row.get("build_id", "")) != build_id:
                     continue
                 if str(row.get("errors", "0")) not in ("", "0"):
                     continue
+                matched_history = True
 
                 tps = self._to_float(row.get("aggregate_tps", 0.0), 0.0)
                 model_is_mtp = str(row.get("is_mtp_model", "0")) == "1"
@@ -338,6 +353,9 @@ class BuildVersionRegistry:
                 if ts > last_ts:
                     last_ts = ts
 
+            if not matched_history:
+                continue
+
             new_non = f"{best_non:.4f}" if best_non is not None else None
             new_mtp = f"{best_mtp:.4f}" if best_mtp is not None else None
             if (
@@ -350,7 +368,7 @@ class BuildVersionRegistry:
                 record["bench_last_run_at"] = last_ts
                 updated += 1
 
-        if updated:
+        if updated and persist:
             self._save()
         return updated
 

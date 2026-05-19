@@ -600,7 +600,6 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
         "-m", str(model),
         "--host", args.host,
         "--port", str(args.port),
-        "-ngl", str(args.gpu_layers),
         "--flash-attn", "on" if args.flash_attn else "off",
         "-np", str(args.parallel),
         "-c", str(args.ctx_size),
@@ -609,6 +608,8 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
         "--cache-type-k", args.cache_type_k,
         "--cache-type-v", args.cache_type_v,
     ]
+    if args.gpu_layers >= 0:
+        cmd.extend(["-ngl", str(args.gpu_layers)])
     if args.server_seed is not None:
         cmd.extend(["--seed", str(args.server_seed)])
     if args.no_warmup:
@@ -1133,7 +1134,32 @@ def normalize_spec_mode(value: str) -> str:
 
 def is_mtp_model_name(model_path: str) -> bool:
     name = Path(model_path).name.lower()
-    return "-mtp" in name or name.endswith("mtp.gguf")
+    if "-mtp" in name or name.endswith("mtp.gguf") or "nextn" in name:
+        return True
+
+    model_file = Path(model_path)
+    if not model_file.exists() or not model_file.is_file():
+        return False
+
+    marker = b"nextn"
+    chunk_size = 4 * 1024 * 1024
+    overlap = len(marker) - 1
+    tail = b""
+
+    try:
+        with model_file.open("rb") as file_obj:
+            while True:
+                chunk = file_obj.read(chunk_size)
+                if not chunk:
+                    break
+                data = (tail + chunk).lower()
+                if marker in data:
+                    return True
+                tail = data[-overlap:] if len(data) > overlap else data
+    except Exception:
+        return False
+
+    return False
 
 
 def _model_display_name(model_path: str) -> str:

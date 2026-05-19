@@ -1,19 +1,19 @@
 {
-  "Qwen3.6-27B-Q3_K_S.gguf::ctx32k-only": {
+  "Qwen3.6-27B-Q3_K_S.gguf::active-ctx12k": {
     "model": "Qwen3.6-27B-Q3_K_S.gguf",
-    "profile": "ctx32k-only",
-    "best_tps": "37.5657",
-    "ctx": "65536",
-    "batch": "4096",
-    "ubatch": "512",
+    "profile": "active-ctx12k",
+    "best_tps": "11.6534",
+    "ctx": "12288",
+    "batch": "6144",
+    "ubatch": "2048",
     "kv_k": "q4_0",
     "kv_v": "q4_0",
-    "spec_mode": "ngram-mod",
-    "extra_preset": "",
-    "extra_args": "",
-    "build_id": "bld-20260508104925-23f8d9c8",
-    "run_id": "run-a6888dcd57",
-    "label": "sprint14-b512-newmethod-thinkon-5run",
-    "timestamp": "2026-05-09 10:20:11"
+    "spec_mode": "none",
+    "extra_preset": "base",
+    "extra_args": "--spec-type none --cache-ram 0 --ctx-checkpoints 0",
+    "build_id": "",
+    "run_id": "",
+    "label": "prefill-current-ub2048-base-r3",
+    "timestamp": "2026-05-17"
   }
 }

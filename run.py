@@ -38,10 +38,12 @@ def main():
     # Import and start GUI
     try:
         from PyQt6.QtWidgets import QApplication
+        from gui_theme import apply_modern_theme
         from main_window import LlamaCppGUI
         
         app = QApplication(sys.argv)
         app.setStyle("Fusion")  # Modern style
+        apply_modern_theme(app)
         
         window = LlamaCppGUI()
         window.show()

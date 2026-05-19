@@ -34,6 +34,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from model_capabilities import model_supports_mtp
+
 
 class BenchCommandThread(QThread):
     """Run benchmark command in background so UI remains responsive."""
@@ -161,6 +163,7 @@ class BenchmarkTabWidget(QWidget):
         self._live_best_by_key: dict[str, dict[str, str]] = {}
         self._summary_sweep_cache: dict[str, tuple[str, str]] = {}
         self._server_help_cache: dict[str, str] = {}
+        self._bench_help_cache: dict[str, str] = {}
         self._autotune_result = {"best": "", "summary_json": "", "summary_csv": ""}
         self._autotune_active_run: str | None = None
         self.create_ui()
@@ -945,6 +948,8 @@ class BenchmarkTabWidget(QWidget):
         label = f"gui-autotune-{model.stem}-{run_stamp}"
         session_label = f"gui-autotune-{model.stem}"
         autotune_session_file = self.project_root / "build_logs" / "agent-workload" / f"{session_label}-autotune-session.json"
+        compatibility_notes: list[str] = []
+
         command = [
             sys.executable,
             "scripts/agent_workload_bench.py",
@@ -964,7 +969,7 @@ class BenchmarkTabWidget(QWidget):
             "--artifact-mode",
             "unified",
             "--gpu-layers",
-            "99",
+            "-1",
             "--parallel",
             "1",
             "--max-tokens",
@@ -972,9 +977,9 @@ class BenchmarkTabWidget(QWidget):
             "--startup-timeout",
             "180",
             "--request-timeout",
-            "20",
-            "--task-fail-timeout",
-            "20",
+            "180",
+            "--task-hard-timeout",
+            "60",
             "--background-server-policy",
             "fail",
             "--allow-ctx-above-16k",
@@ -997,24 +1002,47 @@ class BenchmarkTabWidget(QWidget):
             autotune_kv_values,
             "--autotune-spec-values",
             ",".join(spec_values),
-            "--autotune-extra-presets",
-            autotune_extra_presets,
             "--autotune-max-configs",
             str(max(64, config_count + 8)),
             "--autotune-update-preset",
             "--autotune-preset-file",
             "gui/model_presets.json",
-            "--autotune-session-file",
-            str(autotune_session_file),
         ]
 
-        if self.autotune_resume_checkbox.isChecked():
-            command.append("--autotune-resume")
+        if self._bench_supports_flag("--task-fail-timeout"):
+            command.extend(["--task-fail-timeout", "60"])
         else:
-            command.append("--no-autotune-resume")
+            compatibility_notes.append("--task-fail-timeout not supported by this benchmark script; using timeout policy: off")
+
+        if self._bench_supports_flag("--autotune-extra-presets"):
+            command.extend(["--autotune-extra-presets", autotune_extra_presets])
+        elif any(item.lower() != "base" for item in extra_presets):
+            compatibility_notes.append("--autotune-extra-presets not supported; running without extra preset sweep")
+
+        if self._bench_supports_flag("--autotune-session-file"):
+            command.extend(["--autotune-session-file", str(autotune_session_file)])
+        else:
+            compatibility_notes.append(
+                "--autotune-session-file not supported; session checkpoint path will use script default"
+            )
+
+        if self._bench_supports_flag("--autotune-resume"):
+            if self.autotune_resume_checkbox.isChecked():
+                command.append("--autotune-resume")
+            else:
+                command.append("--no-autotune-resume")
+        else:
+            compatibility_notes.append(
+                "--autotune-resume not supported; benchmark script default resume behavior will be used"
+            )
 
         if self.autotune_reset_session_checkbox.isChecked():
-            command.append("--autotune-reset-session")
+            if self._bench_supports_flag("--autotune-reset-session"):
+                command.append("--autotune-reset-session")
+            else:
+                compatibility_notes.append(
+                    "--autotune-reset-session requested but not supported by benchmark script"
+                )
 
         bench_env = self._bench_env_overrides()
 
@@ -1064,7 +1092,12 @@ class BenchmarkTabWidget(QWidget):
             f"resume={'on' if self.autotune_resume_checkbox.isChecked() else 'off'}, "
             f"reset={'on' if self.autotune_reset_session_checkbox.isChecked() else 'off'}"
         )
-        self.log_output.append("[INFO] Task timeout policy: 20s hard cutoff (slow task => config fail)")
+
+        self.log_output.append("[INFO] Task timeout policy: 60s hard + 60s fail")
+
+        for note in compatibility_notes:
+            self.log_output.append(f"[INFO] Compatibility: {note}")
+
         self.bench_thread = BenchCommandThread(command=command, working_dir=self.project_root, env=bench_env)
         self.bench_thread.output.connect(self._on_bench_output)
         self.bench_thread.finished_signal.connect(self._on_bench_finished)
@@ -1255,6 +1288,37 @@ class BenchmarkTabWidget(QWidget):
     def _parse_csv_values(values: str) -> list[str]:
         return [v.strip().lower() for v in values.split(",") if v.strip()]
 
+    def _bench_help_output(self) -> str:
+        script_path = self.project_root / "scripts" / "agent_workload_bench.py"
+        cache_key = f"{sys.executable}|{script_path}"
+
+        if cache_key in self._bench_help_cache:
+            return self._bench_help_cache[cache_key]
+
+        try:
+            result = subprocess.run(
+                [sys.executable, str(script_path), "--help"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+                cwd=self.project_root,
+            )
+            output = ((result.stdout or "") + "\n" + (result.stderr or "")).lower()
+            self._bench_help_cache[cache_key] = output
+            return output
+        except Exception:
+            self._bench_help_cache[cache_key] = ""
+            return ""
+
+    def _bench_supports_flag(self, flag: str) -> bool:
+        normalized = flag.strip().lower()
+        if not normalized:
+            return False
+        if not normalized.startswith("--"):
+            normalized = f"--{normalized}"
+        return normalized in self._bench_help_output()
+
     def _server_help_output(self, server_bin: Path) -> str:
         try:
             cache_key = str(server_bin.resolve())
@@ -1294,12 +1358,12 @@ class BenchmarkTabWidget(QWidget):
                     spec_type_modes.append(mode)
 
         allowed_modes = set(spec_type_modes)
-        model_name = model.name.lower()
+        mtp_compatible = model_supports_mtp(model)
 
         def is_mode_model_compatible(mode: str) -> bool:
             if mode != "mtp":
                 return True
-            return "mtp" in model_name or "nextn" in model_name
+            return mtp_compatible
 
         if requested and requested not in {"auto", "all"}:
             ordered: list[str] = []

@@ -12,7 +12,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 
+from autotune_profiles import ACTIVE_PROMPT_PROFILE
 from build_manager import BuildManager, ConfigureThread, BuildThread
+from model_capabilities import model_supports_mtp
 
 try:
     from dependency_installer import (
@@ -92,7 +94,7 @@ class BuildTabWidget(QWidget):
         """Create build tab UI"""
         layout = QVBoxLayout(self)
 
-        info_label = QLabel("🔧 Build & Setup - Configure and compile llama.cpp")
+        info_label = QLabel("🔧 Build and Setup - Configure and compile llama.cpp")
         info_label.setStyleSheet("font-size: 14px; font-weight: bold;")
         layout.addWidget(info_label)
 
@@ -304,7 +306,7 @@ class BuildTabWidget(QWidget):
         buttons_layout.addStretch()
         layout.addLayout(buttons_layout)
 
-        moved_label = QLabel("Benchmark and autotune controls moved to '📈 Bench & Autotune' tab.")
+        moved_label = QLabel("Benchmark and autotune controls moved to the '📈 Bench and Autotune' tab.")
         moved_label.setStyleSheet("color: #666;")
         layout.addWidget(moved_label)
 
@@ -1043,26 +1045,34 @@ class BuildTabWidget(QWidget):
             return
 
         model_path = model_files[0]
+        profile = ACTIVE_PROMPT_PROFILE
         command = [
             sys.executable,
             "scripts/agent_workload_bench.py",
             "--label", "gui-quick-bench",
-            "--tasks", "quick",
+            "--tasks", profile.tasks,
+            "--task-ids", profile.task_ids,
             "--runs", "1",
             "--server-bin", str(server_bin),
             "--model", str(model_path),
             "--build-id", self._active_build_record_id,
             "--artifact-mode", "unified",
-            "--ctx-size", "32768",
-            "--batch-size", "1024",
-            "--ubatch-size", "1024",
-            "--cache-type-k", "q8_0",
-            "--cache-type-v", "q8_0",
+            "--ctx-size", str(profile.min_ctx),
+            "--batch-size", "6144",
+            "--ubatch-size", "2048",
+            "--cache-type-k", "q4_0",
+            "--cache-type-v", "q4_0",
             "--gpu-layers", "99",
             "--parallel", "1",
-            "--max-tokens", "80",
+            "--max-tokens", str(profile.max_tokens),
             "--startup-timeout", "120",
             "--request-timeout", "120",
+            "--real-context-mode", "repo-snapshot",
+            "--real-context-chars", str(profile.real_context_chars),
+            "--no-reuse",
+            "--no-v2-prime-pass",
+            "--no-disable-thinking",
+            "--server-extra", "--spec-type none",
         ]
 
         if hasattr(self, "quick_bench_btn"):
@@ -1079,7 +1089,7 @@ class BuildTabWidget(QWidget):
         silent: bool = False,
         completion_callback=None,
     ) -> bool:
-        """Run large-context autotune sweep and update model presets.
+        """Run the active prompt-profile autotune sweep and update model presets.
 
         Returns True when autotune process is started, else False.
         """
@@ -1102,9 +1112,12 @@ class BuildTabWidget(QWidget):
 
         spec_values = self._resolve_autotune_spec_values(server_bin, resolved_model)
 
-        autotune_tasks = "v2-mini"
-        autotune_max_tokens = "120"
-        autotune_real_context_chars = "21872"
+        profile = ACTIVE_PROMPT_PROFILE
+        autotune_tasks = profile.tasks
+        autotune_max_tokens = str(profile.max_tokens)
+        autotune_real_context_chars = str(profile.real_context_chars)
+        batch_values = range(profile.batch_min, profile.batch_max + 1, profile.batch_step)
+        ubatch_values = range(profile.ubatch_min, profile.ubatch_max + 1, profile.ubatch_step)
 
         command = [
             sys.executable,
@@ -1117,23 +1130,23 @@ class BuildTabWidget(QWidget):
             "--model", str(resolved_model),
             "--build-id", self._active_build_record_id,
             "--artifact-mode", "unified",
-            "--gpu-layers", "99",
+            "--gpu-layers", "-1",
             "--parallel", "1",
             "--max-tokens", autotune_max_tokens,
             "--startup-timeout", "120",
-            "--request-timeout", "20",
-            "--task-fail-timeout", "20",
+            "--request-timeout", str(profile.request_timeout),
+            "--task-hard-timeout", str(profile.task_hard_timeout),
+            "--task-fail-timeout", str(profile.task_fail_timeout),
             "--background-server-policy", "fail",
-            "--allow-ctx-above-16k",
             "--real-context-mode", "repo-snapshot",
             "--real-context-chars", autotune_real_context_chars,
             "--no-reuse",
             "--no-v2-prime-pass",
             "--no-disable-thinking",
-            "--autotune-min-ctx", "32768",
-            "--autotune-ctx-values", "32768",
-            "--autotune-batch-values", "2048,4096,6144,8192",
-            "--autotune-ubatch-values", "128,192,256,512",
+            "--autotune-min-ctx", str(profile.min_ctx),
+            "--autotune-ctx-values", profile.ctx_values,
+            "--autotune-batch-values", ",".join(str(value) for value in batch_values),
+            "--autotune-ubatch-values", ",".join(str(value) for value in ubatch_values),
             "--autotune-kv-values", "q8_0,q4_0",
             "--autotune-spec-values", ",".join(spec_values),
             "--autotune-extra-presets", "base",
@@ -1141,6 +1154,12 @@ class BuildTabWidget(QWidget):
             "--autotune-update-preset",
             "--autotune-preset-file", "gui/model_presets.json",
         ]
+
+        if profile.task_ids:
+            command.extend(["--task-ids", profile.task_ids])
+
+        if profile.allow_ctx_above_16k:
+            command.append("--allow-ctx-above-16k")
 
         self._autotune_silent = silent
         self._autotune_result = {
@@ -1158,7 +1177,7 @@ class BuildTabWidget(QWidget):
         if hasattr(self, "quick_bench_btn"):
             self.quick_bench_btn.setEnabled(False)
         self.build_status_label.setText(
-            f"Running 32K autotune (v2-mini x1, prompt-heavy repo-snapshot, no-reuse, 20s cutoff) for {resolved_model.name}..."
+            f"Running active <16K autotune ({profile.lane_summary}) for {resolved_model.name}..."
         )
         self.bench_thread = QuickBenchmarkThread(command=command, working_dir=Path(self.parent.project_root))
         self.bench_thread.output.connect(self._on_autotune_output)
@@ -1253,8 +1272,7 @@ class BuildTabWidget(QWidget):
                 if fallback_ngram not in resolved:
                     resolved.append(fallback_ngram)
 
-        model_name = model_path.name.lower()
-        if "mtp" in resolved and "mtp" not in model_name and "nextn" not in model_name:
+        if "mtp" in resolved and not model_supports_mtp(model_path):
             resolved = [mode for mode in resolved if mode != "mtp"]
 
         unique: list[str] = []
@@ -1281,7 +1299,7 @@ class BuildTabWidget(QWidget):
         if hasattr(self, "quick_bench_btn"):
             self.quick_bench_btn.setEnabled(True)
         if hasattr(self.parent, "refresh_build_registry"):
-            self.parent.refresh_build_registry()
+            self.parent.refresh_build_registry(persist_benchmark_stats=True)
         if hasattr(self.parent, "builds_info_tab") and hasattr(self.parent.builds_info_tab, "refresh_builds_info"):
             self.parent.builds_info_tab.refresh_builds_info()
         if success:
@@ -1312,7 +1330,7 @@ class BuildTabWidget(QWidget):
         if hasattr(self, "quick_bench_btn"):
             self.quick_bench_btn.setEnabled(True)
         if hasattr(self.parent, "refresh_build_registry"):
-            self.parent.refresh_build_registry()
+            self.parent.refresh_build_registry(persist_benchmark_stats=True)
         if hasattr(self.parent, "builds_info_tab") and hasattr(self.parent.builds_info_tab, "refresh_builds_info"):
             self.parent.builds_info_tab.refresh_builds_info()
         payload = dict(self._autotune_result)
@@ -1330,11 +1348,11 @@ class BuildTabWidget(QWidget):
             if success:
                 QMessageBox.information(
                     self,
-                    "Auto-tune 32K",
+                    "Auto-tune",
                     "Autotune finished. Summary is in build_logs/agent-workload/ and preset was updated."
                 )
             else:
-                QMessageBox.warning(self, "Auto-tune 32K", "Autotune failed. Check build status/output.")
+                QMessageBox.warning(self, "Auto-tune", "Autotune failed. Check build status/output.")
 
     @staticmethod
     def _get_backend_build_dir(backend: str) -> str:

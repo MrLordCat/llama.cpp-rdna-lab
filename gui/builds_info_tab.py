@@ -84,7 +84,7 @@ class BuildsInfoTabWidget(QWidget):
         buttons_layout = QHBoxLayout()
 
         self.refresh_btn = QPushButton("🔄 Refresh")
-        self.refresh_btn.clicked.connect(self.refresh_builds_info)
+        self.refresh_btn.clicked.connect(lambda: self.refresh_builds_info(update_benchmark_stats=True))
         buttons_layout.addWidget(self.refresh_btn)
 
         self.open_build_btn = QPushButton("📂 Open Folder")
@@ -106,7 +106,7 @@ class BuildsInfoTabWidget(QWidget):
         # Connect selection changed
         self.builds_table.itemSelectionChanged.connect(self.on_build_selected)
 
-    def refresh_builds_info(self):
+    def refresh_builds_info(self, update_benchmark_stats: bool = False):
         """Refresh builds information"""
         self.builds_table.setRowCount(0)
         self.executables_table.setRowCount(0)
@@ -115,8 +115,8 @@ class BuildsInfoTabWidget(QWidget):
 
         registry = getattr(self.parent, "build_registry", None)
         if registry is not None and hasattr(self.parent, "refresh_build_registry"):
-            self.parent.refresh_build_registry()
-            registry.update_benchmark_stats_from_history()
+            self.parent.refresh_build_registry(persist_benchmark_stats=update_benchmark_stats)
+            registry.update_benchmark_stats_from_history(persist=update_benchmark_stats)
             records = sorted(
                 registry.list_builds(),
                 key=lambda r: (
