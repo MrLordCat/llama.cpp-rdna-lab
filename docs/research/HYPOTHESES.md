@@ -47,6 +47,7 @@ Where:
 | H11 | ROCm compute vbuffer chunking | A single large ROCm graph compute allocation can land in a bad RDNA4/Windows residency pocket even when kernel routes are unchanged | removes 3x+ prefill cliffs at large native ubatch | extra backend buffer chunks may add allocator fragmentation or affect non-ROCm backends if scoped incorrectly | single-chunk A/B with full `PP reserve` |
 | H12 | Direct/hybrid compressed-KV FlashAttention for local TurboKV | Full graph-dequant fallback is slow; full direct prefill is also slower at large ubatch; Turbo4 currently wants F16/WMMA prefill plus direct TKV decode | implemented; corrected ub1024 Turbo4 gap vs q4 is ~7% for `turbo4/turbo4`, ~5% for opt-in `turbo4/q8_0` | complex graph/backend integration and output equivalence risk | keep hybrid default for Turbo4, keep mixed TKV/Q8 opt-in, tune decode vec-dot and F16 dequant/prefill overhead, continue equivalence validation |
 | H13 | RDNA4 MoE/MMQ LDS staging adaptation | Stormrage's RDNA2 MoE accelerator suggests MMQ prefill can benefit from explicit LDS staging, padding, and occupancy tuning; RDNA4 needs a separate gated variant rather than a direct RDNA2 port | +3% to +10% MoE prefill if current RX 9070 XT path is LDS/occupancy limited | wrong kernel route or RDNA4 occupancy regression; dense path regressions | opt-in RDNA4-only A/B on MoE `b=1024,ub=1024` with dense negative control |
+| H30 | RDNA4 Q4_K/Q5_K large-prefill MMQ selector | Q4_K/Q5_K dequant+hipBLAS is much slower than MMQ on RX 9070 XT for Qwen3.6-27B-Q4_K_S at `ne11<=1024`, while the old RDNA4 K-quant MMQ gate was capped at `ne11<=192` | +3x to +4x Q4 prompt eval on affected prompt-heavy lanes | Q3_K/Q6_K regressions if broadened too far; Q4/Q5 shape-specific cliffs | Q4 pp512/pp1024 forced-MMQ A/B, default-threshold rerun, old-threshold negative control, Q3 negative control |
 
 ## Priority (Start Here)
 
@@ -56,9 +57,10 @@ Where:
 4. H05 because prefill IO is still dominant in prompt-heavy scenarios.
 5. H12 implemented as default Turbo4 hybrid path, but remains a performance-tuning track until the remaining `~7%` active-lane q4 gap is closed.
 6. H13 is the next Stormrage-derived performance idea, but must stay opt-in and RDNA4-gated until MoE A/B proves a win.
-7. H09 to avoid misleading speculative projections in low-coverage runs.
-8. H10 to explain cross-mode speculative regressions with measured overhead.
-9. H01 as a low-risk extension of existing ngram flow.
+7. H30 is completed and kept for Q4_K/Q5_K only: E070 confirms the `ne11<=1024` MMQ selector fixes the downloaded Q4_K_S slow path.
+8. H09 to avoid misleading speculative projections in low-coverage runs.
+9. H10 to explain cross-mode speculative regressions with measured overhead.
+10. H01 as a low-risk extension of existing ngram flow.
 
 ## Evidence Snapshot (E006 Retest)
 

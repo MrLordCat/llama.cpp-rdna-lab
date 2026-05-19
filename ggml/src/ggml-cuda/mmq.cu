@@ -17,6 +17,17 @@ static int ggml_rdna4_stream_k_min_ne11() {
     return min_ne11;
 }
 
+static int ggml_rdna4_q4k_mmq_max_ne11() {
+    int max_ne11 = 1024;
+    if (const char * env = std::getenv("GGML_MMQ_RDNA4_Q4K_MAX_NE11")) {
+        const int parsed = std::atoi(env);
+        if (parsed > 0) {
+            max_ne11 = parsed;
+        }
+    }
+    return max_ne11;
+}
+
 static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
     switch (args.type_x) {
         case GGML_TYPE_Q1_0:
@@ -392,10 +403,11 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
                 case GGML_TYPE_Q5_0:
                 case GGML_TYPE_Q5_1:
                     return ne11 <= 256;
-                case GGML_TYPE_Q2_K:
-                case GGML_TYPE_Q3_K:
                 case GGML_TYPE_Q4_K:
                 case GGML_TYPE_Q5_K:
+                    return ne11 <= ggml_rdna4_q4k_mmq_max_ne11();
+                case GGML_TYPE_Q2_K:
+                case GGML_TYPE_Q3_K:
                 case GGML_TYPE_Q6_K:
                     return ne11 <= 192;
                 default:

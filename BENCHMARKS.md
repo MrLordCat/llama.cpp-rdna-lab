@@ -2321,3 +2321,57 @@ Practical run:
 
 - Старый guard/cap до `ub=900` больше не нужен для native `ub1024` path.
 - Контроль `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1` возвращает slow result, что подтверждает allocator/residency root cause.
+
+## RDNA4 ROCm Q4_K_S Full-Offload + MMQ Selector (2026-05-19)
+
+Контекст: пользовательская модель `models/Qwen3.6-27B-Q4_K_S.gguf` оказалась значительно медленнее текущего Q3 профиля. Это не просто Q3 с другим bpw: Q4 файл имеет 65 блоков, NextN/MTP слой и Q4_K/Q5_K-heavy tensor mix.
+
+### Диагностика
+
+На активной prompt-heavy lane (`ctx=12288`, `b=4096`, `ub=1024`, `q4_0/q4_0`, FlashAttention, thinking ON, no-reuse) default auto-fit сначала уводил слои на CPU:
+
+| Label | Extra args | Offload | Wall | Prompt eval | Decode eval |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `e070-rocm-q4ks-baseline-ctx12288-r1` | default fit | 60/66 | `122.23s` | `64.39 tok/s` | `10.89 tok/s` |
+| `e070-rocm-q4ks-fitt0-ctx12288-r1` | `-fitt 0` | 64/66 | `111.43s` | `70.59 tok/s` | `12.07 tok/s` |
+| `e070-rocm-q4ks-fitoff-smoke-ctx12288-r1` | `-fit off` | 66/66 | smoke | `69.72 tok/s` | n/a |
+
+`-fit off` доказал, что CPU offload был первой проблемой, но не всей причиной: даже полный offload оставался медленным. `llama-bench` показал route issue в Q4_K/Q5_K: forced MMQ был намного быстрее старого default dequant+hipBLAS path.
+
+| Model | Route | pp512 | pp1024 |
+| --- | --- | ---: | ---: |
+| Q4_K_S old default | old RDNA4 gate (`ne11<=192`) | `57.30 tok/s` | `72.17 tok/s` |
+| Q4_K_S forced MMQ | `GGML_CUDA_FORCE_MMQ_RUNTIME=1` | `250.22 tok/s` | `328.25 tok/s` |
+
+### Изменение
+
+В `ggml/src/ggml-cuda/mmq.cu` RDNA4 selector теперь расширяет MMQ gate только для `Q4_K`/`Q5_K` до `ne11<=1024`. Остальные K-типы (`Q2_K`, `Q3_K`, `Q6_K`) остаются на старом `ne11<=192`. Для A/B и rollback добавлен override:
+
+```text
+GGML_MMQ_RDNA4_Q4K_MAX_NE11=<int>
+```
+
+Отрицательный контроль `GGML_MMQ_RDNA4_Q4K_MAX_NE11=192` возвращает старую скорость (`58.12 tok/s` pp512), что подтверждает причинность.
+
+### Результат
+
+| Label | Mode | Wall TPS | Wall | Prompt eval | Decode eval | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `e070-rocm-q4ks-defaultmmq-fitoff-clean-ctx12288-r1` | `spec=none`, `-fit off` | `2.25` | `28.44s` | `330.42 tok/s` | `11.15 tok/s` | current Q4 default recommendation |
+| `e070-rocm-q4ks-defaultmmq-mtp-fitoff-clean-ctx12288-r1` | MTP, `-fit off` | `1.63` | `39.17s` | `219.37 tok/s` | `12.80 tok/s` | acceptance `41/63`, slower overall |
+| Vulkan E068 Q4 check | `wm32-wn32` opt-in | `1.66` | `38.60s` | `262.35 tok/s` | `6.39 tok/s` | slower than ROCm Q4 after fix |
+
+Q3 negative control after the patch stayed healthy: `Qwen3.6-27B-Q3_K_S` pp512 measured `502.03 tok/s`; Q3_K route is intentionally unchanged.
+
+### GUI recommendation
+
+`gui/model_presets.json` now sets the Q4 preset to the practical RX 9070 XT path:
+
+- `ctx=12288`
+- `batch=4096`, `ubatch=1024`
+- `gpu_layers=-1`, FlashAttention ON
+- `q4_0/q4_0` KV
+- thinking ON
+- `extra_args`: `--spec-type none` + `-fit off`
+
+MTP remains opt-in for Q4. It improves accepted decode tokens in this test but adds enough prompt/MTP overhead that prompt-heavy wall time regresses.
