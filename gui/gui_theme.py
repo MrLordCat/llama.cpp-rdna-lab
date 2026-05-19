@@ -25,10 +25,10 @@ def apply_modern_theme(app) -> None:
         QTabBar::tab {
             background: #20242a;
             color: #c9ced6;
-            padding: 8px 14px;
+            padding: 7px 10px;
             border: 1px solid #343a43;
             border-bottom: none;
-            min-width: 120px;
+            min-width: 96px;
         }
         QTabBar::tab:selected {
             background: #2a3038;

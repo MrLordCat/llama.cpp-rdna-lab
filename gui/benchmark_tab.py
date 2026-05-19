@@ -16,15 +16,20 @@ from PyQt6.QtCore import QThread, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QAbstractScrollArea,
     QCheckBox,
     QFileDialog,
     QComboBox,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSplitter,
     QSpinBox,
     QTableWidget,
@@ -171,65 +176,120 @@ class BenchmarkTabWidget(QWidget):
         self.refresh_build_choices()
         self.refresh_saved_presets_table()
 
+    @staticmethod
+    def _create_scroll_panel(widget: QWidget) -> QScrollArea:
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setMinimumSize(0, 0)
+        scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        scroll_area.setWidget(widget)
+        return scroll_area
+
+    @staticmethod
+    def _configure_combo(combo: QComboBox, minimum_contents_length: int = 12) -> None:
+        combo.setMinimumContentsLength(minimum_contents_length)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumWidth(80)
+        combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    @staticmethod
+    def _configure_spinbox(spin_box: QSpinBox) -> None:
+        spin_box.setMinimumWidth(76)
+        spin_box.setMaximumWidth(118)
+        spin_box.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    @staticmethod
+    def _configure_compact_table(table: QTableWidget, column_widths: list[int]) -> None:
+        table.setAlternatingRowColors(True)
+        table.setWordWrap(False)
+        table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        table.setMinimumWidth(0)
+        table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+
+        header = table.horizontalHeader()
+        header.setMinimumSectionSize(48)
+        header.setStretchLastSection(False)
+        for column, width in enumerate(column_widths):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+            table.setColumnWidth(column, width)
+
     def create_ui(self):
         root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setSpacing(8)
 
         info_label = QLabel("📈 Bench & Autotune - dedicated benchmark workflows")
         info_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        info_label.setWordWrap(True)
         root_layout.addWidget(info_label)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         root_layout.addWidget(splitter, 1)
 
         left_widget = QWidget()
+        left_widget.setMinimumWidth(0)
+        left_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 8, 0)
+        left_layout.setSpacing(8)
         right_widget = QWidget()
+        right_widget.setMinimumWidth(0)
+        right_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 8, 0)
+        right_layout.setSpacing(8)
 
-        splitter.addWidget(left_widget)
-        splitter.addWidget(right_widget)
+        splitter.addWidget(self._create_scroll_panel(left_widget))
+        splitter.addWidget(self._create_scroll_panel(right_widget))
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
-        splitter.setSizes([900, 620])
+        splitter.setSizes([640, 520])
 
         model_group = QGroupBox("Model")
         model_layout = QVBoxLayout()
-        model_row = QHBoxLayout()
         self.model_path_input = QLineEdit()
         self.model_path_input.setPlaceholderText("Path to GGUF model...")
-        model_row.addWidget(self.model_path_input)
+        self.model_path_input.setMinimumWidth(0)
+        model_layout.addWidget(self.model_path_input)
 
-        self.model_browse_btn = QPushButton("📂 Browse")
+        self.model_browse_btn = QPushButton("Browse")
+        self.model_browse_btn.setToolTip("Select a GGUF model file")
         self.model_browse_btn.clicked.connect(self.browse_model)
-        model_row.addWidget(self.model_browse_btn)
-        model_layout.addLayout(model_row)
+        model_layout.addWidget(self.model_browse_btn)
 
-        combo_row = QHBoxLayout()
-        combo_row.addWidget(QLabel("Detected models:"))
+        model_layout.addWidget(QLabel("Detected models:"))
         self.model_combo = QComboBox()
         self.model_combo.currentTextChanged.connect(self.on_model_selected)
-        combo_row.addWidget(self.model_combo)
+        model_layout.addWidget(self.model_combo)
 
-        self.model_refresh_btn = QPushButton("🔄 Refresh")
+        self.model_refresh_btn = QPushButton("Refresh")
+        self.model_refresh_btn.setToolTip("Refresh detected GGUF models")
         self.model_refresh_btn.clicked.connect(self.refresh_models_list)
-        combo_row.addWidget(self.model_refresh_btn)
-        model_layout.addLayout(combo_row)
+        model_layout.addWidget(self.model_refresh_btn)
 
         model_group.setLayout(model_layout)
         left_layout.addWidget(model_group)
 
         build_group = QGroupBox("Build Target")
-        build_layout = QHBoxLayout()
-        build_layout.addWidget(QLabel("Backend:"))
+        build_layout = QGridLayout()
+        build_layout.setHorizontalSpacing(8)
+        build_layout.setVerticalSpacing(6)
+        build_layout.addWidget(QLabel("Backend:"), 0, 0)
         self.build_backend_combo = QComboBox()
         self.build_backend_combo.currentTextChanged.connect(self._on_backend_changed)
-        build_layout.addWidget(self.build_backend_combo)
+        build_layout.addWidget(self.build_backend_combo, 0, 1)
 
-        build_layout.addWidget(QLabel("Version:"))
+        build_layout.addWidget(QLabel("Version:"), 1, 0)
         self.build_version_combo = QComboBox()
-        build_layout.addWidget(self.build_version_combo)
+        build_layout.addWidget(self.build_version_combo, 1, 1)
+        build_layout.setColumnStretch(1, 1)
         build_group.setLayout(build_layout)
         left_layout.addWidget(build_group)
 
@@ -237,70 +297,66 @@ class BenchmarkTabWidget(QWidget):
         params_layout = QVBoxLayout()
 
         single_group = QGroupBox("Single Benchmark (used by Run Benchmark)")
-        single_layout = QVBoxLayout()
+        single_layout = QGridLayout()
+        single_layout.setHorizontalSpacing(8)
+        single_layout.setVerticalSpacing(6)
 
-        single_row1 = QHBoxLayout()
-        single_row1.addWidget(QLabel("Tasks:"))
+        single_layout.addWidget(QLabel("Tasks:"), 0, 0)
         self.tasks_combo = QComboBox()
         self.tasks_combo.addItems(["v2-mini", "v2", "quick", "full"])
         self.tasks_combo.setCurrentText("v2-mini")
-        single_row1.addWidget(self.tasks_combo)
+        single_layout.addWidget(self.tasks_combo, 0, 1)
 
-        single_row1.addWidget(QLabel("Runs:"))
+        single_layout.addWidget(QLabel("Runs:"), 1, 0)
         self.runs_spin = QSpinBox()
         self.runs_spin.setMinimum(1)
         self.runs_spin.setMaximum(10)
         self.runs_spin.setValue(1)
-        single_row1.addWidget(self.runs_spin)
+        single_layout.addWidget(self.runs_spin, 1, 1)
 
-        single_row1.addWidget(QLabel("Spec:"))
+        single_layout.addWidget(QLabel("Spec:"), 2, 0)
         self.spec_combo = QComboBox()
         self.spec_combo.addItems(["none", "ngram-mod", "mtp", "ngram-mtp"])
         self.spec_combo.setCurrentText("none")
-        single_row1.addWidget(self.spec_combo)
-        single_layout.addLayout(single_row1)
+        single_layout.addWidget(self.spec_combo, 2, 1)
 
-        single_row2 = QHBoxLayout()
-        single_row2.addWidget(QLabel("Ctx:"))
+        single_layout.addWidget(QLabel("Ctx:"), 3, 0)
         self.ctx_spin = QSpinBox()
         self.ctx_spin.setMinimum(8192)
         self.ctx_spin.setMaximum(131072)
         self.ctx_spin.setValue(65536)
         self.ctx_spin.setSingleStep(8192)
-        single_row2.addWidget(self.ctx_spin)
+        single_layout.addWidget(self.ctx_spin, 3, 1)
 
-        single_row2.addWidget(QLabel("Batch:"))
+        single_layout.addWidget(QLabel("Batch:"), 4, 0)
         self.batch_spin = QSpinBox()
         self.batch_spin.setMinimum(32)
         self.batch_spin.setMaximum(8192)
         self.batch_spin.setValue(2048)
         self.batch_spin.setSingleStep(32)
-        single_row2.addWidget(self.batch_spin)
+        single_layout.addWidget(self.batch_spin, 4, 1)
 
-        single_row2.addWidget(QLabel("UBatch:"))
+        single_layout.addWidget(QLabel("UBatch:"), 5, 0)
         self.ubatch_spin = QSpinBox()
         self.ubatch_spin.setMinimum(32)
         self.ubatch_spin.setMaximum(8192)
         self.ubatch_spin.setValue(512)
         self.ubatch_spin.setSingleStep(32)
-        single_row2.addWidget(self.ubatch_spin)
-        single_layout.addLayout(single_row2)
+        single_layout.addWidget(self.ubatch_spin, 5, 1)
 
-        single_row3 = QHBoxLayout()
-        single_row3.addWidget(QLabel("KV K/V:"))
+        single_layout.addWidget(QLabel("KV K/V:"), 6, 0)
         self.kv_combo = QComboBox()
         self.kv_combo.addItems(["q8_0", "q4_0", "f16", "bf16", "f32"])
         self.kv_combo.setCurrentText("q4_0")
-        single_row3.addWidget(self.kv_combo)
+        single_layout.addWidget(self.kv_combo, 6, 1)
 
-        single_row3.addWidget(QLabel("Max tokens:"))
+        single_layout.addWidget(QLabel("Max tokens:"), 7, 0)
         self.max_tokens_spin = QSpinBox()
         self.max_tokens_spin.setMinimum(8)
         self.max_tokens_spin.setMaximum(1024)
         self.max_tokens_spin.setValue(80)
-        single_row3.addWidget(self.max_tokens_spin)
-        single_row3.addStretch(1)
-        single_layout.addLayout(single_row3)
+        single_layout.addWidget(self.max_tokens_spin, 7, 1)
+        single_layout.setColumnStretch(1, 1)
 
         single_group.setLayout(single_layout)
         params_layout.addWidget(single_group)
@@ -312,73 +368,80 @@ class BenchmarkTabWidget(QWidget):
             "Fixed mode: ctx=32768, tasks=v2-mini, runs=1, prompt-heavy repo-snapshot, "
             "no-reuse, no-prime, thinking on, request/task timeout=20s"
         )
+        autotune_mode_info.setWordWrap(True)
         autotune_mode_info.setStyleSheet("color: #b0b0b0;")
         autotune_layout.addWidget(autotune_mode_info)
 
-        row4 = QHBoxLayout()
-        row4.addWidget(QLabel("Batch min:"))
+        batch_grid = QGridLayout()
+        batch_grid.setHorizontalSpacing(8)
+        batch_grid.setVerticalSpacing(6)
+        batch_grid.addWidget(QLabel("Batch min:"), 0, 0)
         self.at_batch_min_spin = QSpinBox()
         self.at_batch_min_spin.setMinimum(32)
         self.at_batch_min_spin.setMaximum(8192)
         self.at_batch_min_spin.setValue(2048)
         self.at_batch_min_spin.setSingleStep(32)
         self.at_batch_min_spin.setToolTip("Minimal batch value in sweep (>= 32)")
-        row4.addWidget(self.at_batch_min_spin)
+        batch_grid.addWidget(self.at_batch_min_spin, 0, 1)
 
-        row4.addWidget(QLabel("Batch max:"))
+        batch_grid.addWidget(QLabel("Batch max:"), 1, 0)
         self.at_batch_max_spin = QSpinBox()
         self.at_batch_max_spin.setMinimum(32)
         self.at_batch_max_spin.setMaximum(8192)
         self.at_batch_max_spin.setValue(8192)
         self.at_batch_max_spin.setSingleStep(32)
         self.at_batch_max_spin.setToolTip("Maximal batch value in sweep")
-        row4.addWidget(self.at_batch_max_spin)
+        batch_grid.addWidget(self.at_batch_max_spin, 1, 1)
 
-        row4.addWidget(QLabel("Batch step:"))
+        batch_grid.addWidget(QLabel("Batch step:"), 2, 0)
         self.at_batch_step_spin = QSpinBox()
         self.at_batch_step_spin.setMinimum(1)
         self.at_batch_step_spin.setMaximum(8192)
         self.at_batch_step_spin.setValue(2048)
         self.at_batch_step_spin.setSingleStep(1)
         self.at_batch_step_spin.setToolTip("Increment for batch range")
-        row4.addWidget(self.at_batch_step_spin)
-        row4.addStretch(1)
-        autotune_layout.addLayout(row4)
+        batch_grid.addWidget(self.at_batch_step_spin, 2, 1)
+        batch_grid.setColumnStretch(1, 1)
+        autotune_layout.addLayout(batch_grid)
 
-        row5 = QHBoxLayout()
-        row5.addWidget(QLabel("UBatch min:"))
+        ubatch_grid = QGridLayout()
+        ubatch_grid.setHorizontalSpacing(8)
+        ubatch_grid.setVerticalSpacing(6)
+        ubatch_grid.addWidget(QLabel("UBatch min:"), 0, 0)
         self.at_ubatch_min_spin = QSpinBox()
         self.at_ubatch_min_spin.setMinimum(32)
         self.at_ubatch_min_spin.setMaximum(8192)
         self.at_ubatch_min_spin.setValue(128)
         self.at_ubatch_min_spin.setSingleStep(32)
         self.at_ubatch_min_spin.setToolTip("Minimal ubatch value in sweep (>= 32)")
-        row5.addWidget(self.at_ubatch_min_spin)
+        ubatch_grid.addWidget(self.at_ubatch_min_spin, 0, 1)
 
-        row5.addWidget(QLabel("UBatch max:"))
+        ubatch_grid.addWidget(QLabel("UBatch max:"), 1, 0)
         self.at_ubatch_max_spin = QSpinBox()
         self.at_ubatch_max_spin.setMinimum(32)
         self.at_ubatch_max_spin.setMaximum(8192)
         self.at_ubatch_max_spin.setValue(512)
         self.at_ubatch_max_spin.setSingleStep(32)
         self.at_ubatch_max_spin.setToolTip("Maximal ubatch value in sweep")
-        row5.addWidget(self.at_ubatch_max_spin)
+        ubatch_grid.addWidget(self.at_ubatch_max_spin, 1, 1)
 
-        row5.addWidget(QLabel("UBatch step:"))
+        ubatch_grid.addWidget(QLabel("UBatch step:"), 2, 0)
         self.at_ubatch_step_spin = QSpinBox()
         self.at_ubatch_step_spin.setMinimum(1)
         self.at_ubatch_step_spin.setMaximum(8192)
         self.at_ubatch_step_spin.setValue(64)
         self.at_ubatch_step_spin.setSingleStep(1)
         self.at_ubatch_step_spin.setToolTip("Increment for ubatch range")
-        row5.addWidget(self.at_ubatch_step_spin)
-        row5.addStretch(1)
-        autotune_layout.addLayout(row5)
+        ubatch_grid.addWidget(self.at_ubatch_step_spin, 2, 1)
+        ubatch_grid.setColumnStretch(1, 1)
+        autotune_layout.addLayout(ubatch_grid)
 
-        kv_row = QHBoxLayout()
-        kv_row.addWidget(QLabel("KV sweep:"))
+        kv_grid = QGridLayout()
+        kv_grid.setHorizontalSpacing(14)
+        kv_grid.setVerticalSpacing(4)
+        kv_grid.addWidget(QLabel("KV sweep:"), 0, 0)
         self.autotune_kv_checks: dict[str, QCheckBox] = {}
-        for kv_name, enabled, hint in [
+        for index, (kv_name, enabled, hint) in enumerate([
             ("q4_0", True, "Main fast lane for current prompt-heavy target"),
             ("q8_0", True, "Higher-quality KV cache variant"),
             ("turbo4", False, "TurboKV 4-bit cache (128-block WHT, correctness path)"),
@@ -387,75 +450,82 @@ class BenchmarkTabWidget(QWidget):
             ("f16", False, "FP16 KV (usually slower/heavier)"),
             ("bf16", False, "BF16 KV (usually slower/heavier)"),
             ("f32", False, "FP32 KV (debug/reference only)"),
-        ]:
+        ]):
             checkbox = QCheckBox(kv_name)
             checkbox.setChecked(enabled)
             checkbox.setToolTip(hint)
             self.autotune_kv_checks[kv_name] = checkbox
-            kv_row.addWidget(checkbox)
-        kv_row.addStretch(1)
-        autotune_layout.addLayout(kv_row)
+            kv_grid.addWidget(checkbox, index // 2, (index % 2) + 1)
+        kv_grid.setColumnStretch(3, 1)
+        autotune_layout.addLayout(kv_grid)
 
-        spec_row = QHBoxLayout()
-        spec_row.addWidget(QLabel("Spec sweep:"))
+        spec_grid = QGridLayout()
+        spec_grid.setHorizontalSpacing(14)
+        spec_grid.setVerticalSpacing(4)
+        spec_grid.addWidget(QLabel("Spec sweep:"), 0, 0)
         self.autotune_spec_checks: dict[str, QCheckBox] = {}
-        for mode, enabled, hint in [
+        for index, (mode, enabled, hint) in enumerate([
             ("none", True, "Always keep plain decoding baseline in sweep"),
             ("ngram-mod", True, "Ngram speculative mode"),
             ("draft", False, "Draft speculative mode when supported"),
             ("eagle3", False, "Eagle3 speculative mode when supported"),
             ("mtp", False, "MTP mode; requires server + MTP model support"),
             ("ngram-mtp", False, "Experimental ngram first, MTP fallback mode"),
-        ]:
+        ]):
             checkbox = QCheckBox(mode)
             checkbox.setChecked(enabled)
             checkbox.setToolTip(hint)
             self.autotune_spec_checks[mode] = checkbox
-            spec_row.addWidget(checkbox)
-        spec_row.addStretch(1)
-        autotune_layout.addLayout(spec_row)
+            spec_grid.addWidget(checkbox, index // 2, (index % 2) + 1)
+        spec_grid.setColumnStretch(3, 1)
+        autotune_layout.addLayout(spec_grid)
 
-        extra_row = QHBoxLayout()
-        extra_row.addWidget(QLabel("Extra presets:"))
+        extra_grid = QGridLayout()
+        extra_grid.setHorizontalSpacing(14)
+        extra_grid.setVerticalSpacing(4)
+        extra_grid.addWidget(QLabel("Extra presets:"), 0, 0)
         self._autotune_extra_presets_map: dict[str, str] = {
             "base": "base",
             "ngram-balanced": "ngram-balanced::--spec-ngram-mod-n-min 48 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-max 64",
             "ngram-wide": "ngram-wide::--spec-ngram-mod-n-min 64 --spec-ngram-mod-n-match 32 --spec-ngram-mod-n-max 96",
         }
         self.autotune_extra_checks: dict[str, QCheckBox] = {}
-        for key, enabled, hint in [
+        for index, (key, enabled, hint) in enumerate([
             ("base", True, "No extra server arguments"),
             ("ngram-balanced", False, "Balanced ngram knobs for ngram-mod"),
             ("ngram-wide", False, "Wider ngram window for ngram-mod"),
-        ]:
+        ]):
             checkbox = QCheckBox(key)
             checkbox.setChecked(enabled)
             checkbox.setToolTip(hint)
             self.autotune_extra_checks[key] = checkbox
-            extra_row.addWidget(checkbox)
-        extra_row.addStretch(1)
-        autotune_layout.addLayout(extra_row)
+            extra_grid.addWidget(checkbox, index // 2, (index % 2) + 1)
+        extra_grid.setColumnStretch(3, 1)
+        autotune_layout.addLayout(extra_grid)
 
         custom_extra_row = QHBoxLayout()
         custom_extra_row.addWidget(QLabel("Custom extras:"))
         self.autotune_custom_extra_input = QLineEdit()
         self.autotune_custom_extra_input.setPlaceholderText("name::--arg value||name2::--arg2 value")
         self.autotune_custom_extra_input.setToolTip("Optional extra presets; separate presets with ||")
+        self.autotune_custom_extra_input.setMinimumWidth(0)
         custom_extra_row.addWidget(self.autotune_custom_extra_input)
         autotune_layout.addLayout(custom_extra_row)
 
-        row7 = QHBoxLayout()
+        session_grid = QGridLayout()
+        session_grid.setHorizontalSpacing(14)
+        session_grid.setVerticalSpacing(4)
         self.autotune_resume_checkbox = QCheckBox("Resume unfinished session")
         self.autotune_resume_checkbox.setChecked(True)
         self.autotune_resume_checkbox.setToolTip("Continue from saved autotune progress if a previous run was interrupted")
-        row7.addWidget(self.autotune_resume_checkbox)
+        session_grid.addWidget(self.autotune_resume_checkbox, 0, 0)
 
         self.autotune_reset_session_checkbox = QCheckBox("Reset saved session before run")
         self.autotune_reset_session_checkbox.setChecked(False)
         self.autotune_reset_session_checkbox.setToolTip("Ignore and overwrite previous session checkpoint for this model/profile")
-        row7.addWidget(self.autotune_reset_session_checkbox)
-        row7.addStretch(1)
-        autotune_layout.addLayout(row7)
+        session_grid.addWidget(self.autotune_reset_session_checkbox, 1, 0)
+        session_grid.setColumnStretch(1, 1)
+        autotune_layout.addLayout(session_grid)
 
         self.autotune_grid_preview_label = QLabel("")
         self.autotune_grid_preview_label.setWordWrap(True)
@@ -466,6 +536,31 @@ class BenchmarkTabWidget(QWidget):
 
         params_group.setLayout(params_layout)
         left_layout.addWidget(params_group)
+
+        for combo, minimum_contents_length in [
+            (self.model_combo, 18),
+            (self.build_backend_combo, 10),
+            (self.build_version_combo, 18),
+            (self.tasks_combo, 8),
+            (self.spec_combo, 10),
+            (self.kv_combo, 8),
+        ]:
+            self._configure_combo(combo, minimum_contents_length)
+
+        for spin_box in [
+            self.runs_spin,
+            self.ctx_spin,
+            self.batch_spin,
+            self.ubatch_spin,
+            self.max_tokens_spin,
+            self.at_batch_min_spin,
+            self.at_batch_max_spin,
+            self.at_batch_step_spin,
+            self.at_ubatch_min_spin,
+            self.at_ubatch_max_spin,
+            self.at_ubatch_step_spin,
+        ]:
+            self._configure_spinbox(spin_box)
 
         for spin_box in [
             self.at_batch_min_spin,
@@ -482,26 +577,32 @@ class BenchmarkTabWidget(QWidget):
         self.autotune_custom_extra_input.textChanged.connect(self._update_autotune_grid_preview)
         self._update_autotune_grid_preview()
 
-        btn_row = QHBoxLayout()
-        self.run_bench_btn = QPushButton("⚡ Run Benchmark")
+        btn_grid = QGridLayout()
+        btn_grid.setHorizontalSpacing(8)
+        btn_grid.setVerticalSpacing(6)
+        self.run_bench_btn = QPushButton("Run Benchmark")
+        self.run_bench_btn.setToolTip("Run the single benchmark profile above")
         self.run_bench_btn.clicked.connect(self.run_benchmark)
-        btn_row.addWidget(self.run_bench_btn)
+        btn_grid.addWidget(self.run_bench_btn, 0, 0)
 
-        self.run_autotune_btn = QPushButton("🎯 Run Auto-tune 32K (v2-mini x1)")
+        self.run_autotune_btn = QPushButton("Run Auto-tune 32K")
+        self.run_autotune_btn.setToolTip("Run the 32K v2-mini x1 autotune grid")
         self.run_autotune_btn.clicked.connect(self.run_autotune)
-        btn_row.addWidget(self.run_autotune_btn)
+        btn_grid.addWidget(self.run_autotune_btn, 1, 0)
 
-        self.stop_btn = QPushButton("⏹ Stop")
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setToolTip("Stop the current benchmark or autotune run")
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self.stop_current_run)
-        btn_row.addWidget(self.stop_btn)
+        btn_grid.addWidget(self.stop_btn, 2, 0)
 
-        self.open_history_btn = QPushButton("📄 Open BENCH_HISTORY.md")
+        self.open_history_btn = QPushButton("Open History")
+        self.open_history_btn.setToolTip("Open build_logs/agent-workload/BENCH_HISTORY.md")
         self.open_history_btn.clicked.connect(self.open_history_md)
-        btn_row.addWidget(self.open_history_btn)
+        btn_grid.addWidget(self.open_history_btn, 3, 0)
 
-        btn_row.addStretch(1)
-        left_layout.addLayout(btn_row)
+        btn_grid.setColumnStretch(0, 1)
+        left_layout.addLayout(btn_grid)
 
         self.status_label = QLabel("Ready")
         left_layout.addWidget(self.status_label)
@@ -511,7 +612,7 @@ class BenchmarkTabWidget(QWidget):
         log_layout = QVBoxLayout()
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
-        self.log_output.setMinimumHeight(200)
+        self.log_output.setMinimumHeight(150)
         log_layout.addWidget(self.log_output)
         log_group.setLayout(log_layout)
         right_layout.addWidget(log_group, 2)
@@ -539,35 +640,46 @@ class BenchmarkTabWidget(QWidget):
         self.presets_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.presets_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.presets_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.presets_table.setMinimumHeight(230)
+        self.presets_table.setMinimumHeight(190)
+        self._configure_compact_table(
+            self.presets_table,
+            [140, 180, 82, 70, 105, 72, 96, 110, 180, 120, 120, 120, 150, 160],
+        )
         presets_layout.addWidget(self.presets_table)
 
-        presets_actions = QHBoxLayout()
-        self.apply_history_preset_btn = QPushButton("✅ Apply Selected Run as Default")
+        presets_actions = QGridLayout()
+        presets_actions.setHorizontalSpacing(8)
+        presets_actions.setVerticalSpacing(6)
+        self.apply_history_preset_btn = QPushButton("Apply Default")
+        self.apply_history_preset_btn.setToolTip("Apply the selected run as the default model preset")
         self.apply_history_preset_btn.clicked.connect(self.apply_selected_run_as_default_preset)
-        presets_actions.addWidget(self.apply_history_preset_btn)
+        presets_actions.addWidget(self.apply_history_preset_btn, 0, 0)
 
-        self.delete_history_run_btn = QPushButton("🗑 Delete Selected Run")
+        self.delete_history_run_btn = QPushButton("Delete")
+        self.delete_history_run_btn.setToolTip("Delete the selected autotune run from history")
         self.delete_history_run_btn.clicked.connect(self.delete_selected_preset)
-        presets_actions.addWidget(self.delete_history_run_btn)
+        presets_actions.addWidget(self.delete_history_run_btn, 1, 0)
 
-        self.refresh_history_btn = QPushButton("🔄 Refresh Run History")
+        self.refresh_history_btn = QPushButton("Refresh")
+        self.refresh_history_btn.setToolTip("Refresh autotune run history")
         self.refresh_history_btn.clicked.connect(self.refresh_saved_presets_table)
-        presets_actions.addWidget(self.refresh_history_btn)
+        presets_actions.addWidget(self.refresh_history_btn, 2, 0)
 
-        self.open_history_log_btn = QPushButton("📂 Open Selected Run Log")
+        self.open_history_log_btn = QPushButton("Open Log")
+        self.open_history_log_btn.setToolTip("Open the log for the selected run")
         self.open_history_log_btn.clicked.connect(self.open_selected_history_log)
-        presets_actions.addWidget(self.open_history_log_btn)
+        presets_actions.addWidget(self.open_history_log_btn, 3, 0)
 
-        self.copy_history_log_btn = QPushButton("📋 Copy Selected Run Log")
+        self.copy_history_log_btn = QPushButton("Copy Log")
+        self.copy_history_log_btn.setToolTip("Copy the selected run log content")
         self.copy_history_log_btn.clicked.connect(self.copy_selected_history_log_to_clipboard)
-        presets_actions.addWidget(self.copy_history_log_btn)
+        presets_actions.addWidget(self.copy_history_log_btn, 4, 0)
 
-        self.copy_history_row_btn = QPushButton("📋 Copy Selected Run Data")
+        self.copy_history_row_btn = QPushButton("Copy Row")
+        self.copy_history_row_btn.setToolTip("Copy the selected run data")
         self.copy_history_row_btn.clicked.connect(self.copy_selected_history_row_to_clipboard)
-        presets_actions.addWidget(self.copy_history_row_btn)
+        presets_actions.addWidget(self.copy_history_row_btn, 5, 0)
 
-        presets_actions.addStretch(1)
         presets_layout.addLayout(presets_actions)
 
         presets_group.setLayout(presets_layout)
@@ -589,7 +701,11 @@ class BenchmarkTabWidget(QWidget):
             "Status",
         ])
         self.autotune_history_table.setSortingEnabled(True)
-        self.autotune_history_table.setMinimumHeight(280)
+        self.autotune_history_table.setMinimumHeight(190)
+        self._configure_compact_table(
+            self.autotune_history_table,
+            [62, 70, 76, 76, 70, 96, 120, 70, 78],
+        )
         history_layout.addWidget(self.autotune_history_table)
         history_group.setLayout(history_layout)
         right_layout.addWidget(history_group, 4)
