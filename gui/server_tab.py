@@ -225,7 +225,7 @@ class ServerTabWidget(QWidget):
         kv_layout = QHBoxLayout()
         kv_layout.addWidget(QLabel("KV Cache Type:"))
         self.server_kv_type_combo = QComboBox()
-        self.server_kv_type_combo.addItems(["f32", "f16", "bf16", "q8_0", "q4_0"])
+        self.server_kv_type_combo.addItems(["f16", "bf16", "f32", "q8_0", "q4_0"])
         self.server_kv_type_combo.setCurrentText("f16")
         kv_layout.addWidget(self.server_kv_type_combo)
 
@@ -536,9 +536,9 @@ class ServerTabWidget(QWidget):
             self._apply_spec_controls_from_extra_args(str(match["extra_args"]).strip())
 
         kv_map = {
-            0: "f32",
-            1: "f16",
-            2: "bf16",
+            0: "f16",
+            1: "bf16",
+            2: "f32",
             3: "q8_0",
             7: "q4_0",
         }

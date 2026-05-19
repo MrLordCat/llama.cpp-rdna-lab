@@ -48,6 +48,10 @@ Where:
 | H12 | Direct/hybrid compressed-KV FlashAttention for local TurboKV | Full graph-dequant fallback is slow; full direct prefill is also slower at large ubatch; Turbo4 currently wants F16/WMMA prefill plus direct TKV decode | implemented; corrected ub1024 Turbo4 gap vs q4 is ~7% for `turbo4/turbo4`, ~5% for opt-in `turbo4/q8_0` | complex graph/backend integration and output equivalence risk | keep hybrid default for Turbo4, keep mixed TKV/Q8 opt-in, tune decode vec-dot and F16 dequant/prefill overhead, continue equivalence validation |
 | H13 | RDNA4 MoE/MMQ LDS staging adaptation | Stormrage's RDNA2 MoE accelerator suggests MMQ prefill can benefit from explicit LDS staging, padding, and occupancy tuning; RDNA4 needs a separate gated variant rather than a direct RDNA2 port | +3% to +10% MoE prefill if current RX 9070 XT path is LDS/occupancy limited | wrong kernel route or RDNA4 occupancy regression; dense path regressions | opt-in RDNA4-only A/B on MoE `b=1024,ub=1024` with dense negative control |
 | H30 | RDNA4 Q4_K/Q5_K large-prefill MMQ selector | Q4_K/Q5_K dequant+hipBLAS is much slower than MMQ on RX 9070 XT for Qwen3.6-27B-Q4_K_S at `ne11<=1024`, while the old RDNA4 K-quant MMQ gate was capped at `ne11<=192` | +3x to +4x Q4 prompt eval on affected prompt-heavy lanes | Q3_K/Q6_K regressions if broadened too far; Q4/Q5 shape-specific cliffs | Q4 pp512/pp1024 forced-MMQ A/B, default-threshold rerun, old-threshold negative control, Q3 negative control |
+| H31 | RDNA4 Vulkan Q3_K large-MMQ tile retarget | E068 proved AMD proprietary Vulkan large tiles can recover most Q3 prompt loss, but the best wall variant may not be the best raw prefill variant; `wn16` and nearby tile shapes may reduce register/LDS pressure in Q3_K `mul_mmq` | +2% to +8% prompt eval without code changes if an existing tile shape is better for prefill | wall TPS may fall if decode/overhead worsens; env-only tuning may be shape-specific | active-lane `wn16`/`wm32-wn32` A/B against same ROCm prompt baseline |
+| H32 | Vulkan Q3_K MMQ byte-wise sub4 | Q3_K MMVQ already subtracts the offset with a 32-bit byte-wise bit trick, but Q3_K MMQ still does unpack/subtract/repack in the hot dot loop that dominates prefill | +1% to +4% prompt eval if ALU/register overhead matters | compiler already optimizes it away, or bit-twiddle increases pressure | active-lane E072 `wm32-wn32` A/B with perf logger if promising |
+| H33 | Vulkan Q3_K MMQ packed32 loads | Q3_K MMQ still loads four packed16 pairs for each repack even though Q3_K packed32 layout exists and MMVQ already uses it | +1% to +5% prompt eval if load/repack overhead is material | added temporaries/register pressure, or old packed16 loads already coalesce well | active-lane E073 `wm32-wn32` A/B |
+| H34 | Q3 12k f16 KV prefill profile | At ctx=12288 the Q3_K_S model fits with f16 KV, avoiding compressed-KV attention overhead that shows up as a large FlashAttention block in Vulkan perf logs | +3% to +7% raw prompt eval | more VRAM, output-length/wall-TPS comparability changes, not viable for long context | E074 Vulkan/ROCm f16 KV A/B |
 
 ## Priority (Start Here)
 
@@ -58,9 +62,13 @@ Where:
 5. H12 implemented as default Turbo4 hybrid path, but remains a performance-tuning track until the remaining `~7%` active-lane q4 gap is closed.
 6. H13 is the next Stormrage-derived performance idea, but must stay opt-in and RDNA4-gated until MoE A/B proves a win.
 7. H30 is completed and kept for Q4_K/Q5_K only: E070 confirms the `ne11<=1024` MMQ selector fixes the downloaded Q4_K_S slow path.
-8. H09 to avoid misleading speculative projections in low-coverage runs.
-9. H10 to explain cross-mode speculative regressions with measured overhead.
-10. H01 as a low-risk extension of existing ngram flow.
+8. H31 is near-complete for tile constants: E071 refresh puts Vulkan `wm32-wn32` within `0.6%` of ROCm raw prompt and `+7.7%` wall, but extra WM/WN source variants did not beat it on the active lane.
+9. H32 was tested in E072 and rejected as a no-code-kept micro-optimization; Q3_K MMQ remains the dominant target, but this specific subtract rewrite is not useful.
+10. H33 was tested in E073 and rejected as a no-code-kept packed32 load-side rewrite for active Q3_K MMQ.
+11. H34 is kept as a 12k Q3 speed profile: f16 KV gives a measured Vulkan raw prefill win, with q4_0 KV retained as the memory fallback.
+12. H09 to avoid misleading speculative projections in low-coverage runs.
+13. H10 to explain cross-mode speculative regressions with measured overhead.
+14. H01 as a low-risk extension of existing ngram flow.
 
 ## Evidence Snapshot (E006 Retest)
 
@@ -68,4 +76,8 @@ Where:
 - Supported as modeling-next-step: H10.
 - Analytic-only so far: H02.
 - Plausible but not measured yet: H01, H03, H04, H05, H06, H07, H13.
+- Measured near-miss: H31; tile retargeting alone is probably not enough to significantly exceed ROCm raw prefill.
+- Rejected narrow probe: H32 / E072, Q3_K MMQ offset subtract micro-optimization based on the existing MMVQ bit-twiddle; first active gate was a small regression, so the shader patch was reverted.
+- Rejected narrow probe: H33 / E073, Q3_K MMQ packed32 load-side rewrite; first active gate was a small regression, so the shader patch was reverted.
+- Kept profile change: H34 / E074, Q3_K_S ctx=12288 f16 KV speed preset; raw Vulkan prompt `1230.7333 tok/s` over 3 runs, above same-KV ROCm `1194.22 tok/s`.
 - Prototype measured and promoted to default for eligible TKV lanes. Smoke `pp64/tg8` improved `turbo4_0` from `186.69/17.09` fallback to `227.88/24.82` direct. Corrected active-lane `v2-review` at `ub=1024` shows Turbo4 hybrid below q4 but much closer; after specialized `TKV4 set_rows`, `q4_0=11.17 TPS`, `turbo4=10.38 TPS` (`-7.1%`). Mixed opt-in `turbo4/q8_0` measured `10.60 TPS` (`-5.1%`) with larger KV. Diagnostic `ub=192` remains useful only for direct-vs-fallback (`turbo4 direct=6.68`, fallback=3.10 TPS).
