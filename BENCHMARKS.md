@@ -2529,6 +2529,7 @@ Cold-first baseline остаётся отдельной метрикой: `--no-
 | `e110-rocm-q3k-fitoff-r1` | cold-first, `-fit off` | `11.7557` | tie; do not transfer Q4 fit-off rule to Q3 |
 | `e111-rocm-q3k-reuse-steady-r1` | repeated/session, reuse enabled | `14.6132` | prompt cache/checkpoints enabled |
 | `e111-rocm-q3k-reuse-steady-r3` | repeated/session, reuse enabled | `17.7984` | confirmed route; after-first tasks about `20.00 TPS` |
+| `e112-rocm-q3k-reuse-ngram244864-r3` | repeated/session, reuse + ngram-mod | `18.7194` | stacked opt-in route; after-first tasks about `21.40 TPS` |
 
 E111 is the useful practical gain from this cycle, but it is **not** a cold-first kernel/default speedup. Server logs show the mechanism:
 
@@ -2540,6 +2541,7 @@ E111 is the useful practical gain from this cycle, but it is **not** a cold-firs
 Вывод:
 
 - Для GUI/agent sessions keep prompt cache/checkpoints enabled: practical repeated throughput is now around `17.8 TPS` aggregate and `~20 TPS` after the first shared-prefix task.
+- Optional stacked session route: add `--spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64` on top of cache/checkpoints. In E112 this reached `18.72 TPS` aggregate and about `21.40 TPS` after the first task, with `102/126` accepted draft tokens in two bursts.
 - For cold-first kernel work keep using no-reuse controls; the current cold-first ceiling remains around `11.75-11.85 TPS` on this 12k q4-KV lane.
 - Speculative cold-first projections must include coverage/effective acceptance. In E107 local acceptance alone was misleading because coverage was almost zero.
 - GDN block-geometry changes now require resource/occupancy proof before coding; `num_warps=1/2` and chunk-size style probes are closed.

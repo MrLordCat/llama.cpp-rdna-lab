@@ -69,7 +69,7 @@ Confirmed 12k repeated/session lane:
 | KV | `q4_0/q4_0` |
 | Speculation | `--spec-type none` |
 | Reuse | prompt cache/checkpoints enabled |
-| Metric type | repeated/steady only; E111 r3 `17.7984 TPS`, after-first tasks about `20.00 TPS` |
+| Metric type | repeated/steady only; E111 r3 `17.7984 TPS`, E112 reuse+ngram r3 `18.7194 TPS`, after-first tasks about `21.40 TPS` with stacked ngram |
 
 Historical trace lane:
 
@@ -332,8 +332,12 @@ Metric interpretation:
 - `ngram-mod` has measured repeated/steady upside in older lanes, but E107
   rejects the tested ngram settings for the current 12k q4-KV cold-first lane:
   coverage/effective acceptance were near zero and wall TPS regressed.
+- E112 keeps `ngram-mod 24/48/64` as an opt-in stacked session route on top of
+  prompt cache/checkpoints: `17.7984 -> 18.7194 TPS`, with `102/126` draft
+  tokens accepted in two bursts.
 - Future speculative claims must report local acceptance, coverage, and
-  effective acceptance together.
+  effective acceptance together, plus per-task accepted-token bursts when
+  coverage is sparse.
 - MTP smoke results are promising, but not a default route without the right
   GGUF and compatibility validation.
 
@@ -357,7 +361,9 @@ E111 measured this route on the active 12k ROCm q4-KV lane with `spec=none`:
 | cold-first reference `e106-rocm-q3k-control-r1` | `11.8464` | no reuse, cache/checkpoints disabled |
 | `e111-rocm-q3k-reuse-steady-r1` | `14.6132` | first task cold, second task reused prefix |
 | `e111-rocm-q3k-reuse-steady-r3` | `17.7984` | six tasks, five reused-prefix tasks |
+| `e112-rocm-q3k-reuse-ngram244864-r3` | `18.7194` | prompt reuse plus opt-in ngram bursts |
 | after-first tasks in E111 r3 | `~20.00` | practical repeated-session throughput |
+| after-first tasks in E112 r3 | `~21.40` | stacked ngram repeated-session throughput |
 
 Log evidence:
 
@@ -371,6 +377,8 @@ Interpretation:
 
 - This is a real practical route for GUI/agent sessions.
 - It is not a cold-first kernel/default improvement.
+- `ngram-mod 24/48/64` can stack on this route, but only as an opt-in repeated
+  session profile because the benefit is bursty and task-dependent.
 - Do not disable server reuse in user-facing presets unless the goal is a clean
   first-response benchmark.
 
@@ -458,7 +466,7 @@ Use these to keep future acceleration plans evidence-based:
 | Question | Tooling/route | Notes |
 | --- | --- | --- |
 | Where is wall time by server phase? | server timings, `scripts/agent_workload_bench.py` output | Separates prompt eval and generation |
-| Does prompt reuse help? | same-lane run without `--no-reuse`, cache/checkpoint log evidence | E111 confirms this is the main repeated/session route |
+| Does prompt reuse help? | same-lane run without `--no-reuse`, cache/checkpoint log evidence | E111 confirms this is the main repeated/session route; E112 shows opt-in ngram can stack |
 | How does ubatch split behave? | `LLAMA_UBATCH_TIMING=1`, optional `LLAMA_UBATCH_TIMING_SYNC=1` | Use sync only for diagnostic shares, not headline TPS |
 | Which ROCm matmul route is active? | route traces around `ggml_cuda_mul_mat` and `GGML_TRACE_CUBLAS_Q3K_ROUTE` | Default off; trace changes timing |
 | How much Q3_K staging repeats? | E103-style Q3_K route reuse trace | Already shows maximal repeat count but too much fp16 footprint |
@@ -477,7 +485,7 @@ Use these to keep future acceleration plans evidence-based:
 | P2 | Vulkan Q3_K prompt shader | Vulkan decode is strong but prompt Q3_K route trails ROCm | Useful fallback/idea source, not primary ROCm TPS fix |
 | P3 | KV/FA long-context route | q4 and FA preserve fit; alternatives have regressed | Keep q4/FA; optimize only after same-lane A/B |
 | P4 | Prompt cache/checkpoint session route | Strong repeated/session gain by avoiding shared-prefix prefill | Keep enabled for practical sessions; do not mix with cold baseline |
-| P5 | `ngram-mod` session route | Can help warm decode, but current 12k cold-first coverage is near zero | Keep opt-in; require coverage/effective acceptance |
+| P5 | `ngram-mod` session route | Can stack on prompt cache via rare long accepted-token bursts; current 12k cold-first coverage is near zero | Keep opt-in; require coverage/effective acceptance and burst evidence |
 | P6 | GDN/SSM/RMS/fusions | Visible but smaller; past simple probes negative | Revisit if a trace shows shared memory/residency slowdown |
 
 ## Cleanup and Deletion Boundaries
