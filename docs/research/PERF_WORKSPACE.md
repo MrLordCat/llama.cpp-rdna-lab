@@ -4,6 +4,11 @@ This workspace layer is for fast, reproducible TPS work on `llama.cpp-with-GUI`.
 It does not replace `AGENTS.md`; it points agents to the shortest safe path for
 local ROCm/Vulkan performance research.
 
+Open this repository in VS Code via `llama.cpp-with-GUI.code-workspace` from the
+repo root. The workspace file provides the folder, search/watcher exclusions,
+file associations, and extension recommendations; `.vscode/tasks.json` provides
+the runnable benchmark/check tasks.
+
 ## Purpose
 
 - Reduce agent ramp-up time before TPS experiments.

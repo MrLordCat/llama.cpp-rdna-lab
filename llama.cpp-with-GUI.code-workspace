@@ -1,0 +1,49 @@
+{
+    "folders": [
+        {
+            "name": "llama.cpp-with-GUI",
+            "path": "."
+        }
+    ],
+    "settings": {
+        "python-envs.defaultEnvManager": "ms-python.python:system",
+        "cmake.configureOnOpen": false,
+        "files.associations": {
+            "*.comp": "glsl",
+            "*.glsl": "glsl",
+            "*.cu": "cuda-cpp",
+            "*.cuh": "cuda-cpp"
+        },
+        "search.exclude": {
+            "**/__pycache__/**": true,
+            "**/.pytest_cache/**": true,
+            "build/**": true,
+            "build-*/**": true,
+            "models/**": true,
+            "**/*.gguf": true,
+            "vendor/**": true
+        },
+        "files.watcherExclude": {
+            "**/__pycache__/**": true,
+            "**/.pytest_cache/**": true,
+            "build/**": true,
+            "build-*/**": true,
+            "models/**": true,
+            "**/*.gguf": true,
+            "build_logs/**": true
+        }
+    },
+    "extensions": {
+        "recommendations": [
+            "github.copilot",
+            "github.copilot-chat",
+            "ms-python.python",
+            "ms-vscode.cmake-tools",
+            "ms-vscode.cpptools"
+        ],
+        "unwantedRecommendations": [
+            "ms-toolsai.jupyter",
+            "vscjava.vscode-java-pack"
+        ]
+    }
+}
