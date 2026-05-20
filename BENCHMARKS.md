@@ -2502,3 +2502,44 @@ Q3 negative control after the patch stayed healthy: `Qwen3.6-27B-Q3_K_S` pp512 m
 - `extra_args`: `--spec-type none` + `-fit off`
 
 MTP remains opt-in for Q4. It improves accepted decode tokens in this test but adds enough prompt/MTP overhead that prompt-heavy wall time regresses.
+
+## ROCm Q3_K 12k Route Refresh and Repeated-Session Gain (2026-05-20)
+
+Контекст: после полной карты маршрутов был обновлён активный `Qwen3.6-27B-Q3_K_S` профиль на RX 9070 XT / ROCm:
+
+- `ctx=12288`
+- `batch=6144`, `ubatch=2048`
+- KV `q4_0/q4_0`
+- `spec=none`
+- tasks `triage_diff,review_bug`
+- thinking ON
+
+Cold-first baseline остаётся отдельной метрикой: `--no-reuse --cache-ram 0 --ctx-checkpoints 0`.
+
+| Label | Mode | Aggregate TPS | Notes |
+| --- | --- | ---: | --- |
+| `e106-rocm-q3k-control-r1` | cold-first, no reuse | `11.8464` | fresh same-lane control |
+| `e107-rocm-q3k-ngrammod-r1` | cold-first, ngram-mod 24/48/64 | `11.7838` | generated zero drafts; reject |
+| `e107-rocm-q3k-ngrammod-m12-r1` | cold-first, ngram-mod 12/16/32 | `11.3471` | effective acceptance `0.001428`; reject |
+| `e107-rocm-q3k-ngramsimple-n8m16-r1` | cold-first, ngram-simple | `11.2810` | effective acceptance `0.004908`; reject |
+| `e108-rocm-gdn-control-r1` | cold-first post-build control | `11.7604` | GDN probe baseline |
+| `e108-rocm-gdn-warps2-r1` | cold-first, temporary `num_warps=2` | `11.7408` | reject/reverted |
+| `e108-rocm-gdn-warps1-r1` | cold-first, temporary `num_warps=1` | `11.7258` | reject/reverted |
+| `e109-vulkan12k-q3k-q4kv-r1` | Vulkan same-lane fallback | `0.0000` | full offload loaded, first task timed out |
+| `e110-rocm-q3k-fitoff-r1` | cold-first, `-fit off` | `11.7557` | tie; do not transfer Q4 fit-off rule to Q3 |
+| `e111-rocm-q3k-reuse-steady-r1` | repeated/session, reuse enabled | `14.6132` | prompt cache/checkpoints enabled |
+| `e111-rocm-q3k-reuse-steady-r3` | repeated/session, reuse enabled | `17.7984` | confirmed route; after-first tasks about `20.00 TPS` |
+
+E111 is the useful practical gain from this cycle, but it is **not** a cold-first kernel/default speedup. Server logs show the mechanism:
+
+- prompt cache enabled with `8192 MiB` limit;
+- first task creates checkpoints around `5370` and `7418` tokens;
+- later tasks select the slot by LCP similarity (`sim_best=0.982-0.984`);
+- later tasks restore the `5370`-token checkpoint and reprocess only about `2033-2052` prompt tokens instead of the full `7403-7422`.
+
+Вывод:
+
+- Для GUI/agent sessions keep prompt cache/checkpoints enabled: practical repeated throughput is now around `17.8 TPS` aggregate and `~20 TPS` after the first shared-prefix task.
+- For cold-first kernel work keep using no-reuse controls; the current cold-first ceiling remains around `11.75-11.85 TPS` on this 12k q4-KV lane.
+- Speculative cold-first projections must include coverage/effective acceptance. In E107 local acceptance alone was misleading because coverage was almost zero.
+- GDN block-geometry changes now require resource/occupancy proof before coding; `num_warps=1/2` and chunk-size style probes are closed.

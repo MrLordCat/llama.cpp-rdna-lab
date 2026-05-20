@@ -26,7 +26,8 @@ metric refresh as lanes change, not route discovery for the current profile.
 | Vulkan build/backend/shader routes | Medium-high | Same-lane route timings for every non-matmul op; more FA/KV-specific Vulkan traces |
 | Q4 KV cache route | Medium | Fresh ROCm same-lane q4/q8/f16 A/B at `ctx=12288` and `ctx=32768`; existing evidence is enough to keep q4 as default |
 | FlashAttention | Medium | Fresh FA on/off A/B for the active `ubatch=2048` lane; existing trace says FA is not the main 12k bottleneck |
-| `ngram-mod` and speculative routes | Medium | Fresh cold/warm split on the active `ubatch=2048` lane; MTP needs an MTP-enabled GGUF before speed claims |
+| Prompt cache/checkpoint session route | High | Refresh only when prompt templates or server cache defaults change |
+| `ngram-mod` and speculative routes | Medium-high | E107 covered cold-first same-lane failure; remaining gap is repeated-session ngram on top of prompt-cache route. MTP needs an MTP-enabled GGUF before speed claims |
 | GUI/server command route | Medium | Server launch generation and GUI knobs are identified, but not fully mapped node-by-node |
 | Cleanup/pruning guidance | Conservative | Any deletion still needs build-profile proof; current docs are not a deletion authorization |
 
@@ -61,6 +62,15 @@ Historical decode/C01 lane used by several trace documents:
 - Keep its per-route timing data, but do not mix its TPS headline with the
   newer `ubatch=2048` prompt-heavy cold-first lane.
 
+Repeated/steady session lane:
+
+- Same model/backend/context/batch/KV as the main 12k lane.
+- Reuse enabled; do not pass `--no-reuse`, `--cache-ram 0`, or
+  `--ctx-checkpoints 0`.
+- `spec=none` for the confirmed E111 route.
+- Metric type: repeated/steady only; never use as a cold-first kernel/default
+  headline.
+
 ## Route Metric Table
 
 | Route | Evidence | Bottleneck reason | Current decision |
@@ -69,6 +79,7 @@ Historical decode/C01 lane used by several trace documents:
 | ROCm Q3_K MMQ/MMVQ decode and medium shapes | C01 split: `mul_mat_q_direct|q3_K 386.811 ms`, `mul_mat_vec_q_direct|q3_K 214.295 ms`, `cublas_backend|f32 205.952 ms`; steady small-slice share is about `71%` Q3 direct routes | Quantized unpack, tile shape, and RDNA4 occupancy dominate repeated decode/medium work. Local nwarps/tile tuning gave small real gains, but route remains a sustained cost center | Keep. Incremental tuning only if it targets observed Q3 buckets and has cold/warm split |
 | FlashAttention on ROCm | E026 C01 trace: sync CUDA_NODE total `24758.198 ms`; `FLASH_ATTN_EXT forward = 638.004 ms`, about `2.58%`; dominant shape `ne=(256,24,192,1)`, sum `607.121 ms`, count `1216`, avg `0.4993 ms`; active reduced route was WMMA F16 with `D=256`, `q_rows=192`, `selected_cols=16` | On the 12k Qwen lane FA is not large enough to move wall TPS much. A 10% local FA win is only about `0.25-0.30%` wall in that trace | Covered as route and metric. Keep FA, but it is not the first TPS lever for 12k prompt-heavy |
 | Q4 KV cache (`q4_0/q4_0`) | E009 TurboKV probes: q4 baseline `11.15-11.17 TPS`; TKV4 direct/hybrid regressed `-7%` to `-10%`; mixed TKV/Q8 narrowed gap but still lost to q4. E076 Vulkan 32k KV gate: q4 safe-force baseline `9.8493`; q8 `9.1102`; f16 `8.8361` | Q4 KV reduces memory footprint and bandwidth enough to fit long context and keep attention viable. Higher precision KV increases memory pressure; local TurboKV direct paths remain slower than q4 | Current preferred KV route. Treat q4 as part of the active lane, not as an optional side note |
+| Server prompt cache / context checkpoints | E111 same-lane reuse route: cold-first reference `11.8464 TPS`; reuse r1 `14.6132 TPS`; reuse r3 `17.7984 TPS`; after-first tasks about `20.00 TPS`; logs show prompt cache enabled, LCP similarity `0.982-0.984`, and restored `5370`-token checkpoints | Sequential repo tasks share a large prompt prefix. The route does not make kernels faster; it avoids reprocessing most of the shared prompt and turns repeated prompt-heavy tasks into shorter prefill + same decode | Keep enabled for practical GUI/agent sessions. Disable only when collecting cold-first kernel/default claims |
 | `ngram-mod` speculative route | E026: generated draft coverage `0.0167`, effective acceptance `0.00675`, local acceptance `0.4051`; E028 repeated/steady: `9.4890 -> 10.3689 TPS` (`+9.27%`), effective acceptance `0.023594`; E030 split: clean cold/warm `9.47/9.45`, ngram cold/warm `9.46/10.72` | It helps when a session is warm enough to populate useful ngram state. Cold-first prompt-heavy TPS barely moves because draft coverage is low at the start | Keep as opt-in warm/session accelerator. Do not make it a cold-first default without a new split proving it |
 | MTP / `ngram-mtp` | E060 smoke: MTP accepted `46/48` draft tokens, `0.958` local acceptance, `13.53 TPS`; `ngram-mtp` `13.54 TPS`; `ngram-mod` generated zero drafts in that triage | MTP can be strong only with an MTP-enabled GGUF and compatible server route. It is not a generic replacement for ngram or prompt prefill work | Documented, guarded/experimental. No default GUI claim until compatible model and server path are verified |
 | Vulkan Q3_K prompt route | E061 12k prompt-heavy: Vulkan `4.2206 TPS` vs ROCm `6.3327 TPS`; decode-biased Vulkan was faster (`35.2850` vs ROCm `27.9781`). E100/E102 32k valid spec-none: Vulkan `10.5230`, ROCm `10.8879`; Vulkan prompt side remains the gap. E078-E102 identify active Q3_K pipeline `matmul_q3_k_f32_f16acc_aligned_l` | Vulkan decode is competitive, but prompt-heavy Q3_K matmul is still limited by the active shader/cooperative-matrix route. The remaining gap is not FA-first | Keep Vulkan as fallback/comparison. Future Vulkan work should stay on Q3_K prompt shader route, not broad backend churn |
@@ -147,10 +158,42 @@ CLI/server route:
 
 Performance interpretation:
 
-- `ngram-mod` has real repeated/steady upside, but low cold-first coverage.
+- E107 showed the current q4-KV 12k cold-first lane does not benefit from the
+  tested ngram settings: `24/48/64` generated zero drafts, and smaller
+  settings reached only `0.001428-0.004908` effective acceptance while
+  regressing wall TPS.
+- `ngram-mod` can still have repeated/steady upside, but only after coverage
+  appears; report local acceptance, coverage, and effective acceptance together.
 - It does not attack prompt prefill, so it cannot solve the current main
   prompt-heavy Q3_K bottleneck alone.
 - Report it separately as `repeated/steady` unless the split says otherwise.
+
+## Prompt Cache / Checkpoint Route
+
+Server route:
+
+- `tools/server/server-context.cpp` updates the prompt cache when slots become
+  available.
+- Similar prompt prefixes are selected by LCP similarity.
+- Context checkpoints can restore a shared prefix and then reprocess only the
+  changed tail.
+
+Measured E111 behavior on the active 12k ROCm q4-KV lane:
+
+- cold-first reference: `11.8464 TPS`;
+- reuse r1: `14.6132 TPS`;
+- reuse r3: `17.7984 TPS`;
+- after-first repeated tasks: about `20.00 TPS`;
+- full prompt tokens stayed around `7403-7422`, but reused tasks processed only
+  about `2033-2052` prompt tokens after restoring the `5370`-token checkpoint.
+
+Performance interpretation:
+
+- This is the strongest route gain found in the current cycle, but it is a
+  session/reuse gain rather than a kernel gain.
+- Keep it enabled in practical GUI/agent sessions.
+- Keep disabling it for cold-first kernel work so route changes are compared
+  against the same baseline.
 
 ## Why The Current TPS Wall Is Not One Thing
 
@@ -162,7 +205,7 @@ the scenario:
 | 12k cold-first prompt-heavy ROCm | Large Q3_K prefill through hipBLAS staging; Q3_K -> fp16 conversion and memory movement are the route ceiling |
 | 12k decode/medium ROCm | Q3_K MMQ/MMVQ direct routes and smaller fused/runtime kernels |
 | 32k long-context | KV memory pressure and attention viability matter more; q4 is the practical default, FA is required for some quantized KV cases |
-| Warm/repeated sessions | ngram state can improve decode, but only after coverage appears |
+| Warm/repeated sessions | Prompt cache/checkpoints can remove most shared-prefix prefill; ngram can help decode only after coverage appears |
 | Vulkan fallback | Decode can be strong; prompt-heavy Q3_K shader path is the limiter |
 
 ## Measurement Gaps
@@ -175,8 +218,8 @@ Before deleting code or changing defaults, collect these in order:
 2. Same-lane FA on/off A/B, only to confirm ceiling; do not over-prioritize it
    unless FA share rises sharply.
 3. Same-lane KV A/B: `q4_0/q4_0` vs `q8_0/q8_0` and `f16/f16` at 12k and 32k.
-4. Same-lane `ngram-mod` cold/warm split. Keep cold-first and repeated/steady
-   headlines separate.
+4. Same-lane `ngram-mod` repeated-session check on top of the E111 prompt-cache
+   route. Keep cold-first and repeated/steady headlines separate.
 5. MTP or `ngram-mtp` only with a known MTP-enabled GGUF and an explicit
    compatibility note.
 6. Vulkan 32k route trace focused on active Q3_K shader pipeline, not broad

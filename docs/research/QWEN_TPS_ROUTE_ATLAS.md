@@ -58,6 +58,19 @@ Important session/long-context lane:
 | Speculation | `ngram-mod` only as opt-in repeated/steady behavior |
 | Metric type | keep cold-first and repeated/steady separate |
 
+Confirmed 12k repeated/session lane:
+
+| Field | Value |
+| --- | --- |
+| Model | `models/Qwen3.6-27B-Q3_K_S.gguf` |
+| Backend | ROCm/HIP on RX 9070 XT / `gfx1201` |
+| Context | `ctx=12288` |
+| Batch | `batch=6144`, `ubatch=2048` |
+| KV | `q4_0/q4_0` |
+| Speculation | `--spec-type none` |
+| Reuse | prompt cache/checkpoints enabled |
+| Metric type | repeated/steady only; E111 r3 `17.7984 TPS`, after-first tasks about `20.00 TPS` |
+
 Historical trace lane:
 
 | Field | Value |
@@ -144,6 +157,8 @@ Server-route bottleneck rules:
 
 - If prompt eval is slow and kernel traces point to `MUL_MAT`, fix backend
   compute first.
+- If repeated tasks share a large prefix, keep prompt cache/checkpoints enabled
+  for practical throughput; disable them only for cold-first kernel claims.
 - If prompt eval is fast but generation stalls, inspect sampling, draft
   coverage, TG scheduler, and small-batch kernels.
 - If failures shrink `n_batch`, inspect KV slot pressure and reuse/checkpoint
@@ -314,10 +329,50 @@ Server behavior:
 
 Metric interpretation:
 
-- `ngram-mod` has measured repeated/steady upside, but cold-first coverage is
-  low at session start.
+- `ngram-mod` has measured repeated/steady upside in older lanes, but E107
+  rejects the tested ngram settings for the current 12k q4-KV cold-first lane:
+  coverage/effective acceptance were near zero and wall TPS regressed.
+- Future speculative claims must report local acceptance, coverage, and
+  effective acceptance together.
 - MTP smoke results are promising, but not a default route without the right
   GGUF and compatibility validation.
+
+## Prompt Cache and Checkpoint Route
+
+Primary file: `tools/server/server-context.cpp`.
+
+Route mechanics:
+
+1. The server keeps slot prompt state after a request.
+2. Before the next request, prompt cache update and LCP similarity pick the best
+   reusable slot/prefix.
+3. Context checkpoints restore a shared prefix when the exact current prompt
+   tail differs.
+4. The server reprocesses only the changed tail, then continues normal decode.
+
+E111 measured this route on the active 12k ROCm q4-KV lane with `spec=none`:
+
+| Run | Aggregate TPS | Interpretation |
+| --- | ---: | --- |
+| cold-first reference `e106-rocm-q3k-control-r1` | `11.8464` | no reuse, cache/checkpoints disabled |
+| `e111-rocm-q3k-reuse-steady-r1` | `14.6132` | first task cold, second task reused prefix |
+| `e111-rocm-q3k-reuse-steady-r3` | `17.7984` | six tasks, five reused-prefix tasks |
+| after-first tasks in E111 r3 | `~20.00` | practical repeated-session throughput |
+
+Log evidence:
+
+- prompt cache enabled with `8192 MiB` limit;
+- LCP similarity `0.982-0.984`;
+- restored checkpoint at `5370` tokens;
+- reused tasks processed about `2033-2052` prompt tokens instead of full
+  `7403-7422` token prompts.
+
+Interpretation:
+
+- This is a real practical route for GUI/agent sessions.
+- It is not a cold-first kernel/default improvement.
+- Do not disable server reuse in user-facing presets unless the goal is a clean
+  first-response benchmark.
 
 ## ROCm Compute Route
 
@@ -403,6 +458,7 @@ Use these to keep future acceleration plans evidence-based:
 | Question | Tooling/route | Notes |
 | --- | --- | --- |
 | Where is wall time by server phase? | server timings, `scripts/agent_workload_bench.py` output | Separates prompt eval and generation |
+| Does prompt reuse help? | same-lane run without `--no-reuse`, cache/checkpoint log evidence | E111 confirms this is the main repeated/session route |
 | How does ubatch split behave? | `LLAMA_UBATCH_TIMING=1`, optional `LLAMA_UBATCH_TIMING_SYNC=1` | Use sync only for diagnostic shares, not headline TPS |
 | Which ROCm matmul route is active? | route traces around `ggml_cuda_mul_mat` and `GGML_TRACE_CUBLAS_Q3K_ROUTE` | Default off; trace changes timing |
 | How much Q3_K staging repeats? | E103-style Q3_K route reuse trace | Already shows maximal repeat count but too much fp16 footprint |
@@ -420,8 +476,9 @@ Use these to keep future acceleration plans evidence-based:
 | P1 | ROCm Q3_K MMQ/MMVQ decode/medium shapes | Sustained Q3 direct route pressure in C01 traces | Tune only with exact bucket evidence |
 | P2 | Vulkan Q3_K prompt shader | Vulkan decode is strong but prompt Q3_K route trails ROCm | Useful fallback/idea source, not primary ROCm TPS fix |
 | P3 | KV/FA long-context route | q4 and FA preserve fit; alternatives have regressed | Keep q4/FA; optimize only after same-lane A/B |
-| P4 | `ngram-mod` session route | Warm upside, low cold-first coverage | Keep opt-in; do not mix with cold baseline |
-| P5 | GDN/SSM/RMS/fusions | Visible but smaller; past simple probes negative | Revisit if a trace shows shared memory/residency slowdown |
+| P4 | Prompt cache/checkpoint session route | Strong repeated/session gain by avoiding shared-prefix prefill | Keep enabled for practical sessions; do not mix with cold baseline |
+| P5 | `ngram-mod` session route | Can help warm decode, but current 12k cold-first coverage is near zero | Keep opt-in; require coverage/effective acceptance |
+| P6 | GDN/SSM/RMS/fusions | Visible but smaller; past simple probes negative | Revisit if a trace shows shared memory/residency slowdown |
 
 ## Cleanup and Deletion Boundaries
 
@@ -453,6 +510,8 @@ The route map is considered complete enough for the next TPS plan when:
 - the active Qwen launch/config route is mapped;
 - q4 KV and FA interactions are mapped;
 - ngram/MTP/speculative routes are mapped and separated from cold-first claims;
+- prompt cache/checkpoint reuse route is mapped and separated from cold-first
+  claims;
 - Qwen graph layer families are mapped to ggml ops;
 - ROCm and Vulkan compute routes are cross-linked;
 - the current measured bottlenecks are ranked;
