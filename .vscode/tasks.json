@@ -6,6 +6,7 @@
             "type": "shell",
             "command": "git",
             "args": ["status", "--short", "--branch"],
+            "group": "test",
             "problemMatcher": []
         },
         {
@@ -15,8 +16,9 @@
             "args": [
                 "-NoProfile",
                 "-Command",
-                "Get-Process llama-server -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path"
+                "if (Get-Process llama-server -ErrorAction SilentlyContinue) { Get-Process llama-server -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path; exit 1 } else { Write-Host 'No llama-server process found' }"
             ],
+            "group": "test",
             "problemMatcher": []
         },
         {
@@ -91,6 +93,7 @@
             "type": "shell",
             "command": "python",
             "args": ["scripts/research/formula_sanity_checks.py"],
+            "group": "test",
             "problemMatcher": []
         },
         {
@@ -102,6 +105,7 @@
                 "PATH=\"/c/Strawberry/c/bin:$PATH\" GGML_VK_FORCE_AMD_LARGE_MATMUL=1 python scripts/agent_workload_bench.py --server-bin build-vulkan/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --label vscode-vulkan32k-control-r1 --ctx-size 32768 --batch-size 5120 --ubatch-size 1024 --gpu-layers 999 --cache-type-k q4_0 --cache-type-v q4_0 --flash-attn --parallel 1 --max-tokens 120 --tasks v2-mini --task-ids v2_write_function --real-context-mode repo-snapshot --real-context-chars 21872 --no-disable-thinking --no-reuse --allow-ctx-above-16k --runs 1 --background-server-policy fail"
             ],
             "dependsOn": ["bench: check no llama-server"],
+            "group": "test",
             "problemMatcher": []
         },
         {
@@ -113,6 +117,7 @@
                 "python scripts/agent_workload_bench.py --server-bin build-rocm-vec/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --label vscode-rocm32k-control-r1 --ctx-size 32768 --batch-size 5120 --ubatch-size 1024 --gpu-layers 999 --cache-type-k q4_0 --cache-type-v q4_0 --flash-attn --parallel 1 --max-tokens 120 --tasks v2-mini --task-ids v2_write_function --real-context-mode repo-snapshot --real-context-chars 21872 --no-disable-thinking --no-reuse --allow-ctx-above-16k --runs 1 --background-server-policy fail"
             ],
             "dependsOn": ["bench: check no llama-server"],
+            "group": "test",
             "problemMatcher": []
         },
         {
@@ -123,6 +128,7 @@
                 "-lc",
                 "tail -n 40 build_logs/agent-workload/BENCH_HISTORY_V2.md"
             ],
+            "group": "test",
             "problemMatcher": []
         }
     ]

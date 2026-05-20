@@ -106,7 +106,12 @@ Current Vulkan-vs-ROCm diagnostic lane:
 Check no background server:
 
 ```powershell
-Get-Process llama-server -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path
+if (Get-Process llama-server -ErrorAction SilentlyContinue) {
+   Get-Process llama-server -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path
+   exit 1
+} else {
+   Write-Host "No llama-server process found"
+}
 ```
 
 Build Vulkan server and bench:
