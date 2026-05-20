@@ -1,0 +1,28 @@
+{
+    "python-envs.defaultEnvManager": "ms-python.python:system",
+    "cmake.configureOnOpen": false,
+    "files.associations": {
+        "*.comp": "glsl",
+        "*.glsl": "glsl",
+        "*.cu": "cuda-cpp",
+        "*.cuh": "cuda-cpp"
+    },
+    "search.exclude": {
+        "**/__pycache__/**": true,
+        "**/.pytest_cache/**": true,
+        "build/**": true,
+        "build-*/**": true,
+        "models/**": true,
+        "**/*.gguf": true,
+        "vendor/**": true
+    },
+    "files.watcherExclude": {
+        "**/__pycache__/**": true,
+        "**/.pytest_cache/**": true,
+        "build/**": true,
+        "build-*/**": true,
+        "models/**": true,
+        "**/*.gguf": true,
+        "build_logs/**": true
+    }
+}

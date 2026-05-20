@@ -8,6 +8,8 @@ No active default speedup branch remains. Parked leads are H28 selector parity, 
 
 This folder is a local R&D workspace for ideas beyond current ngram speculative decoding and Flash Attention baselines.
 
+For VS Code agent setup, fixed tasks, tool budgets, and benchmark workflow, start with `PERF_WORKSPACE.md`.
+
 ## Goal
 
 Find reproducible changes that can improve wall TPS in the active prompt-heavy lane, not only synthetic microbenchmarks.
@@ -35,6 +37,7 @@ Primary lane (project policy):
 ## Structure
 
 - HYPOTHESES.md: prioritized candidate ideas and why they might work
+- PERF_WORKSPACE.md: VS Code agent/tool/task workflow for reproducible TPS work
 - PERFORMANCE_ARCHIVE_2026-05-18.md: final pause/archive summary for the current cycle
 - EXPERIMENT_TEMPLATE.md: standard template for each experiment
 - RESULTS_LOG.md: compact ledger of executed experiments

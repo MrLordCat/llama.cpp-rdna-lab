@@ -1,0 +1,129 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "workspace: git status",
+            "type": "shell",
+            "command": "git",
+            "args": ["status", "--short", "--branch"],
+            "problemMatcher": []
+        },
+        {
+            "label": "bench: check no llama-server",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-Command",
+                "Get-Process llama-server -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "checks: gui py_compile",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "-m",
+                "py_compile",
+                "gui/llama_gui.py",
+                "gui/build_manager.py",
+                "gui/dependency_checker.py",
+                "gui/hardware_detector.py"
+            ],
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "checks: diff check",
+            "type": "shell",
+            "command": "git",
+            "args": ["diff", "--check"],
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "checks: precommit quick",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "checks: gui py_compile",
+                "checks: diff check"
+            ],
+            "problemMatcher": [],
+            "group": "test"
+        },
+        {
+            "label": "build: vulkan server+bench",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "--build",
+                "build-vulkan",
+                "--target",
+                "llama-server",
+                "llama-bench",
+                "--config",
+                "Release",
+                "-j",
+                "8"
+            ],
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "configure: rocm gfx1201",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "-B",
+                "build-rocm",
+                "-G",
+                "Ninja",
+                "-DGGML_HIP=ON",
+                "-DAMDGPU_TARGETS=gfx1201",
+                "-DCMAKE_BUILD_TYPE=Release"
+            ],
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "research: formula sanity",
+            "type": "shell",
+            "command": "python",
+            "args": ["scripts/research/formula_sanity_checks.py"],
+            "problemMatcher": []
+        },
+        {
+            "label": "bench: vulkan q3 32k control",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-lc",
+                "PATH=\"/c/Strawberry/c/bin:$PATH\" GGML_VK_FORCE_AMD_LARGE_MATMUL=1 python scripts/agent_workload_bench.py --server-bin build-vulkan/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --label vscode-vulkan32k-control-r1 --ctx-size 32768 --batch-size 5120 --ubatch-size 1024 --gpu-layers 999 --cache-type-k q4_0 --cache-type-v q4_0 --flash-attn --parallel 1 --max-tokens 120 --tasks v2-mini --task-ids v2_write_function --real-context-mode repo-snapshot --real-context-chars 21872 --no-disable-thinking --no-reuse --allow-ctx-above-16k --runs 1 --background-server-policy fail"
+            ],
+            "dependsOn": ["bench: check no llama-server"],
+            "problemMatcher": []
+        },
+        {
+            "label": "bench: rocm q3 32k control",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-lc",
+                "python scripts/agent_workload_bench.py --server-bin build-rocm-vec/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --label vscode-rocm32k-control-r1 --ctx-size 32768 --batch-size 5120 --ubatch-size 1024 --gpu-layers 999 --cache-type-k q4_0 --cache-type-v q4_0 --flash-attn --parallel 1 --max-tokens 120 --tasks v2-mini --task-ids v2_write_function --real-context-mode repo-snapshot --real-context-chars 21872 --no-disable-thinking --no-reuse --allow-ctx-above-16k --runs 1 --background-server-policy fail"
+            ],
+            "dependsOn": ["bench: check no llama-server"],
+            "problemMatcher": []
+        },
+        {
+            "label": "bench: history tail",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-lc",
+                "tail -n 40 build_logs/agent-workload/BENCH_HISTORY_V2.md"
+            ],
+            "problemMatcher": []
+        }
+    ]
+}
