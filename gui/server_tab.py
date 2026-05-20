@@ -682,6 +682,12 @@ class ServerTabWidget(QWidget):
             self.server_batch_spinbox.setValue(cfg["batch"])
             self.server_threads_spinbox.setValue(cfg["threads"])
 
+    @staticmethod
+    def _vulkan_runtime_env() -> dict[str, str]:
+        return {
+            "GGML_VK_FORCE_AMD_LARGE_MATMUL": "1",
+        }
+
     def start_server(self):
         """Start llama-server"""
         if self.server_thread and self.server_thread.isRunning():
@@ -788,11 +794,16 @@ class ServerTabWidget(QWidget):
         server_env = None
         if "rocm" in build_dir.name.lower() and hasattr(self.parent, "build_manager"):
             server_env = self.parent.build_manager.get_rocm_env()
+        elif "vulkan" in build_dir.name.lower():
+            server_env = self._vulkan_runtime_env()
 
         self.server_log.clear()
         self._memory_fit_warning_shown = False
         self.server_log.append(f"[INFO] Build: {build_dir}")
         self.server_log.append(f"[INFO] Command: {' '.join(command)}")
+        if server_env and "GGML_VK_FORCE_AMD_LARGE_MATMUL" in server_env:
+            env_summary = ", ".join(f"{key}={value}" for key, value in sorted(server_env.items()))
+            self.server_log.append(f"[INFO] Env overrides: {env_summary}")
 
         self.server_thread = ServerThread(command, str(self.parent.project_root), port=port, env=server_env)
         self.server_thread.output_ready.connect(self.on_server_status)

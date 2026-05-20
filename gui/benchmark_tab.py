@@ -986,6 +986,9 @@ class BenchmarkTabWidget(QWidget):
         self.log_output.clear()
         self.log_output.append(f"[INFO] Starting benchmark for {model.name}")
         self.log_output.append(f"[INFO] Build ID: {build_id or '-'}")
+        if bench_env:
+            env_summary = ", ".join(f"{key}={value}" for key, value in sorted(bench_env.items()))
+            self.log_output.append(f"[INFO] Env overrides: {env_summary}")
         self.bench_thread = BenchCommandThread(command=command, working_dir=self.project_root, env=bench_env)
         self.bench_thread.output.connect(self._on_bench_output)
         self.bench_thread.finished_signal.connect(self._on_bench_finished)
@@ -1191,6 +1194,9 @@ class BenchmarkTabWidget(QWidget):
         self.log_output.append(f"[INFO] Starting autotune for {model.name}")
         self.log_output.append(f"[INFO] Build ID: {build_id or '-'}")
         self.log_output.append(f"[INFO] Autotune profile: 32K fixed, configs: {config_count}")
+        if bench_env:
+            env_summary = ", ".join(f"{key}={value}" for key, value in sorted(bench_env.items()))
+            self.log_output.append(f"[INFO] Env overrides: {env_summary}")
         self.log_output.append(f"[INFO] Workload: {autotune_tasks}, max_tokens: {autotune_max_tokens}")
         self.log_output.append(f"[INFO] Spec selected: {','.join(requested_spec_values)}")
         if skipped_spec_values:
@@ -1323,7 +1329,16 @@ class BenchmarkTabWidget(QWidget):
             unique.append(item)
         return unique
 
+    @staticmethod
+    def _vulkan_runtime_env() -> dict[str, str]:
+        return {
+            "GGML_VK_FORCE_AMD_LARGE_MATMUL": "1",
+        }
+
     def _bench_env_overrides(self) -> dict[str, str]:
+        backend_key = self._backend_key_from_display(self.build_backend_combo.currentText().strip()).lower()
+        if backend_key == "vulkan":
+            return self._vulkan_runtime_env()
         return {}
 
     def _update_autotune_grid_preview(self) -> None:

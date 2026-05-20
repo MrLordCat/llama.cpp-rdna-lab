@@ -3230,6 +3230,49 @@ static bool ggml_vk_matmul_shmem_support(const vk_device& device, const std::vec
     return supported;
 }
 
+static bool ggml_vk_matmul_warptile_layout_valid(const std::vector<uint32_t>& warptile) {
+    GGML_ASSERT(warptile.size() >= 11);
+    const uint32_t bm      = warptile[1];
+    const uint32_t bn      = warptile[2];
+    const uint32_t wm      = warptile[4];
+    const uint32_t wn      = warptile[5];
+    const uint32_t tm      = warptile[7];
+    const uint32_t tn      = warptile[8];
+    const uint32_t warp    = warptile[10];
+
+    if (bm == 0 || bn == 0 || wm == 0 || wn == 0 || tm == 0 || tn == 0 || warp == 0) {
+        return false;
+    }
+    if (bm % wm != 0 || bn % wn != 0 || wm % tm != 0 || wn % tn != 0) {
+        return false;
+    }
+
+    const uint32_t storestride = warp / tm;
+    if (storestride == 0 || warp % tm != 0 || storestride > tn || tn % storestride != 0) {
+        return false;
+    }
+    return true;
+}
+
+static bool ggml_vk_matmul_prepare_variant_warptile(const vk_device& device, std::vector<uint32_t>& warptile) {
+    GGML_ASSERT(warptile.size() >= 11);
+    if (!ggml_vk_matmul_warptile_layout_valid(warptile)) {
+        return false;
+    }
+
+    const uint64_t block_size = uint64_t(warptile[10]) * (warptile[1] / warptile[4]) * (warptile[2] / warptile[5]);
+    if (block_size > device->properties.limits.maxComputeWorkGroupInvocations) {
+        return false;
+    }
+
+    if (warptile[0] != block_size) {
+        VK_LOG_DEBUG("ggml_vulkan: retile MMQ workgroup size " << warptile[0] << " -> " << block_size);
+        warptile[0] = uint32_t(block_size);
+    }
+
+    return true;
+}
+
 struct GpuPipelineConfig {
     // GPU architecture identifier.
     // Example: vk_device_architecture::AMD_GCN
@@ -3427,6 +3470,8 @@ static void ggml_vk_load_shaders(vk_device& device) {
             l_warptile = { 256, 128, 128, 16, subgroup_size_8, 64, 2, tm_m, tn_m, tk_m, subgroup_size_8 };
             l_warptile_mmq = l_warptile_mmq_int = { 256, 128, 128, 32, subgroup_size_8, 64, 2, tm_m, tn_m, tk_m, subgroup_size_8 };
             l_warptile_mmq_int_k = { 256, 128, 128, 32, subgroup_size_16, 64, 1, 4, 2, 1, subgroup_size_16 };
+            const std::vector<uint32_t> l_warptile_mmq_base = l_warptile_mmq;
+            const std::vector<uint32_t> l_warptile_mmq_int_base = l_warptile_mmq_int;
 
             if (amd_large_matmul_variant != nullptr) {
                 amd_large_matmul_variant_active = true;
@@ -3476,8 +3521,12 @@ static void ggml_vk_load_shaders(vk_device& device) {
                     l_warptile_mmq_int[5] = 32;
                     l_warptile_mmq_int[6] = 1;
                 } else if (variant == "wm32-wn32") {
+                    l_warptile_mmq[1] = 64;
+                    l_warptile_mmq[2] = 64;
                     l_warptile_mmq[4] = 32;
                     l_warptile_mmq[5] = 32;
+                    l_warptile_mmq_int[1] = 64;
+                    l_warptile_mmq_int[2] = 64;
                     l_warptile_mmq_int[4] = 32;
                     l_warptile_mmq_int[5] = 32;
                 } else if (variant == "wm128-wn32") {
@@ -3507,7 +3556,22 @@ static void ggml_vk_load_shaders(vk_device& device) {
                     l_warptile_mmq_int[0] = 128;
                     l_warptile_mmq_int[4] = 128;
                 }
+
+                if (!ggml_vk_matmul_prepare_variant_warptile(device, l_warptile_mmq) ||
+                    !ggml_vk_matmul_prepare_variant_warptile(device, l_warptile_mmq_int)) {
+                    GGML_LOG_WARN(
+                        "ggml_vulkan: AMD large matmul variant '%s' has invalid MMQ tile layout "
+                        "(tile=[%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u]), using base large matmul profile\n",
+                        variant.c_str(),
+                        l_warptile_mmq[0], l_warptile_mmq[1], l_warptile_mmq[2], l_warptile_mmq[3],
+                        l_warptile_mmq[4], l_warptile_mmq[5], l_warptile_mmq[6], l_warptile_mmq[7],
+                        l_warptile_mmq[8], l_warptile_mmq[9], l_warptile_mmq[10]);
+                    l_warptile_mmq = l_warptile_mmq_base;
+                    l_warptile_mmq_int = l_warptile_mmq_int_base;
+                    amd_large_matmul_variant_active = false;
+                }
             }
+
         } else if (device->vendor_id == VK_VENDOR_ID_INTEL && device->coopmat_support && device->architecture == INTEL_XE2) {
             // Xe2/Xe3 with coopmat enabled - warptile performance tuning
             l_warptile = { 512, 128, 128, 16, subgroup_size_8, 32, 2, tm_m, tn_m, tk_m, subgroup_size_8 };
@@ -3523,7 +3587,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
                 l_mmq_wg_denoms = { 64, 128, 1 };
             } else if (variant == "bn64" || variant == "block128-bn64") {
                 l_mmq_wg_denoms = { 128, 64, 1 };
-            } else if (variant == "bm64-bn64") {
+            } else if (variant == "bm64-bn64" || variant == "wm32-wn32") {
                 l_mmq_wg_denoms = { 64, 64, 1 };
             }
         }

@@ -240,6 +240,57 @@ Cheap knobs did not expose a keep candidate: `GGML_VK_FORCE_MMVQ=1` was neutral 
 - `docs/research/experiments/E069_vulkan_decode_mmvq_probe.md`
 - `build_logs/agent-workload/e069-vulkan-decode-q3scale-packed32-128-r3.diagnostics.md`
 
+### E075: GUI 32k Vulkan env promotion
+
+Fresh GUI autotune A/B on `Qwen3.6-27B-Q3_K_S.gguf` used the 32k lane: `ctx=32768`, `b=5120`, `ub=1024`, `q4_0/q4_0`, `spec=ngram-mod`, `repo-snapshot chars=21872`, no reuse, no v2 prime, thinking on, 120 generated tokens. The initial GUI result showed ROCm ahead because Vulkan was launched without the E068 runtime env.
+
+| Backend / config | Aggregate TPS | Prompt eval TPS | Decode eval TPS | Result |
+| --- | ---: | ---: | ---: | --- |
+| ROCm GUI fresh control | `11.0606` | `1155.52` | `28.83` | current GUI control |
+| Vulkan GUI baseline | `8.1791` | `659.49` | `40.05` | missing runtime env |
+| Vulkan `GGML_VK_FORCE_AMD_LARGE_MATMUL=1`, `GGML_VK_AMD_LARGE_MATMUL_VARIANT=wm32-wn32` r1 | `12.1414` | `1121.21` | `40.01` | `+48.4%` vs Vulkan baseline; `+9.8%` vs ROCm wall |
+| Vulkan same env r3 | `12.6420` | `1163.96` | `42.22` | `+54.6%` vs Vulkan baseline; `+14.3%` vs ROCm wall |
+
+Conclusion: large-context Vulkan prefill did drop when the GUI ran default Vulkan, and the previously discovered `wm32-wn32` RDNA4/Vulkan profile restores 32k prefill to ROCm level in throughput-only benchmarks. Follow-up real generation tests rejected the profile for default GUI use: with `GGML_VK_AMD_LARGE_MATMUL_VARIANT=wm32-wn32`, Vulkan returned all-slash output in both thinking chat and raw completion, while Vulkan without the variant, Vulkan with only `GGML_VK_FORCE_AMD_LARGE_MATMUL=1`, and ROCm control produced normal text. GUI Vulkan server/autotune now applies only `GGML_VK_FORCE_AMD_LARGE_MATMUL=1`; future Vulkan work should treat `wm32-wn32` as a correctness bug until logits/output equivalence is fixed.
+
+Artifacts:
+- `build_logs/agent-workload/gui-autotune-Qwen3.6-27B-Q3_K_S-20260519-233738-cfg01.server.log`
+- `build_logs/agent-workload/gui-autotune-Qwen3.6-27B-Q3_K_S-20260519-233825-cfg01.server.log`
+- `build_logs/agent-workload/e075-vulkan32k-gui-baseline-r1.diagnostics.md`
+- `build_logs/agent-workload/e075-vulkan32k-gui-wm32wn32-r1.diagnostics.md`
+- `build_logs/agent-workload/e075-vulkan32k-gui-wm32wn32-r3.diagnostics.md`
+- `docs/research/experiments/E075_vulkan_32k_gui_prefill_runtime_profile.md`
+
+### E076: valid Vulkan 32k follow-up
+
+After E075 rejected the corrupt `wm32-wn32` profile, the next pass checked external leads and same-session no-code gates on the safe Vulkan GUI profile (`GGML_VK_FORCE_AMD_LARGE_MATMUL=1` only). Current tree already contains the useful `#23056` Q3_K/Q6_K MMVQ block-load and 32-bit subtract work, while `#22970` remains mostly Q4_K/Q5_K/Q6_K and was already rejected for this Q3_K_S lane in E063.
+
+Same lane as E075: `ctx=32768`, `b=5120`, `ub=1024`, `q4_0/q4_0`, `spec=ngram-mod`, `repo-snapshot chars=21872`, no reuse, no v2 prime, thinking on, 120 generated tokens.
+
+| Vulkan config | Aggregate TPS | Prompt eval TPS | Decode eval TPS | Result |
+| --- | ---: | ---: | ---: | --- |
+| Safe force-only base | `9.8493` | `907.02` | `32.59` | baseline |
+| `wm128-wn32` | `9.6075` | `870.91` | `32.97` | reject |
+| `block128-wm128` | `9.0091` | `792.98` | `33.32` | reject |
+| `block128-bn64` | `7.5254` | `624.78` | `33.10` | reject |
+| `GGML_VK_DISABLE_MMVQ=1` | `9.3738` | `876.90` | `29.92` | reject |
+| `b4096/ub1024` | `9.8353` | `905.08` | `32.58` | tie/reject |
+| `b6144/ub1024` | `9.7029` | `883.55` | `32.97` | reject |
+| `q8_0/q8_0` KV | `9.1102` | `865.69` | `28.12` | reject |
+| `f16/f16` KV | `8.8361` | `937.74` | `22.40` | reject: prompt up, decode down |
+| Post-guard safe force-only base | `9.8389` | `900.12` | `33.08` | no regression |
+| Post-guard `wn16` | `4.7196` | `781.57` | `7.71` | reject |
+
+The backend now validates/prepares all manual AMD large-matmul variants, not just exact `wm32-wn32`, so an invalid coopmat geometry cannot silently benchmark by skipping output work. The safe profile did not regress after this guard. Current conclusion: honest Vulkan 32k remains below the fresh ROCm control (`11.0606 TPS`, `1155.52 tok/s` prompt) because of prefill, not because of batch/ubatch/KV/env selection. Next Vulkan work should be source-level Q3_K prefill profiling/code, with real generation smoke before any speed claim.
+
+Artifacts:
+- `build_logs/agent-workload/e076-vulkan32k-valid-base-r1.diagnostics.md`
+- `build_logs/agent-workload/e076-vulkan32k-valid-wm128wn32-r1.diagnostics.md`
+- `build_logs/agent-workload/e076-vulkan32k-shape-b4096ub1024-r1.diagnostics.md`
+- `build_logs/agent-workload/e076-vulkan32k-kvf16-r1.diagnostics.md`
+- `build_logs/agent-workload/e076-vulkan32k-postguard-base-r1.diagnostics.md`
+- `docs/research/experiments/E076_vulkan_32k_valid_prefill_followup.md`
+
 ## TurboKV direct FlashAttention smoke (2026-05-13)
 
 Это короткий технический smoke для guarded prototype `GGML_TKV_DIRECT_FATTN=1`, а не финальный target-lane speed claim. Полный артефакт с командами и числами: `build_logs/agent-workload/e009-tkv-direct-fattn-smoke-20260513.md`.
