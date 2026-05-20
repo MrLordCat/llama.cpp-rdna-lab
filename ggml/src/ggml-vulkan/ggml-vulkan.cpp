@@ -3457,7 +3457,14 @@ static void ggml_vk_load_shaders(vk_device& device) {
         m_warptile_mmqid_int_k = { 128,                      64,  64, 32, mul_mat_subgroup_size_16,     32, 1, 2, 2, 1, mul_mat_subgroup_size_16 };
         s_warptile_mmqid_int_k = { mul_mat_subgroup_size_32, 32,  32, 32, s_warptile_wm,                32, 1, 2, 1, 1, mul_mat_subgroup_size_16 };
 
-        const bool force_amd_large_matmul = getenv("GGML_VK_FORCE_AMD_LARGE_MATMUL") != nullptr;
+        const bool force_amd_large_matmul_env = getenv("GGML_VK_FORCE_AMD_LARGE_MATMUL") != nullptr;
+        const bool disable_amd_large_matmul = getenv("GGML_VK_DISABLE_AMD_LARGE_MATMUL") != nullptr;
+        const bool auto_amd_large_matmul = device->vendor_id == VK_VENDOR_ID_AMD &&
+                           device->driver_id == vk::DriverId::eAmdProprietary &&
+                           device->architecture == AMD_RDNA3 &&
+                           device->coopmat_support &&
+                           !device->uma;
+        const bool force_amd_large_matmul = force_amd_large_matmul_env || (auto_amd_large_matmul && !disable_amd_large_matmul);
         const char * amd_large_matmul_variant = getenv("GGML_VK_AMD_LARGE_MATMUL_VARIANT");
         bool amd_large_matmul_variant_active = false;
 
@@ -3926,6 +3933,17 @@ static void ggml_vk_load_shaders(vk_device& device) {
             CREATE_MM(TYPE, PIPELINE_NAME . f32acc, NAMELC, , WG_DENOMS, WARPTILE, PUSHCONST, PARAMCOUNT, ID) \
         } \
 
+#define CREATE_MMQ(TYPE, PIPELINE_NAME, NAMELC, WG_DENOMS, WARPTILE, PUSHCONST, PARAMCOUNT, ID, REQSUBGROUPSIZE) \
+        if (device->mul_mat ## ID ## _l[TYPE]) { \
+            ggml_vk_create_pipeline(device, device-> PIPELINE_NAME .f32acc->l, #NAMELC        "_l", NAMELC ## _len,        NAMELC ##  _data,        "main", PARAMCOUNT, sizeof(PUSHCONST), l_ ## WG_DENOMS, l_ ## WARPTILE, 1, false, REQSUBGROUPSIZE > 0, REQSUBGROUPSIZE);   \
+        } \
+        if (device->mul_mat ## ID ## _m[TYPE]) { \
+            ggml_vk_create_pipeline(device, device-> PIPELINE_NAME .f32acc->m, #NAMELC        "_m", NAMELC ## _len,        NAMELC ##  _data,        "main", PARAMCOUNT, sizeof(PUSHCONST), m_ ## WG_DENOMS, m_ ## WARPTILE, 1, false, REQSUBGROUPSIZE > 0, REQSUBGROUPSIZE);   \
+        } \
+        if (device->mul_mat ## ID ## _s[TYPE]) { \
+            ggml_vk_create_pipeline(device, device-> PIPELINE_NAME .f32acc->s, #NAMELC        "_s", NAMELC ## _len,        NAMELC ##  _data,        "main", PARAMCOUNT, sizeof(PUSHCONST), s_ ## WG_DENOMS, s_ ## WARPTILE, 1, false, REQSUBGROUPSIZE > 0, REQSUBGROUPSIZE);   \
+        } \
+
         CREATE_MM(GGML_TYPE_F32, pipeline_matmul_f32, matmul_f32_f32, , wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
         CREATE_MM(GGML_TYPE_F32, pipeline_matmul_f32_f16, matmul_f32_f16, , wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
         CREATE_MM2(GGML_TYPE_F16, pipeline_matmul_f16, matmul_f16, wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
@@ -4020,6 +4038,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
         CREATE_MM2(GGML_TYPE_MXFP4,   pipeline_dequant_mul_mat_mat_id[GGML_TYPE_MXFP4],   matmul_id_subgroup_mxfp4_f32,   mmq_wg_denoms, warptile_mmq, vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id);
         CREATE_MM2(GGML_TYPE_NVFP4,   pipeline_dequant_mul_mat_mat_id[GGML_TYPE_NVFP4],   matmul_id_subgroup_nvfp4_f32,   mmq_wg_denoms, warptile_mmq, vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id);
 #undef CREATE_MM2
+#undef CREATE_MMQ
 #undef CREATE_MM
     } else
 #endif  // defined(VK_KHR_cooperative_matrix) && defined(GGML_VULKAN_COOPMAT_GLSLC_SUPPORT)
@@ -5764,7 +5783,14 @@ static vk_device ggml_vk_get_device(size_t idx) {
 
         // Shaders
         // Disable matmul tile sizes early if performance low or not supported
-        const bool force_amd_large_matmul = getenv("GGML_VK_FORCE_AMD_LARGE_MATMUL") != nullptr;
+        const bool force_amd_large_matmul_env = getenv("GGML_VK_FORCE_AMD_LARGE_MATMUL") != nullptr;
+        const bool disable_amd_large_matmul = getenv("GGML_VK_DISABLE_AMD_LARGE_MATMUL") != nullptr;
+        const bool auto_amd_large_matmul = device->vendor_id == VK_VENDOR_ID_AMD &&
+                           device->driver_id == vk::DriverId::eAmdProprietary &&
+                           device->architecture == AMD_RDNA3 &&
+                           device->coopmat_support &&
+                           !device->uma;
+        const bool force_amd_large_matmul = force_amd_large_matmul_env || (auto_amd_large_matmul && !disable_amd_large_matmul);
         for (uint32_t i = 0; i < GGML_TYPE_COUNT; ++i) {
             switch (device->vendor_id) {
 #ifndef GGML_VULKAN_RUN_TESTS
@@ -7823,10 +7849,15 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
 
     const bool y_f32_kernel = src1->type == GGML_TYPE_F32 && !y_non_contig;
 
-    bool quantize_y = ctx->device->integer_dot_product && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0;
+    const bool y_contiguous = ggml_is_contiguous(src1);
+    bool quantize_y = ctx->device->integer_dot_product && src1->type == GGML_TYPE_F32 && y_contiguous && !y_non_contig && (ne11 * ne10) % 4 == 0;
+    const bool quantize_y_initial = quantize_y;
+    const vk_matmul_pipeline q8_candidate_pipeline = quantize_y ? ctx->device->pipeline_dequant_mul_mat_mat_q8_1[src0->type].f32acc : nullptr;
+    const bool q8_candidate_empty = q8_candidate_pipeline == nullptr || q8_candidate_pipeline->is_empty();
 
     // Check for mmq first
     vk_matmul_pipeline mmp = quantize_y ? ggml_vk_get_mul_mat_mat_pipeline(ctx, src0->type, GGML_TYPE_Q8_1, (ggml_prec)dst->op_params[0]) : nullptr;
+    const bool q8_mmp_found = mmp != nullptr;
 
     if (mmp == nullptr) {
         // Fall back to f16 dequant mul mat
@@ -7852,6 +7883,33 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
 
     if (ggml_vk_device_size(src0) > ctx->device->properties.limits.maxStorageBufferRange) {
         pipeline = ggml_vk_get_64b_indexing_pipeline(ctx, pipeline);
+    }
+
+    static const bool route_trace = std::getenv("GGML_VK_MATMUL_ROUTE_TRACE") != nullptr;
+    if (route_trace && pipeline) {
+        static std::mutex route_trace_mutex;
+        static std::set<std::string> route_trace_seen;
+
+        std::ostringstream key;
+        key << pipeline->name << "|src0=" << ggml_type_name(src0->type)
+            << "|src1=" << ggml_type_name(src1->type)
+            << "|m=" << ne01 << "|n=" << ne11 << "|k=" << ne10
+            << "|aligned=" << aligned
+            << "|integer_dot=" << ctx->device->integer_dot_product
+            << "|y_contiguous=" << y_contiguous
+            << "|quantize_y_initial=" << quantize_y_initial
+            << "|q8_candidate_empty=" << q8_candidate_empty
+            << "|q8_mmp_found=" << q8_mmp_found
+            << "|quantize_y=" << quantize_y
+            << "|x_non_contig=" << x_non_contig
+            << "|y_non_contig=" << y_non_contig
+            << "|qx_dequant=" << qx_needs_dequant
+            << "|qy_dequant=" << qy_needs_dequant;
+
+        std::lock_guard<std::mutex> guard(route_trace_mutex);
+        if (route_trace_seen.insert(key.str()).second) {
+            std::cerr << "ggml_vulkan: matmul route: " << key.str() << std::endl;
+        }
     }
 
     // Reserve extra storage in the N dimension for the Y matrix, so we can avoid bounds-checking

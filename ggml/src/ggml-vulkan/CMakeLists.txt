@@ -181,7 +181,8 @@ if (Vulkan_FOUND)
 
     file(GLOB _ggml_vk_shaders_gen_sources
               CONFIGURE_DEPENDS "${_ggml_vk_input_dir}/*.cpp"
-                                "${_ggml_vk_input_dir}/*.h")
+                                "${_ggml_vk_input_dir}/*.h"
+                                "${_ggml_vk_input_dir}/*.glsl")
 
     add_custom_command(
         OUTPUT ${_ggml_vk_header}

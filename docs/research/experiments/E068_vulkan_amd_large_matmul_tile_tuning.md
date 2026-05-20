@@ -43,15 +43,15 @@
 
 ## Result
 
-- Outcome: win
+- Outcome: superseded/rejected by later validation
 - Delta: best confirmed variant `GGML_VK_AMD_LARGE_MATMUL_VARIANT=wm32-wn32` reached `7.6446` aggregate TPS / `7.58` median over 3 runs, vs E065 Vulkan `6.4180` aggregate (`+19.1%`) and same-session ROCm control `7.3868` aggregate (`+3.5%`). Prompt eval improved to `1110.09 tok/s` but remains below ROCm `1173.24`; decode stayed much faster than ROCm (`40.40` vs `28.62`).
-- Confidence: medium-high for this lane; confirmed with 3 runs and no errors, but still opt-in because other quant types and tasks were not broadly validated.
-- Recommendation: keep `GGML_VK_AMD_LARGE_MATMUL_VARIANT=wm32-wn32` as RDNA4/Vulkan opt-in together with `GGML_VK_FORCE_AMD_LARGE_MATMUL=1`; do not make it universal default yet.
+- Confidence: downgraded. Later H31 validation found this route was corrupt/undercovered and should not be used as a profile.
+- Recommendation: historical only. Do not use `GGML_VK_AMD_LARGE_MATMUL_VARIANT=wm32-wn32` as an RDNA4/Vulkan opt-in baseline.
 
 ## Notes
 
 - Surprises: reducing the large tile's warp-column shape (`WN=16` or `WM=32/WN=32`) helped far more than block size changes. `wn16` and `wm32-wn32` both reached about `7.41-7.42 TPS` in single-run full-lane probes; `wm32-wn32` confirmed best at r3.
-- Follow-up action: run decode-biased sanity and a second prompt-heavy task before promoting beyond an opt-in RDNA4 profile.
+- Follow-up correction: E075/E078 invalidated this profile; keep only as a cautionary example that tile variants need static layout and active-route validation.
 
 ## Key Measurements
 

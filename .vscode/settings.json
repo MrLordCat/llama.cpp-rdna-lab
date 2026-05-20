@@ -1,11 +1,24 @@
 {
     "python-envs.defaultEnvManager": "ms-python.python:system",
     "cmake.configureOnOpen": false,
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/build-vulkan/compile_commands.json",
     "files.associations": {
         "*.comp": "glsl",
         "*.glsl": "glsl",
+        "*.jsonl": "jsonl",
+        "*.agent.md": "markdown",
+        "*.prompt.md": "markdown",
+        "*.instructions.md": "markdown",
         "*.cu": "cuda-cpp",
         "*.cuh": "cuda-cpp"
+    },
+    "files.exclude": {
+        "build/**": true,
+        "build-*/**": true,
+        "models/**": true,
+        "**/*.gguf": true,
+        "vendor/**": true,
+        "third_party/**": true
     },
     "search.exclude": {
         "**/__pycache__/**": true,
@@ -14,15 +27,24 @@
         "build-*/**": true,
         "models/**": true,
         "**/*.gguf": true,
-        "vendor/**": true
+        "vendor/**": true,
+        "third_party/**": true,
+        "build_logs/**/*.csv": true,
+        "build_logs/**/*.json": true,
+        "build_logs/**/*.jsonl": true,
+        "build_logs/**/*.server.log": true
     },
     "files.watcherExclude": {
+        "**/.git/objects/**": true,
+        "**/.git/subtree-cache/**": true,
         "**/__pycache__/**": true,
         "**/.pytest_cache/**": true,
         "build/**": true,
         "build-*/**": true,
         "models/**": true,
         "**/*.gguf": true,
+        "vendor/**": true,
+        "third_party/**": true,
         "build_logs/**": true
     }
 }

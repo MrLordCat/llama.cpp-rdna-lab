@@ -1,3 +1,27 @@
+#if defined(DATA_A_Q3_K)
+FLOAT_TYPEV2 dequant_q3_k_pair(const uint idx) {
+            const uint ib = idx / 128;                   // 2 values per idx
+            const uint iqs = idx % 128;                  // 0..127
+
+            const uint n = iqs / 64;                     // 0,1
+            const uint qsi = n * 32 + (iqs % 16) * 2;    // 0,2,4..62
+            const uint hmi =          (iqs % 16) * 2;    // 0,2,4..30
+            const uint is = iqs / 8;                     // 0..15
+            const uint halfsplit = ((iqs % 64) / 16);    // 0,1,2,3
+            const uint qsshift = halfsplit * 2;          // 0,2,4,6
+
+            const int8_t us = int8_t(((data_a[ib].scales[is % 8] >> (4 * int(is / 8))) & 0xF)
+                                  | (((data_a[ib].scales[8 + (is % 4)] >> (2 * int(is / 4))) & 3) << 4));
+            const float dl = float(data_a[ib].d) * float(us - 32);
+
+            const vec2 qs = vec2(unpack8((uint(data_a_packed16[ib].qs[qsi / 2]) >> qsshift) & 0x0303).xy);
+            const vec2 hm = vec2(unpack8(((uint(data_a_packed16[ib].hmask[hmi / 2]) >> (4 * n + halfsplit)) & 0x0101 ^ 0x0101) << 2).xy);
+
+            return FLOAT_TYPEV2(dl * (qs.x - hm.x),
+                                dl * (qs.y - hm.y));
+}
+#endif
+
 void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uint idx_m, const uint block, const uint end_k) {
 #if defined(DATA_A_F32) || defined(DATA_A_F16)
 #if LOAD_VEC_A == 8
@@ -164,29 +188,18 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
             buf_a[buf_idx    ] = FLOAT_TYPEV2(v.xy);
             buf_a[buf_idx + 1] = FLOAT_TYPEV2(v.zw);
 #elif defined(DATA_A_Q3_K)
+#if LOAD_VEC_A == 4
             const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
             const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;
+            const uint pair_idx = idx * 2;
 
-            const uint ib = idx / 128;                   // 2 values per idx
-            const uint iqs = idx % 128;                  // 0..127
-
-            const uint n = iqs / 64;                     // 0,1
-            const uint qsi = n * 32 + (iqs % 16) * 2;    // 0,2,4..62
-            const uint hmi =          (iqs % 16) * 2;    // 0,2,4..30
-            const uint j = (iqs % 64) / 4;               // 0..3
-            const uint is = iqs / 8;                     // 0..15
-            const uint halfsplit = ((iqs % 64) / 16);    // 0,1,2,3
-            const uint qsshift = halfsplit * 2;          // 0,2,4,6
-
-            const int8_t us = int8_t(((data_a[ib].scales[is % 8] >> (4 * int(is / 8))) & 0xF)
-                                  | (((data_a[ib].scales[8 + (is % 4)] >> (2 * int(is / 4))) & 3) << 4));
-            const float dl = float(data_a[ib].d) * float(us - 32);
-
-            const vec2 qs = vec2(unpack8((uint(data_a_packed16[ib].qs[qsi / 2]) >> qsshift) & 0x0303).xy);
-            const vec2 hm = vec2(unpack8(((uint(data_a_packed16[ib].hmask[hmi / 2]) >> (4 * n + halfsplit)) & 0x0101 ^ 0x0101) << 2).xy);
-
-            buf_a[buf_idx] = FLOAT_TYPEV2(dl * (qs.x - hm.x),
-                                          dl * (qs.y - hm.y));
+            buf_a[buf_idx    ] = dequant_q3_k_pair(pair_idx);
+            buf_a[buf_idx + 1] = dequant_q3_k_pair(pair_idx + 1);
+#else
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+            const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;
+            buf_a[buf_idx] = dequant_q3_k_pair(idx);
+#endif
 #elif defined(DATA_A_Q4_K)
             const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
             const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;

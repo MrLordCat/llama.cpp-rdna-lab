@@ -208,7 +208,7 @@ Confirmed active-lane result:
 | Vulkan E065 large + Q3_K align | 3 | 4096/1024 | `6.4180` aggregate / `6.38` median | `897.63` | `40.35` | previous Vulkan best |
 | Vulkan E068 `wm32-wn32` | 3 | 4096/1024 | `7.6446` aggregate / `7.58` median | `1110.0867` | `40.40` | `+3.5%` aggregate vs ROCm; `+19.1%` vs E065 |
 
-Итог: Vulkan now exceeds the same-session ROCm wall-TPS target on this exact cold prompt-heavy lane when the RDNA4 opt-in tile variant is enabled. ROCm still has higher raw prompt eval (`1173` vs `1110 tok/s`), but Vulkan's decode path is much faster (`40.40` vs `28.62 tok/s`), so wall TPS wins. Keep this as an RDNA4/Vulkan opt-in profile until a second prompt-heavy task and decode-biased sanity are checked.
+Follow-up correction: later validation rejected the old `wm32-wn32` win as a corrupt/undercovered route, not an accepted profile. Keep this entry only as historical context; do not use `wm32-wn32` as a Vulkan opt-in baseline.
 
 ### E069: decode-focused MMVQ probe
 
@@ -290,6 +290,82 @@ Artifacts:
 - `build_logs/agent-workload/e076-vulkan32k-kvf16-r1.diagnostics.md`
 - `build_logs/agent-workload/e076-vulkan32k-postguard-base-r1.diagnostics.md`
 - `docs/research/experiments/E076_vulkan_32k_valid_prefill_followup.md`
+
+### E078-E102: valid Q3_K `mul_mm.comp` prefill work and tile validation
+
+After the corrupt `wm32-wn32` route was rejected, H31 moved to the active Vulkan Q3_K coopmat route. Tracing showed the 12k prompt-heavy path uses `matmul_q3_k_f32_f16acc_aligned_l` from `ggml/src/ggml-vulkan/vulkan-shaders/mul_mm.comp`, not the MMQ-only path. A fixed `llama-bench pp7488` gate is now used for shader probes because it keeps prompt tokens stable while matching the large-prefill hotspot.
+
+Current controls for the 12k lane (`ctx=12288`, `b=4096`, `ub=1024`, `q4_0/q4_0`, FlashAttention on, no reuse, thinking on, `triage_diff`, 64 generated tokens):
+
+| Backend / config | Aggregate TPS | Prompt eval TPS | Decode eval TPS | Result |
+| --- | ---: | ---: | ---: | --- |
+| Vulkan force-large control before E082/E086 | `6.4679` | `905.64` | `40.36` | baseline |
+| ROCm same-lane control | `7.1936` | `1129.76` | `28.63` | target |
+| Vulkan E086 corrected Q3_K loadvec4 | `6.6277` | `934.80` | `40.13` | `+2.47%` aggregate, `+3.22%` prompt eval vs Vulkan control |
+
+Fixed pp7488 gates:
+
+| Config | pp7488 tok/s | Result |
+| --- | ---: | --- |
+| E082 baseline before stride18 | `908.23` | reference |
+| E082 Q3_K stride18 | `922.62 ± 2.45` | kept, `+1.58%` |
+| E086 Q3_K stride18 + corrected `LOAD_VEC_A=4` | `961.82 ± 25.60` | kept, `+4.25%` vs E082 |
+| E091 E086 + `GGML_VK_AMD_LARGE_MATMUL_VARIANT=wn48` | `972.31 ± 1.97` | downgraded by E093; static `WN=48` invalid for `BN=128`, not a profile |
+| ROCm control | `1097.66` | remaining raw-prefill target |
+
+Rejected probes in this phase: f16 dequant arithmetic, unsigned scale arithmetic, coopmat strides 16/19/22, E082 tile variants `wn32`, `wn16`, `wm128-wn32`, corrected `LOAD_VEC_A=8`, pair-scale helper, packed32 pair helper, Q8_1/MMQ/Q8-int-dot Q3 route, aligned-store specialization, Q3_K shift/mask and scale-int arithmetic rewrites, `bm256`/`bn256*` large tiles, and the old generator-only Q3_K `LOAD_VEC_A=4` probe. The kept E086 path differs from that old probe: it maps each 4-value load index to two Q3_K pair indices and writes both shared-memory slots.
+
+Active Q3_K pipeline stats after E086/E102: `matmul_q3_k_f32_f16acc_aligned_l` uses `113 VGPR`, `45 SGPR`, `20480 B LDS`, `0 scratch` (`118 VGPR` before E086). E093/E097 static warptile scout downgraded E091's `wn48` result because the requested `WN=48` layout is invalid for the current `BN=128` route (`128 % 48 != 0`) and should runtime-fallback to base. Accepted H31 source baseline remains E082 stride18 + E086 corrected `LOAD_VEC_A=4`: fixed pp7488 `961.82 ± 25.60`, workload r1 `6.6277`, prompt eval `934.80`. E102 makes this fast AMD large-matmul route the no-env default on the local eligible AMD proprietary coopmat device; the no-env pp7488 recheck after cleanup was `983.48`, while `GGML_VK_DISABLE_AMD_LARGE_MATMUL=1` dropped to `708.19`.
+
+12k workload validation for E091 (`GGML_VK_FORCE_AMD_LARGE_MATMUL=1`, `GGML_VK_AMD_LARGE_MATMUL_VARIANT=wn48`) reached `6.7981` aggregate TPS r3, prompt eval `962.8567 tok/s`, decode `40.0967 tok/s`, prompt tokens `7489`, errors `0`, but this is now a suspect measurement rather than an accepted improvement. Do not use `wn48` as an opt-in profile unless a later backend log proves a different active valid prepared tile. Future tile/env variants must pass `python scripts/research/vulkan_warptile_static_scout.py` before benchmark claims.
+
+After E093/E097 correction, the no-build gate estimates that matching ROCm pp7488 from the accepted E086/E102 baseline requires a large local speedup in the active Q3_K hotspot. This is too large for repeated helper-only or neighboring-stride probes unless the gate identifies a new high-share mechanism.
+
+The updated static scout also closes the naive BK-depth idea before build: E097 corrected the model to local runtime constants (`subgroup=64`, coopmat `16x16x16`) and base Q3 LDS `20480 B`, matching driver stats. `BK=64` halves K-block/barrier rounds (`160 -> 80`) but leaves full-K dequant/B traffic unchanged and raises Q3 shared memory to `34816 B`; `BK=16` lowers shared memory but doubles K-block/barrier rounds. Treat BK variants as `needs-resource-proof`, not as benchmark candidates by default. E098 then measured the larger `bm256`/`bn256*` family: `bn256=947.12`, `bm256=909.59`, `bn256-wn128=921.84`, `bn256-wm128=940.21` pp7488 vs base around `983.21`, so all env branches were removed.
+
+Fresh 32k spec-none controls after E100 are consistent with the updated no-env fast path: Vulkan reached `10.5230` aggregate TPS / `993.94 tok/s` prompt eval / `32.93 tok/s` decode, while ROCm reached `10.8879` / `1132.44` / `28.49` on the same lane. This is a control checkpoint, not a new candidate; the aggregate gap is down to about `-3.35%`, but the 32k gap remains prompt/prefill-side even though Vulkan decode is faster.
+
+E095 added a Vulkan feature snapshot gate. On this system, `glslc` supports `coopmat`, `coopmat2`, `integer_dot`, and `bfloat16` feature tests, but `vulkaninfo` reports runtime `VK_KHR_cooperative_matrix=yes` and `VK_NV_cooperative_matrix2=no` for the AMD proprietary `26.3.1 (LLPC)` driver. Do not chase `mul_mm_cm2`/NV coopmat2 as the AMD acceleration route for this lane unless the driver capability changes.
+
+E096 added a SPIR-V opcode summary gate for generated Vulkan shaders. The active KHR coopmat Q3_K binary (`matmul_q3_k_f32_aligned_f16acc_cm1.spv`) contains `OpCooperativeMatrixLoadKHR=2`, `OpCooperativeMatrixMulAddKHR=1`, `OpCooperativeMatrixStoreKHR=3`, and `OpControlBarrier=6`; the plain Q3_K binary has no cooperative-matrix ops. Use this only as a route/mechanism fingerprint, not a speed claim.
+
+E099 kept `GGML_VK_MATMUL_ROUTE_TRACE=1` as a default-off diagnostic and rejected the Q8_1/int-dot route: temporary `matmul_q3_k_q8_1_l` creation did switch routes, but pp256 fell to `225.08` with `143 VGPR / 43 SGPR / 28672 B LDS`. E100 rejected aligned-store cleanup despite cleaner SPIR-V (`StoreKHR 3 -> 2`, barriers `6 -> 4`) because same-session 32k workload was `10.4974` vs baseline `10.5230`. E101 rejected Q3_K shift/mask and scale-int arithmetic rewrites (`927.51` and `929.30` pp7488). Do not retry these families without a new structural mechanism.
+
+Artifacts:
+- `docs/research/experiments/E078_vulkan12k_q3k_prefill_route_trace.md`
+- `docs/research/experiments/E082_vulkan12k_q3k_coopmat_stride18_probe.md`
+- `docs/research/experiments/E085_vulkan12k_q3k_stride18_tile_scout.md`
+- `docs/research/experiments/E086_vulkan12k_q3k_correct_loadvec4_probe.md`
+- `docs/research/experiments/E091_vulkan12k_q3k_e086_tile_rescout.md`
+- `docs/research/experiments/E093_vulkan_warptile_static_scout.md`
+- `docs/research/experiments/E094_vulkan_rocm_32k_specnone_controls.md`
+- `docs/research/experiments/E095_vulkan_feature_snapshot_tooling.md`
+- `docs/research/experiments/E096_spirv_opcode_summary_tooling.md`
+- `docs/research/experiments/E097_vulkan_warptile_static_model_correction.md`
+- `docs/research/experiments/E098_vulkan_q3k_bn256_large_tile_probe.md`
+- `docs/research/experiments/E099_vulkan_q8_route_trace_and_negative_control.md`
+- `docs/research/experiments/E100_vulkan_current_controls_store_and_shape_gates.md`
+- `docs/research/experiments/E101_vulkan_q3k_dequant_micro_antipatterns.md`
+- `docs/research/experiments/E102_vulkan_amd_auto_large_matmul_default.md`
+- `build_logs/agent-workload/e086-vulkan-q3-correct-loadvec4-pp7488-r3.md`
+- `build_logs/agent-workload/e086-vulkan12k-q3-correct-loadvec4-r1.diagnostics.md`
+- `build_logs/agent-workload/e086-vulkan-q3-correct-loadvec4-pipeline-stats.log`
+- `build_logs/agent-workload/e091-vulkan-q3-e086-wn48-pp7488-r3.md`
+- `build_logs/agent-workload/e091-vulkan12k-q3-e086-wn48-r3.diagnostics.md`
+- `build_logs/agent-workload/e092-vulkan-q3k-prebuild-gate-smoke.md`
+- `build_logs/agent-workload/e093-vulkan-warptile-static-scout.md`
+- `build_logs/agent-workload/vscode-vulkan32k-control-r1.diagnostics.md`
+- `build_logs/agent-workload/vscode-rocm32k-control-r1.diagnostics.md`
+- `build_logs/agent-workload/e095-vulkan-feature-snapshot.md`
+- `build_logs/agent-workload/e096-spirv-op-summary-q3k.md`
+- `build_logs/agent-workload/e097-warptile-static-scout-corrected.md`
+- `build_logs/agent-workload/e098-pipeline-stats-bn256-q3k-pp7488.txt`
+- `build_logs/agent-workload/e099-force-intdot-q8-route-p256.txt`
+- `build_logs/agent-workload/e100-vulkan32k-store-baseline-r1.diagnostics.md`
+- `build_logs/agent-workload/e100-rocm32k-current-control-r1.diagnostics.md`
+- `build_logs/agent-workload/e101-q3k-scale-int-pp7488-r1.txt`
+- `build_logs/agent-workload/e102-vulkan-auto-large-noenv-pp7488-r1.txt`
+- `build_logs/agent-workload/e102-vulkan32k-auto-large-noenv-r1.diagnostics.md`
 
 ## TurboKV direct FlashAttention smoke (2026-05-13)
 

@@ -22,6 +22,17 @@
             "problemMatcher": []
         },
         {
+            "label": "workspace: perf readiness snapshot",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-lc",
+                "git status --short --branch; python --version; cmake --version | head -n 1; printf \"ninja \"; ninja --version; git --version; rg --version | head -n 1; printf \"VULKAN_SDK=%s\\n\" \"${VULKAN_SDK:-}\"; printf \"HIP_PATH=%s\\n\" \"${HIP_PATH:-}\"; for exe in glslc vulkaninfo spirv-dis spirv-val spirv-opt gfxrecon.py gfxrecon-capture-vulkan.py vkconfig; do if command -v \"$exe\" >/dev/null 2>&1; then printf \"%s=OK %s\\n\" \"$exe\" \"$(command -v \"$exe\")\"; else printf \"%s=MISSING\\n\" \"$exe\"; fi; done; for f in build-vulkan/bin/llama-server.exe build-vulkan/bin/llama-bench.exe build-rocm-vec/bin/llama-server.exe models/Qwen3.6-27B-Q3_K_S.gguf scripts/agent_workload_bench.py; do if [[ -e \"$f\" ]]; then printf \"path:%s=OK\\n\" \"$f\"; else printf \"path:%s=MISSING\\n\" \"$f\"; fi; done"
+            ],
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
             "label": "checks: gui py_compile",
             "type": "shell",
             "command": "python",
@@ -97,6 +108,36 @@
             "problemMatcher": []
         },
         {
+            "label": "research: vulkan q3 prebuild gate",
+            "type": "shell",
+            "command": "python",
+            "args": ["scripts/research/vulkan_q3k_prebuild_gate.py"],
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "research: vulkan feature snapshot",
+            "type": "shell",
+            "command": "python",
+            "args": ["scripts/research/vulkan_feature_snapshot.py"],
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "research: vulkan q3 spirv summary",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "scripts/research/spirv_op_summary.py",
+                "build-vulkan/ggml/src/ggml-vulkan/vulkan-shaders.spv/matmul_q3_k_f32_aligned_f16acc_cm1.spv",
+                "build-vulkan/ggml/src/ggml-vulkan/vulkan-shaders.spv/matmul_q3_k_f32_aligned_f16acc.spv",
+                "--top",
+                "35"
+            ],
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
             "label": "bench: vulkan q3 32k control",
             "type": "shell",
             "command": "bash",
@@ -115,6 +156,30 @@
             "args": [
                 "-lc",
                 "python scripts/agent_workload_bench.py --server-bin build-rocm-vec/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --label vscode-rocm32k-control-r1 --ctx-size 32768 --batch-size 5120 --ubatch-size 1024 --gpu-layers 999 --cache-type-k q4_0 --cache-type-v q4_0 --flash-attn --parallel 1 --max-tokens 120 --tasks v2-mini --task-ids v2_write_function --real-context-mode repo-snapshot --real-context-chars 21872 --no-disable-thinking --no-reuse --allow-ctx-above-16k --runs 1 --background-server-policy fail"
+            ],
+            "dependsOn": ["bench: check no llama-server"],
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "bench: vulkan q3 12k prompt control",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-lc",
+                "PATH=\"/c/Strawberry/c/bin:$PATH\" GGML_VK_FORCE_AMD_LARGE_MATMUL=1 python scripts/agent_workload_bench.py --server-bin build-vulkan/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --label vscode-vulkan12k-prompt-control-r1 --ctx-size 12288 --batch-size 4096 --ubatch-size 1024 --gpu-layers 999 --cache-type-k q4_0 --cache-type-v q4_0 --flash-attn --parallel 1 --max-tokens 64 --tasks quick --task-ids triage_diff --real-context-mode repo-snapshot --no-disable-thinking --no-reuse --no-v2-prime-pass --runs 1 --background-server-policy fail --server-extra \"--spec-type none\" --write-diagnostics"
+            ],
+            "dependsOn": ["bench: check no llama-server"],
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "bench: rocm q3 12k prompt control",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-lc",
+                "python scripts/agent_workload_bench.py --server-bin build-rocm-vec/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --label vscode-rocm12k-prompt-control-r1 --ctx-size 12288 --batch-size 4096 --ubatch-size 1024 --gpu-layers 999 --cache-type-k q4_0 --cache-type-v q4_0 --flash-attn --parallel 1 --max-tokens 64 --tasks quick --task-ids triage_diff --real-context-mode repo-snapshot --no-disable-thinking --no-reuse --no-v2-prime-pass --runs 1 --background-server-policy fail --server-extra \"--spec-type none\" --write-diagnostics"
             ],
             "dependsOn": ["bench: check no llama-server"],
             "group": "test",
