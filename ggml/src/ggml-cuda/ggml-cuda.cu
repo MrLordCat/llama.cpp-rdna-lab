@@ -1722,6 +1722,89 @@ static const cublas_split_timing_config & ggml_cuda_cublas_get_split_timing_conf
     return config;
 }
 
+struct cublas_q3k_route_trace_config {
+    bool enabled = false;
+    int64_t min_ncols = 1024;
+};
+
+static const cublas_q3k_route_trace_config & ggml_cuda_cublas_get_q3k_route_trace_config() {
+    static const cublas_q3k_route_trace_config config = [] {
+        cublas_q3k_route_trace_config result;
+
+        result.enabled = getenv("GGML_TRACE_CUBLAS_Q3K_ROUTE") != nullptr;
+
+        if (const char * env = getenv("GGML_TRACE_CUBLAS_Q3K_ROUTE_MIN_NCOLS")) {
+            result.min_ncols = std::max<int64_t>(0, std::atoll(env));
+        }
+
+        if (result.enabled) {
+            GGML_LOG_INFO(
+                "Detected GGML_TRACE_CUBLAS_Q3K_ROUTE min_ncols=%lld\n",
+                (long long) result.min_ncols);
+        }
+
+        return result;
+    }();
+
+    return config;
+}
+
+struct cublas_q3k_route_trace_stats {
+    int64_t calls = 0;
+    int64_t total_ncols = 0;
+    int64_t total_convert_elems = 0;
+    double total_convert_ms = 0.0;
+};
+
+static std::string ggml_cuda_cublas_q3k_staging_key(
+        const ggml_tensor * src0, const int dev,
+        const int64_t row_low, const int64_t row_high, const int64_t ne00) {
+    char key[256];
+    snprintf(key, sizeof(key), "%p|%p|dev=%d|row=%lld:%lld|ne00=%lld",
+        (const void *) src0, src0->data, dev,
+        (long long) row_low, (long long) row_high, (long long) ne00);
+    return std::string(key);
+}
+
+static void ggml_cuda_cublas_trace_q3k_route(
+        const cublas_q3k_route_trace_config & config,
+        const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst,
+        const char * src0_dd_i, const int dev, const int cc,
+        const int64_t row_low, const int64_t row_high,
+        const int64_t ne00, const int64_t ne10, const int64_t src1_ncols,
+        const double src0_ms, const double src0_convert_ms) {
+    if (!config.enabled || src0->type != GGML_TYPE_Q3_K || src1_ncols < config.min_ncols) {
+        return;
+    }
+
+    const int64_t row_diff = row_high - row_low;
+    const int64_t convert_elems = row_diff * ne00;
+
+    const std::string key = ggml_cuda_cublas_q3k_staging_key(src0, dev, row_low, row_high, ne00);
+
+    static std::mutex mutex;
+    static std::map<std::string, cublas_q3k_route_trace_stats> stats_by_key;
+
+    std::lock_guard<std::mutex> lock(mutex);
+    cublas_q3k_route_trace_stats & stats = stats_by_key[key];
+    stats.calls += 1;
+    stats.total_ncols += src1_ncols;
+    stats.total_convert_elems += convert_elems;
+    stats.total_convert_ms += src0_convert_ms;
+
+    const double avg_convert_ms = stats.calls > 0 ? stats.total_convert_ms / (double) stats.calls : 0.0;
+
+    GGML_LOG_INFO(
+        "GGML_TRACE_CUBLAS_Q3K_ROUTE: dst=%s src0=%s src1=%s src0_tensor=%p src0_data=%p src0_dev_ptr=%p dev=%d cc=%d row_low=%lld row_high=%lld row_diff=%lld ne00=%lld ne10=%lld ncols=%lld convert_elems=%lld calls_for_key=%lld repeated_for_key=%lld total_ncols_for_key=%lld total_convert_elems_for_key=%lld src0_ms=%.3f src0_convert_ms=%.3f avg_convert_ms_for_key=%.3f\n",
+        dst->name, src0->name, src1->name,
+        (const void *) src0, src0->data, (const void *) src0_dd_i, dev, cc,
+        (long long) row_low, (long long) row_high, (long long) row_diff,
+        (long long) ne00, (long long) ne10, (long long) src1_ncols,
+        (long long) convert_elems, (long long) stats.calls, (long long) (stats.calls - 1),
+        (long long) stats.total_ncols, (long long) stats.total_convert_elems,
+        src0_ms, src0_convert_ms, avg_convert_ms);
+}
+
 static double ggml_cuda_cublas_split_timing_sync_elapsed(
         cudaStream_t stream,
         const std::chrono::high_resolution_clock::time_point & start,
@@ -1774,6 +1857,7 @@ static void ggml_cuda_op_mul_mat_cublas(
 
     const int cc = ggml_cuda_info().devices[id].cc;
     const auto & split_timing_config = ggml_cuda_cublas_get_split_timing_config();
+    const auto & q3k_route_trace_config = ggml_cuda_cublas_get_q3k_route_trace_config();
     const bool trace_split_timing = split_timing_config.enabled && src1_ncols >= split_timing_config.min_ncols;
     int trace_capture_active = 0;
     auto trace_stage_start = trace_split_timing ?
@@ -1866,6 +1950,9 @@ static void ggml_cuda_op_mul_mat_cublas(
         }
         const double src0_ms = split_timing_config.detail ? src0_alloc_ms + src0_convert_ms : trace_stage_ms(src0->type != GGML_TYPE_F16);
         const half * src0_ptr = src0->type == GGML_TYPE_F16 ? (const half *) src0_dd_i : src0_as_f16.get();
+        ggml_cuda_cublas_trace_q3k_route(
+            q3k_route_trace_config, src0, src1, dst, src0_dd_i, id, cc,
+            row_low, row_high, ne00, ne10, src1_ncols, src0_ms, src0_convert_ms);
 
         ggml_cuda_pool_alloc<half> src1_as_f16(ctx.pool(id));
         double src1_alloc_ms = 0.0;
