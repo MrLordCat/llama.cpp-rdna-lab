@@ -91,7 +91,7 @@ class ServerTabWidget(QWidget):
         preset_layout = QHBoxLayout()
         preset_layout.addWidget(QLabel("Preset:"))
         self.server_preset_combo = QComboBox()
-        self.server_preset_combo.addItems(["Default", "Fast", "Quality", "Balanced", "VRAM Limited"])
+        self.server_preset_combo.addItems(["Default", "Fast", "Quality", "Balanced", "VRAM Limited", "CPU Fallback"])
         self.server_preset_combo.currentIndexChanged.connect(self.apply_server_preset)
         preset_layout.addWidget(self.server_preset_combo)
 
@@ -675,19 +675,44 @@ class ServerTabWidget(QWidget):
         preset = self.server_preset_combo.currentText()
 
         presets = {
-            "Default": {"gpu_layers": 99, "context": 32768, "batch": 2048, "threads": 8},
-            "Fast": {"gpu_layers": 99, "context": 4096, "batch": 4096, "threads": 4},
-            "Quality": {"gpu_layers": 99, "context": 16384, "batch": 1024, "threads": 16},
-            "Balanced": {"gpu_layers": 50, "context": 8192, "batch": 2048, "threads": 8},
-            "VRAM Limited": {"gpu_layers": 20, "context": 4096, "batch": 512, "threads": 4}
+            "Default": {"backend": "GPU", "gpu_layers": 99, "context": 32768, "batch": 2048, "ubatch": 512, "threads": 8, "no_mmap": False},
+            "Fast": {"backend": "GPU", "gpu_layers": 99, "context": 4096, "batch": 4096, "ubatch": 512, "threads": 4, "no_mmap": False},
+            "Quality": {"backend": "GPU", "gpu_layers": 99, "context": 16384, "batch": 1024, "ubatch": 512, "threads": 16, "no_mmap": False},
+            "Balanced": {"backend": "GPU", "gpu_layers": 50, "context": 8192, "batch": 2048, "ubatch": 512, "threads": 8, "no_mmap": False},
+            "VRAM Limited": {"backend": "GPU", "gpu_layers": 20, "context": 4096, "batch": 512, "ubatch": 128, "threads": 4, "no_mmap": False},
+            "CPU Fallback": {
+                "backend": "CPU",
+                "gpu_layers": 0,
+                "context": 4096,
+                "batch": 512,
+                "ubatch": 128,
+                "threads": 6,
+                "kv_type": "q4_0",
+                "flash_attn": True,
+                "spec_type": "None",
+                "no_mmap": True,
+            },
         }
 
         if preset in presets:
             cfg = presets[preset]
+            if "backend" in cfg:
+                self.server_backend_combo.setCurrentText(cfg["backend"])
             self.server_gpu_layers_spinbox.setValue(cfg["gpu_layers"])
             self.server_context_spinbox.setValue(cfg["context"])
             self.server_batch_spinbox.setValue(cfg["batch"])
+            if "ubatch" in cfg:
+                self.server_ubatch_spinbox.setValue(cfg["ubatch"])
             self.server_threads_spinbox.setValue(cfg["threads"])
+            if "kv_type" in cfg:
+                self.server_kv_type_combo.setCurrentText(cfg["kv_type"])
+            if "flash_attn" in cfg:
+                self.server_flash_attn_check.setChecked(bool(cfg["flash_attn"]))
+            if "spec_type" in cfg:
+                self.server_spec_type_combo.setCurrentText(str(cfg["spec_type"]))
+                self.on_spec_type_changed()
+            if "no_mmap" in cfg:
+                self.server_no_mmap_check.setChecked(bool(cfg["no_mmap"]))
 
     @staticmethod
     def _vulkan_runtime_env() -> dict[str, str]:
