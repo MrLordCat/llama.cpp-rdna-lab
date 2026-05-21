@@ -344,6 +344,11 @@ class ServerTabWidget(QWidget):
         self.server_no_warmup_check.setChecked(True)
         perf_layout.addWidget(self.server_no_warmup_check)
 
+        self.server_no_mmap_check = QCheckBox("Load model into RAM (--no-mmap)")
+        self.server_no_mmap_check.setChecked(False)
+        self.server_no_mmap_check.setToolTip("Useful for CPU fallback / -ngl 0 routes when mmap paging limits throughput")
+        perf_layout.addWidget(self.server_no_mmap_check)
+
         self.server_disable_thinking_check = QCheckBox(
             "Disable thinking for benchmark-like throughput (--chat-template-kwargs)"
         )
@@ -529,6 +534,8 @@ class ServerTabWidget(QWidget):
             self.server_parallel_spinbox.setValue(int(match["parallel"]))
         if "flash_attn" in match:
             self.server_flash_attn_check.setChecked(bool(match["flash_attn"]))
+        if "no_mmap" in match:
+            self.server_no_mmap_check.setChecked(bool(match["no_mmap"]))
         if "disable_thinking" in match:
             self.server_disable_thinking_check.setChecked(bool(match["disable_thinking"]))
         if "extra_args" in match:
@@ -743,6 +750,7 @@ class ServerTabWidget(QWidget):
 
         # Avoid duplicate speculative flags when preset already supplies them via Extra Arguments.
         has_spec_in_extra = any(tok.startswith("--spec-") or tok == "--spec-type" for tok in extra_tokens)
+        has_no_mmap_in_extra = "--no-mmap" in extra_tokens
 
         spec_type = self.server_spec_type_combo.currentText().strip().lower()
         if not has_spec_in_extra:
@@ -765,6 +773,9 @@ class ServerTabWidget(QWidget):
 
         if self.server_no_warmup_check.isChecked():
             command.append("--no-warmup")
+
+        if self.server_no_mmap_check.isChecked() and not has_no_mmap_in_extra:
+            command.append("--no-mmap")
 
         if self.server_disable_thinking_check.isChecked():
             command.extend([
@@ -1115,6 +1126,7 @@ class ServerTabWidget(QWidget):
 
         self.server_flash_attn_check.setChecked(settings.value("server/flash_attn", True, type=bool))
         self.server_no_warmup_check.setChecked(settings.value("server/no_warmup", True, type=bool))
+        self.server_no_mmap_check.setChecked(settings.value("server/no_mmap", False, type=bool))
         self.server_disable_thinking_check.setChecked(settings.value("server/disable_thinking", False, type=bool))
         self.server_auto_fit_check.setChecked(settings.value("server/auto_fit", True, type=bool))
 
@@ -1172,6 +1184,7 @@ class ServerTabWidget(QWidget):
 
         settings.setValue("server/flash_attn", self.server_flash_attn_check.isChecked())
         settings.setValue("server/no_warmup", self.server_no_warmup_check.isChecked())
+        settings.setValue("server/no_mmap", self.server_no_mmap_check.isChecked())
         settings.setValue("server/disable_thinking", self.server_disable_thinking_check.isChecked())
         settings.setValue("server/auto_fit", self.server_auto_fit_check.isChecked())
 
