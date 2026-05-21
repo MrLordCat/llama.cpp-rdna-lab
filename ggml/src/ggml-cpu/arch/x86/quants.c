@@ -1647,6 +1647,19 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
     const __m256i mone = _mm256_set1_epi8(1);
     const __m128i m32 = _mm_set1_epi8(32);
 
+    // Preload the four Q3_K scale-shuffle masks once to avoid repeated loads
+    // in the inner hot loop.
+    const __m256i shuf_q3k[4] = {
+        get_scale_shuffle_q3k(0), get_scale_shuffle_q3k(1),
+        get_scale_shuffle_q3k(2), get_scale_shuffle_q3k(3),
+    };
+    const __m256i q3k_hbit_masks[8] = {
+        _mm256_slli_epi16(mone, 0), _mm256_slli_epi16(mone, 1),
+        _mm256_slli_epi16(mone, 2), _mm256_slli_epi16(mone, 3),
+        _mm256_slli_epi16(mone, 4), _mm256_slli_epi16(mone, 5),
+        _mm256_slli_epi16(mone, 6), _mm256_slli_epi16(mone, 7),
+    };
+
     __m256 acc = _mm256_setzero_ps();
 
     uint32_t aux[3];
@@ -1677,29 +1690,23 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
         // integer accumulator
         __m256i sumi = _mm256_setzero_si256();
 
-        int bit = 0;
-        int is  = 0;
-
         for (int j = 0; j < QK_K/128; ++j) {
+            const int bit = j << 2;
             // load low 2 bits
             const __m256i q3bits = _mm256_loadu_si256((const __m256i*)q3); q3 += 32;
 
             // prepare low and high bits
             const __m256i q3l_0 = _mm256_and_si256(q3bits, m3);
-            const __m256i q3h_0 = _mm256_slli_epi16(_mm256_srli_epi16(_mm256_andnot_si256(hbits, _mm256_slli_epi16(mone, bit)), bit), 2);
-            ++bit;
+            const __m256i q3h_0 = _mm256_slli_epi16(_mm256_srli_epi16(_mm256_andnot_si256(hbits, q3k_hbit_masks[bit + 0]), bit + 0), 2);
 
             const __m256i q3l_1 = _mm256_and_si256(_mm256_srli_epi16(q3bits, 2), m3);
-            const __m256i q3h_1 = _mm256_slli_epi16(_mm256_srli_epi16(_mm256_andnot_si256(hbits, _mm256_slli_epi16(mone, bit)), bit), 2);
-            ++bit;
+            const __m256i q3h_1 = _mm256_slli_epi16(_mm256_srli_epi16(_mm256_andnot_si256(hbits, q3k_hbit_masks[bit + 1]), bit + 1), 2);
 
             const __m256i q3l_2 = _mm256_and_si256(_mm256_srli_epi16(q3bits, 4), m3);
-            const __m256i q3h_2 = _mm256_slli_epi16(_mm256_srli_epi16(_mm256_andnot_si256(hbits, _mm256_slli_epi16(mone, bit)), bit), 2);
-            ++bit;
+            const __m256i q3h_2 = _mm256_slli_epi16(_mm256_srli_epi16(_mm256_andnot_si256(hbits, q3k_hbit_masks[bit + 2]), bit + 2), 2);
 
             const __m256i q3l_3 = _mm256_and_si256(_mm256_srli_epi16(q3bits, 6), m3);
-            const __m256i q3h_3 = _mm256_slli_epi16(_mm256_srli_epi16(_mm256_andnot_si256(hbits, _mm256_slli_epi16(mone, bit)), bit), 2);
-            ++bit;
+            const __m256i q3h_3 = _mm256_slli_epi16(_mm256_srli_epi16(_mm256_andnot_si256(hbits, q3k_hbit_masks[bit + 3]), bit + 3), 2);
 
             // load Q8 quants
             const __m256i q8_0 = _mm256_loadu_si256((const __m256i*)q8); q8 += 32;
@@ -1726,10 +1733,10 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
             p16_3 = _mm256_sub_epi16(p16_3, q8s_3);
 
             // multiply with scales
-            p16_0 = _mm256_madd_epi16(_mm256_shuffle_epi8(scales[j], get_scale_shuffle_q3k(is + 0)), p16_0);
-            p16_1 = _mm256_madd_epi16(_mm256_shuffle_epi8(scales[j], get_scale_shuffle_q3k(is + 1)), p16_1);
-            p16_2 = _mm256_madd_epi16(_mm256_shuffle_epi8(scales[j], get_scale_shuffle_q3k(is + 2)), p16_2);
-            p16_3 = _mm256_madd_epi16(_mm256_shuffle_epi8(scales[j], get_scale_shuffle_q3k(is + 3)), p16_3);
+            p16_0 = _mm256_madd_epi16(_mm256_shuffle_epi8(scales[j], shuf_q3k[0]), p16_0);
+            p16_1 = _mm256_madd_epi16(_mm256_shuffle_epi8(scales[j], shuf_q3k[1]), p16_1);
+            p16_2 = _mm256_madd_epi16(_mm256_shuffle_epi8(scales[j], shuf_q3k[2]), p16_2);
+            p16_3 = _mm256_madd_epi16(_mm256_shuffle_epi8(scales[j], shuf_q3k[3]), p16_3);
 
             // accumulate
             p16_0 = _mm256_add_epi32(p16_0, p16_1);
