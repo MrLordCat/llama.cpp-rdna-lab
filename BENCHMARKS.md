@@ -2601,6 +2601,8 @@ Context: after the driver update, decode-heavy routing was tested separately fro
 | `e116-driver5012-decode-vulkan-q4-specnone-r3` | Vulkan q4 | short-prompt decode gate | `39.8801` | `40.8683 tok/s` | confirmed r3 |
 | `e116-driver5012-decode-vulkan-f16-specnone-r3` | Vulkan f16 | short-prompt decode gate | `40.2753` | `41.2283 tok/s` | current decode-heavy route |
 | `e118-quality-vulkan-f16-specnone-mt512-r1` | Vulkan f16 | real-context server run, 512 output tokens | `28.7575` | `39.855 tok/s` | prompt + decode mixed, real server logs |
+| `e119-realctx512-rocm-q4-specnone-r3` | ROCm q4 | real-context r3, 512 output tokens | `24.9524` | `28.4483 tok/s` | warm-only `25.82 TPS` |
+| `e119-realctx512-vulkan-f16-specnone-r3` | Vulkan f16 | real-context r3, 512 output tokens | `32.0298` | `39.4483 tok/s` | warm-only `33.89 TPS` |
 
 Live-server correctness:
 
@@ -2609,3 +2611,5 @@ Live-server correctness:
 - Direct ROCm server sanity with `--reasoning-budget 256` produced a normal final answer (`finish_reason=stop`, `436` completion tokens, decode `29.52 tok/s`).
 
 Workflow update: every future large speedup needs a lightweight live-server smoke before promotion. The check is simple: run the actual target backend, ask a normal prompt, and reject the route if it produces repeated punctuation/symbols or broken reasoning like the old `wm32-wn32` Vulkan bug.
+
+E119 result: Vulkan f16 is now the confirmed long-answer/repeated-session route for this model on driver `32.0.31007.5012`: `+28.36%` aggregate and `+31.25%` warm-only over ROCm q4 on the same real-context 512-token workload. This does not replace the ROCm q4 cold prompt-heavy default, because ROCm still wins prompt eval (`1152.56` vs `966.93 tok/s` in E119).
