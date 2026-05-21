@@ -2606,6 +2606,8 @@ Context: after the driver update, decode-heavy routing was tested separately fro
 | `e120-realctx512-vulkan-q4-specnone-r3` | Vulkan q4 | real-context r3, 512 output tokens | `32.1668` | `40.1350 tok/s` | warm-only `33.96 TPS`, KV `216 MiB` |
 | `e121-realctx256-rocm-q4-specnone-r3` | ROCm q4 | real-context r3, 256 output tokens | `22.3563` | `28.7067 tok/s` | warm-only `23.88 TPS` |
 | `e121-realctx256-vulkan-q4-specnone-r3` | Vulkan q4 | real-context r3, 256 output tokens | `26.6050` | `40.0600 tok/s` | warm-only `29.43 TPS` |
+| `e122-realctx128-rocm-q4-specnone-r3` | ROCm q4 | real-context r3, 128 output tokens | `18.3480` | `28.8350 tok/s` | warm-only `20.55 TPS`, cold-only `15.11 TPS` |
+| `e122-realctx128-vulkan-q4-specnone-r3` | Vulkan q4 | real-context r3, 128 output tokens | `19.6365` | `40.2400 tok/s` | warm-only `23.15 TPS`, cold-only `15.06 TPS` |
 
 Live-server correctness:
 
@@ -2618,3 +2620,5 @@ Workflow update: every future large speedup needs a lightweight live-server smok
 E119/E120 result: Vulkan is now the confirmed long-answer/repeated-session backend for this model on driver `32.0.31007.5012`. E120 makes the practical route **Vulkan q4 KV**, not f16: it matched/slightly beat f16 (`32.1668` vs `32.0298 TPS`) while reducing KV from `768 MiB` to `216 MiB`. Against ROCm q4, the long-answer gain is `+28.91%` aggregate and `+31.53%` warm-only. This does not replace the ROCm q4 cold prompt-heavy default, because ROCm still wins prompt eval (`1152.56` vs Vulkan q4 `894.05 tok/s` in E119/E120).
 
 E121 boundary result: Vulkan q4 already wins at 256 generated tokens (`26.6050` vs ROCm `22.3563`, `+19.00%`; warm-only `29.43` vs `23.88`, `+23.24%`). The route split is now: ROCm q4 for cold/prompt-heavy and short generation; Vulkan q4 for medium/long repeated-session answers.
+
+E122 boundary result: at 128 generated tokens, repeated/session Vulkan q4 still wins (`19.6365` vs `18.3480`, `+7.02%`; warm-only `23.15` vs `20.55`, `+12.65%`), but cold-only is a tie/slightly ROCm (`15.06` Vulkan vs `15.11` ROCm). This locks the policy: choose by scenario, not by a single global backend.

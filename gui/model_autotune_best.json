@@ -48,7 +48,7 @@
     "extra_preset": "base",
     "extra_args": "--spec-type none",
     "max_tokens": "512",
-    "min_recommended_max_tokens": "256",
+    "min_recommended_max_tokens": "128",
     "real_context_mode": "repo-snapshot",
     "build_id": "",
     "run_id": "",
