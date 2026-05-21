@@ -449,18 +449,29 @@ Main Vulkan dispatch path:
 Current Vulkan hot route:
 
 - Decode can outperform ROCm on some lanes.
-- Prompt-heavy Q3_K remains limited by the active large matmul shader route.
+- Prompt-heavy Q3_K remains limited by the active large matmul shader route,
+  and at `ctx=65536` q4 FlashAttention becomes a co-primary blocker.
 - Accepted route after E082/E086/E102:
   `matmul_q3_k_f32_f16acc_aligned_l`.
+- E128/E131 64k route:
+  - best safe Vulkan stack: `GGML_VK_ALLOW_GRAPHICS_QUEUE=1`, `--no-mmap`,
+    `b8192/ub1024`, q4/q4 KV, FA on, `spec=none`, no reuse;
+  - `MUL_MAT q3_K` is `47.79%` and `FLASH_ATTN_EXT` is `38.03%` of traced
+    time;
+  - active FA route is `flash_attn_f32_f16_aligned_f32accq4_0`,
+    `coopmat1`, q4/q4, `Br=16,Bc=64,D_split=8,row_split=4`,
+    main `N=1024`, growing `KV`, `split_k=1`, `use_mask_opt=1`.
 - Rejected route families include old corrupt tile profiles, Q8_1/int-dot
   Q3_K route, expression-only dequant cleanup, aligned-store cleanup, and
-  invalid warptiles.
+  invalid warptiles. For 64k FA, E129 rejects `Bc=32/128`, E131 rejects
+  mask-opt disable and forced FA f16acc.
 
 Current Vulkan acceleration thesis:
 
-- Continue only in the active Q3_K coopmat prefill path.
-- Do not spend time on FA or broad env sweeps unless a trace changes the
-  hotspot distribution.
+- Continue in the active Q3_K coopmat prefill path and the now-measured q4
+  long-KV FA path.
+- Do not spend time on speculative decode, nearby ubatch sweeps, FA `Bc`
+  retuning, mask-opt disable, or f16acc forcing for the 64k lane.
 
 ## Backend Scheduler and Op Coverage
 
@@ -492,6 +503,7 @@ Use these to keep future acceleration plans evidence-based:
 | Which ROCm matmul route is active? | route traces around `ggml_cuda_mul_mat` and `GGML_TRACE_CUBLAS_Q3K_ROUTE` | Default off; trace changes timing |
 | How much Q3_K staging repeats? | E103-style Q3_K route reuse trace | Already shows maximal repeat count but too much fp16 footprint |
 | Which Vulkan shader route is active? | `GGML_VK_MATMUL_ROUTE_TRACE=1` | Use with perf logger only for diagnostics |
+| Which Vulkan FA route is active? | `GGML_VK_FA_ROUTE_TRACE=1` | Shows path, q/k/v types, `Br/Bc`, split-k, mask-opt, and workgroup geometry |
 | Which Vulkan kernels dominate? | `GGML_VK_PERF_LOGGER=1` | Intrusive; not a speed claim |
 | Does ngram help cold or warm? | cold/warm split, draft stats | Report coverage and effective acceptance |
 | Does KV type help? | same-lane q4/q8/f16 A/B | Compare prompt and decode separately |
@@ -503,8 +515,8 @@ Use these to keep future acceleration plans evidence-based:
 | --- | --- | --- | --- |
 | P0 | ROCm large Q3_K prefill via hipBLAS staging | Large share, repeated Q3_K -> fp16 conversion, current alternatives rejected | First serious code-design target |
 | P1 | ROCm Q3_K MMQ/MMVQ decode/medium shapes | Sustained Q3 direct route pressure in C01 traces | Tune only with exact bucket evidence |
-| P2 | Vulkan Q3_K prompt shader | Vulkan decode is strong but prompt Q3_K route trails ROCm | Useful fallback/idea source, not primary ROCm TPS fix |
-| P3 | KV/FA long-context route | q4 and FA preserve fit; alternatives have regressed | Keep q4/FA; optimize only after same-lane A/B |
+| P2 | Vulkan Q3_K prompt shader | Vulkan decode is strong but prompt Q3_K route trails ROCm; at 64k it is `47.79%` of traced time | Active Vulkan 64k code target, but require prebuild/static gates |
+| P3 | Vulkan q4 FA long-context route | `FLASH_ATTN_EXT` is `38.03%` of traced 64k Vulkan time; easy FA toggles have regressed | Keep q4/FA; optimize only with shader/resource evidence and same-lane A/B |
 | P4 | Prompt cache/checkpoint session route | Strong repeated/session gain by avoiding shared-prefix prefill | Keep enabled for practical sessions; do not mix with cold baseline |
 | P5 | `ngram-mod` session route | Can stack on prompt cache via accepted-token bursts; current 12k cold-first coverage is near zero; match-8 is too noisy | Keep `12/16/32` opt-in; require coverage/effective acceptance and burst evidence |
 | P6 | GDN/SSM/RMS/fusions | Visible but smaller; past simple probes negative | Revisit if a trace shows shared memory/residency slowdown |

@@ -86,6 +86,7 @@ candidate.
 | `GGML_VK_VISIBLE_DEVICES` | device selection | Limits visible Vulkan devices |
 | `GGML_OP_OFFLOAD_MIN_BATCH` | scheduler/offload | Minimum op batch size for offload decisions |
 | `GGML_VK_MATMUL_ROUTE_TRACE` | matmul | Logs unique Vulkan matmul pipeline/type/shape decisions |
+| `GGML_VK_FA_ROUTE_TRACE` | FlashAttention | Logs unique Vulkan FA path/type/tile/split/mask decisions |
 | `GGML_VK_PERF_LOGGER` | timing | Timestamp timing logger |
 | `GGML_VK_PERF_LOGGER_CONCURRENT` | timing | Groups timings by concurrent command batches |
 | `GGML_VK_PERF_LOGGER_FREQUENCY` | timing | Controls logger frequency |
@@ -252,11 +253,24 @@ Pipeline families:
 
 Route knobs:
 
+- `GGML_VK_FA_ROUTE_TRACE` for default-off route diagnostics.
 - `GGML_VK_DISABLE_COOPMAT`
 - `GGML_VK_DISABLE_COOPMAT2`
 - `GGML_VK_DISABLE_INTEGER_DOT_PRODUCT`
 - `GGML_VK_DISABLE_BFLOAT16`
 - `GGML_VK_DISABLE_F16`
+
+Measured Qwen3.6 64k Vulkan route:
+
+- E131 active route: `flash_attn_f32_f16_aligned_f32accq4_0`.
+- Path and types: `coopmat1`, `q4_0/q4_0`, `q=f32`.
+- Main geometry: `HSK=256`, `HSV=256`, `Br=16`, `Bc=64`,
+  `D_split=8`, `row_split=4`, `workgroup_size=256`,
+  `subgroup_size=64`.
+- Main chunks: `N=1024`, `KV=1024..57344`, `split_k=1`,
+  `use_mask_opt=1`; tail chunk: `N=178`, `KV=57600`.
+- Negative gates: disabling mask-opt regressed; forced FA f16acc did not beat
+  the full 64k best.
 
 Cleanup note: FlashAttention is one of the highest-value comparison surfaces
 between ROCm and Vulkan. If compile pressure becomes a problem, prefer a
@@ -348,6 +362,13 @@ Matmul route topology:
 ```bash
 GGML_VK_MATMUL_ROUTE_TRACE=1 \
 python scripts/agent_workload_bench.py --label <label> ...
+```
+
+FlashAttention route topology:
+
+```bash
+GGML_VK_FA_ROUTE_TRACE=1 \
+python scripts/repo_snapshot_context_bench.py --label-prefix <label> ...
 ```
 
 Vulkan timing:

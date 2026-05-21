@@ -427,6 +427,15 @@ enum FaCodePath {
     FA_COOPMAT2,
 };
 
+static const char * ggml_vk_fa_path_name(FaCodePath path) {
+    switch (path) {
+    case FA_SCALAR:   return "scalar";
+    case FA_COOPMAT1: return "coopmat1";
+    case FA_COOPMAT2: return "coopmat2";
+    default:          return "unknown";
+    }
+}
+
 struct vk_fa_pipeline_state {
     uint32_t HSK, HSV;
     uint32_t Br, Bc;
@@ -9453,6 +9462,48 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         // of "align", so recompute split_k based on that.
         split_kv = ROUNDUP_POW2(std::max(1u, KV / split_k), alignment);
         split_k = CEIL_DIV(KV, split_kv);
+    }
+
+    static const bool route_trace = std::getenv("GGML_VK_FA_ROUTE_TRACE") != nullptr;
+    if (route_trace && pipeline) {
+        static std::mutex route_trace_mutex;
+        static std::set<std::string> route_trace_seen;
+
+        std::ostringstream key;
+        key << pipeline->name
+            << "|path=" << ggml_vk_fa_path_name(fa_pipeline_state.path)
+            << "|k=" << ggml_type_name(k->type)
+            << "|v=" << ggml_type_name(v->type)
+            << "|q=" << ggml_type_name(q->type)
+            << "|HSK=" << HSK
+            << "|HSV=" << HSV
+            << "|N=" << N
+            << "|KV=" << KV
+            << "|Br=" << Br
+            << "|Bc=" << Bc
+            << "|D_split=" << fa_pipeline_state.D_split
+            << "|row_split=" << fa_pipeline_state.row_split
+            << "|shmem_staging=" << fa_pipeline_state.shmem_staging
+            << "|workgroup_size=" << fa_pipeline_state.workgroup_size
+            << "|subgroup_size=" << fa_pipeline_state.subgroup_size
+            << "|aligned=" << fa_pipeline_state.aligned
+            << "|f32acc=" << fa_pipeline_state.f32acc
+            << "|flags=" << fa_pipeline_state.flags
+            << "|limit_occupancy_shmem=" << fa_pipeline_state.limit_occupancy_shmem
+            << "|use_mask_opt=" << use_mask_opt
+            << "|gqa_ratio=" << gqa_ratio
+            << "|split_k=" << split_k
+            << "|split_kv=" << split_kv
+            << "|Tr=" << Tr
+            << "|wg_x=" << workgroups_x
+            << "|wg_y=" << workgroups_y
+            << "|wg_z=" << workgroups_z
+            << "|shader_cores=" << shader_core_count;
+
+        std::lock_guard<std::mutex> guard(route_trace_mutex);
+        if (route_trace_seen.insert(key.str()).second) {
+            std::cerr << "ggml_vulkan: flash_attn route: " << key.str() << std::endl;
+        }
     }
 
     // Reserve space for split_k temporaries. For each split x batch, we need to store the O matrix (D x ne1)
