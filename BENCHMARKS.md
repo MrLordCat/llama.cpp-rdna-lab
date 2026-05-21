@@ -33,6 +33,38 @@ build_logs\agent-workload\<label>.server.log
 
 Для коротких агентных ответов runner по умолчанию добавляет `--chat-template-kwargs {"enable_thinking":false,"preserve_thinking":false}`. Это можно отключить флагом `--no-disable-thinking`.
 
+## Vulkan 64k full-context rebaseline (2026-05-21)
+
+Фокус переключён на Vulkan `ctx=65536`: пользователь заметил, что длинный контекст ощущается сильно медленнее, несмотря на быстрый Vulkan decode. Проверка была сделана через реальный `llama-server` request в `scripts\repo_snapshot_context_bench.py`, не через синтетический bench. Финальная калибровка prompt: `152000` chars, `57409` prompt tokens, `120` completion tokens, Qwen3.6-27B-Q3_K_S, q4/q4 KV, FlashAttention on, full offload, `spec=none`, thinking on, no reuse (`--cache-ram 0 --ctx-checkpoints 0`).
+
+| Backend / route | b/ub | Wall TPS | Prompt eval TPS | Decode eval TPS | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Vulkan baseline | 2048/512 | `1.2896` | `640.63` | `36.04` | baseline |
+| ROCm comparison | 2048/512 | `1.5545` | `799.09` | `22.83` | Vulkan loses full 64k wall on prefill |
+| Vulkan shape | 4096/1024 | `1.3106` | `651.59` | `35.86` | `+1.63%` wall vs Vulkan baseline |
+| Vulkan `GGML_VK_ALLOW_GRAPHICS_QUEUE=1` + `--no-mmap` | 4096/1024 | `1.3375` | `665.00` | `36.54` | keep as stack |
+| Vulkan confirm, graphics queue + `--no-mmap` | 8192/1024 | `1.3406` | `666.62` | `36.58` | best safe Vulkan 64k route, `+3.95%` vs baseline |
+| Vulkan q8/q8 KV | 4096/1024 | `0.2008` | `96.62` | `35.53` | reject; prefill/residency collapse |
+| Vulkan FA scalar code probe | 8192/1024 | `1.0526` | `520.12` | `34.19` | reject/revert; `-21.48%` |
+
+Итог: подозрение подтвердилось частично. Vulkan остаётся намного быстрее в decode (`36.58` vs ROCm `22.83` tok/s), но на полном 64k cold-context wall проигрывает ROCm примерно `13.8%`, потому что prompt eval ниже (`666.62` vs `799.09` tok/s). Лучший безопасный no-code профиль для Vulkan 64k сейчас:
+
+```powershell
+$env:GGML_VK_ALLOW_GRAPHICS_QUEUE = "1"
+# server-extra: "--spec-type none --cache-ram 0 --ctx-checkpoints 0 --no-mmap"
+# batch/ubatch: 8192/1024, q4_0/q4_0, flash-attn on
+```
+
+Perf trace для Vulkan 64k показывает, почему это сдерживает TPS: `MUL_MAT q3_K` занимает `47.79%`, `FLASH_ATTN_EXT` ещё `38.03%`; вместе это около `85.8%` traced time. Значит следующий кодовый фокус не ngram/spec, а Q3_K large-prefill kernel path и q4 FlashAttention long-KV route.
+
+Артефакты:
+- `build_logs/agent-workload/e128-vulkan64k-c152k-b2048-ub512-q4-none-noreuse-repo-summary.md`
+- `build_logs/agent-workload/e128-rocm64k-c152k-b2048-ub512-q4-none-noreuse-repo-summary.md`
+- `build_logs/agent-workload/e128-vulkan64k-c152k-b8192-ub1024-q4-graphicsq-nommap-confirm-none-noreuse-repo-summary.md`
+- `build_logs/agent-workload/e128-vulkan64k-c152k-b4096-ub1024-q4-perf1-ctx64k.server.log`
+- `build_logs/agent-workload/e128-vulkan64k-c152k-b4096-ub1024-q4-trace8-ctx64k.server.log`
+- `docs/research/experiments/E128_vulkan64k_context_rebaseline.md`
+
 ## H03 ngram+MTP chain smoke (2026-05-19)
 
 Добавлен экспериментальный `--spec-type ngram-mtp`: в одном server run сначала пробуется `ngram-mod`, затем MTP fallback. Это opt-in режим для проверки совместимости двух speculative источников, не новый default.
