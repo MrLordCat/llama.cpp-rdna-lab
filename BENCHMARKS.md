@@ -2603,6 +2603,7 @@ Context: after the driver update, decode-heavy routing was tested separately fro
 | `e118-quality-vulkan-f16-specnone-mt512-r1` | Vulkan f16 | real-context server run, 512 output tokens | `28.7575` | `39.855 tok/s` | prompt + decode mixed, real server logs |
 | `e119-realctx512-rocm-q4-specnone-r3` | ROCm q4 | real-context r3, 512 output tokens | `24.9524` | `28.4483 tok/s` | warm-only `25.82 TPS` |
 | `e119-realctx512-vulkan-f16-specnone-r3` | Vulkan f16 | real-context r3, 512 output tokens | `32.0298` | `39.4483 tok/s` | warm-only `33.89 TPS` |
+| `e120-realctx512-vulkan-q4-specnone-r3` | Vulkan q4 | real-context r3, 512 output tokens | `32.1668` | `40.1350 tok/s` | warm-only `33.96 TPS`, KV `216 MiB` |
 
 Live-server correctness:
 
@@ -2612,4 +2613,4 @@ Live-server correctness:
 
 Workflow update: every future large speedup needs a lightweight live-server smoke before promotion. The check is simple: run the actual target backend, ask a normal prompt, and reject the route if it produces repeated punctuation/symbols or broken reasoning like the old `wm32-wn32` Vulkan bug.
 
-E119 result: Vulkan f16 is now the confirmed long-answer/repeated-session route for this model on driver `32.0.31007.5012`: `+28.36%` aggregate and `+31.25%` warm-only over ROCm q4 on the same real-context 512-token workload. This does not replace the ROCm q4 cold prompt-heavy default, because ROCm still wins prompt eval (`1152.56` vs `966.93 tok/s` in E119).
+E119/E120 result: Vulkan is now the confirmed long-answer/repeated-session backend for this model on driver `32.0.31007.5012`. E120 makes the practical route **Vulkan q4 KV**, not f16: it matched/slightly beat f16 (`32.1668` vs `32.0298 TPS`) while reducing KV from `768 MiB` to `216 MiB`. Against ROCm q4, the long-answer gain is `+28.91%` aggregate and `+31.53%` warm-only. This does not replace the ROCm q4 cold prompt-heavy default, because ROCm still wins prompt eval (`1152.56` vs Vulkan q4 `894.05 tok/s` in E119/E120).
