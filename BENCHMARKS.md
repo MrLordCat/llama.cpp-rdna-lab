@@ -2590,3 +2590,22 @@ Prompt-only pp7488 sanity:
 - Why even shorter match failed: `ngram-mod 8/16/32` generated more bad drafts (`74/544` accepted), effective acceptance fell to `0.004251`, and decode collapsed to `20.33 tok/s`.
 - `ngram-simple` is rejected: despite drafts, decode fell to `22.70 tok/s`, so its speculative overhead/verify pattern is worse than reuse-only.
 - Vulkan did not become a replacement for ROCm after the driver update; warmed Vulkan pp7488 is still about `17%` behind ROCm.
+
+## Driver 5012 Decode Route and Live-Server Sanity (2026-05-21)
+
+Context: after the driver update, decode-heavy routing was tested separately from prompt-heavy cold-first routing. This is not a replacement for the ROCm prompt-heavy default; it is a long-generation/decode profile.
+
+| Label | Backend / KV | Mode | Aggregate TPS | Decode eval | Notes |
+| --- | --- | --- | ---: | ---: | --- |
+| `e116-driver5012-decode-rocm-q4-specnone-r1` | ROCm q4 | short-prompt decode gate | `29.1685` | `29.625 tok/s` | decode control |
+| `e116-driver5012-decode-vulkan-q4-specnone-r3` | Vulkan q4 | short-prompt decode gate | `39.8801` | `40.8683 tok/s` | confirmed r3 |
+| `e116-driver5012-decode-vulkan-f16-specnone-r3` | Vulkan f16 | short-prompt decode gate | `40.2753` | `41.2283 tok/s` | current decode-heavy route |
+| `e118-quality-vulkan-f16-specnone-mt512-r1` | Vulkan f16 | real-context server run, 512 output tokens | `28.7575` | `39.855 tok/s` | prompt + decode mixed, real server logs |
+
+Live-server correctness:
+
+- User manually verified the Vulkan route in a real server/client flow: normal thinking/answers, no corrupted symbol output, no slash spam.
+- Direct ROCm server sanity with unrestricted reasoning produced coherent `reasoning_content` but no final `content` before `max_tokens=1024`; this is a reasoning-budget/API extraction behavior, not a backend corruption signal.
+- Direct ROCm server sanity with `--reasoning-budget 256` produced a normal final answer (`finish_reason=stop`, `436` completion tokens, decode `29.52 tok/s`).
+
+Workflow update: every future large speedup needs a lightweight live-server smoke before promotion. The check is simple: run the actual target backend, ask a normal prompt, and reject the route if it produces repeated punctuation/symbols or broken reasoning like the old `wm32-wn32` Vulkan bug.
