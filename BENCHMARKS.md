@@ -2622,3 +2622,5 @@ E119/E120 result: Vulkan is now the confirmed long-answer/repeated-session backe
 E121 boundary result: Vulkan q4 already wins at 256 generated tokens (`26.6050` vs ROCm `22.3563`, `+19.00%`; warm-only `29.43` vs `23.88`, `+23.24%`). The route split is now: ROCm q4 for cold/prompt-heavy and short generation; Vulkan q4 for medium/long repeated-session answers.
 
 E122 boundary result: at 128 generated tokens, repeated/session Vulkan q4 still wins (`19.6365` vs `18.3480`, `+7.02%`; warm-only `23.15` vs `20.55`, `+12.65%`), but cold-only is a tie/slightly ROCm (`15.06` Vulkan vs `15.11` ROCm). This locks the policy: choose by scenario, not by a single global backend.
+
+ROCm prefill allocator scout (E123): changing compute vbuffer chunking did not improve the cold prompt-heavy lane after driver `32.0.31007.5012`. Against E113 cold `11.9858 TPS`, `128 MiB` measured `11.8684`, `64 MiB` measured `11.8013`, and `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1` measured `11.7784`. Keep default chunking; continue prefill work in H35 route/kernel space.
