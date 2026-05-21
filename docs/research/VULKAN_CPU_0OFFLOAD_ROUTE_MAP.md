@@ -145,13 +145,11 @@ some Q3_K layers from CPU.
 
 High-value candidates:
 
-1. Isolated clean-vs-candidate A/B for the current `quants.c` Q3_K
-   mask/shuffle preload change.
-2. Q3_K x86 repack design, starting from existing Q4_K/Q5_K/Q6_K interleaved
+1. Q3_K x86 repack design, starting from existing Q4_K/Q5_K/Q6_K interleaved
    repack patterns in `repack.cpp`.
-3. Multi-row Q3_K vec-dot route if shapes allow batching several rows and
+2. Multi-row Q3_K vec-dot route if shapes allow batching several rows and
    amortizing q8/scales work.
-4. Per-op timing for CPU `MUL_MAT` in the `-ngl 0 --no-mmap` lane, so changes
+3. Per-op timing for CPU `MUL_MAT` in the `-ngl 0 --no-mmap` lane, so changes
    can be attributed to Q3_K rather than mmap/session noise.
 
 Rejected or low-value repeats:
@@ -161,3 +159,7 @@ Rejected or low-value repeats:
 - `--mlock` as a substitute for `--no-mmap`.
 - More large thread-count sweeps without a new mechanism.
 - Ngram/speculative decoding without measured effective acceptance.
+- Simple Q3_K mask/shuffle preload as a promoted decode win: E126 showed no
+  decode improvement.
+- Simple Q3_K next-block prefetch: E127 was only a noisy `+1.13%` r1 and was
+  reverted.

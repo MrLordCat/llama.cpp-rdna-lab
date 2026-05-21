@@ -2676,3 +2676,14 @@ Recommended practical CPU fallback command additions:
 ```powershell
 --gpu-layers 0 --no-mmap --cache-type-k q4_0 --cache-type-v q4_0 --flash-attn on --spec-type none
 ```
+
+CPU Q3_K follow-up probes:
+
+- E126 isolated the current local `quants.c` Q3_K mask/shuffle preload change
+  against a clean worktree. Aggregate moved `1.8067 -> 1.8611 TPS`, but decode
+  did not improve (`2.4833 -> 2.4800 tok/s`), so this is not a promoted CPU
+  decode speedup.
+- E127 tested a next-block Q3/Q8 prefetch inside `ggml_vec_dot_q3_K_q8_K` on a
+  64-token gate. It measured only `2.0716 -> 2.0950 TPS` r1 and decode
+  `2.42 -> 2.44 tok/s`, so the patch was reverted. This points away from
+  simple mask/prefetch tweaks and toward Q3_K repack/interleaved matvec work.
