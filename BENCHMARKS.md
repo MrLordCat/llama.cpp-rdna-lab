@@ -2545,3 +2545,46 @@ E111 is the useful practical gain from this cycle, but it is **not** a cold-firs
 - For cold-first kernel work keep using no-reuse controls; the current cold-first ceiling remains around `11.75-11.85 TPS` on this 12k q4-KV lane.
 - Speculative cold-first projections must include coverage/effective acceptance. In E107 local acceptance alone was misleading because coverage was almost zero.
 - GDN block-geometry changes now require resource/occupancy proof before coding; `num_warps=1/2` and chunk-size style probes are closed.
+
+## Driver 32.0.31007.5012 Rebaseline (2026-05-21)
+
+Контекст: после обновления AMD video driver все baseline были обновлены. Новый driver fingerprint:
+
+- GPU: AMD Radeon RX 9070 XT
+- Driver: `32.0.31007.5012`
+- Driver date: `2026-05-12`
+
+Same active lane:
+
+- `Qwen3.6-27B-Q3_K_S`
+- ROCm `build-rocm-vec`
+- `ctx=12288`, `batch=6144`, `ubatch=2048`
+- KV `q4_0/q4_0`
+- tasks `triage_diff,review_bug`
+- thinking ON
+
+| Label | Mode | Aggregate TPS | Notes |
+| --- | --- | ---: | --- |
+| `e113-driver5012-rocm-cold-specnone-r3` | cold-first, no reuse, `spec=none` | `11.9858` | new cold-first baseline |
+| `e113-driver5012-rocm-reuse-specnone-r3` | repeated/session, reuse, `spec=none` | `17.8934` | after-first mean `20.2012 TPS` |
+| `e113-driver5012-rocm-reuse-ngram244864-r3` | reuse + ngram-mod 24/48/64 | `17.7270` | noisy negative r3 |
+| `e113-driver5012-rocm-reuse-ngram244864-r3b` | reuse + ngram-mod 24/48/64 | `18.4637` | noisy positive r3b |
+| `e113-driver5012-rocm-reuse-ngram121632-r3` | reuse + ngram-mod 12/16/32 | `19.0148` | after-first mean `23.1681 TPS` |
+| `e113-driver5012-rocm-reuse-ngram121632-r3b` | reuse + ngram-mod 12/16/32 | `19.5051` | after-first mean `23.9038 TPS` |
+| `e113-driver5012-rocm-reuse-ngramsimple-n8m16-r3` | reuse + ngram-simple n8/m16 | `15.3491` | reject |
+
+Prompt-only pp7488 sanity:
+
+| Label | Backend | pp7488 tok/s | Notes |
+| --- | --- | ---: | --- |
+| `e113-driver5012-vulkan-pp7488-r3` | Vulkan | `900.22 +/- 151.13` | first post-driver run, likely shader/pipeline cache noise |
+| `e113-driver5012-vulkan-pp7488-r3b` | Vulkan | `962.41 +/- 33.93` | warmed repeat |
+| `e113-driver5012-rocm-pp7488-r3` | ROCm | `1159.49 +/- 73.80` | ROCm still ahead on prompt |
+
+Вывод:
+
+- Cold-first baseline changed modestly: use `11.9858 TPS` for new no-reuse kernel/default comparisons.
+- Practical repeated/session best is now prompt cache/checkpoints + `ngram-mod 12/16/32`: best r3 `19.5051 TPS`, after-first mean `23.9038 TPS`.
+- Why shorter ngram won: it increased effective acceptance to `0.035028` (`320/484` accepted draft tokens), enough to speed repeated decode. The first cold task is slower, so this remains session-only.
+- `ngram-simple` is rejected: despite drafts, decode fell to `22.70 tok/s`, so its speculative overhead/verify pattern is worse than reuse-only.
+- Vulkan did not become a replacement for ROCm after the driver update; warmed Vulkan pp7488 is still about `17%` behind ROCm.
