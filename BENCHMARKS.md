@@ -2626,3 +2626,53 @@ E122 boundary result: at 128 generated tokens, repeated/session Vulkan q4 still 
 ROCm prefill allocator scout (E123): changing compute vbuffer chunking did not improve the cold prompt-heavy lane after driver `32.0.31007.5012`. Against E113 cold `11.9858 TPS`, `128 MiB` measured `11.8684`, `64 MiB` measured `11.8013`, and `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1` measured `11.7784`. Keep default chunking; continue prefill work in H35 route/kernel space.
 
 Vulkan speculative stack scout (E124): do not add `ngram-mod 12/16/32` to the Vulkan q4 session route. On the E122 128-token lane it regressed from `19.6365` to `14.3229 TPS` (`0.7294x`), with effective acceptance only `0.004844`. Vulkan q4 session route stays `spec=none`; ROCm keeps the separate E113 ngram session opt-in.
+
+## Vulkan CPU 0-Offload Route (E125, 2026-05-21)
+
+Context: CPU fallback inside the Vulkan build, launched with `--gpu-layers 0`.
+This is not pure CPU unless `--no-op-offload` is also used. The benchmark was
+intentionally small because Qwen3.6-27B-Q3_K_S CPU fallback is slow:
+`ctx=4096`, `batch=512`, `ubatch=128`, q4 KV, FlashAttention on, `spec=none`,
+no reuse, thinking on, `max_tokens=32`, task `review_bug`.
+
+| Label | Route | Aggregate TPS | Prompt eval | Decode eval | Decision |
+| --- | --- | ---: | ---: | ---: | --- |
+| `e125-cpu0offload-default32-r3` | `-ngl 0`, mmap, op-offload on | `1.7703` | `32.5033 tok/s` | `2.3267 tok/s` | baseline |
+| `e125-cpu0offload-t6-32-r3` | `--threads 6 --threads-batch 6` | `1.7995` | `30.6367 tok/s` | `2.4267 tok/s` | small/tie |
+| `e125-cpu0offload-noopoff32-r3` | `--no-op-offload` | `0.8900` | about `6.18 tok/s` | about `2.47 tok/s` | reject |
+| `e125-cpu0offload-f16kv32-r1` | f16/f16 KV | `1.7617` | `27.69 tok/s` | `2.45 tok/s` | reject |
+| `e125-cpu0offload-mlock32-r1` | `--mlock` | `1.7196` | `27.81 tok/s` | `2.36 tok/s` | reject |
+| `e125-cpu0offload-nommap32-r3` | `--no-mmap` | `1.8815` | `33.9133 tok/s` | `2.4900 tok/s` | keep |
+| `e125-cpu0offload-nommap-t6-32-r3` | `--no-mmap --threads 6 --threads-batch 6` | `1.8931` | `31.4133 tok/s` | `2.5767 tok/s` | optional decode-skew route |
+
+Partial-offload scout with `--no-mmap`:
+
+| Label | GPU layers | Aggregate TPS |
+| --- | ---: | ---: |
+| `e125-vulkan-hybrid-ngl8-nommap32-r1` | 8 | `2.11` |
+| `e125-vulkan-hybrid-ngl16-nommap32-r1` | 16 | `2.32` |
+| `e125-vulkan-hybrid-ngl32-nommap32-r1` | 32 | `3.46` |
+| `e125-vulkan-hybrid-ngl48-nommap32-r1` | 48 | `6.03` |
+| `e125-vulkan-full-ngl65-nommap32-r1` | 65 | `28.93` |
+
+Route findings:
+
+- Keep `--no-mmap` for practical Vulkan `-ngl 0` CPU fallback. It improved r3
+  wall TPS from `1.7703` to `1.8815` (`+6.28%`) while preserving the same
+  Vulkan op-offload scheduler route.
+- Do not use `--no-op-offload` for speed. It collapses graph splits but drops
+  prompt eval by about 4-5x.
+- q4 V cache requires FlashAttention; `--no-flash-attn` failed at init with
+  `V cache quantization requires flash_attn`.
+- The real code bottleneck is CPU Q3_K matvec: `GGML_TYPE_Q3_K` routes to
+  `ggml_vec_dot_q3_K_q8_K`, `.nrows = 1`, and Q3_K has no current x86 repack
+  route in `ggml/src/ggml-cpu/repack.cpp`.
+- Next CPU-code work should isolate Q3_K x86 vec-dot changes and/or add a
+  Q3_K repack/interleaved route. The current local `quants.c` micro-change was
+  present in the measured binary and is not yet a clean-vs-candidate claim.
+
+Recommended practical CPU fallback command additions:
+
+```powershell
+--gpu-layers 0 --no-mmap --cache-type-k q4_0 --cache-type-v q4_0 --flash-attn on --spec-type none
+```

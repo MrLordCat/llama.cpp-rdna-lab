@@ -1,6 +1,6 @@
 # Qwen TPS Route Atlas
 
-Updated: 2026-05-20.
+Updated: 2026-05-21.
 
 This is the top-level route map for future TPS work on the local
 `llama.cpp-with-GUI` fork. It connects GUI/CLI/server parameters, Qwen graph
@@ -11,6 +11,7 @@ Detailed companions:
 
 - ROCm backend routes: `docs/research/ROCM_ROUTE_MAP.md`
 - Vulkan backend routes: `docs/research/VULKAN_ROUTE_MAP.md`
+- Vulkan `-ngl 0` CPU fallback route: `docs/research/VULKAN_CPU_0OFFLOAD_ROUTE_MAP.md`
 - Metrics and bottleneck table: `docs/research/ROUTE_METRICS_AND_GAPS.md`
 
 ## Coverage Contract
@@ -79,6 +80,19 @@ Historical trace lane:
 | Batch | `batch=6144`, `ubatch=192` |
 | KV | `q4_0/q4_0` |
 | Use | C01 route shares, FA trace, decode/medium-shape hotspot evidence |
+
+Vulkan CPU fallback lane:
+
+| Field | Value |
+| --- | --- |
+| Model | `models/Qwen3.6-27B-Q3_K_S.gguf` |
+| Backend | Vulkan build with `--gpu-layers 0` |
+| Context | `ctx=4096` for quick CPU experiments |
+| Batch | `batch=512`, `ubatch=128` |
+| KV | `q4_0/q4_0` |
+| Speculation | `--spec-type none` |
+| Reuse | disabled |
+| Metric type | short real-server CPU fallback gate; E125 default `1.7703 TPS`, `--no-mmap` `1.8815 TPS` |
 
 Do not compare headline TPS across these lanes without marking the lane.
 
