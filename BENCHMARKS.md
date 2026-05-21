@@ -2624,3 +2624,5 @@ E121 boundary result: Vulkan q4 already wins at 256 generated tokens (`26.6050` 
 E122 boundary result: at 128 generated tokens, repeated/session Vulkan q4 still wins (`19.6365` vs `18.3480`, `+7.02%`; warm-only `23.15` vs `20.55`, `+12.65%`), but cold-only is a tie/slightly ROCm (`15.06` Vulkan vs `15.11` ROCm). This locks the policy: choose by scenario, not by a single global backend.
 
 ROCm prefill allocator scout (E123): changing compute vbuffer chunking did not improve the cold prompt-heavy lane after driver `32.0.31007.5012`. Against E113 cold `11.9858 TPS`, `128 MiB` measured `11.8684`, `64 MiB` measured `11.8013`, and `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1` measured `11.7784`. Keep default chunking; continue prefill work in H35 route/kernel space.
+
+Vulkan speculative stack scout (E124): do not add `ngram-mod 12/16/32` to the Vulkan q4 session route. On the E122 128-token lane it regressed from `19.6365` to `14.3229 TPS` (`0.7294x`), with effective acceptance only `0.004844`. Vulkan q4 session route stays `spec=none`; ROCm keeps the separate E113 ngram session opt-in.
