@@ -270,7 +270,9 @@ Measured Qwen3.6 64k Vulkan route:
 - Main chunks: `N=1024`, `KV=1024..57344`, `split_k=1`,
   `use_mask_opt=1`; tail chunk: `N=178`, `KV=57600`.
 - Negative gates: disabling mask-opt regressed; forced FA f16acc did not beat
-  the full 64k best.
+  the full 64k best; forced SHMEM staging fell back to scalar FA.
+- Driver resource stats for the main route: `98 VGPR`, `76 SGPR`,
+  `26112 B LDS`, `0 scratch`.
 
 Cleanup note: FlashAttention is one of the highest-value comparison surfaces
 between ROCm and Vulkan. If compile pressure becomes a problem, prefer a

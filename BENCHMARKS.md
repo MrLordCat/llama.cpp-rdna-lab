@@ -59,6 +59,8 @@ Perf trace для Vulkan 64k показывает, почему это сдер�
 
 E131 добавил default-off `GGML_VK_FA_ROUTE_TRACE=1` и снял живой 64k route trace. Активная FA-ветка: `flash_attn_f32_f16_aligned_f32accq4_0`, `coopmat1`, `q4_0/q4_0`, `Br=16,Bc=64,D_split=8,row_split=4`, `workgroup_size=256`, `subgroup_size=64`. Основные prefill chunks идут как `N=1024`, `KV=1024..57344`, `split_k=1`, `use_mask_opt=1`; tail chunk `N=178,KV=57600`. Две быстрые гипотезы закрыты: отключение mask-opt упало до `639.44` prompt tok/s, а forced FA f16acc на полном `max_tokens=120` дал `1.3380 TPS` против best `1.3406`. Вывод: не повторять mask/f16acc toggles; FA требует более глубокого shader/resource анализа, а Q3_K matmul остаётся равноправной первой целью.
 
+E132 добавил FA resource fingerprint: main 64k coopmat1 route использует `98 VGPR`, `76 SGPR`, `26112 B LDS`, `0 scratch`; warmup GQA route `101/69/26112/0`. Попытка forced SHMEM staging не осталась на coopmat1: support gate откатил FA в scalar route (`Bc=32`, `192 VGPR`, `6144 B LDS`) и prompt упал до `520.18` tok/s. Значит staging не кандидат на текущем driver/resource limit; любой будущий FA-кандидат должен route trace-ом доказать, что не ушёл в scalar fallback.
+
 Артефакты:
 - `build_logs/agent-workload/e128-vulkan64k-c152k-b2048-ub512-q4-none-noreuse-repo-summary.md`
 - `build_logs/agent-workload/e128-rocm64k-c152k-b2048-ub512-q4-none-noreuse-repo-summary.md`
@@ -67,8 +69,11 @@ E131 добавил default-off `GGML_VK_FA_ROUTE_TRACE=1` и снял живо�
 - `build_logs/agent-workload/e128-vulkan64k-c152k-b4096-ub1024-q4-trace8-ctx64k.server.log`
 - `build_logs/agent-workload/e131-vulkan64k-fa-route-trace-c152k-b8192-ub1024-q4-ctx64k.server.log`
 - `build_logs/agent-workload/e131-vulkan64k-fa-force-f16acc-c152k-b8192-ub1024-q4-confirm120-repo-summary.md`
+- `build_logs/agent-workload/e132-vulkan64k-fa-pipeline-stats-c152k-b8192-ub1024-q4-ctx64k.server.log`
+- `build_logs/agent-workload/e132-vulkan64k-fa-shmem-staging-c152k-b8192-ub1024-q4-screen-repo-summary.md`
 - `docs/research/experiments/E128_vulkan64k_context_rebaseline.md`
 - `docs/research/experiments/E131_vulkan64k_fa_route_trace_and_gates.md`
+- `docs/research/experiments/E132_vulkan64k_fa_resource_and_shmem_gate.md`
 
 ## H03 ngram+MTP chain smoke (2026-05-19)
 
