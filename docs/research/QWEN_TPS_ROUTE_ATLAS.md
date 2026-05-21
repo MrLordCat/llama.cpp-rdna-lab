@@ -337,6 +337,8 @@ Metric interpretation:
   effective acceptance `0.035028`.
 - `ngram-simple n8/m16` is rejected for this route (`15.3491 TPS`) because
   decode slowed despite draft generation.
+- E114 rejects going shorter to `ngram-mod 8/16/32`: `14.2479 TPS`, local
+  acceptance `0.136029`, effective acceptance `0.004251`.
 - Future speculative claims must report local acceptance, coverage, and
   effective acceptance together, plus per-task accepted-token bursts when
   coverage is sparse.
@@ -490,7 +492,7 @@ Use these to keep future acceleration plans evidence-based:
 | P2 | Vulkan Q3_K prompt shader | Vulkan decode is strong but prompt Q3_K route trails ROCm | Useful fallback/idea source, not primary ROCm TPS fix |
 | P3 | KV/FA long-context route | q4 and FA preserve fit; alternatives have regressed | Keep q4/FA; optimize only after same-lane A/B |
 | P4 | Prompt cache/checkpoint session route | Strong repeated/session gain by avoiding shared-prefix prefill | Keep enabled for practical sessions; do not mix with cold baseline |
-| P5 | `ngram-mod` session route | Can stack on prompt cache via accepted-token bursts; current 12k cold-first coverage is near zero | Keep `12/16/32` opt-in; require coverage/effective acceptance and burst evidence |
+| P5 | `ngram-mod` session route | Can stack on prompt cache via accepted-token bursts; current 12k cold-first coverage is near zero; match-8 is too noisy | Keep `12/16/32` opt-in; require coverage/effective acceptance and burst evidence |
 | P6 | GDN/SSM/RMS/fusions | Visible but smaller; past simple probes negative | Revisit if a trace shows shared memory/residency slowdown |
 
 ## Cleanup and Deletion Boundaries

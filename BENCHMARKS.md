@@ -2572,6 +2572,7 @@ Same active lane:
 | `e113-driver5012-rocm-reuse-ngram121632-r3` | reuse + ngram-mod 12/16/32 | `19.0148` | after-first mean `23.1681 TPS` |
 | `e113-driver5012-rocm-reuse-ngram121632-r3b` | reuse + ngram-mod 12/16/32 | `19.5051` | after-first mean `23.9038 TPS` |
 | `e113-driver5012-rocm-reuse-ngramsimple-n8m16-r3` | reuse + ngram-simple n8/m16 | `15.3491` | reject |
+| `e114-driver5012-rocm-reuse-ngram081632-r3` | reuse + ngram-mod 8/16/32 | `14.2479` | reject; local acceptance collapsed |
 
 Prompt-only pp7488 sanity:
 
@@ -2586,5 +2587,6 @@ Prompt-only pp7488 sanity:
 - Cold-first baseline changed modestly: use `11.9858 TPS` for new no-reuse kernel/default comparisons.
 - Practical repeated/session best is now prompt cache/checkpoints + `ngram-mod 12/16/32`: best r3 `19.5051 TPS`, after-first mean `23.9038 TPS`.
 - Why shorter ngram won: it increased effective acceptance to `0.035028` (`320/484` accepted draft tokens), enough to speed repeated decode. The first cold task is slower, so this remains session-only.
+- Why even shorter match failed: `ngram-mod 8/16/32` generated more bad drafts (`74/544` accepted), effective acceptance fell to `0.004251`, and decode collapsed to `20.33 tok/s`.
 - `ngram-simple` is rejected: despite drafts, decode fell to `22.70 tok/s`, so its speculative overhead/verify pattern is worse than reuse-only.
 - Vulkan did not become a replacement for ROCm after the driver update; warmed Vulkan pp7488 is still about `17%` behind ROCm.
