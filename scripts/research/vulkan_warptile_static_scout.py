@@ -158,7 +158,7 @@ MEASURED = {
     "bm64": "E091 rejected; 797.92",
     "bn64": "E091 rejected; 720.07/737.21",
     "bm64-bn64": "E091 rejected; 646.10",
-    "bm256": "static-only: halves B reload proxy while keeping A dequant proxy roughly flat; requires LDS/resource proof",
+    "bm256": "E146 rejected; 916.62 vs 972.84 base, 94 VGPR / 31744 B LDS despite halved B reload proxy",
     "bn192": "static-only: reduces A dequant proxy by about 25% for N=1024; requires LDS/resource proof",
     "bn192-wn96": "E143 rejected; 760.78 vs 974.19 base, 139 VGPR / 25088 B LDS",
     "bn192-wm128-wn96": "E143 rejected; 137.71, 171 VGPR plus scratch",

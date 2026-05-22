@@ -49,6 +49,10 @@ PRIORS: tuple[Prior, ...] = (
     Prior("dequantreuse", "Q3_K dequant reuse without pair-count reduction", 0.10, "low-ceiling", "scale/helper reuse is E088-calibrated non-positive unless the idea removes substantial dequant work"),
     Prior("bk64", "Q3_K BK=64 static scout", 0.0, "needs-resource-proof", "halves K-loop barriers but leaves full-K dequant/B traffic unchanged and raises Q3 LDS to 34816 B"),
     Prior("bk16", "Q3_K BK=16 static scout", 0.0, "low-ceiling", "doubles K-loop barriers; only plausible if pipeline resources improve materially"),
+    Prior("bm256", "E098/E146 Q3_K BM256 large tile", -5.78, "reject", "E098 bm256 909.59 vs 983.21; E146 bm256 916.62 vs 972.84 with 31744 B LDS"),
+    Prior("bn256", "E098/E143 Q3_K BN256 large tile", -3.67, "reject", "E098 bn256 947.12 vs 983.21; E143 BN256 variants regressed -32% with high LDS/register pressure"),
+    Prior("bn192", "E143 Q3_K BN192 large-N route", -21.90, "reject", "bn192-wn96 760.78 vs 974.19 and nearby large-N variants were worse"),
+    Prior("largetile", "E098/E143/E146 large-tile family", -5.0, "reject-without-new-topology", "plain BM/BN growth in current mul_mm.comp repeatedly loses to LDS/register/occupancy pressure"),
     Prior("packed32", "E090 packed32 pair helper", -1.04, "reject", "pp7488 r1 951.79 vs E086 961.82"),
     Prior("stride20", "E089 stride20 recheck", -5.21, "reject", "pp7488 r1 911.74 vs E086 961.82"),
     Prior("stride22", "E084 stride22", -3.06, "reject", "pp7488 r1 894.36 vs E082 922.62"),
@@ -73,6 +77,10 @@ TOKEN_ALIASES: dict[str, tuple[str, ...]] = {
     "dequantreuse": ("dequant reuse", "reuse dequant", "block-level dequant", "block level dequant", "block reuse", "fused pair", "fused q3 decode"),
     "bk64": ("bk64", "bk 64", "bk=64", "bk = 64"),
     "bk16": ("bk16", "bk 16", "bk=16", "bk = 16"),
+    "bm256": ("bm256", "bm 256", "bm=256", "bm = 256"),
+    "bn256": ("bn256", "bn 256", "bn=256", "bn = 256"),
+    "bn192": ("bn192", "bn 192", "bn=192", "bn = 192", "bn192-wn96", "bn 192 wn 96"),
+    "largetile": ("large tile", "large-tile", "larger tile", "warptile", "tile growth", "larger-n", "larger-m"),
     "packed32": ("packed32", "packed 32", "data_a_packed32"),
     "f16dequant": ("f16 dequant", "float16 dequant", "half dequant"),
     "unsignedscale": ("unsigned scale", "uint scale", "uint8_t scale"),
@@ -231,12 +239,25 @@ def historical_analogs(rows: list[ResultRow], candidate_text: str) -> list[tuple
         row_tokens = set(re.findall(r"[a-z0-9_]+", row_text))
         score = len(text_tokens & row_tokens)
         for key, aliases in TOKEN_ALIASES.items():
-            if any(alias in candidate_text.lower() for alias in aliases) and key.replace("loadvec", "load_vec") in row_text:
+            candidate_has_alias = any(alias in candidate_text.lower() for alias in aliases)
+            row_has_alias = any(alias in row_text for alias in aliases)
+            row_has_key = key in row_text or key.replace("loadvec", "load_vec") in row_text
+            if candidate_has_alias and (row_has_alias or row_has_key):
                 score += 3
         if score > 0:
             scored.append((score, row))
     scored.sort(key=lambda item: (item[0], item[1].date, item[1].exp_id), reverse=True)
     return scored[:8]
+
+
+def row_is_rejected_or_negative(row: ResultRow) -> bool:
+    text = f"{row.delta} {row.decision}".lower()
+    return (
+        "reject" in text
+        or "negative" in text
+        or "regress" in text
+        or bool(re.search(r"(^|[^0-9])-[0-9]+(?:\.[0-9]+)?\s*%", text))
+    )
 
 
 def print_current_state(state: CurrentState) -> None:
@@ -318,7 +339,13 @@ def print_dequant_reuse_sanity(state: CurrentState, req_local: float | None) -> 
     print()
 
 
-def print_candidate_signal(candidate_text: str, priors: list[Prior], args: argparse.Namespace, req_local: float | None) -> str:
+def print_candidate_signal(
+    candidate_text: str,
+    priors: list[Prior],
+    analogs: list[tuple[int, ResultRow]],
+    args: argparse.Namespace,
+    req_local: float | None,
+) -> str:
     print("## Candidate Signal")
     print()
     if not candidate_text:
@@ -337,10 +364,27 @@ def print_candidate_signal(candidate_text: str, priors: list[Prior], args: argpa
         print("- matched_prior: none")
 
     estimated_gain = max((p.gain_pct for p in priors), default=None)
+    blocking_priors = [
+        prior
+        for prior in priors
+        if prior.gain_pct <= 0.0 or "reject" in prior.decision
+    ]
+    blocking_analogs = [
+        (score, row)
+        for score, row in analogs
+        if score >= args.min_blocking_analog_score and row_is_rejected_or_negative(row)
+    ]
     decision = "needs-mechanism-estimate"
     reason = "no measured analogue matched; provide --local-gain-pct or add a cheap trace/stat gate"
 
-    if estimated_gain is not None:
+    if blocking_priors:
+        decision = "skip-build-unless-new-topology"
+        reason = f"matched rejected prior: {blocking_priors[0].label}"
+    elif blocking_analogs:
+        score, row = blocking_analogs[0]
+        decision = "skip-build-unless-new-topology"
+        reason = f"matched rejected historical analogue {row.exp_id} with score {score}"
+    elif estimated_gain is not None:
         if any("needs-layout-validation" in prior.decision for prior in priors):
             decision = "validate-layout-before-build"
             reason = "matched positive prior has invalid/static-suspect warptile layout"
@@ -357,7 +401,7 @@ def print_candidate_signal(candidate_text: str, priors: list[Prior], args: argpa
             decision = "build-if-new-lane-or-confirming"
             reason = "positive measured analogue exists"
 
-    if args.local_gain_pct is not None:
+    if args.local_gain_pct is not None and not blocking_priors and not blocking_analogs:
         local_speedup = 1.0 + args.local_gain_pct / 100.0
         projected_total = total_speedup_from_local(args.target_share, local_speedup)
         projected_gain_pct = (projected_total - 1.0) * 100.0
@@ -418,6 +462,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--goal-total-speedup", type=float, default=None, help="override target total speedup")
     parser.add_argument("--local-gain-pct", type=float, default=None, help="candidate local hotspot gain estimate")
     parser.add_argument("--min-build-gain-pct", type=float, default=0.75, help="minimum projected/measured gain to justify a build")
+    parser.add_argument("--min-blocking-analog-score", type=int, default=3, help="minimum historical analog score that can block a build when rejected/negative")
     parser.add_argument("--require-target-closing", action="store_true", help="require candidate to close selected target, not just improve")
     return parser.parse_args()
 
@@ -445,7 +490,7 @@ def main() -> int:
     print_current_state(state)
     _, req_local = print_target_math(args)
     print_dequant_reuse_sanity(state, req_local)
-    print_candidate_signal(candidate_text, priors, args, req_local)
+    print_candidate_signal(candidate_text, priors, analogs, args, req_local)
     print_analogs(analogs)
     print_guidance(args, req_local)
 

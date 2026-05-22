@@ -2918,3 +2918,22 @@ state, and `D_split=4` does the inverse. In practice the driver reports the
 same resource fingerprint and both directions regress `-2.6%` to `-2.8%`.
 Future FA work needs a shader-body change or per-KV-tail timing proof; merely
 redistributing the head dimension inside the current cm1 shader is not enough.
+
+## Vulkan 64k Q3_K BM256 Route Gate (E146, 2026-05-22)
+
+Route-level Q3_K test in the opposite direction from E143. Instead of growing
+`BN` to reduce A-side repetition, `BM256` keeps `BN=128,BK=32` and halves the
+M-block count. Static scout predicted about `2x` lower B reload/workgroup
+proxy on hot 64k shapes while leaving A-pair dequant work roughly unchanged.
+
+| Q3_K route | pp7488 | Pipeline resources | Decision |
+| --- | ---: | --- | --- |
+| default `BM128/BN128/BK32` | `972.84` | `113 VGPR / 45 SGPR / 20480 B LDS / 0 scratch` | baseline |
+| `BM256/BN128/BK32` | `916.62` | `94 VGPR / 45 SGPR / 31744 B LDS / 0 scratch` | reject |
+
+The route did reduce VGPR and kept scratch at zero, but LDS rose to `31744 B`,
+almost the whole 32 KiB device budget, and prompt throughput fell `-5.78%`.
+That corrects the workflow: B/workgroup proxy reduction is not enough unless
+the candidate also preserves occupancy/residency. Future Q3_K work should not
+repeat larger M/N tiles in current `mul_mm.comp`; it needs a different layout
+or shape-specific shader that reduces repeated A work without near-limit LDS.

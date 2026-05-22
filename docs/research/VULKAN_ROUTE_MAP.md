@@ -206,6 +206,11 @@ Measured 64k Q3_K route note:
   `972.77 -> 587.52` because K-loop and barrier cadence doubled. `BK64` was
   rejected statically because Q3 shader LDS would be `36864 B`, above the local
   32 KiB shared-memory budget.
+- E146 tested `BM256` as a B/workgroup-reduction route. Static workgroups and
+  B reload halve while A-pair dequant stays flat. Runtime resources changed to
+  `94 VGPR / 45 SGPR / 31744 B LDS / 0 scratch`, but pp7488 fell
+  `972.84 -> 916.62`. Larger M tiles in current `mul_mm.comp` are closed unless
+  a new topology also fixes near-limit LDS/occupancy.
 
 ### Mat-Vec Route
 
