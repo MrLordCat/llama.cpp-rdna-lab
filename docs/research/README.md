@@ -42,7 +42,19 @@ Primary lane (project policy):
 - EXPERIMENT_TEMPLATE.md: standard template for each experiment
 - RESULTS_LOG.md: compact ledger of executed experiments
 - R0_post_ngram_flashattention.md: first deep-dive note with concrete discovery directions
+- DFLASH_IMPLEMENTATION_PREP.md: staged DFlash integration plan for this fork
 - experiments/: per-experiment notes (E001, E002, ...)
+- dflash/: source vendor manifest and DFlash-specific planning artifacts
+
+DFlash planning directory currently includes:
+
+- `dflash/VENDOR_MANIFEST.md`
+- `dflash/PHASE_PLAYBOOK.md`
+- `dflash/BRANCH_AND_COMMIT_PLAN.md`
+- `dflash/COMPATIBILITY_MATRIX.md`
+- `dflash/IMPLEMENTATION_RUNBOOK.md`
+- `dflash/FUTURE_WORKFLOW.md`
+- `dflash/KICKOFF_PACKET.md`
 
 ## Related Tooling
 
