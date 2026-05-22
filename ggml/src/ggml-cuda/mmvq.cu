@@ -435,6 +435,11 @@ static bool ggml_cuda_trace_mmvq_timing_sync_enabled() {
     return enabled;
 }
 
+static bool ggml_cuda_trace_mmvq_resources_enabled() {
+    static const bool enabled = std::getenv("GGML_TRACE_MMVQ_RESOURCES") != nullptr;
+    return enabled;
+}
+
 template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false>
 __launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id())*ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void mul_mat_vec_q(
@@ -637,6 +642,68 @@ static __global__ void mul_mat_vec_q(
     }
 }
 
+struct mmvq_kernel_resource_trace {
+    int block_threads = 0;
+    int nbytes_shared = 0;
+    int num_regs = -1;
+    int max_dyn_shared_bytes = -1;
+    size_t static_shared_bytes = 0;
+    int max_blocks_per_sm = -1;
+    int max_threads_per_sm = -1;
+    float occupancy_pct = -1.0f;
+    float waves_per_sm = -1.0f;
+};
+
+template <ggml_type type, int c_ncols_dst, bool has_fusion, bool small_k>
+static mmvq_kernel_resource_trace mmvq_collect_kernel_resource_trace(
+        const dim3 & block_dims, const int nbytes_shared, const int warp_size) {
+    mmvq_kernel_resource_trace trace;
+    trace.block_threads = block_dims.x * block_dims.y * block_dims.z;
+    trace.nbytes_shared = nbytes_shared;
+
+    int max_blocks_per_sm = -1;
+    if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &max_blocks_per_sm,
+            mul_mat_vec_q<type, c_ncols_dst, has_fusion, small_k>,
+            trace.block_threads,
+            nbytes_shared) == cudaSuccess) {
+        trace.max_blocks_per_sm = max_blocks_per_sm;
+    }
+
+    int max_threads_per_sm = 0;
+    const int device = ggml_cuda_get_device();
+#ifdef GGML_USE_HIP
+    if (hipDeviceGetAttribute(&max_threads_per_sm, hipDeviceAttributeMaxThreadsPerMultiProcessor, device) == hipSuccess) {
+        trace.max_threads_per_sm = max_threads_per_sm;
+    }
+
+    hipFuncAttributes attr;
+    if (hipFuncGetAttributes(&attr, (const void *) mul_mat_vec_q<type, c_ncols_dst, has_fusion, small_k>) == hipSuccess) {
+        trace.num_regs = attr.numRegs;
+        trace.static_shared_bytes = attr.sharedSizeBytes;
+    }
+#else
+    if (cudaDeviceGetAttribute(&max_threads_per_sm, cudaDevAttrMaxThreadsPerMultiProcessor, device) == cudaSuccess) {
+        trace.max_threads_per_sm = max_threads_per_sm;
+    }
+
+    cudaFuncAttributes attr;
+    if (cudaFuncGetAttributes(&attr, mul_mat_vec_q<type, c_ncols_dst, has_fusion, small_k>) == cudaSuccess) {
+        trace.num_regs = attr.numRegs;
+        trace.max_dyn_shared_bytes = attr.maxDynamicSharedSizeBytes;
+        trace.static_shared_bytes = attr.sharedSizeBytes;
+    }
+#endif
+
+    if (trace.max_blocks_per_sm > 0 && trace.max_threads_per_sm > 0 && warp_size > 0) {
+        const int active_threads = trace.max_blocks_per_sm * trace.block_threads;
+        trace.occupancy_pct = 100.0f * (float) active_threads / (float) trace.max_threads_per_sm;
+        trace.waves_per_sm = (float) active_threads / (float) warp_size;
+    }
+
+    return trace;
+}
+
 // Dedicated MoE multi-token kernel.
 // Grid: (ceil(nrows_x / c_rows_per_block), nchannels_dst)
 // Block: (warp_size, ncols_dst) - each warp handles one token independently.
@@ -724,8 +791,13 @@ static void mul_mat_vec_q_switch_fusion(
 
     const bool has_fusion = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr;
     const bool trace_timing = ggml_cuda_trace_mmvq_timing_enabled();
+    const bool trace_resources = ggml_cuda_trace_mmvq_resources_enabled();
     const bool trace_timing_sync = trace_timing && ggml_cuda_trace_mmvq_timing_sync_enabled();
     const bool trace_timing_pre_sync = trace_timing_sync && std::getenv("GGML_TRACE_MMVQ_TIMING_PRE_SYNC") != nullptr;
+    const int device = trace_resources ? ggml_cuda_get_device() : 0;
+    const size_t smpbo = trace_resources ? ggml_cuda_info().devices[device].smpbo : 0;
+    const int warp_size = trace_resources ? ggml_cuda_info().devices[device].warp_size : 0;
+    mmvq_kernel_resource_trace kernel_trace;
     double pre_sync_ms = 0.0;
     bool pre_sync_applied = false;
     if (trace_timing_pre_sync) {
@@ -749,17 +821,17 @@ static void mul_mat_vec_q_switch_fusion(
     const auto timing_start = trace_timing ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
 
     auto log_timing = [&](const bool launched_with_fusion) {
-        if (!trace_timing) {
+        if (!trace_timing && !trace_resources) {
             return;
         }
 
-        const auto timing_after_launch = std::chrono::high_resolution_clock::now();
-        const double enqueue_ms = std::chrono::duration<double, std::milli>(timing_after_launch - timing_start).count();
+        const auto timing_after_launch = trace_timing ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
+        const double enqueue_ms = trace_timing ? std::chrono::duration<double, std::milli>(timing_after_launch - timing_start).count() : 0.0;
         double sync_ms = 0.0;
         int capture_active = 0;
         bool sync_applied = false;
 
-        if (trace_timing_sync) {
+        if (trace_timing && trace_timing_sync) {
 #ifdef GGML_USE_HIP
             hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
             CUDA_CHECK(hipStreamIsCapturing(stream, &capture_status));
@@ -778,8 +850,10 @@ static void mul_mat_vec_q_switch_fusion(
             }
         }
 
+        const size_t shared_total = (size_t) kernel_trace.nbytes_shared + kernel_trace.static_shared_bytes;
+
         GGML_LOG_INFO(
-            "%s: timing type=%d/%s ncols_dst=%d small_k=%d fusion=%d ncols_x=%u grid=(%u,%u,%u) block=(%u,%u,%u) sync_req=%d pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+            "%s: timing type=%d/%s ncols_dst=%d small_k=%d fusion=%d ncols_x=%u grid=(%u,%u,%u) block=(%u,%u,%u) trace_resources=%d block_threads=%d nbytes_shared=%d static_shared=%zu shared_total=%zu smpbo=%zu shared_pct=%.2f regs=%d max_dyn_shared=%d max_blocks_per_sm=%d max_threads_per_sm=%d occupancy_pct=%.2f waves_per_sm=%.2f sync_req=%d pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
             __func__,
             (int) type,
             ggml_type_name(type),
@@ -793,6 +867,19 @@ static void mul_mat_vec_q_switch_fusion(
             block_dims.x,
             block_dims.y,
             block_dims.z,
+            trace_resources ? 1 : 0,
+            kernel_trace.block_threads,
+            kernel_trace.nbytes_shared,
+            kernel_trace.static_shared_bytes,
+            shared_total,
+            smpbo,
+            smpbo > 0 ? 100.0 * (double) shared_total / (double) smpbo : 0.0,
+            kernel_trace.num_regs,
+            kernel_trace.max_dyn_shared_bytes,
+            kernel_trace.max_blocks_per_sm,
+            kernel_trace.max_threads_per_sm,
+            kernel_trace.occupancy_pct,
+            kernel_trace.waves_per_sm,
             trace_timing_sync ? 1 : 0,
             pre_sync_applied ? 1 : 0,
             sync_applied ? 1 : 0,
@@ -805,6 +892,10 @@ static void mul_mat_vec_q_switch_fusion(
 
     if constexpr (c_ncols_dst == 1) {
         if (has_fusion) {
+            if (trace_resources) {
+                kernel_trace = mmvq_collect_kernel_resource_trace<type, c_ncols_dst, true, small_k>(
+                    block_dims, nbytes_shared, warp_size);
+            }
             mul_mat_vec_q<type, c_ncols_dst, true, small_k><<<block_nums, block_dims, nbytes_shared, stream>>>
                 (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
                  channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
@@ -816,6 +907,10 @@ static void mul_mat_vec_q_switch_fusion(
 
     GGML_ASSERT(!has_fusion && "fusion only supported for ncols_dst=1");
 
+    if (trace_resources) {
+        kernel_trace = mmvq_collect_kernel_resource_trace<type, c_ncols_dst, false, small_k>(
+            block_dims, nbytes_shared, warp_size);
+    }
     mul_mat_vec_q<type, c_ncols_dst, false, small_k><<<block_nums, block_dims, nbytes_shared, stream>>>
         (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
         channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
