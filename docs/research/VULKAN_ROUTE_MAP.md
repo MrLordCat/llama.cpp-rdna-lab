@@ -174,6 +174,21 @@ Mechanics:
 - `ggml_vk_guess_matmul_pipeline(...)` chooses small/medium/large and aligned
   variants. Coopmat2 uses a different crossover heuristic than scalar/coopmat1.
 
+Measured 64k Q3_K route note:
+
+- Active hot Q3_K shapes route directly through
+  `matmul_q3_k_f32_f16acc_aligned_l`, not through the fallback predequant path.
+- E139 forced the existing fallback for large Q3_K shapes as a route gate:
+  `Q3_K -> fp16 prealloc_x -> matmul_f16_f32_f16acc_aligned_l`.
+  It routed correctly but regressed pp7488 `969.61 -> 743.65`. Narrow gates
+  also lost: only `m>=17000` measured `832.27`, only `k>=17000` measured
+  `929.40`.
+- The f16 fallback pipeline resource stats were good
+  (`77 VGPR`, `44 SGPR`, `22528 B LDS`, `0 scratch`), so the failure is the
+  multi-dispatch route topology: a large fp16 temp, sync boundary, and extra
+  global write/read traffic. Do not use existing per-node predequant as the
+  future Q3_K repack strategy.
+
 ### Mat-Vec Route
 
 Code path:

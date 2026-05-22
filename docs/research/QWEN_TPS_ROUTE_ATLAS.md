@@ -485,6 +485,12 @@ Current Vulkan hot route:
   - E138 FA split-k gate: forcing existing FA split/reduce from `KV>=8192`
     routed correctly but dropped prompt eval from `666.87` to `96.29 tok/s`,
     because it adds temp writes, sync, and reduce dispatch per FA node.
+  - E139 Q3_K predequant route gate: forcing hot Q3_K matmuls through the
+    existing `Q3_K -> fp16 prealloc_x -> f16 matmul` fallback routed correctly
+    but dropped pp7488 from `969.61` to `743.65`. Even the narrow
+    `k>=17000` hot shape regressed to `929.40`, while the f16 matmul pipeline
+    itself used only `77 VGPR`; the route cost is the fp16 temp, sync, and
+    extra global traffic.
 - Rejected route families include old corrupt tile profiles, Q8_1/int-dot
   Q3_K route, expression-only dequant cleanup, aligned-store cleanup, and
   invalid warptiles. For 64k FA, E129 rejects `Bc=32/128`, E131 rejects
@@ -498,13 +504,16 @@ Current Vulkan acceleration thesis:
 - Treat the next work as a route stack, not a single tweak. E135 proved the
   dense FFN graph hook, E136 says dual-A/same-B alone is below target unless it
   also reduces A-side Q3_K work, and E137 says current dual-N/same-A loses to
-  accumulator/VGPR pressure. Prioritize backend-private Q3_K repack/layout or
-  a separate shape-specific Q3_K shader that leaves the default shader
-  fingerprint untouched, or single-dispatch FA long-KV work. Use FFN fusion
-  only as a stack component if resource proof stays coopmat/no-scratch.
+  accumulator/VGPR pressure. E139 says existing per-node predequant is the
+  wrong repack implementation because it adds a large fp16 temp and sync.
+  Prioritize a direct/single-dispatch shape-specific Q3_K shader or a
+  backend-private layout that avoids fp16 temp/sync, or single-dispatch FA
+  long-KV work. Use FFN fusion only as a stack component if resource proof
+  stays coopmat/no-scratch.
 - Do not spend time on speculative decode, nearby ubatch sweeps, FA `Bc`
   retuning, mask-opt disable, f16acc forcing, SHMEM staging, or forced FA
-  split-k for the 64k lane.
+  split-k for the 64k lane. Do not repeat the existing Q3_K predequant fallback
+  as a route candidate.
 
 ## Backend Scheduler and Op Coverage
 

@@ -2780,3 +2780,22 @@ main long-KV chunks. The failure is structural: the existing split-k route adds
 temporary output/L/M writes, `ggml_vk_sync_buffers`, and a split-k reduce
 dispatch for each FA node. Future FA long-KV work must stay in a single dispatch
 or first redesign that reduce topology.
+
+## Vulkan 64k Q3_K Predequant Route Gate (E139, 2026-05-22)
+
+Short pp gate for the complex Q3_K route idea "use existing backend
+predequant, then f16 matmul" on the current Vulkan `b8192/ub1024`, q4/q4,
+FlashAttention-on lane:
+
+| Route | pp7488 | Route activation | Decision |
+| --- | ---: | --- | --- |
+| direct Q3_K baseline | `969.61` | `matmul_q3_k_f32_f16acc_aligned_l`, `qx_dequant=0` | baseline |
+| force all large Q3_K predequant | `743.65` | `matmul_f16_f32_f16acc_aligned_l`, `qx_dequant=1` | reject |
+| force only `m>=17000` | `832.27` | predequant only for `m=17408,k=5120` | reject |
+| force only `k>=17000` | `929.40` | predequant only for `m=5120,k=17408` | reject |
+
+Pipeline stats for the f16 fallback route were not the problem by themselves:
+`77 VGPR / 44 SGPR / 22528 B LDS / 0 scratch`. The regression points at the
+route topology: each top hot shape writes a roughly `170 MiB` fp16 temp,
+synchronizes, then rereads it for f16 matmul. The temporary env-gated code was
+reverted and `llama-bench`/`llama-server` were rebuilt clean.
