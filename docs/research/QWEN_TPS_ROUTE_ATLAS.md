@@ -48,6 +48,23 @@ Main cold-first lane for code-speed claims:
 | Thinking | on / `--no-disable-thinking` |
 | Metric type | cold-first baseline only |
 
+Active ROCm decode parity lane:
+
+| Field | Value |
+| --- | --- |
+| Model | `models/Qwen3.6-27B-Q3_K_S.gguf` |
+| Backend baseline | ROCm/HIP SDK 7.1 on RX 9070 XT / `gfx1201` |
+| Backend comparator | Vulkan on RX 9070 XT / AMD proprietary driver |
+| Context | `ctx=12288` |
+| Batch | `batch=6144`, `ubatch=2048` |
+| KV | first parity gate `q4_0/q4_0`; f16 Vulkan kept as decode-only upper comparator |
+| Speculation | `--spec-type none` |
+| Reuse | `--cache-ram 0 --ctx-checkpoints 0`, no reuse |
+| Thinking | on / `--no-disable-thinking` |
+| Current evidence | E116 ROCm q4 `29.1685 TPS` / `29.625 tok/s`; Vulkan q4/f16 `39.8801-40.2753 TPS` / `40.8683-41.2283 tok/s` |
+| First action | E149 ROCm/Vulkan diagnostic traces and first Q3_K route-delta table are complete; E150 rejects disabling fusion, so next audit ROCm fused MMVQ Q3_K FFN decode shapes before the first code branch |
+| Metric type | decode-focused backend parity; do not mix with prompt-heavy cold-first or 64k prefill headlines |
+
 Important session/long-context lane:
 
 | Field | Value |

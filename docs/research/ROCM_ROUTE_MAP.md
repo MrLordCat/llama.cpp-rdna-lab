@@ -47,6 +47,29 @@ the existing MMQ kernel loses on the large Q3_K prompt shapes. The credible H35
 route is a shape-specific fused Q3_K x F16 RDNA4 GEMM that avoids persistent
 fp16 residency and competes directly with the current hipBLAS route.
 
+H39 adds a separate decode-parity focus against Vulkan. Do not conflate it with
+the large-Q3_K prefill route above: E116 shows the short-decode ROCm q4 route at
+about `29.625 tok/s` decode eval while Vulkan q4/f16 reaches about
+`40.9-41.2 tok/s`. E149 audits the gap and rejects the simplified explanation
+that ROCm lacks fusion; this backend already has RMS, rope/set-rows, unary, SSM,
+FFN decode fusions and HIP graph capture. The fresh E149 non-sync ROCm trace is
+matmul-dominated (`MUL_MAT forward 77.84%`) and leaves norm/rope/set-rows at
+only about `3.26%`, with Q3_K direct route counts as the first target
+(`mul_mat_vec_q_direct,q3_K 929`, `mul_mat_q_direct,q3_K 349`). The E149 sync
+companion moderates the exact share but confirms the same priority:
+`MUL_MAT forward+fused 53.80%` versus `RMS_NORM+ROPE+SET_ROWS 11.83%` after the
+initial section is excluded. The first decode-only shape-delta table narrows the
+target further: ROCm Q3_K matvec time is split between `mul_mat_vec_q_fused`
+(`63.78%`) and `mul_mat_vec_q_direct` (`36.22%`), led by FFN shapes
+`m=17408,n=1,k=5120` and `m=5120,n=1,k=17408`. The Vulkan q4 perf comparator is
+also Q3-led (`MUL_MAT_VEC q3_K 50.67%` plus `MUL_MAT_ADD_VEC q3_K 19.38%`)
+while `ROPE+SET_ROWS` is only `0.60%`. E150 then rejects disabling ROCm fusion
+(`30.08 -> 28.61 tok/s` decode), so the route is useful but still the main
+optimization target. Next H39 work should audit the ROCm fused MMVQ Q3_K
+implementation/resource policy for those FFN decode shapes, then design a
+Q3_K-specific MMVQ improvement if the local ceiling is plausible, not a
+standalone fusion port or fusion removal.
+
 ## Build-Time Route Map
 
 ROCm is not a standalone source backend in this tree. It is a HIP build of the
