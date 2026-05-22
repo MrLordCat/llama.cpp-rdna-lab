@@ -67,6 +67,8 @@ E134 добавил route-ceiling gate через `scripts/research/vulkan_route
 
 E135 добавил default-off `GGML_VK_FFN_ROUTE_TRACE=1` и проверил dense FFN graph hook на реальном 64k `llama-server` прогоне (`max_tokens=1`, no reuse). Trace подтвердил, что активный prefill graph содержит `63 x q3_K SWIGLU` кандидатов формы `m=17408,n=1024,k=5120`, то есть Vulkan может матчить цельную ветку `MUL_MAT + MUL_MAT + GLU` для gate/up FFN. Это не speed claim: следующий gate — resource proof для dual-A/same-B Q3_K SwiGLU или переход к Q3_K repack/layout, если регистры/coopmat не проходят.
 
+E136 добавил модель `scripts/research/vulkan_ffn_route_model.py`. Она показывает, что dual-A/same-B FFN fusion без уменьшения A-side Q3_K work не закрывает 64k gap: для base tile dual-A LDS `29696 B`, accumulators `16 -> 32`, local ceiling с A proxy `1.417x`, projected wall `1.4466 TPS` против ROCm target `1.5545`. Вывод: FFN fusion остаётся возможным stack-компонентом, но следующий соло Q3_K маршрут должен уменьшать повторный A-dequant across N-blocks или идти в Q3_K repack/layout; второй главный путь остаётся FA long-KV.
+
 Артефакты:
 - `build_logs/agent-workload/e128-vulkan64k-c152k-b2048-ub512-q4-none-noreuse-repo-summary.md`
 - `build_logs/agent-workload/e128-rocm64k-c152k-b2048-ub512-q4-none-noreuse-repo-summary.md`
@@ -80,12 +82,14 @@ E135 добавил default-off `GGML_VK_FFN_ROUTE_TRACE=1` и проверил 
 - `build_logs/agent-workload/e133-vulkan64k-perf-shape-summary.md`
 - `build_logs/agent-workload/e134-vulkan64k-route-ceiling.md`
 - `build_logs/agent-workload/e134-vulkan64k-ffn-route-trace-repo-summary.md`
+- `build_logs/agent-workload/e136-vulkan64k-ffn-route-model.md`
 - `docs/research/experiments/E128_vulkan64k_context_rebaseline.md`
 - `docs/research/experiments/E131_vulkan64k_fa_route_trace_and_gates.md`
 - `docs/research/experiments/E132_vulkan64k_fa_resource_and_shmem_gate.md`
 - `docs/research/experiments/E133_vulkan64k_perf_shape_summary.md`
 - `docs/research/experiments/E134_vulkan64k_complex_route_gate.md`
 - `docs/research/experiments/E135_vulkan64k_ffn_route_trace.md`
+- `docs/research/experiments/E136_vulkan64k_ffn_route_model.md`
 
 ## H03 ngram+MTP chain smoke (2026-05-19)
 
