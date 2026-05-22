@@ -61,6 +61,8 @@ E131 добавил default-off `GGML_VK_FA_ROUTE_TRACE=1` и снял живо�
 
 E132 добавил FA resource fingerprint: main 64k coopmat1 route использует `98 VGPR`, `76 SGPR`, `26112 B LDS`, `0 scratch`; warmup GQA route `101/69/26112/0`. Попытка forced SHMEM staging не осталась на coopmat1: support gate откатил FA в scalar route (`Bc=32`, `192 VGPR`, `6144 B LDS`) и prompt упал до `520.18` tok/s. Значит staging не кандидат на текущем driver/resource limit; любой будущий FA-кандидат должен route trace-ом доказать, что не ушёл в scalar fallback.
 
+E133 добавил shape-level разбор E128 perf log через `scripts/research/vulkan_perf_shape_summary.py`. По распарсенным hot rows `MUL_MAT q3_K` занимает `42684.45 ms`, `FLASH_ATTN_EXT` `33965.16 ms`, а две главные Q3_K формы дают `31628.56 ms`: `m=17408,n=1024,k=5120` (`20338.69 ms`) и `m=5120,n=1024,k=17408` (`11289.87 ms`). Значит следующий Q3_K-кандидат должен явно двигать эти feed-forward up/gate и down shapes, а следующий FA-кандидат должен показывать per-KV tail improvement (`KV=45k..57k`), не только общий prompt TPS.
+
 Артефакты:
 - `build_logs/agent-workload/e128-vulkan64k-c152k-b2048-ub512-q4-none-noreuse-repo-summary.md`
 - `build_logs/agent-workload/e128-rocm64k-c152k-b2048-ub512-q4-none-noreuse-repo-summary.md`
@@ -71,9 +73,11 @@ E132 добавил FA resource fingerprint: main 64k coopmat1 route испол�
 - `build_logs/agent-workload/e131-vulkan64k-fa-force-f16acc-c152k-b8192-ub1024-q4-confirm120-repo-summary.md`
 - `build_logs/agent-workload/e132-vulkan64k-fa-pipeline-stats-c152k-b8192-ub1024-q4-ctx64k.server.log`
 - `build_logs/agent-workload/e132-vulkan64k-fa-shmem-staging-c152k-b8192-ub1024-q4-screen-repo-summary.md`
+- `build_logs/agent-workload/e133-vulkan64k-perf-shape-summary.md`
 - `docs/research/experiments/E128_vulkan64k_context_rebaseline.md`
 - `docs/research/experiments/E131_vulkan64k_fa_route_trace_and_gates.md`
 - `docs/research/experiments/E132_vulkan64k_fa_resource_and_shmem_gate.md`
+- `docs/research/experiments/E133_vulkan64k_perf_shape_summary.md`
 
 ## H03 ngram+MTP chain smoke (2026-05-19)
 

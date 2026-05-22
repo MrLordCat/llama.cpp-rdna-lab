@@ -273,6 +273,10 @@ Measured Qwen3.6 64k Vulkan route:
   the full 64k best; forced SHMEM staging fell back to scalar FA.
 - Driver resource stats for the main route: `98 VGPR`, `76 SGPR`,
   `26112 B LDS`, `0 scratch`.
+- E133 shape timing: `FLASH_ATTN_EXT` totals `33965.16 ms`; the largest
+  individual tail chunks are `N=1024,KV=57344` (`1168.85 ms`),
+  `KV=56320` (`1136.25 ms`), and `KV=55296` (`1122.66 ms`).
+  Future FA claims should show the long-KV tail moved and stayed on coopmat1.
 
 Cleanup note: FlashAttention is one of the highest-value comparison surfaces
 between ROCm and Vulkan. If compile pressure becomes a problem, prefer a
