@@ -2799,3 +2799,20 @@ Pipeline stats for the f16 fallback route were not the problem by themselves:
 route topology: each top hot shape writes a roughly `170 MiB` fp16 temp,
 synchronizes, then rereads it for f16 matmul. The temporary env-gated code was
 reverted and `llama-bench`/`llama-server` were rebuilt clean.
+
+## Vulkan 64k Q3_K Matmul Split-K Gate (E140, 2026-05-22)
+
+Short pp gate for forcing existing Vulkan matmul split-K on the hot reverse
+Q3_K shape `m=5120,n=1024,k=17408`:
+
+| Route | pp7488 | Decision |
+| --- | ---: | --- |
+| direct Q3_K baseline | `968.74` | baseline |
+| forced split-K2 for `k>=17000` | `966.21` | reject |
+| forced split-K4 for `k>=17000` | `964.46` | reject |
+
+Route trace confirmed the forced split on the intended hot shape. This is not a
+catastrophic branch, but it is not positive: the shape already exposes about
+`320` large-tile workgroups before split-K, so adding K partitions mostly adds
+partial-output traffic, sync, and reduce overhead. The temporary code was
+reverted and the Vulkan bench/server binaries were rebuilt clean.

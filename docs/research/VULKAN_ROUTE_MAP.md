@@ -188,6 +188,11 @@ Measured 64k Q3_K route note:
   multi-dispatch route topology: a large fp16 temp, sync boundary, and extra
   global write/read traffic. Do not use existing per-node predequant as the
   future Q3_K repack strategy.
+- E140 forced existing matmul split-K for the hot reverse Q3_K shape
+  `m=5120,n=1024,k=17408`. Split-K2 measured `966.21` and split-K4 measured
+  `964.46` vs the direct `968.74` baseline. The route is near-neutral but not
+  positive; the shape already has enough workgroups, and partial-output
+  traffic/reduce overhead cancels the theoretical shorter K-loop benefit.
 
 ### Mat-Vec Route
 

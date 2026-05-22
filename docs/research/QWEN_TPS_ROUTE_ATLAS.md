@@ -491,6 +491,11 @@ Current Vulkan hot route:
     `k>=17000` hot shape regressed to `929.40`, while the f16 matmul pipeline
     itself used only `77 VGPR`; the route cost is the fp16 temp, sync, and
     extra global traffic.
+  - E140 Q3_K matmul split-K gate: forcing existing split-K on
+    `m=5120,n=1024,k=17408` routed correctly but measured `966.21` for
+    split-K2 and `964.46` for split-K4 vs `968.74` direct. The hot reverse
+    shape already exposes enough workgroups, so split/reduce overhead does not
+    buy useful parallelism.
 - Rejected route families include old corrupt tile profiles, Q8_1/int-dot
   Q3_K route, expression-only dequant cleanup, aligned-store cleanup, and
   invalid warptiles. For 64k FA, E129 rejects `Bc=32/128`, E131 rejects
@@ -507,13 +512,13 @@ Current Vulkan acceleration thesis:
   accumulator/VGPR pressure. E139 says existing per-node predequant is the
   wrong repack implementation because it adds a large fp16 temp and sync.
   Prioritize a direct/single-dispatch shape-specific Q3_K shader or a
-  backend-private layout that avoids fp16 temp/sync, or single-dispatch FA
-  long-KV work. Use FFN fusion only as a stack component if resource proof
+  backend-private layout that avoids fp16 temp/sync/reduce, or single-dispatch
+  FA long-KV work. Use FFN fusion only as a stack component if resource proof
   stays coopmat/no-scratch.
 - Do not spend time on speculative decode, nearby ubatch sweeps, FA `Bc`
   retuning, mask-opt disable, f16acc forcing, SHMEM staging, or forced FA
   split-k for the 64k lane. Do not repeat the existing Q3_K predequant fallback
-  as a route candidate.
+  or existing matmul split-K as route candidates.
 
 ## Backend Scheduler and Op Coverage
 
