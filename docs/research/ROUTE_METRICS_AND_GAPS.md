@@ -149,8 +149,11 @@ Performance interpretation:
   `Br=16,Bc=64`, `split_k=1`, and `use_mask_opt=1` on main chunks.
 - The first easy FA gates are negative: disabling mask-opt regresses, forced
   f16acc does not beat the full-run best, and forced SHMEM staging falls back
-  to scalar FA. Future FA speed work should start from shader/resource
-  evidence, not another trivial env toggle.
+  to scalar FA. E141 also rejects changing the whole KV dtype route for H38:
+  f16/f16 improves pp7488 only `+2.68%` and fails the real 64k server memory
+  fit, while q8_0/q8_0 regresses. Future FA speed work should start from
+  shader/resource evidence inside the existing q4/q4 coopmat1 route, not
+  another trivial env toggle or an f16 KV cache route.
 
 ## Speculative / Ngram Route
 

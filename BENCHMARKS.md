@@ -2816,3 +2816,22 @@ catastrophic branch, but it is not positive: the shape already exposes about
 `320` large-tile workgroups before split-K, so adding K partitions mostly adds
 partial-output traffic, sync, and reduce overhead. The temporary code was
 reverted and the Vulkan bench/server binaries were rebuilt clean.
+
+## Vulkan 64k KV Dtype Route Gate (E141, 2026-05-22)
+
+Short pp gate for the complex FA-route question "is q4 KV dequant the missing
+large lever?":
+
+| KV route | pp7488 | Fit / decision |
+| --- | ---: | --- |
+| q4_0/q4_0 | `970.03 tok/s` | baseline |
+| f16/f16 | `996.00 tok/s` | only `+2.68%` pp upper bound; 64k server fit failed |
+| q8_0/q8_0 | `940.03 tok/s` | reject |
+
+The f16 64k server never became ready because the memory fitter projected
+`16183 MiB` Vulkan device use against `15221 MiB` free and needed to reduce by
+`1986 MiB`. Using the E134 FA share as a rough proxy, the f16 pp result implies
+only about `1.067x` local FA speedup, far below the `1.494x` local speedup FA
+would need to close the 64k gap alone. Keep q4/q4 KV for H38; future FA work
+should optimize the single-dispatch q4 coopmat1 route directly rather than
+building an f16 KV cache/dequant route that does not fit.

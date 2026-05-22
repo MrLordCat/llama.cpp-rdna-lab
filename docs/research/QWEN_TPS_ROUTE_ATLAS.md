@@ -496,6 +496,10 @@ Current Vulkan hot route:
     split-K2 and `964.46` for split-K4 vs `968.74` direct. The hot reverse
     shape already exposes enough workgroups, so split/reduce overhead does not
     buy useful parallelism.
+  - E141 KV dtype upper-bound gate: f16/f16 KV improved pp7488 only
+    `970.03 -> 996.00 tok/s` and failed real 64k server fit
+    (`16183 MiB` projected Vulkan device use vs `15221 MiB` free); q8_0/q8_0
+    regressed to `940.03 tok/s`. q4/q4 remains the H38 route.
 - Rejected route families include old corrupt tile profiles, Q8_1/int-dot
   Q3_K route, expression-only dequant cleanup, aligned-store cleanup, and
   invalid warptiles. For 64k FA, E129 rejects `Bc=32/128`, E131 rejects
@@ -513,8 +517,8 @@ Current Vulkan acceleration thesis:
   wrong repack implementation because it adds a large fp16 temp and sync.
   Prioritize a direct/single-dispatch shape-specific Q3_K shader or a
   backend-private layout that avoids fp16 temp/sync/reduce, or single-dispatch
-  FA long-KV work. Use FFN fusion only as a stack component if resource proof
-  stays coopmat/no-scratch.
+  FA long-KV work inside the existing q4/q4 route. Use FFN fusion only as a
+  stack component if resource proof stays coopmat/no-scratch.
 - Do not spend time on speculative decode, nearby ubatch sweeps, FA `Bc`
   retuning, mask-opt disable, f16acc forcing, SHMEM staging, or forced FA
   split-k for the 64k lane. Do not repeat the existing Q3_K predequant fallback
@@ -563,7 +567,7 @@ Use these to keep future acceleration plans evidence-based:
 | P0 | ROCm large Q3_K prefill via hipBLAS staging | Large share, repeated Q3_K -> fp16 conversion, current alternatives rejected | First serious code-design target |
 | P1 | ROCm Q3_K MMQ/MMVQ decode/medium shapes | Sustained Q3 direct route pressure in C01 traces | Tune only with exact bucket evidence |
 | P2 | Vulkan Q3_K prompt shader | Vulkan decode is strong but prompt Q3_K route trails ROCm; at 64k it is `47.79%` of traced time; E133 shows top forms `17408x1024x5120` and `5120x1024x17408` are `74.1%` of parsed Q3_K time; E134 says all-Q3_K needs `1.357x` local to close the lane alone; E135 proves the real 64k graph exposes `63 x q3_K SWIGLU` FFN gate/up candidates; E136 says dual-A/same-B FFN fusion alone projects below target unless it reduces A-side work | Active Vulkan 64k code target, but require route-ceiling, graph-pattern, resource, shape-level perf, and A-dequant/layout proof. First complex implementation should target repeated A-dequant across N-blocks or backend-private Q3_K repack/layout; FFN fusion remains a stack component |
-| P3 | Vulkan q4 FA long-context route | `FLASH_ATTN_EXT` is `38.03%` of traced 64k Vulkan time; main route is `98 VGPR / 76 SGPR / 26112 B LDS / 0 scratch`; easy FA toggles have regressed; E133 shows tail KV chunks dominate the FA series; E134 says FA alone needs `1.494x` local | Keep q4/FA; optimize only with shader/resource evidence, per-KV tail timing, and same-lane A/B. Treat it as the second half of the combined Q3_K+FA stack |
+| P3 | Vulkan q4 FA long-context route | `FLASH_ATTN_EXT` is `38.03%` of traced 64k Vulkan time; main route is `98 VGPR / 76 SGPR / 26112 B LDS / 0 scratch`; easy FA toggles have regressed; E133 shows tail KV chunks dominate the FA series; E134 says FA alone needs `1.494x` local; E141 says f16/f16 KV is only a small pp upper bound and does not fit the real 64k server lane | Keep q4/FA; optimize only with shader/resource evidence, per-KV tail timing, and same-lane A/B. Treat it as the second half of the combined Q3_K+FA stack; do not pivot to f16/q8 KV for H38 |
 | P4 | Prompt cache/checkpoint session route | Strong repeated/session gain by avoiding shared-prefix prefill | Keep enabled for practical sessions; do not mix with cold baseline |
 | P5 | `ngram-mod` session route | Can stack on prompt cache via accepted-token bursts; current 12k cold-first coverage is near zero; match-8 is too noisy | Keep `12/16/32` opt-in; require coverage/effective acceptance and burst evidence |
 | P6 | GDN/SSM/RMS/fusions | Visible but smaller; past simple probes negative | Revisit if a trace shows shared memory/residency slowdown |

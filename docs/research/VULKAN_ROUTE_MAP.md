@@ -304,6 +304,12 @@ Measured Qwen3.6 64k Vulkan route:
   `split_k=2` but regressed prompt eval from `666.87` to `96.29 tok/s` because
   the route adds temp writes, a sync boundary, and a reduce dispatch per FA
   node. Do not repeat split-k forcing without redesigning the reduce topology.
+- E141 used KV dtype as an upper-bound route gate. f16/f16 improved pp7488 only
+  `970.03 -> 996.00 tok/s` (`+2.68%`) and failed real 64k server fit
+  (`16183 MiB` projected Vulkan device use vs `15221 MiB` free). q8_0/q8_0
+  regressed to `940.03 tok/s`. Keep q4/q4 for 64k and optimize the current
+  single-dispatch q4 coopmat1 shader directly; do not build an f16 KV
+  staging/cache route unless a future design also solves residency.
 
 Cleanup note: FlashAttention is one of the highest-value comparison surfaces
 between ROCm and Vulkan. If compile pressure becomes a problem, prefer a
