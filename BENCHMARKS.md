@@ -2853,3 +2853,28 @@ fallback; it is live-state pressure inside the single-dispatch shader. Doubling
 rows increases `Of/Lf/Mf/mask` state enough to raise VGPR sharply, and f16acc
 does not fix it. The temporary env-gated code was reverted and Vulkan
 `llama-bench`/`llama-server` were rebuilt clean.
+
+## Vulkan 64k Q3_K Large-N Warptile Gate (E143, 2026-05-22)
+
+Complex route-family gate for the idea "reduce repeated A-side Q3_K work by
+making each large matmul cover more N columns per workgroup". Static scout
+first rejected plain `BN192` as unsafe for the current A-load map, then tested
+valid `BN192/WN96` and `BN256` variants under `GGML_VK_AMD_LARGE_MATMUL_VARIANT`.
+
+| Q3_K route | pp7488 | Pipeline resources | Decision |
+| --- | ---: | --- | --- |
+| default `BN128/WN64` | `974.19` | `113 VGPR / 45 SGPR / 20480 B LDS / 0 scratch` | baseline |
+| `bn192-wn96` | `760.78` | `139 VGPR / 48 SGPR / 25088 B LDS / 0 scratch` | reject |
+| `bn192-wm128-wn96` | `137.71` | `171 VGPR / 54 SGPR / 24064 B LDS / 784 B scratch` | reject |
+| `bn256-wn128` | `659.02` | `165 VGPR / 58 SGPR / 29696 B LDS / 0 scratch` | reject |
+| `bn256-wm128` | `660.97` | `165 VGPR / 43 SGPR / 29696 B LDS / 0 scratch` | reject |
+
+The static model was directionally useful but incomplete: `BN192/BN256` really
+reduce N-tile count and the A-dequant proxy, yet the current `mul_mm.comp`
+topology turns that into much higher accumulator/live-state pressure. `WN96`,
+`WN128`, and `WM128` variants all lose to VGPR/LDS/scratch and lower occupancy.
+The temporary env-gated branches were reverted and Vulkan `llama-bench` /
+`llama-server` were rebuilt clean. Next Q3_K work should not be another larger
+N-tile retune; it needs a backend-private Q3_K layout or separate
+shape-specific shader that reduces repeated A-side work without growing live
+fragments this way.

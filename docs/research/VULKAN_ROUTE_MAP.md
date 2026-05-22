@@ -193,6 +193,14 @@ Measured 64k Q3_K route note:
   `964.46` vs the direct `968.74` baseline. The route is near-neutral but not
   positive; the shape already has enough workgroups, and partial-output
   traffic/reduce overhead cancels the theoretical shorter K-loop benefit.
+- E143 tested the larger-N warptile route family for the active large Q3_K
+  shader. Static scout showed plain `BN192` is unsafe under the current A-load
+  map, while `BN192/WN96` and `BN256` variants are layout-valid. The real pp
+  gate rejected all valid variants: default `974.19`, `bn192-wn96` `760.78`
+  (`139 VGPR / 25088 B LDS`), `bn192-wm128-wn96` `137.71`
+  (`171 VGPR` plus scratch), and `bn256-*` about `660` (`165 VGPR /
+  29696 B LDS`). Larger N tiles reduce A-dequant/workgroup proxies, but current
+  `mul_mm.comp` pays too much in live fragments, LDS, and occupancy.
 
 ### Mat-Vec Route
 

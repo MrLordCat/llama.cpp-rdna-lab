@@ -59,6 +59,23 @@ Important session/long-context lane:
 | Speculation | `ngram-mod` only as opt-in repeated/steady behavior |
 | Metric type | keep cold-first and repeated/steady separate |
 
+Active Vulkan 64k investigation lane:
+
+| Field | Value |
+| --- | --- |
+| Model | `models/Qwen3.6-27B-Q3_K_S.gguf` |
+| Backend | Vulkan on RX 9070 XT / AMD proprietary driver |
+| Context | `ctx=65536` |
+| Batch | `batch=8192`, `ubatch=1024` |
+| KV | `q4_0/q4_0` |
+| FlashAttention | on |
+| Speculation | `--spec-type none` |
+| Reuse | `--cache-ram 0 --ctx-checkpoints 0`, no reuse |
+| Required env/args | `GGML_VK_ALLOW_GRAPHICS_QUEUE=1`, `--no-mmap` |
+| Current best | E128 `1.3406 TPS`, prompt `666.62`, decode `36.58` |
+| Comparator | ROCm same lane E128 `1.5545 TPS`, prompt `799.09`, decode `22.83` |
+| Metric type | cold-first long-context real-server lane |
+
 Confirmed 12k repeated/session lane:
 
 | Field | Value |
@@ -504,6 +521,12 @@ Current Vulkan hot route:
     coopmat1 q4/q4 but regressed pp7488 `971.09 -> 896.97` and raised the main
     FA route to `133 VGPR`; a f16acc companion still measured only `922.22`.
     Larger query-row cm1 is closed unless a new design cuts per-row live state.
+  - E143 Q3_K large-N warptile gate: `BN192/WN96` and `BN256` variants reduced
+    static A-dequant/workgroup proxies but regressed badly. Default pp7488 was
+    `974.19`; `bn192-wn96` measured `760.78` with `139 VGPR`, `bn256-*`
+    measured about `660` with `165 VGPR / 29696 B LDS`, and
+    `bn192-wm128-wn96` spilled scratch and fell to `137.71`. Larger N tiles are
+    closed for the current `mul_mm.comp` topology.
 - Rejected route families include old corrupt tile profiles, Q8_1/int-dot
   Q3_K route, expression-only dequant cleanup, aligned-store cleanup, and
   invalid warptiles. For 64k FA, E129 rejects `Bc=32/128`, E131 rejects
@@ -518,7 +541,9 @@ Current Vulkan acceleration thesis:
   dense FFN graph hook, E136 says dual-A/same-B alone is below target unless it
   also reduces A-side Q3_K work, and E137 says current dual-N/same-A loses to
   accumulator/VGPR pressure. E139 says existing per-node predequant is the
-  wrong repack implementation because it adds a large fp16 temp and sync.
+  wrong repack implementation because it adds a large fp16 temp and sync. E143
+  says bigger current warptiles are also the wrong A-reuse implementation
+  because they trade dequant reduction for VGPR/LDS/scratch pressure.
   Prioritize a direct/single-dispatch shape-specific Q3_K shader or a
   backend-private layout that avoids fp16 temp/sync/reduce, or single-dispatch
   FA long-KV work inside the existing q4/q4 route, but not by simply increasing
@@ -527,7 +552,8 @@ Current Vulkan acceleration thesis:
 - Do not spend time on speculative decode, nearby ubatch sweeps, FA `Bc`
   retuning, mask-opt disable, f16acc forcing, SHMEM staging, or forced FA
   split-k for the 64k lane. Do not repeat the existing Q3_K predequant fallback
-  or existing matmul split-K as route candidates.
+  or existing matmul split-K as route candidates; do not repeat larger-N
+  warptile retunes without a new topology that reduces live-state pressure.
 
 ## Backend Scheduler and Op Coverage
 
@@ -571,7 +597,7 @@ Use these to keep future acceleration plans evidence-based:
 | --- | --- | --- | --- |
 | P0 | ROCm large Q3_K prefill via hipBLAS staging | Large share, repeated Q3_K -> fp16 conversion, current alternatives rejected | First serious code-design target |
 | P1 | ROCm Q3_K MMQ/MMVQ decode/medium shapes | Sustained Q3 direct route pressure in C01 traces | Tune only with exact bucket evidence |
-| P2 | Vulkan Q3_K prompt shader | Vulkan decode is strong but prompt Q3_K route trails ROCm; at 64k it is `47.79%` of traced time; E133 shows top forms `17408x1024x5120` and `5120x1024x17408` are `74.1%` of parsed Q3_K time; E134 says all-Q3_K needs `1.357x` local to close the lane alone; E135 proves the real 64k graph exposes `63 x q3_K SWIGLU` FFN gate/up candidates; E136 says dual-A/same-B FFN fusion alone projects below target unless it reduces A-side work | Active Vulkan 64k code target, but require route-ceiling, graph-pattern, resource, shape-level perf, and A-dequant/layout proof. First complex implementation should target repeated A-dequant across N-blocks or backend-private Q3_K repack/layout; FFN fusion remains a stack component |
+| P2 | Vulkan Q3_K prompt shader | Vulkan decode is strong but prompt Q3_K route trails ROCm; at 64k it is `47.79%` of traced time; E133 shows top forms `17408x1024x5120` and `5120x1024x17408` are `74.1%` of parsed Q3_K time; E134 says all-Q3_K needs `1.357x` local to close the lane alone; E135 proves the real 64k graph exposes `63 x q3_K SWIGLU` FFN gate/up candidates; E136 says dual-A/same-B FFN fusion alone projects below target unless it reduces A-side work; E143 rejects larger-N warptiles because A-reuse lost to VGPR/LDS/scratch | Active Vulkan 64k code target, but require route-ceiling, graph-pattern, resource, shape-level perf, and A-dequant/layout proof. First complex implementation should target backend-private Q3_K repack/layout or a separate shape-specific shader that reduces repeated A work without larger-tile live-state growth; FFN fusion remains a stack component |
 | P3 | Vulkan q4 FA long-context route | `FLASH_ATTN_EXT` is `38.03%` of traced 64k Vulkan time; main route is `98 VGPR / 76 SGPR / 26112 B LDS / 0 scratch`; easy FA toggles have regressed; E133 shows tail KV chunks dominate the FA series; E134 says FA alone needs `1.494x` local; E141 says f16/f16 KV is only a small pp upper bound and does not fit the real 64k server lane; E142 says `Br32/Bc32` loses to VGPR pressure | Keep q4/FA; optimize only with shader/resource evidence, per-KV tail timing, and same-lane A/B. Treat it as the second half of the combined Q3_K+FA stack; do not pivot to f16/q8 KV or larger-Br cm1 for H38 |
 | P4 | Prompt cache/checkpoint session route | Strong repeated/session gain by avoiding shared-prefix prefill | Keep enabled for practical sessions; do not mix with cold baseline |
 | P5 | `ngram-mod` session route | Can stack on prompt cache via accepted-token bursts; current 12k cold-first coverage is near zero; match-8 is too noisy | Keep `12/16/32` opt-in; require coverage/effective acceptance and burst evidence |
