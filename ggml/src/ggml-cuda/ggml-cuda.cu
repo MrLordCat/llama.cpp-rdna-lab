@@ -5408,7 +5408,6 @@ void ggml_backend_cuda_unregister_host_buffer(void * buffer) {
     }
 }
 
-
 // backend device
 
 struct ggml_backend_cuda_device_context {

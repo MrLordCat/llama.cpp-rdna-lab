@@ -299,6 +299,8 @@ struct common_speculative_state_draft : public common_speculative_state {
             llama_token id_last,
             llama_tokens & result) override {
         const auto & sparams = params.draft;
+        const int32_t n_max = sparams.n_max;
+        const int32_t n_min = sparams.n_min;
 
         auto * spec = this;
 
@@ -313,7 +315,7 @@ struct common_speculative_state_draft : public common_speculative_state {
         int reuse_i = 0; // index of part to be reused in prompt_dft
         int reuse_n = 0; // length of part to be reused in prompt_dft
 
-        const int n_ctx = llama_n_ctx(ctx_dft) - sparams.n_max;
+        const int n_ctx = llama_n_ctx(ctx_dft) - n_max;
 
         llama_tokens prompt_cnv;
         if (!spec->vocab_cmpt) {
@@ -382,7 +384,7 @@ struct common_speculative_state_draft : public common_speculative_state {
         }
 
         result.clear();
-        result.reserve(sparams.n_max);
+        result.reserve(n_max);
 
         if (reuse_n == 0 || (use_ckpt && reuse_i > 0)) {
             llama_memory_clear(mem_dft, false);
@@ -394,7 +396,7 @@ struct common_speculative_state_draft : public common_speculative_state {
                 for (int i = reuse_i + reuse_n + 1; i < (int) prompt_dft.size(); ++i) {
                     result.push_back(prompt_dft[i]);
 
-                    if (sparams.n_max <= (int) result.size()) {
+                    if (n_max <= (int) result.size()) {
                         break;
                     }
                 }
@@ -480,7 +482,7 @@ struct common_speculative_state_draft : public common_speculative_state {
         common_sampler_reset(smpl);
 
         // sample n_draft tokens from the draft model
-        for (int i = 0; i < sparams.n_max; ++i) {
+        for (int i = 0; i < n_max; ++i) {
             common_batch_clear(batch);
 
             common_sampler_sample(smpl, ctx_dft, 0, true);
@@ -504,7 +506,7 @@ struct common_speculative_state_draft : public common_speculative_state {
 
             result.push_back(id);
 
-            if (sparams.n_max <= (int) result.size()) {
+            if (n_max <= (int) result.size()) {
                 break;
             }
 
@@ -525,12 +527,12 @@ struct common_speculative_state_draft : public common_speculative_state {
             detokenized = replace_to_tgt(detokenized);
             LOG_DBG("draft->main detokenized string: '%s'\n", detokenized.c_str());
             result = common_tokenize(ctx_tgt, detokenized, false, true);
-            if (result.size() > (size_t) sparams.n_max) {
-                result.resize(sparams.n_max);
+            if (result.size() > (size_t) n_max) {
+                result.resize(n_max);
             }
         }
 
-        if (result.size() < (size_t) sparams.n_min) {
+        if (result.size() < (size_t) n_min) {
             result.clear();
         }
     }
@@ -1203,7 +1205,7 @@ common_speculative * common_speculative_init(
     // Compute the implementations to use based on the config and their order of preference
     std::vector<common_speculative_config> configs = {}; // list of speculative configs to try
     {
-        bool has_draft = !params.draft.mparams.path.empty();
+        bool has_draft = ctx_dft != nullptr;
         bool has_draft_eagle3 = false; // TODO PR-18039: if params.speculative.eagle3
         bool has_mtp = (params.type == COMMON_SPECULATIVE_TYPE_MTP || params.type == COMMON_SPECULATIVE_TYPE_NGRAM_MTP) &&
                    (ctx_mtp != nullptr);
@@ -1272,7 +1274,7 @@ common_speculative * common_speculative_init(
                 impls.push_back(std::make_unique<common_speculative_state_draft>(config.type,
                     /* .ctx_tgt      = */ ctx_tgt,
                     /* .ctx_dft      = */ ctx_dft,
-                    /* .replacements = */ params.draft.replacements,
+                    /* .replacements = */ config.params.draft.replacements,
                     /* .use_ckpt     = */ use_ckpt
                 ));
                 break;
