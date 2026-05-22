@@ -201,6 +201,11 @@ Measured 64k Q3_K route note:
   (`171 VGPR` plus scratch), and `bn256-*` about `660` (`165 VGPR /
   29696 B LDS`). Larger N tiles reduce A-dequant/workgroup proxies, but current
   `mul_mm.comp` pays too much in live fragments, LDS, and occupancy.
+- E144 tested the opposite resource direction with `BK16`. It lowered resources
+  from `113 VGPR / 20480 B LDS` to `70 VGPR / 12288 B LDS`, but pp7488 fell
+  `972.77 -> 587.52` because K-loop and barrier cadence doubled. `BK64` was
+  rejected statically because Q3 shader LDS would be `36864 B`, above the local
+  32 KiB shared-memory budget.
 
 ### Mat-Vec Route
 

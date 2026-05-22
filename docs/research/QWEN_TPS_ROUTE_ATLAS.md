@@ -527,6 +527,10 @@ Current Vulkan hot route:
     measured about `660` with `165 VGPR / 29696 B LDS`, and
     `bn192-wm128-wn96` spilled scratch and fell to `137.71`. Larger N tiles are
     closed for the current `mul_mm.comp` topology.
+  - E144 Q3_K BK-depth gate: `BK16` lowered resources from
+    `113 VGPR / 20480 B LDS` to `70 VGPR / 12288 B LDS`, but pp7488 fell
+    `972.77 -> 587.52`; `BK64` exceeds the 32 KiB shared-memory budget.
+    Shrinking K depth is closed unless a new design reduces barrier cadence.
 - Rejected route families include old corrupt tile profiles, Q8_1/int-dot
   Q3_K route, expression-only dequant cleanup, aligned-store cleanup, and
   invalid warptiles. For 64k FA, E129 rejects `Bc=32/128`, E131 rejects
@@ -543,7 +547,9 @@ Current Vulkan acceleration thesis:
   accumulator/VGPR pressure. E139 says existing per-node predequant is the
   wrong repack implementation because it adds a large fp16 temp and sync. E143
   says bigger current warptiles are also the wrong A-reuse implementation
-  because they trade dequant reduction for VGPR/LDS/scratch pressure.
+  because they trade dequant reduction for VGPR/LDS/scratch pressure. E144
+  says simply shrinking BK is not the answer either: the shader gets lighter
+  but spends too much on doubled K-loop/barriers.
   Prioritize a direct/single-dispatch shape-specific Q3_K shader or a
   backend-private layout that avoids fp16 temp/sync/reduce, or single-dispatch
   FA long-KV work inside the existing q4/q4 route, but not by simply increasing
@@ -553,7 +559,8 @@ Current Vulkan acceleration thesis:
   retuning, mask-opt disable, f16acc forcing, SHMEM staging, or forced FA
   split-k for the 64k lane. Do not repeat the existing Q3_K predequant fallback
   or existing matmul split-K as route candidates; do not repeat larger-N
-  warptile retunes without a new topology that reduces live-state pressure.
+  warptile or BK-depth retunes without a new topology that reduces live-state
+  pressure and barrier cadence together.
 
 ## Backend Scheduler and Op Coverage
 
@@ -597,7 +604,7 @@ Use these to keep future acceleration plans evidence-based:
 | --- | --- | --- | --- |
 | P0 | ROCm large Q3_K prefill via hipBLAS staging | Large share, repeated Q3_K -> fp16 conversion, current alternatives rejected | First serious code-design target |
 | P1 | ROCm Q3_K MMQ/MMVQ decode/medium shapes | Sustained Q3 direct route pressure in C01 traces | Tune only with exact bucket evidence |
-| P2 | Vulkan Q3_K prompt shader | Vulkan decode is strong but prompt Q3_K route trails ROCm; at 64k it is `47.79%` of traced time; E133 shows top forms `17408x1024x5120` and `5120x1024x17408` are `74.1%` of parsed Q3_K time; E134 says all-Q3_K needs `1.357x` local to close the lane alone; E135 proves the real 64k graph exposes `63 x q3_K SWIGLU` FFN gate/up candidates; E136 says dual-A/same-B FFN fusion alone projects below target unless it reduces A-side work; E143 rejects larger-N warptiles because A-reuse lost to VGPR/LDS/scratch | Active Vulkan 64k code target, but require route-ceiling, graph-pattern, resource, shape-level perf, and A-dequant/layout proof. First complex implementation should target backend-private Q3_K repack/layout or a separate shape-specific shader that reduces repeated A work without larger-tile live-state growth; FFN fusion remains a stack component |
+| P2 | Vulkan Q3_K prompt shader | Vulkan decode is strong but prompt Q3_K route trails ROCm; at 64k it is `47.79%` of traced time; E133 shows top forms `17408x1024x5120` and `5120x1024x17408` are `74.1%` of parsed Q3_K time; E134 says all-Q3_K needs `1.357x` local to close the lane alone; E135 proves the real 64k graph exposes `63 x q3_K SWIGLU` FFN gate/up candidates; E136 says dual-A/same-B FFN fusion alone projects below target unless it reduces A-side work; E143 rejects larger-N warptiles because A-reuse lost to VGPR/LDS/scratch; E144 rejects BK shrink because barriers dominate | Active Vulkan 64k code target, but require route-ceiling, graph-pattern, resource, shape-level perf, and A-dequant/layout proof. First complex implementation should target backend-private Q3_K repack/layout or a separate shape-specific shader that reduces repeated A work without larger-tile live-state growth or extra K-loop cadence; FFN fusion remains a stack component |
 | P3 | Vulkan q4 FA long-context route | `FLASH_ATTN_EXT` is `38.03%` of traced 64k Vulkan time; main route is `98 VGPR / 76 SGPR / 26112 B LDS / 0 scratch`; easy FA toggles have regressed; E133 shows tail KV chunks dominate the FA series; E134 says FA alone needs `1.494x` local; E141 says f16/f16 KV is only a small pp upper bound and does not fit the real 64k server lane; E142 says `Br32/Bc32` loses to VGPR pressure | Keep q4/FA; optimize only with shader/resource evidence, per-KV tail timing, and same-lane A/B. Treat it as the second half of the combined Q3_K+FA stack; do not pivot to f16/q8 KV or larger-Br cm1 for H38 |
 | P4 | Prompt cache/checkpoint session route | Strong repeated/session gain by avoiding shared-prefix prefill | Keep enabled for practical sessions; do not mix with cold baseline |
 | P5 | `ngram-mod` session route | Can stack on prompt cache via accepted-token bursts; current 12k cold-first coverage is near zero; match-8 is too noisy | Keep `12/16/32` opt-in; require coverage/effective acceptance and burst evidence |

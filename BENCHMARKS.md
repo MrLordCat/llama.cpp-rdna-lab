@@ -2878,3 +2878,22 @@ The temporary env-gated branches were reverted and Vulkan `llama-bench` /
 N-tile retune; it needs a backend-private Q3_K layout or separate
 shape-specific shader that reduces repeated A-side work without growing live
 fragments this way.
+
+## Vulkan 64k Q3_K BK16 Route Gate (E144, 2026-05-22)
+
+Resource-direction gate for the opposite route idea: shrink the Q3_K K tile
+from `BK=32` to `BK=16`, accepting twice as many K-loop/barrier rounds in
+exchange for much lower LDS and register pressure. `BK64` was rejected at the
+static gate because Q3_K shader LDS would be `36864 B`, above the 32 KiB device
+budget.
+
+| Q3_K route | pp7488 | Pipeline resources | Decision |
+| --- | ---: | --- | --- |
+| default `BK32` | `972.77` | `113 VGPR / 45 SGPR / 20480 B LDS / 0 scratch` | baseline |
+| `bk16` | `587.52` | `70 VGPR / 46 SGPR / 12288 B LDS / 0 scratch` | reject |
+
+This is a useful negative control: the `BK16` pipeline is genuinely lighter,
+but prompt throughput drops `-39.60%`. The current Q3_K route is not primarily
+saved by reducing LDS/VGPR if that doubles K-loop and barrier cadence. The
+temporary env-gated branch was reverted and clean Vulkan `llama-bench` /
+`llama-server` were rebuilt.
