@@ -2745,3 +2745,22 @@ CPU Q3_K follow-up probes:
   64-token gate. It measured only `2.0716 -> 2.0950 TPS` r1 and decode
   `2.42 -> 2.44 tok/s`, so the patch was reverted. This points away from
   simple mask/prefetch tweaks and toward Q3_K repack/interleaved matvec work.
+
+## Vulkan 64k Q3_K Route Gate (E137, 2026-05-22)
+
+Short pp gate for the complex Q3_K route idea "reuse one A/dequant tile across
+two adjacent N-blocks":
+
+| Build state | Variant | pp7488 | Pipeline resources | Decision |
+| --- | --- | ---: | --- | --- |
+| temporary probe source | default with generic B guard | `858.83` | `95 VGPR / 45 SGPR / 20480 B LDS / 0 scratch` | reject source shape |
+| temporary probe source | `GGML_VK_AMD_LARGE_MATMUL_VARIANT=niter2` | `855.29` | `120 VGPR / 45 SGPR / 20480 B LDS / 0 scratch` | reject |
+| clean restored source | accepted default | `974.92` | `113 VGPR / 45 SGPR / 20480 B LDS / 0 scratch` | restored |
+
+The temporary patch was reverted and no full 64k server A/B was run. The result
+is useful because it separates the route class from this concrete implementation:
+reducing repeated A-side Q3_K work remains attractive, but doing it by doubling
+accumulator live state inside current `mul_mm.comp` loses to VGPR/occupancy and
+shader fingerprint risk. Next Q3_K work should prefer backend-private Q3_K
+repack/layout or a separate shape-specific shader that does not perturb the
+accepted default route.

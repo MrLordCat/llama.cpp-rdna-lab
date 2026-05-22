@@ -478,6 +478,10 @@ Current Vulkan hot route:
     dual-A LDS and `16 -> 32` accumulator fragments. With unchanged A-dequant
     proxy included, the local ceiling is about `1.417x`, projecting
     `1.4466 TPS`, below the ROCm `1.5545 TPS` target.
+  - E137 Q3_K dual-N gate: a temporary `NITER=2` `mul_mm.comp` prototype kept
+    LDS at `20480 B` and scratch at `0`, but raised the candidate to `120 VGPR`
+    and regressed pp7488 to `855.29`; the clean restored default is `974.92`
+    with `113 VGPR`.
 - Rejected route families include old corrupt tile profiles, Q8_1/int-dot
   Q3_K route, expression-only dequant cleanup, aligned-store cleanup, and
   invalid warptiles. For 64k FA, E129 rejects `Bc=32/128`, E131 rejects
@@ -489,10 +493,12 @@ Current Vulkan acceleration thesis:
 - Continue in the active Q3_K coopmat prefill path and the now-measured q4
   long-KV FA path.
 - Treat the next work as a route stack, not a single tweak. E135 proved the
-  dense FFN graph hook, but E136 says dual-A/same-B alone is below target
-  unless it also reduces A-side Q3_K work. Prioritize repeated A-dequant/layout
-  or FA long-KV, and use FFN fusion only as a stack component if resource proof
-  stays coopmat/no-scratch.
+  dense FFN graph hook, E136 says dual-A/same-B alone is below target unless it
+  also reduces A-side Q3_K work, and E137 says current dual-N/same-A loses to
+  accumulator/VGPR pressure. Prioritize backend-private Q3_K repack/layout or
+  a separate shape-specific Q3_K shader that leaves the default shader
+  fingerprint untouched, or FA long-KV. Use FFN fusion only as a stack
+  component if resource proof stays coopmat/no-scratch.
 - Do not spend time on speculative decode, nearby ubatch sweeps, FA `Bc`
   retuning, mask-opt disable, f16acc forcing, or SHMEM staging for the 64k
   lane.
