@@ -151,9 +151,11 @@ Performance interpretation:
   f16acc does not beat the full-run best, and forced SHMEM staging falls back
   to scalar FA. E141 also rejects changing the whole KV dtype route for H38:
   f16/f16 improves pp7488 only `+2.68%` and fails the real 64k server memory
-  fit, while q8_0/q8_0 regresses. Future FA speed work should start from
-  shader/resource evidence inside the existing q4/q4 coopmat1 route, not
-  another trivial env toggle or an f16 KV cache route.
+  fit, while q8_0/q8_0 regresses. E142 rejects the tempting larger-query-row
+  route: `Br32/Bc32` stays coopmat1/q4 but raises VGPR to `133-134` and loses
+  pp. Future FA speed work should start from shader/resource evidence inside
+  the existing q4/q4 coopmat1 route, not another trivial env toggle, an f16 KV
+  cache route, or larger `Br` without a live-state redesign.
 
 ## Speculative / Ngram Route
 

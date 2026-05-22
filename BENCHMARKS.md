@@ -2835,3 +2835,21 @@ only about `1.067x` local FA speedup, far below the `1.494x` local speedup FA
 would need to close the 64k gap alone. Keep q4/q4 KV for H38; future FA work
 should optimize the single-dispatch q4 coopmat1 route directly rather than
 building an f16 KV cache/dequant route that does not fit.
+
+## Vulkan 64k FA Br32/Bc32 Route Gate (E142, 2026-05-22)
+
+Short pp/resource gate for a structural FA route that doubles query rows per
+workgroup while cutting `Bc` to stay within the 32 KiB LDS budget:
+
+| FA route | pp7488 | Pipeline resources | Decision |
+| --- | ---: | --- | --- |
+| default `Br16/Bc64`, f32acc | `971.09 tok/s` | `98 VGPR / 76 SGPR / 26112 B LDS / 0 scratch` | baseline |
+| `Br32/Bc32`, f32acc | `896.97 tok/s` | `133 VGPR / 83 SGPR / 27136 B LDS / 0 scratch` | reject |
+| `Br32/Bc32`, f16acc | `922.22 tok/s` | `134 VGPR / 83 SGPR / 25088 B LDS / 0 scratch` | reject |
+
+Route trace confirmed the candidate stayed on coopmat1 q4/q4 with
+`Br=32,Bc=32,row_split=2,workgroup_size=128`. The failure is not split/reduce or
+fallback; it is live-state pressure inside the single-dispatch shader. Doubling
+rows increases `Of/Lf/Mf/mask` state enough to raise VGPR sharply, and f16acc
+does not fix it. The temporary env-gated code was reverted and Vulkan
+`llama-bench`/`llama-server` were rebuilt clean.

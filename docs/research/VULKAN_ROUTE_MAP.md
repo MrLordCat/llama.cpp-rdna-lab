@@ -310,6 +310,12 @@ Measured Qwen3.6 64k Vulkan route:
   regressed to `940.03 tok/s`. Keep q4/q4 for 64k and optimize the current
   single-dispatch q4 coopmat1 shader directly; do not build an f16 KV
   staging/cache route unless a future design also solves residency.
+- E142 tested a larger query-row route, `Br32/Bc32`, to reuse each long-KV pass
+  across twice as many rows while staying under LDS limits. The route stayed on
+  coopmat1 q4/q4 but regressed pp7488 `971.09 -> 896.97` and raised resources
+  to `133 VGPR / 83 SGPR / 27136 B LDS`; a f16acc companion still measured only
+  `922.22` with `134 VGPR`. Do not pursue larger-`Br` cm1 without reducing
+  per-row live state.
 
 Cleanup note: FlashAttention is one of the highest-value comparison surfaces
 between ROCm and Vulkan. If compile pressure becomes a problem, prefer a
