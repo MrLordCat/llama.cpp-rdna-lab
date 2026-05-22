@@ -2897,3 +2897,24 @@ but prompt throughput drops `-39.60%`. The current Q3_K route is not primarily
 saved by reducing LDS/VGPR if that doubles K-loop and barrier cadence. The
 temporary env-gated branch was reverted and clean Vulkan `llama-bench` /
 `llama-server` were rebuilt.
+
+## Vulkan 64k FA D-Split Route Gate (E145, 2026-05-22)
+
+FlashAttention resource-distribution gate for the active q4/q4 coopmat1 route.
+The default `Br16/Bc64,row_split=4,D_split=8` was compared against
+`D_split=4` and `D_split=16` with the same `pp7488`, `b8192/ub1024`,
+q4/q4 KV lane. Route trace confirmed all candidates stayed on
+`flash_attn_f32_f16_aligned_f32accq4_0`.
+
+| FA route | pp7488 | Pipeline resources | Decision |
+| --- | ---: | --- | --- |
+| default `D_split=8` | `978.88` | `98 VGPR / 76 SGPR / 26112 B LDS / 0 scratch` | baseline |
+| `D_split=4` | `953.24` | `98 VGPR / 76 SGPR / 26112 B LDS / 0 scratch` | reject |
+| `D_split=16` | `951.54` | `98 VGPR / 76 SGPR / 26112 B LDS / 0 scratch` | reject |
+
+This closes the simple `D_split` branch. The model was plausible because
+`D_split=16` halves the live output vector state while doubling score-column
+state, and `D_split=4` does the inverse. In practice the driver reports the
+same resource fingerprint and both directions regress `-2.6%` to `-2.8%`.
+Future FA work needs a shader-body change or per-KV-tail timing proof; merely
+redistributing the head dimension inside the current cm1 shader is not enough.

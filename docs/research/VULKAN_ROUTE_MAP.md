@@ -329,6 +329,11 @@ Measured Qwen3.6 64k Vulkan route:
   to `133 VGPR / 83 SGPR / 27136 B LDS`; a f16acc companion still measured only
   `922.22` with `134 VGPR`. Do not pursue larger-`Br` cm1 without reducing
   per-row live state.
+- E145 tested the remaining simple cm1 split knob, `D_split=4/16`, while
+  keeping `Br16/Bc64,row_split=4` and q4/q4. Both stayed on the same pipeline
+  and reported the same `98 VGPR / 76 SGPR / 26112 B LDS / 0 scratch`, but
+  regressed pp7488 `978.88 -> 953.24/951.54`. Do not repeat `D_split` retunes;
+  the next FA route needs a shader-body or long-KV-tail redesign.
 
 Cleanup note: FlashAttention is one of the highest-value comparison surfaces
 between ROCm and Vulkan. If compile pressure becomes a problem, prefer a
