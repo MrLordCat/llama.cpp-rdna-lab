@@ -280,6 +280,10 @@ Measured Qwen3.6 64k Vulkan route:
 - E134 route ceiling says FA alone would need about `1.494x` local speedup to
   match the ROCm 64k wall. Treat FA as a co-primary branch, but do not spend it
   on another simple `Bc`/mask/f16acc toggle.
+- E138 forced the existing split-k/reduce path from `KV>=8192`; it routed to
+  `split_k=2` but regressed prompt eval from `666.87` to `96.29 tok/s` because
+  the route adds temp writes, a sync boundary, and a reduce dispatch per FA
+  node. Do not repeat split-k forcing without redesigning the reduce topology.
 
 Cleanup note: FlashAttention is one of the highest-value comparison surfaces
 between ROCm and Vulkan. If compile pressure becomes a problem, prefer a

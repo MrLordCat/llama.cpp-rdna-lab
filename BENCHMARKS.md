@@ -2764,3 +2764,19 @@ accumulator live state inside current `mul_mm.comp` loses to VGPR/occupancy and
 shader fingerprint risk. Next Q3_K work should prefer backend-private Q3_K
 repack/layout or a separate shape-specific shader that does not perturb the
 accepted default route.
+
+## Vulkan 64k FlashAttention Split-K Gate (E138, 2026-05-22)
+
+Real-server full prompt screen with `GGML_VK_ALLOW_GRAPHICS_QUEUE=1`,
+`--no-mmap`, `b8192/ub1024`, q4/q4 KV, FlashAttention on:
+
+| Route | Prompt tokens | Elapsed | Prompt eval | Decision |
+| --- | ---: | ---: | ---: | --- |
+| default FA main chunks | `57518` | `86.3639 s` | `666.87 tok/s` | baseline |
+| forced existing FA split-k2 from `KV>=8192` | `57518` | `597.4568 s` | `96.29 tok/s` | reject/revert |
+
+Route trace confirmed the candidate used `split_k=2` and `split_kv=KV/2` for
+main long-KV chunks. The failure is structural: the existing split-k route adds
+temporary output/L/M writes, `ggml_vk_sync_buffers`, and a split-k reduce
+dispatch for each FA node. Future FA long-KV work must stay in a single dispatch
+or first redesign that reduce topology.

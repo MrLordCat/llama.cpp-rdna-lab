@@ -482,6 +482,9 @@ Current Vulkan hot route:
     LDS at `20480 B` and scratch at `0`, but raised the candidate to `120 VGPR`
     and regressed pp7488 to `855.29`; the clean restored default is `974.92`
     with `113 VGPR`.
+  - E138 FA split-k gate: forcing existing FA split/reduce from `KV>=8192`
+    routed correctly but dropped prompt eval from `666.87` to `96.29 tok/s`,
+    because it adds temp writes, sync, and reduce dispatch per FA node.
 - Rejected route families include old corrupt tile profiles, Q8_1/int-dot
   Q3_K route, expression-only dequant cleanup, aligned-store cleanup, and
   invalid warptiles. For 64k FA, E129 rejects `Bc=32/128`, E131 rejects
@@ -497,11 +500,11 @@ Current Vulkan acceleration thesis:
   also reduces A-side Q3_K work, and E137 says current dual-N/same-A loses to
   accumulator/VGPR pressure. Prioritize backend-private Q3_K repack/layout or
   a separate shape-specific Q3_K shader that leaves the default shader
-  fingerprint untouched, or FA long-KV. Use FFN fusion only as a stack
-  component if resource proof stays coopmat/no-scratch.
+  fingerprint untouched, or single-dispatch FA long-KV work. Use FFN fusion
+  only as a stack component if resource proof stays coopmat/no-scratch.
 - Do not spend time on speculative decode, nearby ubatch sweeps, FA `Bc`
-  retuning, mask-opt disable, f16acc forcing, or SHMEM staging for the 64k
-  lane.
+  retuning, mask-opt disable, f16acc forcing, SHMEM staging, or forced FA
+  split-k for the 64k lane.
 
 ## Backend Scheduler and Op Coverage
 
