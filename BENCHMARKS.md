@@ -2956,3 +2956,37 @@ analytically, and defers signed-nibble until a stronger instruction/resource
 proof exists. Next complex Vulkan work should move to FA long-KV shader-body
 work or a new Q3_K topology that removes A-pair count without fp16 temp,
 accumulator blowup, near-limit LDS, or extra reduce.
+
+## Vulkan 64k FA Analytic Causal Mask Gate (E148, 2026-05-22)
+
+Route-body probe for the active q4/q4 FlashAttention path. The idea was to keep
+mask-opt semantics but remove the separate `fa_mask_opt` dispatch/sync for full
+1024-token causal text chunks by deriving all-zero/all--inf/mixed mask tiles in
+the cm1 shader.
+
+Analytic gate from the E128 perf trace:
+
+| Metric | Value |
+| --- | ---: |
+| Parsed FA rows | `58` |
+| FA total | `33965.16 ms` |
+| Eligible full-chunk FA time | `33865.25 ms` (`99.71%` of FA) |
+| Eligible FA tiles | `26148864` |
+| All-zero tiles | `98.14%` |
+| All--inf skipped tiles | `1.64%` |
+| Mixed boundary tiles | `0.22%` |
+| Mask-opt prepass read proxy | `51072.00 MiB` fp16 mask cells |
+
+Measured pp7488 gate after a temporary env-gated prototype:
+
+| Route | pp7488 | Pipeline resources | Decision |
+| --- | ---: | --- | --- |
+| same-build baseline | `971.41` | normal full/tail route | baseline |
+| analytic causal full chunks | `972.21` | full chunks `84 VGPR / 65 SGPR / 26112 B LDS / 0 scratch`; tail normal `98/76` | reject/tie |
+
+The mechanism was plausible, but the measured delta was only `+0.08%`, inside
+noise and far below the threshold for a 64k server run. The runtime prototype
+was reverted. The useful conclusion is causal: mask-opt prepass/sync is not the
+main FA limiter; future FA work should target the main q4 K/V dequant,
+softmax/PV loop, or a more structural long-KV traversal that changes the shader
+body cost rather than only removing the prepass.
