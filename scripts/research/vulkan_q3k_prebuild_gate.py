@@ -209,12 +209,22 @@ def candidate_text_from_args(args: argparse.Namespace, root: Path) -> str:
     return "\n".join(pieces).strip()
 
 
+def alias_in_text(text: str, alias: str) -> bool:
+    start = text.find(alias)
+    while start >= 0:
+        prefix = text[max(0, start - 24):start]
+        if not re.search(r"(?:^|[\s;,.])(?:no|not|without)\s+(?:a\s+)?$", prefix):
+            return True
+        start = text.find(alias, start + 1)
+    return False
+
+
 def matched_priors(candidate_text: str) -> list[Prior]:
     text = candidate_text.lower()
     matches: list[Prior] = []
     for prior in PRIORS:
         aliases = TOKEN_ALIASES.get(prior.key, (prior.key,))
-        if any(alias in text for alias in aliases):
+        if any(alias_in_text(text, alias) for alias in aliases):
             matches.append(prior)
     return matches
 
@@ -239,8 +249,8 @@ def historical_analogs(rows: list[ResultRow], candidate_text: str) -> list[tuple
         row_tokens = set(re.findall(r"[a-z0-9_]+", row_text))
         score = len(text_tokens & row_tokens)
         for key, aliases in TOKEN_ALIASES.items():
-            candidate_has_alias = any(alias in candidate_text.lower() for alias in aliases)
-            row_has_alias = any(alias in row_text for alias in aliases)
+            candidate_has_alias = any(alias_in_text(candidate_text.lower(), alias) for alias in aliases)
+            row_has_alias = any(alias_in_text(row_text, alias) for alias in aliases)
             row_has_key = key in row_text or key.replace("loadvec", "load_vec") in row_text
             if candidate_has_alias and (row_has_alias or row_has_key):
                 score += 3

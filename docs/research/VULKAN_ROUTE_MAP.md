@@ -211,6 +211,12 @@ Measured 64k Q3_K route note:
   `94 VGPR / 45 SGPR / 31744 B LDS / 0 scratch`, but pp7488 fell
   `972.84 -> 916.62`. Larger M tiles in current `mul_mm.comp` are closed unless
   a new topology also fixes near-limit LDS/occupancy.
+- E147 tested the larger Q3_K layout/repack branch analytically. Persistent
+  FFN fp16/int8 alternates would add `25.03 GiB` / `9.09 GiB`, so they are not
+  viable for the 16 GiB 64k lane. Signed-nibble layout is memory-plausible
+  (`+1.12 GiB` for FFN) but low-confidence because current Q3_K SPIR-V is only
+  modestly heavier than f16/Q4_K and prior unpack/scale simplifications were
+  negative.
 
 ### Mat-Vec Route
 

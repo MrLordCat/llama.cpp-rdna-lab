@@ -2937,3 +2937,22 @@ That corrects the workflow: B/workgroup proxy reduction is not enough unless
 the candidate also preserves occupancy/residency. Future Q3_K work should not
 repeat larger M/N tiles in current `mul_mm.comp`; it needs a different layout
 or shape-specific shader that reduces repeated A work without near-limit LDS.
+
+## Vulkan 64k Q3_K Layout Route Gate (E147, 2026-05-22)
+
+Design gate for the larger Q3_K layout/repack branch. The real GGUF tensor map
+shows broad persistent fp16/int8 layouts are not viable for the 16 GiB 64k lane:
+FFN `gate/up/down` already occupy `6.85 GiB` as Q3_K, while alternate fp16
+would add `25.03 GiB` and int8 would add `9.09 GiB`. A signed-nibble layout is
+the only broad memory-plausible option (`+1.12 GiB` for FFN, `+1.58 GiB` for
+all Q3_K), but it only attacks bit unpack, not scale math or coopmat work.
+
+Static SPIR-V counts also lowered confidence in a signed-nibble implementation:
+current Q3_K aligned cm1 has `247 OpLoad`, `84 OpStore`, `81 OpIMul`,
+`28 OpUDiv`, `13 OpUMod`, and a small number of bit ops; f16 is lighter but not
+by a target-closing margin, and Q4_K is not obviously lighter than Q3_K. E147
+therefore rejects persistent fp16/int8 and single-accumulator sequential-N
+analytically, and defers signed-nibble until a stronger instruction/resource
+proof exists. Next complex Vulkan work should move to FA long-KV shader-body
+work or a new Q3_K topology that removes A-pair count without fp16 temp,
+accumulator blowup, near-limit LDS, or extra reduce.
