@@ -1,6 +1,6 @@
 # Qwen TPS Route Atlas
 
-Updated: 2026-05-21.
+Updated: 2026-05-22.
 
 This is the top-level route map for future TPS work on the local
 `llama.cpp-with-GUI` fork. It connects GUI/CLI/server parameters, Qwen graph
@@ -61,8 +61,8 @@ Active ROCm decode parity lane:
 | Speculation | `--spec-type none` |
 | Reuse | `--cache-ram 0 --ctx-checkpoints 0`, no reuse |
 | Thinking | on / `--no-disable-thinking` |
-| Current evidence | E116 ROCm q4 `29.1685 TPS` / `29.625 tok/s`; Vulkan q4/f16 `39.8801-40.2753 TPS` / `40.8683-41.2283 tok/s` |
-| First action | E149 ROCm/Vulkan diagnostic traces and first Q3_K route-delta table are complete; E150 rejects disabling fusion, so next audit ROCm fused MMVQ Q3_K FFN decode shapes before the first code branch |
+| Current evidence | E116 ROCm q4 `29.1685 TPS` / `29.625 tok/s`; Vulkan q4/f16 `39.8801-40.2753 TPS` / `40.8683-41.2283 tok/s`; E151 raises current ROCm q4 decode to `32.2467 tok/s` on the r3 short-decode gate |
+| First action | E149 ROCm/Vulkan diagnostic traces and Q3_K route-delta table are complete; E150 rejects disabling fusion; E151 keeps RDNA4 Q3_K MMVQ `nwarps=2`. Next action is a post-E151 route/timing trace and a larger Q3_K decode branch plan, not another nearby fusion-disable or launch-overhead toggle |
 | Metric type | decode-focused backend parity; do not mix with prompt-heavy cold-first or 64k prefill headlines |
 
 Important session/long-context lane:

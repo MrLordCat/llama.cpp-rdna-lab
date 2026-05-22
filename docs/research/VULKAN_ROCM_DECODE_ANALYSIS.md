@@ -72,15 +72,23 @@
   `GGML_CUDA_DISABLE_FUSION=1` не помогает, а регрессирует clean short decode
   `30.08 -> 28.61 tok/s`. Значит fusion не "лишняя"; отставание нужно искать
   внутри качества fused Q3_K MMVQ kernel/resource policy.
+- E151 дал первый подтверждённый ROCm code win: RDNA4 `Q3_K/ncols_dst=1`
+  в MMVQ возвращён на `nwarps=2`. На current-tree r3 gate clean post-rebuild
+  был `28.1123 TPS` / `29.77 tok/s` decode, candidate стал `30.3145 TPS` /
+  `32.2467 tok/s` decode (`+8.32%` decode). Живой `llama-server` sanity
+  прошёл нормально: ответ начинался с обычного `Thinking Process:`, без
+  повторяющихся символов или `wm32-wn32`-style corruption.
 - Sequential graph-disable diagnostic не показал пользы от launch/graph
   гипотезы на short-decode gate: clean `27.1129 TPS` / `29.15 tok/s decode`
   против `GGML_CUDA_DISABLE_GRAPHS=1` `27.2063 TPS` / `29.28 tok/s`.
 
 Вывод аудита: главный ROCm decode parity трек должен начинаться с **fresh
-post-driver route trace и Q3_K direct decode/MMVQ-MMQ route proof**, а
-`RMS_NORM+MUL+ROPE` fusion оставить как измеряемый secondary candidate. Для
-64k decode отдельно нужен FA/KV trace, потому что там разрыв ROCm/Vulkan может
-быть уже attention/long-KV, а не short-decode matvec.
+post-driver route trace и Q3_K direct decode/MMVQ-MMQ route proof**. E151 уже
+подтвердил первую маленькую часть этого направления и снизил short-decode gap
+к Vulkan q4 примерно с `1.37x` до `1.27x`, но parity ещё не закрыт.
+`RMS_NORM+MUL+ROPE` fusion остаётся измеряемым secondary candidate. Для 64k
+decode отдельно нужен FA/KV trace, потому что там разрыв ROCm/Vulkan может быть
+уже attention/long-KV, а не short-decode matvec.
 
 Важно для чтения остального файла: sections ниже оставлены как исходная
 гипотеза/контекст. Утверждения вроде "ROCm не использует fusion в decode path"

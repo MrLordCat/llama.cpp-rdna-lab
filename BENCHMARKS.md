@@ -91,6 +91,34 @@ E136 добавил модель `scripts/research/vulkan_ffn_route_model.py`. �
 - `docs/research/experiments/E135_vulkan64k_ffn_route_trace.md`
 - `docs/research/experiments/E136_vulkan64k_ffn_route_model.md`
 
+## ROCm decode parity first code win (2026-05-22)
+
+Фокус H39: догонять Vulkan decode на ROCm для Qwen3.6-27B-Q3_K_S, не смешивая
+это с 64k Vulkan prefill lane. После аудита E149/E150 первый сохранённый кодовый
+win: RDNA4 `Q3_K/ncols_dst=1` в MMVQ использует `nwarps=2`.
+
+Lane: `ctx=12288`, `batch=6144`, `ubatch=2048`, q4/q4 KV, FlashAttention on,
+`--spec-type none`, no reuse, thinking on, `max_tokens=128`, real
+`llama-server` via `scripts\agent_workload_bench.py`.
+
+| Route | Aggregate TPS | Decode eval TPS | Prompt eval TPS | Result |
+| --- | ---: | ---: | ---: | --- |
+| Clean post-rebuild r3 | `28.1123` | `29.77` | `711.73` | baseline |
+| RDNA4 Q3_K MMVQ `nwarps=2` r3 | `30.3145` | `32.2467` | `713.8533` | keep, decode `+8.32%` |
+
+Live server sanity was also run with `max_tokens=64`: errors `0`, decode
+`30.55 tok/s`, response preview was normal `Thinking Process:` text without
+repeated-symbol corruption. Remaining E116 Vulkan q4 comparator is still around
+`40.8683 tok/s`, so ROCm decode parity remains open at about `1.27x`.
+
+Artifacts:
+- `docs/research/experiments/E149_rocm_decode_parity_audit.md`
+- `docs/research/experiments/E150_rocm_decode_fusion_gate.md`
+- `docs/research/experiments/E151_rocm_q3k_mmvq_warps2_decode.md`
+- `build_logs/agent-workload/e151-rocm-decode-q4-cleanpost-r3.diagnostics.md`
+- `build_logs/agent-workload/e151-rocm-decode-q4-q3warps2-r3.diagnostics.md`
+- `build_logs/agent-workload/e151-rocm-decode-q4-q3warps2-live-sanity-r1.diagnostics.md`
+
 ## H03 ngram+MTP chain smoke (2026-05-19)
 
 Добавлен экспериментальный `--spec-type ngram-mtp`: в одном server run сначала пробуется `ngram-mod`, затем MTP fallback. Это opt-in режим для проверки совместимости двух speculative источников, не новый default.

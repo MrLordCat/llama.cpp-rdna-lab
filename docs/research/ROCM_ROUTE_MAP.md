@@ -34,7 +34,7 @@ Current route facts for the local Qwen/RDNA4 environment:
 | --- | --- | --- |
 | `cublas_backend` / hipBLAS | Required for large Q3_K prefill when RDNA4 MMQ selector rejects `ne11 > 192`; stages Q3_K weights to fp16, converts `src1`, runs `cublasGemmEx`/rocBLAS with 32f compute on RDNA4 | Keep. It is the active large Q3_K prefill route and still beats existing MMQ for large Q3_K shapes |
 | `mul_mat_q` / MMQ | Required for Q3_K decode/medium batches, Q4_K/Q5_K prompt path, MoE/expert routes, and quantized fallback avoidance | Keep. E015 and E070 are real wins; only large-Q3_K selector overrides are rejected |
-| `mul_mat_vec_q` / MMVQ | Required for quantized decode/small batch and `MUL_MAT_ID` small expert work; includes local Qwen-hot RDNA4 small-k behavior | Keep. Current code should be rechecked against the historical E013 `Q3_K nwarps=2` note before using that exact claim |
+| `mul_mat_vec_q` / MMVQ | Required for quantized decode/small batch and `MUL_MAT_ID` small expert work; includes local Qwen-hot RDNA4 small-k behavior | Keep. E151 restores and confirms RDNA4 `Q3_K/ncols_dst=1` `nwarps=2` on the current decode lane |
 | `mul_mat_f` / MMF | Dense small matrix path for F32/F16/BF16 when alignment and size gates pass | Keep. Needed as generic dense small route; force-wide probes were rejected, not the route itself |
 | `mul_mat_vec_f` / MMVF | Dense vector/small batch route for F32/F16/BF16 | Keep. Used for dense skinny shapes and avoids hipBLAS overhead in narrow cases |
 | `batched_cublas` | Dense KQ/KQV multi-batch route when FlashAttention is not handling the case | Keep for general backend compatibility |
@@ -65,10 +65,13 @@ target further: ROCm Q3_K matvec time is split between `mul_mat_vec_q_fused`
 also Q3-led (`MUL_MAT_VEC q3_K 50.67%` plus `MUL_MAT_ADD_VEC q3_K 19.38%`)
 while `ROPE+SET_ROWS` is only `0.60%`. E150 then rejects disabling ROCm fusion
 (`30.08 -> 28.61 tok/s` decode), so the route is useful but still the main
-optimization target. Next H39 work should audit the ROCm fused MMVQ Q3_K
-implementation/resource policy for those FFN decode shapes, then design a
-Q3_K-specific MMVQ improvement if the local ceiling is plausible, not a
-standalone fusion port or fusion removal.
+optimization target. E151 restores RDNA4 `Q3_K/ncols_dst=1` `nwarps=2` and
+moves the same short-decode gate from clean post-rebuild `29.77 tok/s` to
+`32.2467 tok/s` (`+8.32%` decode). This is a real first H39 win, but still
+leaves about a `1.27x` gap to the E116 Vulkan q4 comparator. Next H39 work
+should collect a post-E151 route/timing trace, then design a larger
+Q3_K-specific MMVQ branch if the residual fused/direct split still supports it,
+not a standalone fusion port or fusion removal.
 
 ## Build-Time Route Map
 
@@ -332,11 +335,9 @@ RDNA4 Qwen-hot behavior:
   `Q6_K`.
 - For RDNA4, `ncols_dst=1`, and Qwen-hot types, `should_use_small_k(...)`
   defaults to `small_k=true` unless disabled.
-- Current-code audit note: the historical E013 note says a Q3_K `nwarps=2`
-  policy was kept, but the current `calc_nwarps(...)` RDNA4 branch does not
-  visibly list `Q3_K` in the `ncols_dst=1` whitelist. Treat the E013 timing as
-  historical evidence until a current route/timing trace confirms the exact
-  Q3_K MMVQ launch shape in this tree.
+- E151 confirms the current-tree policy: RDNA4 `Q3_K/ncols_dst=1` uses
+  `nwarps=2`. Because Qwen-hot `small_k` is enabled, this lets
+  `calc_rows_per_block(...)` use two rows per block instead of staying at one.
 
 Important knobs:
 
@@ -352,7 +353,8 @@ Key evidence:
 | --- | --- | --- |
 | Early C01 small-k A/B | `26.30 -> 26.66 TPS` in decode trace; route moved to `small_k=1` | Kept as Qwen-hot RDNA4 policy |
 | C01 two-task validation | Default small-k `28.02/28.06 TPS`, disabled `27.86 TPS`; trace `26.68` vs `26.46 TPS` | Keep default small-k |
-| E013 | Historical Q3_K MMVQ `nwarps=2` note improved paired control `9.1629 -> 9.3847 TPS`; Q3_K `nwarps=4` follow-up regressed `9.3847 -> 9.2136` | Keep MMVQ route, but revalidate current Q3_K launch policy before citing `nwarps=2` as active |
+| E013 | Historical Q3_K MMVQ `nwarps=2` note improved paired control `9.1629 -> 9.3847 TPS`; Q3_K `nwarps=4` follow-up regressed `9.3847 -> 9.2136` | Historical prior for the current E151 policy |
+| E151 | Current-tree RDNA4 Q3_K `nwarps=2` improves clean post-rebuild r3 `28.1123 -> 30.3145 TPS`, decode `29.77 -> 32.2467 tok/s`; live server sanity output is normal | Keep RDNA4 Q3_K `nwarps=2`; collect post-E151 residual trace before larger changes |
 
 Cleanup notes:
 
@@ -486,7 +488,8 @@ Clear these before speed claims unless they are the explicit candidate:
 | ID | Area | Baseline | Candidate / diagnostic | Verdict |
 | --- | --- | ---: | ---: | --- |
 | E008 | ROCm compute vbuffer residency | `302.87 tok/s` at bad `ctx32768,ub904` single chunk | `1038.19 tok/s` default chunk at `ub904`, `1114.58 tok/s` at `ub1024` | Keep allocator fix; use single chunk only as negative control |
-| E013 | MMVQ Q3_K decode | `9.1629 TPS` | `9.3847 TPS` | Historical keep; current code needs launch-policy recheck |
+| E013 | MMVQ Q3_K decode | `9.1629 TPS` | `9.3847 TPS` | Historical prior for Q3_K `nwarps=2` |
+| E151 | ROCm decode parity / MMVQ Q3_K | `28.1123 TPS`, `29.77 tok/s` decode | `30.3145 TPS`, `32.2467 tok/s` decode | Keep RDNA4 Q3_K `nwarps=2`; real server sanity passed |
 | E015 | MMQ RDNA4 geometry | `9.3974 TPS` | `9.6080 TPS` | Keep `mmq_y=64,nwarps=4` |
 | E045 | Prefill ubatch recenter | `11.4240 TPS` (`ub1024`) | `11.6534 TPS` (`ub2048`) | Use `ub2048` as current prompt-heavy search baseline |
 | E046 | cublas compute16 | `11.7908 TPS` | `11.4146 TPS` | Reject compute16 default |

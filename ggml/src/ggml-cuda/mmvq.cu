@@ -330,10 +330,13 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
     }
     if (table_id == MMVQ_PARAMETERS_RDNA4) {
         // nwarps=8 benefits types with simple vec_dot on RDNA4 (ncols_dst=1).
-        // Types with complex vec_dot (Q3_K, IQ2_*, IQ3_*) regress due to register
-        // pressure and lookup table contention at higher thread counts.
+        // Types with complex vec_dot (IQ2_*, IQ3_*) regress due to register
+        // pressure and lookup table contention at higher thread counts. Q3_K
+        // likes a middle point on the local RDNA4 decode lane.
         if (ncols_dst == 1) {
             switch (type) {
+                case GGML_TYPE_Q3_K:
+                    return 2;
                 case GGML_TYPE_Q4_0:
                 case GGML_TYPE_Q4_1:
                 case GGML_TYPE_Q5_0:
