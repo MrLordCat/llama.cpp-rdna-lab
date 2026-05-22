@@ -14537,6 +14537,96 @@ static bool ggml_vk_is_empty(ggml_tensor * node) {
     return ggml_is_empty(node) || node->op == GGML_OP_NONE || node->op == GGML_OP_RESHAPE || node->op == GGML_OP_TRANSPOSE || node->op == GGML_OP_VIEW || node->op == GGML_OP_PERMUTE;
 }
 
+static bool ggml_vk_is_dense_ffn_glu_candidate(const struct ggml_cgraph * cgraph, int node_idx, const ggml_tensor ** up, const ggml_tensor ** gate, const ggml_tensor ** glu) {
+    if (!ggml_can_fuse_subgraph(cgraph, node_idx, { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_GLU }, { node_idx + 2 })) {
+        return false;
+    }
+
+    const ggml_tensor * mm0 = cgraph->nodes[node_idx];
+    const ggml_tensor * mm1 = cgraph->nodes[node_idx + 1];
+    const ggml_tensor * cur_glu = cgraph->nodes[node_idx + 2];
+
+    if (cur_glu->src[0] == mm0 && cur_glu->src[1] == mm1) {
+        *gate = mm0;
+        *up = mm1;
+    } else if (cur_glu->src[0] == mm1 && cur_glu->src[1] == mm0) {
+        *gate = mm1;
+        *up = mm0;
+    } else {
+        return false;
+    }
+
+    if ((*up)->src[0]->type != (*gate)->src[0]->type ||
+        !ggml_are_same_shape((*up)->src[0], (*gate)->src[0]) ||
+        !ggml_are_same_stride((*up)->src[0], (*gate)->src[0])) {
+        return false;
+    }
+
+    if ((*up)->src[1] != (*gate)->src[1]) {
+        return false;
+    }
+
+    if ((*up)->src[2] != (*gate)->src[2]) {
+        return false;
+    }
+
+    const ggml_glu_op glu_op = ggml_get_glu_op(cur_glu);
+    if (glu_op != GGML_GLU_OP_SWIGLU && glu_op != GGML_GLU_OP_GEGLU && glu_op != GGML_GLU_OP_SWIGLU_OAI) {
+        return false;
+    }
+
+    if (ggml_get_op_params_i32(cur_glu, 1) != 0) {
+        return false;
+    }
+
+    *glu = cur_glu;
+    return true;
+}
+
+static void ggml_vk_trace_dense_ffn_glu_candidates(const struct ggml_cgraph * cgraph) {
+    int candidates = 0;
+    int prefill_candidates = 0;
+    int q3_candidates = 0;
+    std::map<std::string, int> shapes;
+
+    for (int i = 0; i + 2 < cgraph->n_nodes; ++i) {
+        const ggml_tensor * up = nullptr;
+        const ggml_tensor * gate = nullptr;
+        const ggml_tensor * glu = nullptr;
+        if (!ggml_vk_is_dense_ffn_glu_candidate(cgraph, i, &up, &gate, &glu)) {
+            continue;
+        }
+
+        candidates++;
+        if (up->ne[1] > 1) {
+            prefill_candidates++;
+        }
+        if (up->src[0]->type == GGML_TYPE_Q3_K) {
+            q3_candidates++;
+        }
+
+        std::ostringstream key;
+        key << ggml_type_name(up->src[0]->type)
+            << " glu=" << ggml_glu_op_name(ggml_get_glu_op(glu))
+            << " m=" << up->ne[0]
+            << " n=" << up->ne[1]
+            << " k=" << up->src[1]->ne[0];
+        shapes[key.str()]++;
+    }
+
+    if (candidates == 0) {
+        return;
+    }
+
+    std::cerr << "ggml_vulkan: ffn_route_trace candidates=" << candidates
+              << " prefill=" << prefill_candidates
+              << " q3=" << q3_candidates << std::endl;
+    for (const auto & item : shapes) {
+        std::cerr << "ggml_vulkan: ffn_route_trace " << item.first
+                  << " count=" << item.second << std::endl;
+    }
+}
+
 static bool ggml_vk_can_fuse(const ggml_backend_vk_context * ctx, const struct ggml_cgraph * cgraph, int node_idx, std::initializer_list<enum ggml_op> ops) {
     if (!ggml_can_fuse(cgraph, node_idx, ops)) {
         return false;
@@ -14948,6 +15038,7 @@ static int32_t find_first_set(uint32_t x) {
 static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     VK_LOG_DEBUG("ggml_backend_vk_graph_compute(" << cgraph->n_nodes << " nodes)");
     ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
+    static const bool trace_dense_ffn = getenv("GGML_VK_FFN_ROUTE_TRACE") != nullptr;
 
     if (vk_instance.debug_utils_support) {
         vk::DebugUtilsLabelEXT dul = {};
@@ -14959,6 +15050,10 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
     ctx->prealloc_size_add_rms_partials_offset = 0;
     ctx->do_add_rms_partials = false;
     ctx->do_add_rms_partials_offset_calculation = false;
+
+    if (trace_dense_ffn) {
+        ggml_vk_trace_dense_ffn_glu_candidates(cgraph);
+    }
 
     int last_node = cgraph->n_nodes - 1;
 

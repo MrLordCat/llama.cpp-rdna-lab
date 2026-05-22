@@ -468,6 +468,12 @@ Current Vulkan hot route:
     `m=17408,n=1024,k=5120` (`20338.69 ms`) and
     `m=5120,n=1024,k=17408` (`11289.87 ms`), together `74.1%` of parsed
     Q3_K time.
+  - E134 route ceiling: to match the ROCm 64k wall alone, FFN gate/up would
+    need `2.234x` local speedup, all Q3_K would need `1.357x`, FA would need
+    `1.494x`, while the combined Q3_K+FA prefill core needs only `1.172x`.
+  - E135 graph proof: default-off `GGML_VK_FFN_ROUTE_TRACE=1` on the real
+    64k server lane found `63 x q3_K SWIGLU` prefill candidates with
+    `m=17408,n=1024,k=5120` in each active graph.
 - Rejected route families include old corrupt tile profiles, Q8_1/int-dot
   Q3_K route, expression-only dequant cleanup, aligned-store cleanup, and
   invalid warptiles. For 64k FA, E129 rejects `Bc=32/128`, E131 rejects
@@ -478,6 +484,10 @@ Current Vulkan acceleration thesis:
 
 - Continue in the active Q3_K coopmat prefill path and the now-measured q4
   long-KV FA path.
+- Treat the next work as a route stack, not a single tweak: first add/validate
+  dense FFN graph/resource proof for `MUL_MAT+MUL_MAT+GLU`, then prototype a
+  dual-A/same-B Q3_K SwiGLU prefill path only if the resource gate stays
+  coopmat/no-scratch.
 - Do not spend time on speculative decode, nearby ubatch sweeps, FA `Bc`
   retuning, mask-opt disable, f16acc forcing, or SHMEM staging for the 64k
   lane.
@@ -524,8 +534,8 @@ Use these to keep future acceleration plans evidence-based:
 | --- | --- | --- | --- |
 | P0 | ROCm large Q3_K prefill via hipBLAS staging | Large share, repeated Q3_K -> fp16 conversion, current alternatives rejected | First serious code-design target |
 | P1 | ROCm Q3_K MMQ/MMVQ decode/medium shapes | Sustained Q3 direct route pressure in C01 traces | Tune only with exact bucket evidence |
-| P2 | Vulkan Q3_K prompt shader | Vulkan decode is strong but prompt Q3_K route trails ROCm; at 64k it is `47.79%` of traced time; E133 shows top forms `17408x1024x5120` and `5120x1024x17408` are `74.1%` of parsed Q3_K time | Active Vulkan 64k code target, but require prebuild/static gates and shape-level perf proof |
-| P3 | Vulkan q4 FA long-context route | `FLASH_ATTN_EXT` is `38.03%` of traced 64k Vulkan time; main route is `98 VGPR / 76 SGPR / 26112 B LDS / 0 scratch`; easy FA toggles have regressed; E133 shows tail KV chunks dominate the FA series | Keep q4/FA; optimize only with shader/resource evidence, per-KV tail timing, and same-lane A/B |
+| P2 | Vulkan Q3_K prompt shader | Vulkan decode is strong but prompt Q3_K route trails ROCm; at 64k it is `47.79%` of traced time; E133 shows top forms `17408x1024x5120` and `5120x1024x17408` are `74.1%` of parsed Q3_K time; E134 says all-Q3_K needs `1.357x` local to close the lane alone; E135 proves the real 64k graph exposes `63 x q3_K SWIGLU` FFN gate/up candidates | Active Vulkan 64k code target, but require route-ceiling, graph-pattern, resource, and shape-level perf proof. First complex branch is dense FFN `MUL_MAT+MUL_MAT+GLU` detection plus dual-A/same-B Q3_K SwiGLU only if resource-safe |
+| P3 | Vulkan q4 FA long-context route | `FLASH_ATTN_EXT` is `38.03%` of traced 64k Vulkan time; main route is `98 VGPR / 76 SGPR / 26112 B LDS / 0 scratch`; easy FA toggles have regressed; E133 shows tail KV chunks dominate the FA series; E134 says FA alone needs `1.494x` local | Keep q4/FA; optimize only with shader/resource evidence, per-KV tail timing, and same-lane A/B. Treat it as the second half of the combined Q3_K+FA stack |
 | P4 | Prompt cache/checkpoint session route | Strong repeated/session gain by avoiding shared-prefix prefill | Keep enabled for practical sessions; do not mix with cold baseline |
 | P5 | `ngram-mod` session route | Can stack on prompt cache via accepted-token bursts; current 12k cold-first coverage is near zero; match-8 is too noisy | Keep `12/16/32` opt-in; require coverage/effective acceptance and burst evidence |
 | P6 | GDN/SSM/RMS/fusions | Visible but smaller; past simple probes negative | Revisit if a trace shows shared memory/residency slowdown |

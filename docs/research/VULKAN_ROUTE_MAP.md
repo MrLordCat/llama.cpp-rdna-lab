@@ -277,6 +277,9 @@ Measured Qwen3.6 64k Vulkan route:
   individual tail chunks are `N=1024,KV=57344` (`1168.85 ms`),
   `KV=56320` (`1136.25 ms`), and `KV=55296` (`1122.66 ms`).
   Future FA claims should show the long-KV tail moved and stayed on coopmat1.
+- E134 route ceiling says FA alone would need about `1.494x` local speedup to
+  match the ROCm 64k wall. Treat FA as a co-primary branch, but do not spend it
+  on another simple `Bc`/mask/f16acc toggle.
 
 Cleanup note: FlashAttention is one of the highest-value comparison surfaces
 between ROCm and Vulkan. If compile pressure becomes a problem, prefer a
@@ -300,6 +303,15 @@ Fusion is selected in `ggml_backend_vk_graph_compute(...)` before
 | `RMS_NORM_MUL_ROPE_VIEW_SET_ROWS` | norm + scale + rope + view + KV write | largest KV-update fusion route |
 | `ROPE_VIEW_SET_ROWS` | rope + view + set rows | rope/set-rows fused route |
 | `TOPK_MOE_*` | several softmax/sigmoid/argsort/getrows MoE patterns | `ggml_vk_topk_moe(...)` |
+
+Known gap for H38: Vulkan does not currently have a dense FFN
+`MUL_MAT + MUL_MAT + GLU` prefill fusion route. CUDA/ROCm has a related
+graph matcher/executor for `mul_mat_vec` decode, but it is limited to
+`ncols_dst=1`. E134 says a launch/post-op-only port is not enough; a useful
+Vulkan branch must reuse the B/activation tile or change the Q3_K layout for
+the `m=17408,n=1024,k=5120` gate/up route. E135 adds default-off
+`GGML_VK_FFN_ROUTE_TRACE=1` and proves the target graph exposes this branch on
+the real 64k server lane: `63 x q3_K SWIGLU` prefill candidates per graph.
 
 Fusion can be disabled globally with `GGML_VK_DISABLE_FUSION` or partly with
 `GGML_VK_DISABLE_MULTI_ADD`. Any route timing must state whether fusion was
@@ -374,6 +386,13 @@ FlashAttention route topology:
 
 ```bash
 GGML_VK_FA_ROUTE_TRACE=1 \
+python scripts/repo_snapshot_context_bench.py --label-prefix <label> ...
+```
+
+Dense FFN gate/up route topology:
+
+```bash
+GGML_VK_FFN_ROUTE_TRACE=1 \
 python scripts/repo_snapshot_context_bench.py --label-prefix <label> ...
 ```
 

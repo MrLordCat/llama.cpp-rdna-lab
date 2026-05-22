@@ -63,6 +63,10 @@ E132 добавил FA resource fingerprint: main 64k coopmat1 route испол�
 
 E133 добавил shape-level разбор E128 perf log через `scripts/research/vulkan_perf_shape_summary.py`. По распарсенным hot rows `MUL_MAT q3_K` занимает `42684.45 ms`, `FLASH_ATTN_EXT` `33965.16 ms`, а две главные Q3_K формы дают `31628.56 ms`: `m=17408,n=1024,k=5120` (`20338.69 ms`) и `m=5120,n=1024,k=17408` (`11289.87 ms`). Значит следующий Q3_K-кандидат должен явно двигать эти feed-forward up/gate и down shapes, а следующий FA-кандидат должен показывать per-KV tail improvement (`KV=45k..57k`), не только общий prompt TPS.
 
+E134 добавил route-ceiling gate через `scripts/research/vulkan_route_ceiling.py`. Он подтвердил, что отдельная FFN gate/up fusion-ветка не закроет 64k gap сама по себе: для этого ей нужен `2.234x` local speedup на `24.91%` parsed share. Вся Q3_K `MUL_MAT` ветка требует `1.357x`, вся FA ветка `1.494x`, а общий Q3_K+FA core требует только `1.172x` local speedup. Вывод: следующий Vulkan 64k план должен быть комплексным route stack, начиная с Q3_K large-prefill route detection/resource proof и затем FA long-KV redesign, а не новым одиночным флагом.
+
+E135 добавил default-off `GGML_VK_FFN_ROUTE_TRACE=1` и проверил dense FFN graph hook на реальном 64k `llama-server` прогоне (`max_tokens=1`, no reuse). Trace подтвердил, что активный prefill graph содержит `63 x q3_K SWIGLU` кандидатов формы `m=17408,n=1024,k=5120`, то есть Vulkan может матчить цельную ветку `MUL_MAT + MUL_MAT + GLU` для gate/up FFN. Это не speed claim: следующий gate — resource proof для dual-A/same-B Q3_K SwiGLU или переход к Q3_K repack/layout, если регистры/coopmat не проходят.
+
 Артефакты:
 - `build_logs/agent-workload/e128-vulkan64k-c152k-b2048-ub512-q4-none-noreuse-repo-summary.md`
 - `build_logs/agent-workload/e128-rocm64k-c152k-b2048-ub512-q4-none-noreuse-repo-summary.md`
@@ -74,10 +78,14 @@ E133 добавил shape-level разбор E128 perf log через `scripts/r
 - `build_logs/agent-workload/e132-vulkan64k-fa-pipeline-stats-c152k-b8192-ub1024-q4-ctx64k.server.log`
 - `build_logs/agent-workload/e132-vulkan64k-fa-shmem-staging-c152k-b8192-ub1024-q4-screen-repo-summary.md`
 - `build_logs/agent-workload/e133-vulkan64k-perf-shape-summary.md`
+- `build_logs/agent-workload/e134-vulkan64k-route-ceiling.md`
+- `build_logs/agent-workload/e134-vulkan64k-ffn-route-trace-repo-summary.md`
 - `docs/research/experiments/E128_vulkan64k_context_rebaseline.md`
 - `docs/research/experiments/E131_vulkan64k_fa_route_trace_and_gates.md`
 - `docs/research/experiments/E132_vulkan64k_fa_resource_and_shmem_gate.md`
 - `docs/research/experiments/E133_vulkan64k_perf_shape_summary.md`
+- `docs/research/experiments/E134_vulkan64k_complex_route_gate.md`
+- `docs/research/experiments/E135_vulkan64k_ffn_route_trace.md`
 
 ## H03 ngram+MTP chain smoke (2026-05-19)
 
