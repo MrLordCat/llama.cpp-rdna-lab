@@ -30,8 +30,9 @@ ROCM_NODE_RE = re.compile(
 ROCM_MMVQ_TIMING_RE = re.compile(
     rf"operator\(\): timing type=\d+/(?P<qtype>\S+) "
     rf"ncols_dst=(?P<ncols_dst>\d+) .*?"
-    rf"fusion=(?P<fusion>[01]) ncols_x=(?P<k>\d+) "
+    rf"small_k=(?P<small_k>[01]) fusion=(?P<fusion>[01]) ncols_x=(?P<k>\d+) "
     rf"grid=\((?P<m>\d+),(?P<n>\d+),(?P<z>\d+)\).*?"
+    rf"block=\((?P<block_x>\d+),(?P<block_y>\d+),(?P<block_z>\d+)\).*?"
     rf"total_ms=(?P<total>{NUM})"
 )
 
@@ -68,10 +69,22 @@ class Row:
 @dataclass
 class MmvqTiming:
     qtype: str
+    ncols_dst: int
+    small_k: int
     fusion: int
     m: int
     n: int
     k: int
+    block_y: int
+
+    @property
+    def semantic_m(self) -> int:
+        # MMVQ timing logs the CUDA grid x dimension, not the logical output
+        # rows. In the small-k ncols_dst=1 path rows_per_block matches block.y,
+        # so the logical row count is grid.x * block.y.
+        if self.ncols_dst == 1 and self.small_k:
+            return self.m * self.block_y
+        return self.m
 
 
 def parse_ne(text: str) -> tuple[int, ...]:
@@ -107,10 +120,13 @@ def parse_rocm(path: Path, skip_sections: int) -> list[Row]:
         if match := ROCM_MMVQ_TIMING_RE.search(line):
             pending_timing = MmvqTiming(
                 qtype=match.group("qtype"),
+                ncols_dst=int(match.group("ncols_dst")),
+                small_k=int(match.group("small_k")),
                 fusion=int(match.group("fusion")),
                 m=int(match.group("m")),
                 n=int(match.group("n")),
                 k=int(match.group("k")),
+                block_y=int(match.group("block_y")),
             )
             continue
 
@@ -129,7 +145,7 @@ def parse_rocm(path: Path, skip_sections: int) -> list[Row]:
                             backend="ROCm",
                             bucket=f"mul_mat_vec_q_fused {pending_timing.qtype}->f32",
                             qtype=pending_timing.qtype,
-                            shape=f"m={pending_timing.m} n={pending_timing.n} k={pending_timing.k}",
+                            shape=f"m={pending_timing.semantic_m} n={pending_timing.n} k={pending_timing.k}",
                             calls=1,
                             total_ms=float(match.group("total")),
                         )

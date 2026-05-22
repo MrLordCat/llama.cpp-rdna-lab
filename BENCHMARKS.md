@@ -115,9 +115,11 @@ Artifacts:
 - `docs/research/experiments/E149_rocm_decode_parity_audit.md`
 - `docs/research/experiments/E150_rocm_decode_fusion_gate.md`
 - `docs/research/experiments/E151_rocm_q3k_mmvq_warps2_decode.md`
+- `docs/research/experiments/E152_rocm_poste151_residual_trace.md`
 - `build_logs/agent-workload/e151-rocm-decode-q4-cleanpost-r3.diagnostics.md`
 - `build_logs/agent-workload/e151-rocm-decode-q4-q3warps2-r3.diagnostics.md`
 - `build_logs/agent-workload/e151-rocm-decode-q4-q3warps2-live-sanity-r1.diagnostics.md`
+- `build_logs/agent-workload/e152-rocm-vulkan-decode-route-delta-q3k.md`
 
 ## H03 ngram+MTP chain smoke (2026-05-19)
 

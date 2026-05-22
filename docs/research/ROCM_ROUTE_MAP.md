@@ -69,9 +69,12 @@ optimization target. E151 restores RDNA4 `Q3_K/ncols_dst=1` `nwarps=2` and
 moves the same short-decode gate from clean post-rebuild `29.77 tok/s` to
 `32.2467 tok/s` (`+8.32%` decode). This is a real first H39 win, but still
 leaves about a `1.27x` gap to the E116 Vulkan q4 comparator. Next H39 work
-should collect a post-E151 route/timing trace, then design a larger
-Q3_K-specific MMVQ branch if the residual fused/direct split still supports it,
-not a standalone fusion port or fusion removal.
+E152 confirms the residual Q3_K split remains fused/direct dominated after the
+first win (`64.62%` fused, `35.38%` direct of parsed Q3_K MMVQ time) and fixes
+the route-delta parser so MMVQ `grid.x` is normalized back to logical rows when
+`rows_per_block=2`. Next H39 work should design a larger Q3_K-specific MMVQ
+branch if the residual fused/direct split still supports it, not a standalone
+fusion port or fusion removal.
 
 ## Build-Time Route Map
 
@@ -355,6 +358,7 @@ Key evidence:
 | C01 two-task validation | Default small-k `28.02/28.06 TPS`, disabled `27.86 TPS`; trace `26.68` vs `26.46 TPS` | Keep default small-k |
 | E013 | Historical Q3_K MMVQ `nwarps=2` note improved paired control `9.1629 -> 9.3847 TPS`; Q3_K `nwarps=4` follow-up regressed `9.3847 -> 9.2136` | Historical prior for the current E151 policy |
 | E151 | Current-tree RDNA4 Q3_K `nwarps=2` improves clean post-rebuild r3 `28.1123 -> 30.3145 TPS`, decode `29.77 -> 32.2467 tok/s`; live server sanity output is normal | Keep RDNA4 Q3_K `nwarps=2`; collect post-E151 residual trace before larger changes |
+| E152 | Post-E151 sync trace confirms `nwarps=2`, `small_k=1`, `block=(32,2,1)` for Q3_K and residual Q3_K split fused `64.62%` / direct `35.38%` | Use as topology evidence only; sync timing is not a speed claim |
 
 Cleanup notes:
 
@@ -490,6 +494,7 @@ Clear these before speed claims unless they are the explicit candidate:
 | E008 | ROCm compute vbuffer residency | `302.87 tok/s` at bad `ctx32768,ub904` single chunk | `1038.19 tok/s` default chunk at `ub904`, `1114.58 tok/s` at `ub1024` | Keep allocator fix; use single chunk only as negative control |
 | E013 | MMVQ Q3_K decode | `9.1629 TPS` | `9.3847 TPS` | Historical prior for Q3_K `nwarps=2` |
 | E151 | ROCm decode parity / MMVQ Q3_K | `28.1123 TPS`, `29.77 tok/s` decode | `30.3145 TPS`, `32.2467 tok/s` decode | Keep RDNA4 Q3_K `nwarps=2`; real server sanity passed |
+| E152 | Post-E151 residual trace | diagnostic | Q3_K fused `64.62%`, direct `35.38%`; parser corrected for `rows_per_block=2` | Route branch remains Q3_K-led |
 | E015 | MMQ RDNA4 geometry | `9.3974 TPS` | `9.6080 TPS` | Keep `mmq_y=64,nwarps=4` |
 | E045 | Prefill ubatch recenter | `11.4240 TPS` (`ub1024`) | `11.6534 TPS` (`ub2048`) | Use `ub2048` as current prompt-heavy search baseline |
 | E046 | cublas compute16 | `11.7908 TPS` | `11.4146 TPS` | Reject compute16 default |
