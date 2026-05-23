@@ -122,9 +122,13 @@
 - Done: cheap follow-up gates (`E193`/`E194`):
   - `--no-mmap` is negative on the full-offload ROCm L1 lane (`12.7743 -> 12.6940 TPS`), so E125's CPU fallback residency lesson does not transfer here;
   - replacing RDNA4 `sudot4(true,true)` with `sdot4` fails the ROCm clang 7.1 `gfx1201` build gate because `sdot4` needs target feature `dot1-insts`; the temporary patch was reverted and the ROCm build was restored.
+- Done: H39 static-fusion gate (`E195`):
+  - static Q3_K SWIGLU/no-bias specialization lowered one fused bucket's resource profile (`ncols_x=5120` regs `84 -> 46`, occupancy `87.5% -> 100%`) but did not lower fused Q3_K timing (`580.240 -> 580.369 ms`);
+  - clean r1 regressed (`31.9110 -> 30.6142 TPS`, decode `32.45 -> 31.11 tok/s`), so the patch was reverted and build restored.
 - Next guided step:
   - do not repeat pair/preload-style shared-`q8_1` helpers without a fresh measured load-pressure signal;
   - do not repeat `--no-mmap` or primitive `sdot4` source swaps unless a new lower-level residency/toolchain feature gate changes the premise;
+  - do not pursue static branch-removal/no-bias fusion micro-specializations without instruction-level proof; lower VGPR alone is not enough on this route;
   - for practical real-context wall, choose a larger H35 route: non-persistent fused/direct Q3_K x F16 or graph scheduling that avoids repeated source staging without broad fp16 residency;
   - for pure H39 decode parity, run a separate decode-heavy trace before returning to MMVQ; do not use the E191 prompt-heavy trace as decode-only evidence;
   - keep the strict sequence `baseline r3 -> resource/timing trace -> candidate r3 -> post-check`.
