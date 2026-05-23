@@ -119,8 +119,12 @@
   - real-context trace with prompt tokens `7489` shows parsed `MUL_MAT forward` is dominated by `cublas_backend|q3_K` (`3891.530 ms`, `78.70%`), while MMVQ is only `148.009 ms` on the short diagnostic run;
   - current Q3_K cuBLAS split is `5213.358 ms`: `src0_convert_ms=1637.070`, `src1_ms=364.309`, `gemm_ms=3203.883`;
   - repeated staging remains real (`1396` Q3_K route rows, `698` unique keys, all repeated, max `4` calls per key), but E104/E105 already reject persistent fp16 cache and existing-MMQ forcing.
+- Done: cheap follow-up gates (`E193`/`E194`):
+  - `--no-mmap` is negative on the full-offload ROCm L1 lane (`12.7743 -> 12.6940 TPS`), so E125's CPU fallback residency lesson does not transfer here;
+  - replacing RDNA4 `sudot4(true,true)` with `sdot4` fails the ROCm clang 7.1 `gfx1201` build gate because `sdot4` needs target feature `dot1-insts`; the temporary patch was reverted and the ROCm build was restored.
 - Next guided step:
   - do not repeat pair/preload-style shared-`q8_1` helpers without a fresh measured load-pressure signal;
+  - do not repeat `--no-mmap` or primitive `sdot4` source swaps unless a new lower-level residency/toolchain feature gate changes the premise;
   - for practical real-context wall, choose a larger H35 route: non-persistent fused/direct Q3_K x F16 or graph scheduling that avoids repeated source staging without broad fp16 residency;
   - for pure H39 decode parity, run a separate decode-heavy trace before returning to MMVQ; do not use the E191 prompt-heavy trace as decode-only evidence;
   - keep the strict sequence `baseline r3 -> resource/timing trace -> candidate r3 -> post-check`.
