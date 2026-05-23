@@ -111,8 +111,12 @@
 - Done: first guided route-body design gate (`E189`):
   - local decode-only improvements below `+2%` are too small for this L1 wall mix;
   - the only currently plausible Q3_K follow-up is a streaming fused pair-dot candidate, and only if resource gate avoids the E165 register/occupancy cliff.
+- Done: code-backed pair-dot probe (`E190`):
+  - resource gate was locally positive (`615.144 -> 552.412 ms` on the dominant fused Q3_K bucket, regs `84 -> 95`, occupancy `87.5% -> 100%`);
+  - paired real-context r3 rejected it (`12.9580 -> 12.8560 TPS`, decode `31.4433 -> 31.3267 tok/s`);
+  - conclusion: y-reuse inside the existing fused MMVQ loop is not the current limiting cost; local bucket wins can be eaten by graph/runtime and prompt/decode shifts.
 - Next guided step:
-  - decide whether to code E189's env-gated pair-dot helper or pause for another manual route choice;
-  - start first code-backed stack-test on L1 with strict sequence `baseline r3 -> resource/timing trace -> candidate r3 -> post-check`;
-  - reject any candidate that worsens dominant bucket by resource gate before full r3 cycle;
-  - if a local bucket improves but wall TPS does not, record the new top bucket before writing another patch.
+  - do not repeat pair/preload-style shared-`q8_1` helpers without a fresh measured load-pressure signal;
+  - choose a larger Q3_K route change: launch topology, graph/fusion policy, or a new specialized fused route for the next measured top bucket;
+  - before another patch, capture the post-E190 top bucket and verify whether the bottleneck moved to prompt/prefill, graph scheduling, direct Q3_K, or non-MMVQ ops;
+  - keep the strict sequence `baseline r3 -> resource/timing trace -> candidate r3 -> post-check`.
