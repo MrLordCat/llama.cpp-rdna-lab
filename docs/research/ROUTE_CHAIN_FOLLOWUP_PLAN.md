@@ -115,8 +115,12 @@
   - resource gate was locally positive (`615.144 -> 552.412 ms` on the dominant fused Q3_K bucket, regs `84 -> 95`, occupancy `87.5% -> 100%`);
   - paired real-context r3 rejected it (`12.9580 -> 12.8560 TPS`, decode `31.4433 -> 31.3267 tok/s`);
   - conclusion: y-reuse inside the existing fused MMVQ loop is not the current limiting cost; local bucket wins can be eaten by graph/runtime and prompt/decode shifts.
+- Done: bottleneck recapture (`E191`/`E192`):
+  - real-context trace with prompt tokens `7489` shows parsed `MUL_MAT forward` is dominated by `cublas_backend|q3_K` (`3891.530 ms`, `78.70%`), while MMVQ is only `148.009 ms` on the short diagnostic run;
+  - current Q3_K cuBLAS split is `5213.358 ms`: `src0_convert_ms=1637.070`, `src1_ms=364.309`, `gemm_ms=3203.883`;
+  - repeated staging remains real (`1396` Q3_K route rows, `698` unique keys, all repeated, max `4` calls per key), but E104/E105 already reject persistent fp16 cache and existing-MMQ forcing.
 - Next guided step:
   - do not repeat pair/preload-style shared-`q8_1` helpers without a fresh measured load-pressure signal;
-  - choose a larger Q3_K route change: launch topology, graph/fusion policy, or a new specialized fused route for the next measured top bucket;
-  - before another patch, capture the post-E190 top bucket and verify whether the bottleneck moved to prompt/prefill, graph scheduling, direct Q3_K, or non-MMVQ ops;
+  - for practical real-context wall, choose a larger H35 route: non-persistent fused/direct Q3_K x F16 or graph scheduling that avoids repeated source staging without broad fp16 residency;
+  - for pure H39 decode parity, run a separate decode-heavy trace before returning to MMVQ; do not use the E191 prompt-heavy trace as decode-only evidence;
   - keep the strict sequence `baseline r3 -> resource/timing trace -> candidate r3 -> post-check`.
