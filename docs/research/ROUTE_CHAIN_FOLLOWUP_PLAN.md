@@ -125,10 +125,16 @@
 - Done: H39 static-fusion gate (`E195`):
   - static Q3_K SWIGLU/no-bias specialization lowered one fused bucket's resource profile (`ncols_x=5120` regs `84 -> 46`, occupancy `87.5% -> 100%`) but did not lower fused Q3_K timing (`580.240 -> 580.369 ms`);
   - clean r1 regressed (`31.9110 -> 30.6142 TPS`, decode `32.45 -> 31.11 tok/s`), so the patch was reverted and build restored.
+- Done: decode-heavy recapture (`E196`):
+  - current clean ROCm r3 is `31.9233 TPS` / `32.3833 tok/s` decode;
+  - current clean Vulkan r3 is `40.8007 TPS` / `41.795 tok/s` decode, so ROCm still needs about `1.278x` decode speedup for parity;
+  - fresh ROCm Q3_K route split remains `mul_mat_vec_q_fused 56.95%`, `mul_mat_vec_q_direct 31.33%`, `mul_mat_q_direct 11.72%`;
+  - fresh Vulkan perf-log remains `MUL_MAT_VEC q3_K 72.32%` and `MUL_MAT_ADD_VEC q3_K 27.68%`;
+  - top aligned shapes are still `m=17408,n=1,k=5120`, `m=5120,n=1,k=17408`, `m=10240,n=1,k=5120`, `m=6144,n=1,k=5120`.
 - Next guided step:
   - do not repeat pair/preload-style shared-`q8_1` helpers without a fresh measured load-pressure signal;
   - do not repeat `--no-mmap` or primitive `sdot4` source swaps unless a new lower-level residency/toolchain feature gate changes the premise;
   - do not pursue static branch-removal/no-bias fusion micro-specializations without instruction-level proof; lower VGPR alone is not enough on this route;
   - for practical real-context wall, choose a larger H35 route: non-persistent fused/direct Q3_K x F16 or graph scheduling that avoids repeated source staging without broad fp16 residency;
-  - for pure H39 decode parity, run a separate decode-heavy trace before returning to MMVQ; do not use the E191 prompt-heavy trace as decode-only evidence;
+  - for pure H39 decode parity, E196 reopens Q3_K route-body work only if it changes topology toward the Vulkan q8_1 matvec family without the known rejected failure modes: lower grid width, VDR2 register cliff, pair-dot live-state growth, or static fusion branch removal;
   - keep the strict sequence `baseline r3 -> resource/timing trace -> candidate r3 -> post-check`.

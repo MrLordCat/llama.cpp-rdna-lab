@@ -78,6 +78,15 @@
   `32.2467 tok/s` decode (`+8.32%` decode). Живой `llama-server` sanity
   прошёл нормально: ответ начинался с обычного `Thinking Process:`, без
   повторяющихся символов или `wm32-wn32`-style corruption.
+- E196 обновил decode-heavy baseline после серии отрицательных Q3_K probes:
+  current clean ROCm r3 `31.9233 TPS` / `32.3833 tok/s`, current clean Vulkan
+  r3 `40.8007 TPS` / `41.795 tok/s`. Разрыв остаётся `+27.81%` aggregate в
+  пользу Vulkan, то есть ROCm нужен примерно `1.278x` decode speedup. Свежий
+  route delta снова указывает на Q3_K route body: ROCm Q3_K split
+  `mul_mat_vec_q_fused 56.95%`, `mul_mat_vec_q_direct 31.33%`,
+  `mul_mat_q_direct 11.72%`; Vulkan split `MUL_MAT_VEC q3_K 72.32%`,
+  `MUL_MAT_ADD_VEC q3_K 27.68%`. Следующий ROCm-кандидат должен менять
+  Q3_K topology, а не generic fusion/graph/static-branch/occupancy-only policy.
 - Sequential graph-disable diagnostic не показал пользы от launch/graph
   гипотезы на short-decode gate: clean `27.1129 TPS` / `29.15 tok/s decode`
   против `GGML_CUDA_DISABLE_GRAPHS=1` `27.2063 TPS` / `29.28 tok/s`.
