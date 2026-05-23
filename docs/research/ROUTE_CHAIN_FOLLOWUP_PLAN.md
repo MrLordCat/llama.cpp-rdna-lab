@@ -108,8 +108,11 @@
 - Done: route evidence + fusion control (`E188`):
   - synctrace confirms active Q3_K direct/fused route (`ncols_dst=1`, `small_k=1`, `nwarps=2`),
   - paired `r3` for `GGML_CUDA_DISABLE_FUSION=1` is negative (`-1.89%`), so fusion-disable remains control-only.
+- Done: first guided route-body design gate (`E189`):
+  - local decode-only improvements below `+2%` are too small for this L1 wall mix;
+  - the only currently plausible Q3_K follow-up is a streaming fused pair-dot candidate, and only if resource gate avoids the E165 register/occupancy cliff.
 - Next guided step:
-  - выбрать один route-body candidate после ручного просмотра Phase 3, а не запускать широкий автономный sweep;
+  - decide whether to code E189's env-gated pair-dot helper or pause for another manual route choice;
   - start first code-backed stack-test on L1 with strict sequence `baseline r3 -> resource/timing trace -> candidate r3 -> post-check`;
   - reject any candidate that worsens dominant bucket by resource gate before full r3 cycle;
   - if a local bucket improves but wall TPS does not, record the new top bucket before writing another patch.
