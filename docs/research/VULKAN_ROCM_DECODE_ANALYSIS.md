@@ -107,6 +107,16 @@
   главным Vulkan преимуществом: buffers малы (`~11.5-39.2 KB`), HIP graph
   capture уже убирает host-launch стоимость, а Q3_K dot/dequant body остаётся
   основным лимитером. Этот код был reverted.
+- E199 проверил следующий Vulkan-like layout механизм до runtime-кода. У
+  Vulkan `ggml_vk_device_type_size()` фактически хранит Q3_K/Q6_K device blocks
+  с `+2` bytes padding (`110 -> 112` для Q3_K), поэтому packed32 route не
+  является только shader helper. ROCm CUDA/HIP сейчас копирует raw GGUF bytes,
+  а все `block_q3_K *` kernels предполагают `110`-byte stride. Замена всей
+  Q3_K storage на padded layout стоила бы только `+179.47 MiB` (`1.818%`) для
+  этой модели, но transient repack, duplicate padded copy и локальная
+  `vecdotq.cuh` 32-bit load rewrite отвергнуты аналитически. Если переносить
+  это преимущество в ROCm, нужен отдельный backend-private storage branch с
+  padded set/get/view offsets и full Q3_K kernel correctness audit.
 - Sequential graph-disable diagnostic не показал пользы от launch/graph
   гипотезы на short-decode gate: clean `27.1129 TPS` / `29.15 tok/s decode`
   против `GGML_CUDA_DISABLE_GRAPHS=1` `27.2063 TPS` / `29.28 tok/s`.

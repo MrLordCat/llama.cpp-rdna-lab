@@ -140,11 +140,17 @@
   - env-gated per-graph q8 activation cache built and activated; short trace showed real reuse (`303` hits / `777` misses, `28.1%` hit rate), mainly `attn_norm-*` and `attn_post_norm-*`;
   - same-binary clean A/B was non-positive: baseline r1 `31.9368 TPS`, candidate r1 `31.8573 TPS`, decode `32.50 -> 32.405 tok/s`;
   - conclusion: q8 activation reuse exists, but the buffers are small (`~11.5-39.2 KB`) and HIP graph capture already removes most launch-overhead value. Standalone q8 activation caching does not reduce the real Q3_K dot/dequant body, so the patch was reverted.
+- Done: Q3_K padded-layout gate (`E199`):
+  - Vulkan's packed32 Q3_K advantage is tied to a backend storage contract: `Q3_K/Q6_K` device blocks are padded from `110` to `112` bytes, while ROCm CUDA/HIP currently copies raw GGUF `block_q3_K` bytes and all Q3_K kernels assume `110`-byte pointer arithmetic;
+  - analytic model shows replacing all Q3_K storage would add only `179.47 MiB` (`1.818%`), but duplicating a padded copy beside current ROCm weights would add a full multi-GiB Q3_K model copy and is rejected for the 16 GiB lane;
+  - conclusion: transient repack, duplicate padded copy, and `vecdotq.cuh`-only 32-bit load rewrites are not valid transfers. The only plausible Vulkan-like layout route is a broad backend-private ROCm Q3_K storage branch with buffer set/get/view-offset work and full Q3_K kernel correctness audit.
 - Next guided step:
   - do not repeat pair/preload-style shared-`q8_1` helpers or graph-local q8 activation caches without a fresh synchronized trace proving q8 quantization is a large node-time share;
   - do not repeat `--no-mmap` or primitive `sdot4` source swaps unless a new lower-level residency/toolchain feature gate changes the premise;
   - do not pursue static branch-removal/no-bias fusion micro-specializations without instruction-level proof; lower VGPR alone is not enough on this route;
   - do not pursue wave64/row-warp MMVQ topology as a standalone branch; it preserved row batching but still lost, so the missing Vulkan advantage is not simply "avoid shared cross-warp reduction";
+  - do not pursue local padded-layout or packed32 load patches while ROCm storage still uses `110`-byte Q3_K blocks; a real padded-layout branch must start from backend storage/correctness, not `vecdotq.cuh`;
   - for practical real-context wall, choose a larger H35 route: non-persistent fused/direct Q3_K x F16 or graph scheduling that avoids repeated source staging without broad fp16 residency;
-  - for pure H39 decode parity, E196/E197 leave Q3_K route-body work open only if it changes real work/layout toward the Vulkan q8_1 matvec family without the known rejected failure modes: lower grid width, VDR2 register cliff, pair-dot live-state growth, static fusion branch removal, or wave64/row-warp reduction-only topology;
+  - for pure H39 decode parity, E196/E197/E199 leave Q3_K route-body work open only if it changes real work/layout toward the Vulkan q8_1 matvec family without the known rejected failure modes: lower grid width, VDR2 register cliff, pair-dot live-state growth, static fusion branch removal, wave64/row-warp reduction-only topology, or storage-blind packed-load rewrites;
+  - choose next between a full ROCm padded-storage E2xx design with a correctness smoke first, or a different structural Q3_K route that reduces dot/dequant work without changing the global tensor storage contract;
   - keep the strict sequence `baseline r3 -> resource/timing trace -> candidate r3 -> post-check`.
