@@ -140,6 +140,14 @@
   - env-gated per-graph q8 activation cache built and activated; short trace showed real reuse (`303` hits / `777` misses, `28.1%` hit rate), mainly `attn_norm-*` and `attn_post_norm-*`;
   - same-binary clean A/B was non-positive: baseline r1 `31.9368 TPS`, candidate r1 `31.8573 TPS`, decode `32.50 -> 32.405 tok/s`;
   - conclusion: q8 activation reuse exists, but the buffers are small (`~11.5-39.2 KB`) and HIP graph capture already removes most launch-overhead value. Standalone q8 activation caching does not reduce the real Q3_K dot/dequant body, so the patch was reverted.
+- Done: E202 point-level review protocol lock (2026-05-24):
+  - added paired point-ms A/B with `GGML_TRACE_MMVQ_TIMING_SYNC=1` for `ncols_x=5120/6144/17408` on the same lane;
+  - robust comparison excludes startup outliers (`total_ms < 10`);
+  - accepted workflow rule: wall deltas without point-ms evidence are not enough to claim route-local kernel improvement.
+- Done: E190 host-gated pairdot-off follow-up (2026-05-24):
+  - added a clean host-side `GGML_MMVQ_Q3K_DISABLE_PAIRDOT` dispatch gate to compare the same fused Q3_K route with pair-dot on/off;
+  - pairdot-off reduced fused-route VGPR (`95 -> 84`) but did not produce a clear point-ms or wall gain (`7.6684 -> 7.6747 TPS`, effectively tie);
+  - conclusion: for this lane, pair-dot live-state is not the limiting mechanism, so future work should not stay inside helper-level y-reuse rewrites.
 - Done: Q3_K padded-layout gate (`E199`):
   - Vulkan's packed32 Q3_K advantage is tied to a backend storage contract: `Q3_K/Q6_K` device blocks are padded from `110` to `112` bytes, while ROCm CUDA/HIP currently copies raw GGUF `block_q3_K` bytes and all Q3_K kernels assume `110`-byte pointer arithmetic;
   - analytic model shows replacing all Q3_K storage would add only `179.47 MiB` (`1.818%`), but duplicating a padded copy beside current ROCm weights would add a full multi-GiB Q3_K model copy and is rejected for the 16 GiB lane;
@@ -154,6 +162,7 @@
   - do not pursue static branch-removal/no-bias fusion micro-specializations without instruction-level proof; lower VGPR alone is not enough on this route;
   - do not pursue wave64/row-warp MMVQ topology as a standalone branch; it preserved row batching but still lost, so the missing Vulkan advantage is not simply "avoid shared cross-warp reduction";
   - do not pursue local padded-layout or packed32 load patches while ROCm storage still uses `110`-byte Q3_K blocks; a real padded-layout branch must start from backend storage/correctness, not `vecdotq.cuh`;
+  - if a candidate lowers regs/occupancy pressure but point-ms stays flat, treat that as evidence that instruction/register pressure is not the active limiter for that slice; escalate to staging/layout/scheduling changes instead of another micro-helper rewrite;
   - for practical real-context wall, choose a larger H35 route: non-persistent fused/direct Q3_K x F16 or graph scheduling that avoids repeated source staging without broad fp16 residency;
   - for pure H39 decode parity, E196/E197/E199 leave Q3_K route-body work open only if it changes real work/layout toward the Vulkan q8_1 matvec family without the known rejected failure modes: lower grid width, VDR2 register cliff, pair-dot live-state growth, static fusion branch removal, wave64/row-warp reduction-only topology, or storage-blind packed-load rewrites;
   - if continuing padded storage, start with an env-gated P1/P2 correctness prototype and run `test-backend-ops` Q3_K `MUL_MAT` before real server;

@@ -76,9 +76,15 @@ not make unmeasured speed claims, and the upstream scout should not edit files.
 4. Run one-run A/B gates first.
 5. Use three runs only for final confirmation of borderline or promising deltas.
 6. Compare against the current best/history for the same lane shape.
-7. Revert negative runtime/shader/code probes unless they are intentionally kept
+7. For route or bucket-local kernel changes, run a point-level timing review before promotion:
+   - enable sync timing for the touched route (for MMVQ: `GGML_TRACE_MMVQ_TIMING=1` + `GGML_TRACE_MMVQ_TIMING_SYNC=1` + `GGML_TRACE_MMVQ_RESOURCES=1`)
+   - compare the same points (`ncols_x` buckets) before/after with mean `total_ms`
+   - report a robust view that excludes startup outliers (for example, `total_ms < 10`)
+   - always pair point-level deltas with wall metrics (`aggregate_completion_tps`, prompt/decode ms)
+8. If local point timing improves but wall does not improve (or regresses), classify as bottleneck shift and move to the next route hotspot instead of iterating the same micro-point.
+9. Revert negative runtime/shader/code probes unless they are intentionally kept
    behind a documented opt-in gate.
-8. Update docs in the same work unit:
+10. Update docs in the same work unit:
    - experiment note
    - `docs/research/RESULTS_LOG.md`
    - `BENCHMARKS.md` for meaningful user-facing benchmark decisions

@@ -94,6 +94,63 @@ The experiment was useful because it demonstrated a route-chain trap: a local fu
 
 Next Q3_K candidates should change a larger part of the route, for example launch topology, graph-level fusion policy, or a new specialized fused route for the actual top post-trace bucket. Do not repeat y-reuse-only pair/preload probes unless a fresh trace shows `q8_1` load pressure is the measured bottleneck.
 
+## Follow-up: pair-dot disable A/B via host-side gate
+
+Date: 2026-05-24
+
+Goal:
+
+- separate two hypotheses that were still entangled after the original rejection:
+   - pair-dot is conceptually useful but the current always-on wiring is wrong;
+   - pair-dot reuse is simply not the bottleneck, so both on/off stay near-tied.
+
+Implementation:
+
+- kept the default path unchanged;
+- added host-side dispatch gate `GGML_MMVQ_Q3K_DISABLE_PAIRDOT` in `ggml/src/ggml-cuda/mmvq.cu` so the same fused Q3_K kernel family can be launched with pair-dot on or off without illegal device-side env access.
+
+Lane and measurement contract:
+
+- same L1 lane: `ctx=12288`, `batch=6144`, `ubatch=2048`, q4/q4 KV, `spec=none`, no reuse, thinking on;
+- paired trace run with `GGML_TRACE_MMVQ_RESOURCES=1`, `GGML_TRACE_MMVQ_TIMING=1`, `GGML_TRACE_MMVQ_TIMING_SYNC=1`.
+
+Artifacts:
+
+- pair-dot on:
+   - `build_logs/agent-workload/e190-rocm12k-pairdot-on-trace-r1.server.log`
+   - `build_logs/agent-workload/e190-rocm12k-pairdot-on-trace-r1.diagnostics.md`
+- pair-dot off:
+   - `build_logs/agent-workload/e190-rocm12k-pairdot-off-trace-r1.server.log`
+   - `build_logs/agent-workload/e190-rocm12k-pairdot-off-trace-r1.diagnostics.md`
+
+Measured result:
+
+| Variant | Aggregate TPS | Decode TPS Mean | Prompt Eval Mean | Decode Eval Mean |
+| --- | ---: | ---: | ---: | ---: |
+| pair-dot on | `7.6684` | `30.44` | `6209.77 ms` | `2102.67 ms` |
+| pair-dot off | `7.6747` | `30.62` | `6214.68 ms` | `2090.30 ms` |
+
+Point/resource signal on the fused Q3_K route:
+
+- pair-dot on: hot fused buckets use `95 regs`, `100%` occupancy;
+- pair-dot off: the same fused buckets drop to `84 regs`, `87.5%` occupancy;
+- despite the lower register footprint, representative fused points stay near-tied rather than clearly faster.
+
+Interpretation update:
+
+- lowering VGPR pressure from `95 -> 84` without a point-ms win is strong evidence that pair-dot live-state is not the controlling cost on this route;
+- the missing gain is not hiding behind one more helper rewrite or branch cleanup inside the same MMVQ body;
+- the next branch should be route-level and remove a larger class of work:
+   - ephemeral same-step staging reuse across sibling Q3_K matmuls,
+   - a shape-specialized non-persistent `Q3_K x F16` direct kernel for the hot Qwen buckets,
+   - or a storage/layout contract change that lets ROCm use a more vector-friendly Q3_K path.
+
+Updated decision:
+
+- keep the host-side disable gate only as an experimental knob;
+- do not treat pair-dot on/off selection as an optimization target by itself;
+- move the research center to staging/layout/route-body redesign.
+
 ## Notes
 
 - This probe intentionally does not touch launch geometry, rows-per-block, nwarps, q8 layout, or fusion policy.

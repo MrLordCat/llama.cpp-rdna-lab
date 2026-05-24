@@ -1727,6 +1727,14 @@ struct cublas_q3k_route_trace_config {
     int64_t min_ncols = 1024;
 };
 
+struct q3k_hot_direct_route_config {
+    bool enabled = false;
+    int64_t min_ncols = 1024;
+    int64_t match_row_diff = 0;
+    int64_t match_ne00 = 0;
+    int64_t match_ncols = 0;
+};
+
 static const cublas_q3k_route_trace_config & ggml_cuda_cublas_get_q3k_route_trace_config() {
     static const cublas_q3k_route_trace_config config = [] {
         cublas_q3k_route_trace_config result;
@@ -1749,11 +1757,53 @@ static const cublas_q3k_route_trace_config & ggml_cuda_cublas_get_q3k_route_trac
     return config;
 }
 
+static const q3k_hot_direct_route_config & ggml_cuda_get_q3k_hot_direct_route_config() {
+    static const q3k_hot_direct_route_config config = [] {
+        q3k_hot_direct_route_config result;
+
+        result.enabled = getenv("GGML_EXPERIMENTAL_Q3K_HOT_DIRECT_ROUTE") != nullptr;
+
+        if (const char * env = getenv("GGML_EXPERIMENTAL_Q3K_HOT_DIRECT_ROUTE_MIN_NCOLS")) {
+            result.min_ncols = std::max<int64_t>(0, std::atoll(env));
+        }
+
+        if (const char * env = getenv("GGML_EXPERIMENTAL_Q3K_HOT_DIRECT_ROUTE_MATCH_ROW_DIFF")) {
+            result.match_row_diff = std::max<int64_t>(0, std::atoll(env));
+        }
+
+        if (const char * env = getenv("GGML_EXPERIMENTAL_Q3K_HOT_DIRECT_ROUTE_MATCH_NE00")) {
+            result.match_ne00 = std::max<int64_t>(0, std::atoll(env));
+        }
+
+        if (const char * env = getenv("GGML_EXPERIMENTAL_Q3K_HOT_DIRECT_ROUTE_MATCH_NCOLS")) {
+            result.match_ncols = std::max<int64_t>(0, std::atoll(env));
+        }
+
+        if (result.enabled) {
+            GGML_LOG_INFO(
+                "Detected GGML_EXPERIMENTAL_Q3K_HOT_DIRECT_ROUTE min_ncols=%lld match_row_diff=%lld match_ne00=%lld match_ncols=%lld\n",
+                (long long) result.min_ncols,
+                (long long) result.match_row_diff,
+                (long long) result.match_ne00,
+                (long long) result.match_ncols);
+        }
+
+        return result;
+    }();
+
+    return config;
+}
+
 struct cublas_q3k_route_trace_stats {
     int64_t calls = 0;
     int64_t total_ncols = 0;
     int64_t total_convert_elems = 0;
     double total_convert_ms = 0.0;
+    int64_t last_event_idx = -1;
+    int64_t repeated_calls = 0;
+    int64_t min_gap = std::numeric_limits<int64_t>::max();
+    int64_t max_gap = 0;
+    int64_t total_gap = 0;
 };
 
 static std::string ggml_cuda_cublas_q3k_staging_key(
@@ -1783,26 +1833,83 @@ static void ggml_cuda_cublas_trace_q3k_route(
     const std::string key = ggml_cuda_cublas_q3k_staging_key(src0, dev, row_low, row_high, ne00);
 
     static std::mutex mutex;
+    static int64_t global_event_idx = 0;
     static std::map<std::string, cublas_q3k_route_trace_stats> stats_by_key;
 
     std::lock_guard<std::mutex> lock(mutex);
+    const int64_t event_idx = global_event_idx++;
     cublas_q3k_route_trace_stats & stats = stats_by_key[key];
+    int64_t gap_since_prev = -1;
+    if (stats.last_event_idx >= 0) {
+        gap_since_prev = event_idx - stats.last_event_idx;
+        stats.repeated_calls += 1;
+        stats.total_gap += gap_since_prev;
+        stats.min_gap = std::min(stats.min_gap, gap_since_prev);
+        stats.max_gap = std::max(stats.max_gap, gap_since_prev);
+    }
+    stats.last_event_idx = event_idx;
     stats.calls += 1;
     stats.total_ncols += src1_ncols;
     stats.total_convert_elems += convert_elems;
     stats.total_convert_ms += src0_convert_ms;
 
     const double avg_convert_ms = stats.calls > 0 ? stats.total_convert_ms / (double) stats.calls : 0.0;
+    const double avg_gap = stats.repeated_calls > 0 ? (double) stats.total_gap / (double) stats.repeated_calls : 0.0;
+    const int64_t min_gap = stats.repeated_calls > 0 ? stats.min_gap : -1;
 
     GGML_LOG_INFO(
-        "GGML_TRACE_CUBLAS_Q3K_ROUTE: dst=%s src0=%s src1=%s src0_tensor=%p src0_data=%p src0_dev_ptr=%p dev=%d cc=%d row_low=%lld row_high=%lld row_diff=%lld ne00=%lld ne10=%lld ncols=%lld convert_elems=%lld calls_for_key=%lld repeated_for_key=%lld total_ncols_for_key=%lld total_convert_elems_for_key=%lld src0_ms=%.3f src0_convert_ms=%.3f avg_convert_ms_for_key=%.3f\n",
+        "GGML_TRACE_CUBLAS_Q3K_ROUTE: event_idx=%lld gap_since_prev=%lld dst=%s src0=%s src1=%s src0_tensor=%p src0_data=%p src0_dev_ptr=%p dev=%d cc=%d row_low=%lld row_high=%lld row_diff=%lld ne00=%lld ne10=%lld ncols=%lld convert_elems=%lld calls_for_key=%lld repeated_for_key=%lld min_gap_for_key=%lld avg_gap_for_key=%.2f max_gap_for_key=%lld total_ncols_for_key=%lld total_convert_elems_for_key=%lld src0_ms=%.3f src0_convert_ms=%.3f avg_convert_ms_for_key=%.3f\n",
+        (long long) event_idx, (long long) gap_since_prev,
         dst->name, src0->name, src1->name,
         (const void *) src0, src0->data, (const void *) src0_dd_i, dev, cc,
         (long long) row_low, (long long) row_high, (long long) row_diff,
         (long long) ne00, (long long) ne10, (long long) src1_ncols,
-        (long long) convert_elems, (long long) stats.calls, (long long) (stats.calls - 1),
+        (long long) convert_elems, (long long) stats.calls, (long long) stats.repeated_calls,
+        (long long) min_gap, avg_gap, (long long) stats.max_gap,
         (long long) stats.total_ncols, (long long) stats.total_convert_elems,
         src0_ms, src0_convert_ms, avg_convert_ms);
+}
+
+static bool ggml_cuda_q3k_hot_direct_shape_match(
+        const ggml_tensor * src0,
+        const int64_t row_diff,
+        const int64_t ne00,
+        const int64_t src1_ncols,
+        const q3k_hot_direct_route_config & config) {
+    if (!config.enabled || src0->type != GGML_TYPE_Q3_K || src1_ncols < config.min_ncols) {
+        return false;
+    }
+
+    const bool hot_row = row_diff == 17408 || row_diff == 10240 || row_diff == 6144 || row_diff == 5120;
+    const bool hot_width = ne00 == 5120 || ne00 == 17408;
+    const bool row_filter_ok = config.match_row_diff == 0 || row_diff == config.match_row_diff;
+    const bool ne00_filter_ok = config.match_ne00 == 0 || ne00 == config.match_ne00;
+    const bool ncols_filter_ok = config.match_ncols == 0 || src1_ncols == config.match_ncols;
+    return hot_row && hot_width && row_filter_ok && ne00_filter_ok && ncols_filter_ok;
+}
+
+static void ggml_cuda_trace_q3k_hot_direct_route_match(
+        const q3k_hot_direct_route_config & config,
+        const ggml_tensor * src0,
+        const ggml_tensor * src1,
+        const ggml_tensor * dst,
+        const int dev,
+        const int cc,
+        const int64_t row_low,
+        const int64_t row_high,
+        const int64_t ne00,
+        const int64_t ne10,
+        const int64_t src1_ncols) {
+    const int64_t row_diff = row_high - row_low;
+    if (!ggml_cuda_q3k_hot_direct_shape_match(src0, row_diff, ne00, src1_ncols, config)) {
+        return;
+    }
+
+    GGML_LOG_INFO(
+        "GGML_TRACE_Q3K_HOT_DIRECT_ROUTE_MATCH: dst=%s src0=%s src1=%s dev=%d cc=%d row_low=%lld row_high=%lld row_diff=%lld ne00=%lld ne10=%lld ncols=%lld\n",
+        dst->name, src0->name, src1->name, dev, cc,
+        (long long) row_low, (long long) row_high, (long long) row_diff,
+        (long long) ne00, (long long) ne10, (long long) src1_ncols);
 }
 
 static double ggml_cuda_cublas_split_timing_sync_elapsed(
@@ -1858,6 +1965,7 @@ static void ggml_cuda_op_mul_mat_cublas(
     const int cc = ggml_cuda_info().devices[id].cc;
     const auto & split_timing_config = ggml_cuda_cublas_get_split_timing_config();
     const auto & q3k_route_trace_config = ggml_cuda_cublas_get_q3k_route_trace_config();
+    const auto & q3k_hot_direct_route_config = ggml_cuda_get_q3k_hot_direct_route_config();
     const bool trace_split_timing = split_timing_config.enabled && src1_ncols >= split_timing_config.min_ncols;
     int trace_capture_active = 0;
     auto trace_stage_start = trace_split_timing ?
@@ -1953,6 +2061,9 @@ static void ggml_cuda_op_mul_mat_cublas(
         ggml_cuda_cublas_trace_q3k_route(
             q3k_route_trace_config, src0, src1, dst, src0_dd_i, id, cc,
             row_low, row_high, ne00, ne10, src1_ncols, src0_ms, src0_convert_ms);
+        ggml_cuda_trace_q3k_hot_direct_route_match(
+            q3k_hot_direct_route_config, src0, src1, dst, id, cc,
+            row_low, row_high, ne00, ne10, src1_ncols);
 
         ggml_cuda_pool_alloc<half> src1_as_f16(ctx.pool(id));
         double src1_alloc_ms = 0.0;
@@ -2897,6 +3008,14 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         any_gpus_with_slow_fp16 = any_gpus_with_slow_fp16   || !fast_fp16_hardware_available(cc);
     }
 
+    const auto & q3k_hot_direct_route_config = ggml_cuda_get_q3k_hot_direct_route_config();
+    const bool force_hot_q3k_direct_route = !split &&
+        ggml_cuda_q3k_hot_direct_shape_match(src0, src0->ne[1], src0->ne[0], src1->ne[1], q3k_hot_direct_route_config);
+
+    if (force_hot_q3k_direct_route) {
+        use_mul_mat_q = true;
+    }
+
     // debug helpers
     //printf("src0: %8d %8d %8d %8d\n", src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3]);
     //printf("      %8d %8d %8d %8d\n", src0->nb[0], src0->nb[1], src0->nb[2], src0->nb[3]);
@@ -2958,7 +3077,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         log_mul_mat_route("mul_mat_vec_q_direct");
         ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
     } else if (!split && use_mul_mat_q) {
-        log_mul_mat_route("mul_mat_q_direct");
+        log_mul_mat_route(force_hot_q3k_direct_route ? "mul_mat_q_direct_hotshape" : "mul_mat_q_direct");
         ggml_cuda_mul_mat_q(ctx, src0, src1, nullptr, dst);
     } else if (!split && (use_batched_cublas_f16 || use_batched_cublas_bf16 || use_batched_cublas_f32)
         && !ggml_is_transposed(src0) && !ggml_is_transposed(src1) && src1->ne[2]*src1->ne[3] > 1) {

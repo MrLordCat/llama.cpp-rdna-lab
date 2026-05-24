@@ -440,7 +440,12 @@ static bool ggml_cuda_trace_mmvq_resources_enabled() {
     return enabled;
 }
 
-template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false>
+static bool ggml_cuda_mmvq_q3k_disable_pairdot_enabled() {
+    static const bool enabled = std::getenv("GGML_MMVQ_Q3K_DISABLE_PAIRDOT") != nullptr;
+    return enabled;
+}
+
+template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false, bool use_gate_fast = false, bool use_pairdot = true>
 __launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id())*ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void mul_mat_vec_q(
         const void * __restrict__ vx, const void * __restrict__ vy, const int32_t * __restrict__ ids, const ggml_cuda_mm_fusion_args_device fusion, float * __restrict__ dst,
@@ -487,7 +492,11 @@ static __global__ void mul_mat_vec_q(
     ggml_glu_op active_glu;
 
     if constexpr (has_fusion) {
-        use_gate      = fusion.gate      != nullptr;
+        if constexpr (use_gate_fast) {
+            use_gate = true;
+        } else {
+            use_gate = fusion.gate != nullptr;
+        }
         use_bias      = fusion.x_bias    != nullptr;
         use_gate_bias = fusion.gate_bias != nullptr && use_gate;
         vgate         = fusion.gate;
@@ -528,7 +537,6 @@ static __global__ void mul_mat_vec_q(
     // partial sum for each thread
     float tmp[ncols_dst][rows_per_cuda_block] = {{0.0f}};
     float tmp_gate[ncols_dst][rows_per_cuda_block] = {{0.0f}};
-
     const block_q8_1 * y = ((const block_q8_1 *) vy) + sample_y*stride_sample_y + channel_y*stride_channel_y;
     const int kbx_offset = sample_x*stride_sample_x + channel_x*stride_channel_x + row0*stride_row_x;
 
@@ -542,6 +550,40 @@ static __global__ void mul_mat_vec_q(
         for (int j = 0; j < ncols_dst; ++j) {
 #pragma unroll
             for (int i = 0; i < rows_per_cuda_block; ++i) {
+                if constexpr (type == GGML_TYPE_Q3_K && has_fusion && ncols_dst == 1 && use_gate_fast && use_pairdot) {
+                    float dot_x = 0.0f;
+                    float dot_g = 0.0f;
+                    vec_dot_q3_K_q8_1_pair_streaming(
+                        vx,
+                        vgate,
+                        &y[j*stride_col_y + kby],
+                        kbx_offset + i*stride_row_x + kbx,
+                        kqs,
+                        dot_x,
+                        dot_g);
+                    tmp[j][i] += dot_x;
+                    tmp_gate[j][i] += dot_g;
+                    continue;
+                }
+
+                if constexpr (type == GGML_TYPE_Q3_K && has_fusion && ncols_dst == 1 && !use_gate_fast && use_pairdot) {
+                    if (use_gate) {
+                        float dot_x = 0.0f;
+                        float dot_g = 0.0f;
+                        vec_dot_q3_K_q8_1_pair_streaming(
+                            vx,
+                            vgate,
+                            &y[j*stride_col_y + kby],
+                            kbx_offset + i*stride_row_x + kbx,
+                            kqs,
+                            dot_x,
+                            dot_g);
+                        tmp[j][i] += dot_x;
+                        tmp_gate[j][i] += dot_g;
+                        continue;
+                    }
+                }
+
                 tmp[j][i] += vec_dot_q_cuda(
                     vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
                 if constexpr (has_fusion) {
@@ -654,7 +696,7 @@ struct mmvq_kernel_resource_trace {
     float waves_per_sm = -1.0f;
 };
 
-template <ggml_type type, int c_ncols_dst, bool has_fusion, bool small_k>
+template <ggml_type type, int c_ncols_dst, bool has_fusion, bool small_k, bool use_gate_fast = false, bool use_pairdot = true>
 static mmvq_kernel_resource_trace mmvq_collect_kernel_resource_trace(
         const dim3 & block_dims, const int nbytes_shared, const int warp_size) {
     mmvq_kernel_resource_trace trace;
@@ -664,7 +706,7 @@ static mmvq_kernel_resource_trace mmvq_collect_kernel_resource_trace(
     int max_blocks_per_sm = -1;
     if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(
             &max_blocks_per_sm,
-            mul_mat_vec_q<type, c_ncols_dst, has_fusion, small_k>,
+            mul_mat_vec_q<type, c_ncols_dst, has_fusion, small_k, use_gate_fast, use_pairdot>,
             trace.block_threads,
             nbytes_shared) == cudaSuccess) {
         trace.max_blocks_per_sm = max_blocks_per_sm;
@@ -678,7 +720,7 @@ static mmvq_kernel_resource_trace mmvq_collect_kernel_resource_trace(
     }
 
     hipFuncAttributes attr;
-    if (hipFuncGetAttributes(&attr, (const void *) mul_mat_vec_q<type, c_ncols_dst, has_fusion, small_k>) == hipSuccess) {
+    if (hipFuncGetAttributes(&attr, (const void *) mul_mat_vec_q<type, c_ncols_dst, has_fusion, small_k, use_gate_fast, use_pairdot>) == hipSuccess) {
         trace.num_regs = attr.numRegs;
         trace.static_shared_bytes = attr.sharedSizeBytes;
     }
@@ -688,7 +730,7 @@ static mmvq_kernel_resource_trace mmvq_collect_kernel_resource_trace(
     }
 
     cudaFuncAttributes attr;
-    if (cudaFuncGetAttributes(&attr, mul_mat_vec_q<type, c_ncols_dst, has_fusion, small_k>) == cudaSuccess) {
+    if (cudaFuncGetAttributes(&attr, mul_mat_vec_q<type, c_ncols_dst, has_fusion, small_k, use_gate_fast, use_pairdot>) == cudaSuccess) {
         trace.num_regs = attr.numRegs;
         trace.max_dyn_shared_bytes = attr.maxDynamicSharedSizeBytes;
         trace.static_shared_bytes = attr.sharedSizeBytes;
@@ -792,6 +834,7 @@ static void mul_mat_vec_q_switch_fusion(
     const bool has_fusion = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr;
     const bool trace_timing = ggml_cuda_trace_mmvq_timing_enabled();
     const bool trace_resources = ggml_cuda_trace_mmvq_resources_enabled();
+    const bool disable_q3k_pairdot = ggml_cuda_mmvq_q3k_disable_pairdot_enabled();
     const bool trace_timing_sync = trace_timing && ggml_cuda_trace_mmvq_timing_sync_enabled();
     const bool trace_timing_pre_sync = trace_timing_sync && std::getenv("GGML_TRACE_MMVQ_TIMING_PRE_SYNC") != nullptr;
     const int device = trace_resources ? ggml_cuda_get_device() : 0;
@@ -892,11 +935,58 @@ static void mul_mat_vec_q_switch_fusion(
 
     if constexpr (c_ncols_dst == 1) {
         if (has_fusion) {
+            const bool use_gate = fusion.gate != nullptr;
+            bool use_gate_fast_kernel = false;
+            if constexpr (type == GGML_TYPE_Q3_K) {
+                // On this lane, gate-fast specialization inflates regs for the 5120 bucket.
+                // Keep fast kernel only on observed-safe buckets and avoid 5120 cliff.
+                use_gate_fast_kernel = (ncols_x == 6144) || (ncols_x > 8192);
+            }
+
+            if (use_gate && use_gate_fast_kernel) {
+                if (disable_q3k_pairdot) {
+                    if (trace_resources) {
+                        kernel_trace = mmvq_collect_kernel_resource_trace<type, c_ncols_dst, true, small_k, true, false>(
+                            block_dims, nbytes_shared, warp_size);
+                    }
+                    mul_mat_vec_q<type, c_ncols_dst, true, small_k, true, false><<<block_nums, block_dims, nbytes_shared, stream>>>
+                        (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
+                         channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
+                         sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
+                    log_timing(true);
+                    return;
+                }
+
+                if (trace_resources) {
+                    kernel_trace = mmvq_collect_kernel_resource_trace<type, c_ncols_dst, true, small_k, true, true>(
+                        block_dims, nbytes_shared, warp_size);
+                }
+                mul_mat_vec_q<type, c_ncols_dst, true, small_k, true, true><<<block_nums, block_dims, nbytes_shared, stream>>>
+                    (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
+                     channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
+                     sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
+                log_timing(true);
+                return;
+            }
+
+            if (disable_q3k_pairdot) {
+                if (trace_resources) {
+                    kernel_trace = mmvq_collect_kernel_resource_trace<type, c_ncols_dst, true, small_k, false, false>(
+                        block_dims, nbytes_shared, warp_size);
+                }
+                mul_mat_vec_q<type, c_ncols_dst, true, small_k, false, false><<<block_nums, block_dims, nbytes_shared, stream>>>
+                    (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
+                     channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
+                     sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
+                log_timing(true);
+                return;
+            }
+
             if (trace_resources) {
-                kernel_trace = mmvq_collect_kernel_resource_trace<type, c_ncols_dst, true, small_k>(
+                kernel_trace = mmvq_collect_kernel_resource_trace<type, c_ncols_dst, true, small_k, false, true>(
                     block_dims, nbytes_shared, warp_size);
             }
-            mul_mat_vec_q<type, c_ncols_dst, true, small_k><<<block_nums, block_dims, nbytes_shared, stream>>>
+            mul_mat_vec_q<type, c_ncols_dst, true, small_k, false, true><<<block_nums, block_dims, nbytes_shared, stream>>>
                 (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
                  channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
                  sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
@@ -908,10 +998,10 @@ static void mul_mat_vec_q_switch_fusion(
     GGML_ASSERT(!has_fusion && "fusion only supported for ncols_dst=1");
 
     if (trace_resources) {
-        kernel_trace = mmvq_collect_kernel_resource_trace<type, c_ncols_dst, false, small_k>(
+        kernel_trace = mmvq_collect_kernel_resource_trace<type, c_ncols_dst, false, small_k, false, true>(
             block_dims, nbytes_shared, warp_size);
     }
-    mul_mat_vec_q<type, c_ncols_dst, false, small_k><<<block_nums, block_dims, nbytes_shared, stream>>>
+    mul_mat_vec_q<type, c_ncols_dst, false, small_k, false, true><<<block_nums, block_dims, nbytes_shared, stream>>>
         (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
         channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
         sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
