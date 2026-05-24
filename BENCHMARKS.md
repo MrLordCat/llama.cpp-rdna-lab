@@ -111,6 +111,53 @@ Live server sanity was also run with `max_tokens=64`: errors `0`, decode
 repeated-symbol corruption. Remaining E116 Vulkan q4 comparator is still around
 `40.8683 tok/s`, so ROCm decode parity remains open at about `1.27x`.
 
+### E201: Q3_K padded storage opt-in follow-up (2026-05-24)
+
+H43 moved from pure correctness to a small measured opt-in signal. `GGML_CUDA_Q3K_PADDED_STORAGE=1`
+stores non-split Q3_K tensors as backend-private `112`-byte blocks, uses padded-aware
+dequant/cublas and dense MMVQ accessors, disables MMQ under the knob, and fail-closes
+Q3_K `CPY` until partial/raw-copy semantics are covered. Default behavior is unchanged.
+
+Same lane as above except `max_tokens=120`:
+
+| Route | Runs | Aggregate TPS | Prompt eval TPS | Decode eval TPS | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| control | 3 | `12.0761` | `1259.06` | `29.9933` | baseline |
+| `GGML_CUDA_Q3K_PADDED_STORAGE=1` | 3 | `12.1572` | `1260.0033` | `30.4333` | opt-in only, wall `+0.67%`, decode `+1.47%` |
+
+Trace point after restoring padded-aware MMVQ recovered the earlier decode collapse and moved
+the hot cublas bucket `17408x5120@2048` from `1424.346` to `1393.866 ms`.
+With `GGML_CUDA_DISABLE_GRAPHS=1`, MMVQ point timing also showed a real local Q3_K decode
+gain: the fused `nx=17408` bucket moved `76.090 -> 72.740 ms`, while Q4_K/Q6_K buckets
+were unchanged/noise.
+Do not promote this as default yet: split buffers, partial views, MMQ/prefill, and MoE are
+not covered. Treat it as a valid H43 foundation for the next structural route-body slice.
+
+Follow-up E201-P2a adds a second opt-in gate, `GGML_CUDA_Q3K_PADDED_STORAGE_MMQ=1`.
+With both storage gates enabled, Q3_K MMQ reads the padded physical blocks directly instead
+of falling back to cuBLAS on small-prompt MMQ shapes. Default behavior remains unchanged.
+
+Point gate on a short real-server lane (`quick/triage_diff`, no real-context, `max_tokens=32`,
+`GGML_CUDA_DISABLE_GRAPHS=1`) moved Q3_K MMQ `ncols_max=159/mmq_x=80` from
+`252.526` to `231.453 ms` (`+8.34%` local), with route proof `q3k_padded=1`.
+
+No-trace wall confirmation on the decode-biased short lane (`max_tokens=256`):
+
+| Route | Runs | Aggregate TPS | Prompt eval TPS | Decode eval TPS | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| control | 3 | `30.2390` | `708.8467` | `31.1767` | baseline |
+| padded storage + MMQ | 3 | `30.9884` | `735.3667` | `31.9167` | opt-in only, wall `+2.48%`, decode `+2.37%` |
+
+Active prompt-heavy sanity (`repo-snapshot`, `7422` prompt tokens, `max_tokens=120`) also
+stayed positive in r1: `11.8483 -> 12.0795 TPS`, prompt `1209.88 -> 1232.65 tok/s`,
+decode `30.41 -> 30.93 tok/s`. Candidate JSONL response previews were normal
+`Thinking Process:` text, with `errors=0`.
+
+This is the first H43 route slice with a confirmed short-lane wall win, but it is still
+not default-ready: split buffers, partial views, broader storage/copy semantics, and MoE
+remain uncovered, and the large `ncols=2048` prefill cublas body still needs H42-style
+route-body work.
+
 Artifacts:
 - `docs/research/experiments/E149_rocm_decode_parity_audit.md`
 - `docs/research/experiments/E150_rocm_decode_fusion_gate.md`
@@ -120,6 +167,9 @@ Artifacts:
 - `build_logs/agent-workload/e151-rocm-decode-q4-q3warps2-r3.diagnostics.md`
 - `build_logs/agent-workload/e151-rocm-decode-q4-q3warps2-live-sanity-r1.diagnostics.md`
 - `build_logs/agent-workload/e152-rocm-vulkan-decode-route-delta-q3k.md`
+- `docs/research/experiments/E201_rocm_q3k_padded_storage_p1.md`
+- `build_logs/agent-workload/e201-rocm-q3k-padded-storage-p1.md`
+- `build_logs/agent-workload/e201-rocm-q3k-padded-storage-mmq-p2.md`
 
 ## H03 ngram+MTP chain smoke (2026-05-19)
 

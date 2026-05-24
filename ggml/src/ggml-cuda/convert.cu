@@ -191,6 +191,66 @@ static __global__ void dequantize_block_q3_K(const void * __restrict__ vx, dst_t
     for (int l = l0; l < l0+4; ++l) y[l] = dl * ((int8_t)((q[l] >> shift) & 3) - ((hm[l] & m) ? 0 : 4));
 }
 
+static __global__ void q3_K_pack_to_padded_kernel(
+        const block_q3_K * __restrict__ x,
+        block_q3_K_padded * __restrict__ y,
+        const int64_t nb) {
+    const int64_t i = blockIdx.x;
+    if (i >= nb) {
+        return;
+    }
+
+    const uint8_t * src = (const uint8_t *) (x + i);
+    uint8_t * dst = (uint8_t *) (y + i);
+
+    for (int j = threadIdx.x; j < (int) sizeof(block_q3_K_padded); j += blockDim.x) {
+        dst[j] = j < (int) sizeof(block_q3_K) ? src[j] : 0;
+    }
+}
+
+template<typename dst_t>
+static __global__ void dequantize_block_q3_K_padded(const void * __restrict__ vx, dst_t * __restrict__ yy) {
+
+    const int64_t i = blockIdx.x;
+    const block_q3_K_padded * x = (const block_q3_K_padded *) vx;
+
+    const int64_t r = threadIdx.x/4;
+    const int64_t tid = r/2;
+    const int64_t is0 = r%2;
+    const int64_t l0 = 16*is0 + 4*(threadIdx.x%4);
+    const int64_t n = tid / 4;
+    const int64_t j = tid - 4*n;
+
+    uint8_t m = 1 << (4*n + j);
+    int64_t is = 8*n + 2*j + is0;
+    int shift = 2*j;
+
+    int8_t us = is <  4 ? (x[i].scales[is-0] & 0xF) | (((x[i].scales[is+8] >> 0) & 3) << 4) :
+                is <  8 ? (x[i].scales[is-0] & 0xF) | (((x[i].scales[is+4] >> 2) & 3) << 4) :
+                is < 12 ? (x[i].scales[is-8] >>  4) | (((x[i].scales[is+0] >> 4) & 3) << 4) :
+                          (x[i].scales[is-8] >>  4) | (((x[i].scales[is-4] >> 6) & 3) << 4);
+    float d_all = x[i].d;
+    float dl = d_all * (us - 32);
+
+    dst_t * y = yy + i*QK_K + 128*n + 32*j;
+    const uint8_t * q = x[i].qs + 32*n;
+    const uint8_t * hm = x[i].hmask;
+
+    for (int l = l0; l < l0+4; ++l) y[l] = dl * ((int8_t)((q[l] >> shift) & 3) - ((hm[l] & m) ? 0 : 4));
+}
+
+void ggml_cuda_q3_K_pack_to_padded(const void * x, void * y, int64_t k, cudaStream_t stream) {
+    GGML_ASSERT(k % QK_K == 0);
+    const int nb = k / QK_K;
+    q3_K_pack_to_padded_kernel<<<nb, 128, 0, stream>>>((const block_q3_K *) x, (block_q3_K_padded *) y, nb);
+}
+
+void ggml_cuda_q3_K_padded_to_fp16(const void * x, half * y, int64_t k, cudaStream_t stream) {
+    GGML_ASSERT(k % QK_K == 0);
+    const int nb = k / QK_K;
+    dequantize_block_q3_K_padded<<<nb, 64, 0, stream>>>(x, y);
+}
+
 static inline __device__ void get_scale_min_k4(int j, const uint8_t * q, uint8_t & d, uint8_t & m) {
     if (j < 4) {
         d = q[j] & 63; m = q[j + 4] & 63;

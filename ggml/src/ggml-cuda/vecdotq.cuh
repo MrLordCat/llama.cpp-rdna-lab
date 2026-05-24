@@ -541,6 +541,52 @@ static __device__ __forceinline__ void vec_dot_q3_K_q8_1_pair_streaming(
     dot_g = __half2float(bq3_g->d) * sumf_g;
 }
 
+static __device__ __forceinline__ void vec_dot_q3_K_padded_q8_1_pair_streaming(
+    const void * __restrict__ vbx,
+    const void * __restrict__ vbg,
+    const block_q8_1 * __restrict__ bq8_1,
+    const int & kbx,
+    const int & iqs,
+    float & dot_x,
+    float & dot_g) {
+
+    const block_q3_K_padded * bq3_x = (const block_q3_K_padded *) vbx + kbx;
+    const block_q3_K_padded * bq3_g = (const block_q3_K_padded *) vbg + kbx;
+
+    const int bq8_offset = QR3_K * (iqs / (QI3_K/2));
+    const int scale_offset = iqs - iqs % QI8_1 + (iqs % QI8_1) / (QI8_1/2);
+
+    const int vl_x = get_int_b2(bq3_x->qs, iqs);
+    const int vl_g = get_int_b2(bq3_g->qs, iqs);
+
+    const int vh_x = ~get_int_b2(bq3_x->hmask, iqs % (QI3_K/2)) >> bq8_offset;
+    const int vh_g = ~get_int_b2(bq3_g->hmask, iqs % (QI3_K/2)) >> bq8_offset;
+
+    float sumf_x = 0.0f;
+    float sumf_g = 0.0f;
+
+#pragma unroll
+    for (int i = 0; i < QR3_K; ++i) {
+        const int u_i = get_int_b4(bq8_1[bq8_offset + i].qs, iqs % QI8_1);
+        const float d8_i = __low2float(bq8_1[bq8_offset + i].ds);
+
+        const int sc_x = vec_dot_q3_K_scale_at(bq3_x->scales, scale_offset, i);
+        const int vil_x = (vl_x >> (2*i)) & 0x03030303;
+        const int vih_x = ((vh_x >> i) << 2) & 0x04040404;
+        const int vi_x = __vsubss4(vil_x, vih_x);
+        sumf_x += d8_i * (ggml_cuda_dp4a(vi_x, u_i, 0) * sc_x);
+
+        const int sc_g = vec_dot_q3_K_scale_at(bq3_g->scales, scale_offset, i);
+        const int vil_g = (vl_g >> (2*i)) & 0x03030303;
+        const int vih_g = ((vh_g >> i) << 2) & 0x04040404;
+        const int vi_g = __vsubss4(vil_g, vih_g);
+        sumf_g += d8_i * (ggml_cuda_dp4a(vi_g, u_i, 0) * sc_g);
+    }
+
+    dot_x = __half2float(bq3_x->d) * sumf_x;
+    dot_g = __half2float(bq3_g->d) * sumf_g;
+}
+
 // contiguous v/x + u/y values
 static __device__ __forceinline__ float vec_dot_q3_K_q8_1_impl_mmq(
     const int * __restrict__ v, const int * __restrict__ u, const int8_t * __restrict__ scales,
@@ -912,6 +958,31 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1(
     const int vl = get_int_b2(bq3_K->qs, iqs);
 
     // invert the mask with ~ so that a 0/1 results in 4/0 being subtracted
+    const int vh = ~get_int_b2(bq3_K->hmask, iqs % (QI3_K/2)) >> bq8_offset;
+
+    int    u[QR3_K];
+    float d8[QR3_K];
+
+#pragma unroll
+    for (int i = 0; i < QR3_K; ++i) {
+        u[i]  = get_int_b4(bq8_1[bq8_offset + i].qs, iqs % QI8_1);
+        d8[i] = __low2float(bq8_1[bq8_offset + i].ds);
+    }
+
+    return vec_dot_q3_K_q8_1_impl_mmvq(vl, vh, u, bq3_K->scales, scale_offset, d, d8);
+}
+
+static __device__ __forceinline__ float vec_dot_q3_K_padded_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_q3_K_padded * bq3_K = (const block_q3_K_padded *) vbq + kbx;
+
+    const int bq8_offset = QR3_K * (iqs / (QI3_K/2));
+    const int scale_offset = iqs - iqs % QI8_1 + (iqs % QI8_1) / (QI8_1/2);
+
+    const float d = bq3_K->d;
+
+    const int vl = get_int_b2(bq3_K->qs, iqs);
     const int vh = ~get_int_b2(bq3_K->hmask, iqs % (QI3_K/2)) >> bq8_offset;
 
     int    u[QR3_K];

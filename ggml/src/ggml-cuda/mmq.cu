@@ -28,6 +28,16 @@ static int ggml_rdna4_q4k_mmq_max_ne11() {
     return max_ne11;
 }
 
+static bool ggml_cuda_q3k_padded_storage_mmq_tensor(const ggml_tensor * tensor) {
+    return std::getenv("GGML_CUDA_Q3K_PADDED_STORAGE") != nullptr &&
+        std::getenv("GGML_CUDA_Q3K_PADDED_STORAGE_MMQ") != nullptr &&
+        tensor->type == GGML_TYPE_Q3_K &&
+        tensor->view_src == nullptr &&
+        ggml_is_contiguous(tensor) &&
+        tensor->ne[0] % QK_K == 0 &&
+        ggml_nelements(tensor) % QK_K == 0;
+}
+
 static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
     switch (args.type_x) {
         case GGML_TYPE_Q1_0:
@@ -122,6 +132,7 @@ void ggml_cuda_mul_mat_q(
     const char  * src0_d = (const char  *) src0->data;
     const float * src1_d = (const float *) src1->data;
     float       *  dst_d = (float       *)  dst->data;
+    const bool q3k_padded_storage = ggml_cuda_q3k_padded_storage_mmq_tensor(src0);
 
     // If src0 is a temporary compute buffer, clear any potential padding.
     if (ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
@@ -180,7 +191,7 @@ void ggml_cuda_mul_mat_q(
             ne00, ne01, ne1, s01, ne11, s1,
             ne02, ne12, s02, s12, s2,
             ne03, ne13, s03, s13, s3,
-            use_stream_k, ne1};
+            use_stream_k, ne1, q3k_padded_storage};
         ggml_cuda_mul_mat_q_switch_type(ctx, args, stream);
         return;
     }
@@ -241,7 +252,7 @@ void ggml_cuda_mul_mat_q(
         ne00, ne01, ne_get_rows, s01, ne_get_rows, s1,
         ne02, ne02, s02, s12, s2,
         ne03, ne13, s03, s13, s3,
-        use_stream_k, ne12};
+        use_stream_k, ne12, q3k_padded_storage};
 
     ggml_cuda_mul_mat_q_switch_type(ctx, args, stream);
 }
@@ -282,7 +293,7 @@ void ggml_cuda_op_mul_mat_q(
         ne00, row_diff, src1_ncols, stride01, ne11, nrows_dst,
         1, 1, 0, 0, 0,
         1, 1, 0, 0, 0,
-        use_stream_k, src1_ncols};
+        use_stream_k, src1_ncols, ggml_cuda_q3k_padded_storage_mmq_tensor(src0)};
 
     ggml_cuda_mul_mat_q_switch_type(ctx, args, stream);
 

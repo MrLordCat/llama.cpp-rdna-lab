@@ -16,6 +16,9 @@ to_bf16_cuda_t ggml_get_to_bf16_cuda(ggml_type type);
 
 to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type);
 
+void ggml_cuda_q3_K_pack_to_padded(const void * x, void * y, int64_t k, cudaStream_t stream);
+void ggml_cuda_q3_K_padded_to_fp16(const void * x, half * y, int64_t k, cudaStream_t stream);
+
 // TODO more general support for non-contiguous inputs
 
 template<typename T>

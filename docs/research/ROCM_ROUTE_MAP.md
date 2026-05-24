@@ -287,6 +287,11 @@ Important knobs:
   knob in `mmq.cuh`; E016 rejected force-x points below the selected default.
 - `GGML_RDNA4_MOE_MMQ_STAGING=1`: opt-in MoE staging experiment path; not a
   dense Q3_K default.
+- `GGML_CUDA_Q3K_PADDED_STORAGE=1` + `GGML_CUDA_Q3K_PADDED_STORAGE_MMQ=1`:
+  default-off H43 route that stores eligible non-split Q3_K tensors as
+  112-byte padded blocks and lets Q3_K MMQ read that storage through a
+  padded-aware tile loader. E201-P2a confirms a short decode-biased wall win;
+  this is not default-ready while split/partial-view/MoE coverage is incomplete.
 
 Key evidence:
 
@@ -298,6 +303,7 @@ Key evidence:
 | E050 | Large Q3_K forced-MMQ target shape was `37.52%` slower than cublas split; broad forced route `10.05 TPS` | Do not send large Q3_K prefill to current MMQ |
 | E070 | Q4_K/Q5_K threshold `ne11<=1024` improved Q4 pp512 `57.30 -> 246.60 tok/s`; full Q4 lane recovered from `122.23s` timeout-scale to `28.44s`, prompt `330.42 tok/s` | Keep Q4_K/Q5_K RDNA4 selector extension |
 | E105 | Narrow Q3_K existing-MMQ override did not beat baseline (`11.74 -> 11.54/11.68/11.44 TPS`) | Do not add Q3 large-prefill selector override |
+| E201-P2a | Padded-storage Q3_K MMQ loader improved Q3_K `ncols=159` point `252.526 -> 231.453 ms` and short-lane r3 `30.2390 -> 30.9884 TPS` | Keep opt-in behind both padded-storage gates |
 
 Diagnostics:
 
@@ -466,6 +472,7 @@ Clear these before speed claims unless they are the explicit candidate:
 | `GGML_TRACE_MUL_MAT_ID_ROUTE` | expert dispatch | `MUL_MAT_ID` route trace |
 | `GGML_TRACE_CUBLAS_SPLIT_TIMING` | hipBLAS fallback | Stage timing |
 | `GGML_TRACE_CUBLAS_SPLIT_DETAIL` | hipBLAS fallback | Alloc vs convert split |
+| `GGML_TRACE_CUBLAS_SPLIT_TIMING_PRE_SYNC` | hipBLAS fallback | Queueing/pre-sync companion |
 | `GGML_TRACE_CUBLAS_SPLIT_TIMING_MIN_NCOLS` | hipBLAS fallback | Prompt-shape filter |
 | `GGML_TRACE_CUBLAS_Q3K_ROUTE` | Q3_K hipBLAS staging | Reuse/key trace |
 | `GGML_TRACE_CUBLAS_Q3K_ROUTE_MIN_NCOLS` | Q3_K hipBLAS staging | Prompt-shape filter |
@@ -480,6 +487,8 @@ Clear these before speed claims unless they are the explicit candidate:
 | `GGML_MMQ_RDNA4_Q4K_MAX_NE11` | MMQ selector | Q4_K/Q5_K threshold override/rollback |
 | `GGML_MMQ_RDNA4_STREAM_K_MIN_NE11` | backend/split MMQ | Stream-K threshold probe |
 | `GGML_MMQ_RDNA4_Q3_FORCE_MMQ_X` | MMQ kernel selection | Diagnostic force-x probe |
+| `GGML_CUDA_Q3K_PADDED_STORAGE` | Q3_K storage | Default-off padded physical storage route |
+| `GGML_CUDA_Q3K_PADDED_STORAGE_MMQ` | Q3_K MMQ | Enables padded-storage MMQ loader under storage gate |
 | `GGML_MMVQ_QWEN_FORCE_SMALL_K` | MMVQ | Force Qwen-hot small-k |
 | `GGML_MMVQ_QWEN_DISABLE_SMALL_K` | MMVQ | Disable Qwen-hot small-k |
 | `GGML_CUDA_FORCE_CUBLAS_COMPUTE_16F` | hipBLAS fp16 path | Rejected route experiment |

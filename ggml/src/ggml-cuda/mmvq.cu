@@ -445,6 +445,11 @@ static bool ggml_cuda_mmvq_q3k_disable_pairdot_enabled() {
     return enabled;
 }
 
+static bool ggml_cuda_mmvq_q3k_padded_storage_enabled() {
+    static const bool enabled = std::getenv("GGML_CUDA_Q3K_PADDED_STORAGE") != nullptr;
+    return enabled;
+}
+
 template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false, bool use_gate_fast = false, bool use_pairdot = true>
 __launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id())*ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void mul_mat_vec_q(
@@ -453,7 +458,8 @@ static __global__ void mul_mat_vec_q(
         const uint32_t stride_col_dst, const uint3 channel_ratio, const uint32_t stride_channel_x,
         const uint32_t stride_channel_y, const uint32_t stride_channel_dst, const uint3 sample_ratio,
         const uint32_t stride_sample_x, const uint32_t stride_sample_y, const uint32_t stride_sample_dst,
-        const uint32_t ids_stride) {
+        const uint32_t ids_stride,
+        const bool q3k_padded_storage) {
 
     constexpr int qk  = ggml_cuda_type_traits<type>::qk;
     constexpr int qi  = ggml_cuda_type_traits<type>::qi;
@@ -553,14 +559,25 @@ static __global__ void mul_mat_vec_q(
                 if constexpr (type == GGML_TYPE_Q3_K && has_fusion && ncols_dst == 1 && use_gate_fast && use_pairdot) {
                     float dot_x = 0.0f;
                     float dot_g = 0.0f;
-                    vec_dot_q3_K_q8_1_pair_streaming(
-                        vx,
-                        vgate,
-                        &y[j*stride_col_y + kby],
-                        kbx_offset + i*stride_row_x + kbx,
-                        kqs,
-                        dot_x,
-                        dot_g);
+                    if (q3k_padded_storage) {
+                        vec_dot_q3_K_padded_q8_1_pair_streaming(
+                            vx,
+                            vgate,
+                            &y[j*stride_col_y + kby],
+                            kbx_offset + i*stride_row_x + kbx,
+                            kqs,
+                            dot_x,
+                            dot_g);
+                    } else {
+                        vec_dot_q3_K_q8_1_pair_streaming(
+                            vx,
+                            vgate,
+                            &y[j*stride_col_y + kby],
+                            kbx_offset + i*stride_row_x + kbx,
+                            kqs,
+                            dot_x,
+                            dot_g);
+                    }
                     tmp[j][i] += dot_x;
                     tmp_gate[j][i] += dot_g;
                     continue;
@@ -570,26 +587,49 @@ static __global__ void mul_mat_vec_q(
                     if (use_gate) {
                         float dot_x = 0.0f;
                         float dot_g = 0.0f;
-                        vec_dot_q3_K_q8_1_pair_streaming(
-                            vx,
-                            vgate,
-                            &y[j*stride_col_y + kby],
-                            kbx_offset + i*stride_row_x + kbx,
-                            kqs,
-                            dot_x,
-                            dot_g);
+                        if (q3k_padded_storage) {
+                            vec_dot_q3_K_padded_q8_1_pair_streaming(
+                                vx,
+                                vgate,
+                                &y[j*stride_col_y + kby],
+                                kbx_offset + i*stride_row_x + kbx,
+                                kqs,
+                                dot_x,
+                                dot_g);
+                        } else {
+                            vec_dot_q3_K_q8_1_pair_streaming(
+                                vx,
+                                vgate,
+                                &y[j*stride_col_y + kby],
+                                kbx_offset + i*stride_row_x + kbx,
+                                kqs,
+                                dot_x,
+                                dot_g);
+                        }
                         tmp[j][i] += dot_x;
                         tmp_gate[j][i] += dot_g;
                         continue;
                     }
                 }
 
-                tmp[j][i] += vec_dot_q_cuda(
-                    vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                if constexpr (type == GGML_TYPE_Q3_K) {
+                    tmp[j][i] += q3k_padded_storage ?
+                        vec_dot_q3_K_padded_q8_1(vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs) :
+                        vec_dot_q_cuda(vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                } else {
+                    tmp[j][i] += vec_dot_q_cuda(
+                        vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                }
                 if constexpr (has_fusion) {
                     if (use_gate) {
-                        tmp_gate[j][i] += vec_dot_q_cuda(
-                            vgate, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                        if constexpr (type == GGML_TYPE_Q3_K) {
+                            tmp_gate[j][i] += q3k_padded_storage ?
+                                vec_dot_q3_K_padded_q8_1(vgate, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs) :
+                                vec_dot_q_cuda(vgate, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                        } else {
+                            tmp_gate[j][i] += vec_dot_q_cuda(
+                                vgate, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                        }
                     }
                 }
             }
@@ -835,6 +875,7 @@ static void mul_mat_vec_q_switch_fusion(
     const bool trace_timing = ggml_cuda_trace_mmvq_timing_enabled();
     const bool trace_resources = ggml_cuda_trace_mmvq_resources_enabled();
     const bool disable_q3k_pairdot = ggml_cuda_mmvq_q3k_disable_pairdot_enabled();
+    const bool q3k_padded_storage = type == GGML_TYPE_Q3_K && ggml_cuda_mmvq_q3k_padded_storage_enabled();
     const bool trace_timing_sync = trace_timing && ggml_cuda_trace_mmvq_timing_sync_enabled();
     const bool trace_timing_pre_sync = trace_timing_sync && std::getenv("GGML_TRACE_MMVQ_TIMING_PRE_SYNC") != nullptr;
     const int device = trace_resources ? ggml_cuda_get_device() : 0;
@@ -952,7 +993,7 @@ static void mul_mat_vec_q_switch_fusion(
                     mul_mat_vec_q<type, c_ncols_dst, true, small_k, true, false><<<block_nums, block_dims, nbytes_shared, stream>>>
                         (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
                          channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
-                         sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
+                         sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, q3k_padded_storage);
                     log_timing(true);
                     return;
                 }
@@ -964,7 +1005,7 @@ static void mul_mat_vec_q_switch_fusion(
                 mul_mat_vec_q<type, c_ncols_dst, true, small_k, true, true><<<block_nums, block_dims, nbytes_shared, stream>>>
                     (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
                      channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
-                     sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
+                     sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, q3k_padded_storage);
                 log_timing(true);
                 return;
             }
@@ -977,7 +1018,7 @@ static void mul_mat_vec_q_switch_fusion(
                 mul_mat_vec_q<type, c_ncols_dst, true, small_k, false, false><<<block_nums, block_dims, nbytes_shared, stream>>>
                     (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
                      channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
-                     sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
+                     sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, q3k_padded_storage);
                 log_timing(true);
                 return;
             }
@@ -989,7 +1030,7 @@ static void mul_mat_vec_q_switch_fusion(
             mul_mat_vec_q<type, c_ncols_dst, true, small_k, false, true><<<block_nums, block_dims, nbytes_shared, stream>>>
                 (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
                  channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
-                 sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
+                 sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, q3k_padded_storage);
             log_timing(true);
             return;
         }
@@ -1004,7 +1045,7 @@ static void mul_mat_vec_q_switch_fusion(
     mul_mat_vec_q<type, c_ncols_dst, false, small_k, false, true><<<block_nums, block_dims, nbytes_shared, stream>>>
         (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
         channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
-        sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
+        sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, q3k_padded_storage);
 
     log_timing(false);
 }

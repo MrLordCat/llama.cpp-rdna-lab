@@ -1962,7 +1962,7 @@ static __device__ __forceinline__ void vec_dot_q2_K_q8_1_mma(
 #endif // AMD_MFMA_AVAILABLE || AMD_WMMA_AVAILABLE
 }
 
-template <int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_q3_K(
+template <typename block_q3_K_t, int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_q3_K_impl(
     const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
     constexpr int nwarps = mmq_get_nwarps_device();
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
@@ -1989,7 +1989,7 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
             i = min(i, i_max);
         }
 
-        const block_q3_K * bxi = (const block_q3_K *) x + kbx0 + i*stride;
+        const block_q3_K_t * bxi = (const block_q3_K_t *) x + kbx0 + i*stride;
 
         const int x_ql_0 = get_int_b2(bxi->qs,    kqsx);
         const int x_qh_0 = get_int_b2(bxi->hmask, kqsx % (QI3_K/2)) >> (4 * (kqsx / (QI3_K/2)));
@@ -2020,7 +2020,7 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
             i = min(i, i_max);
         }
 
-        const block_q3_K * bxi = (const block_q3_K *) x + kbx0 + i*stride;
+        const block_q3_K_t * bxi = (const block_q3_K_t *) x + kbx0 + i*stride;
 
         const int ksc = threadIdx.x % 4;
 
@@ -2056,11 +2056,21 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
             i = min(i, i_max);
         }
 
-        const block_q3_K * bxi = (const block_q3_K *) x + kbx0 + i*stride;
+        const block_q3_K_t * bxi = (const block_q3_K_t *) x + kbx0 + i*stride;
 
         x_df[i] = bxi->d;
     }
 #endif // !(defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE)) || defined(AMD_WMMA_AVAILABLE)
+}
+
+template <int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_q3_K(
+    const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
+    load_tiles_q3_K_impl<block_q3_K, mmq_y, need_check>(x, x_tile, kbx0, i_max, stride);
+}
+
+template <int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_q3_K_padded(
+    const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
+    load_tiles_q3_K_impl<block_q3_K_padded, mmq_y, need_check>(x, x_tile, kbx0, i_max, stride);
 }
 
 template <int mmq_x, int mmq_y>
@@ -3461,19 +3471,36 @@ struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_IQ4_XS> {
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q8_0_q8_1_dp4a<mmq_x, mmq_y>;
 };
 
+template <ggml_type type, int mmq_x, int mmq_y, bool need_check>
+static __device__ __forceinline__ void mul_mat_q_load_tiles(
+        const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride,
+        const bool use_q3k_padded_storage) {
+    constexpr load_tiles_mmq_t load_tiles = mmq_type_traits<mmq_x, mmq_y, need_check, type>::load_tiles;
+
+    if constexpr (type == GGML_TYPE_Q3_K) {
+        if (use_q3k_padded_storage) {
+            load_tiles_q3_K_padded<mmq_y, need_check>(x, x_tile, kbx0, i_max, stride);
+            return;
+        }
+    } else {
+        GGML_UNUSED(use_q3k_padded_storage);
+    }
+
+    load_tiles(x, x_tile, kbx0, i_max, stride);
+}
+
 template <ggml_type type, int mmq_x, bool need_check, bool fixup>
 static __device__ __forceinline__ void mul_mat_q_process_tile(
         const char * __restrict__ x, const int offset_x, const int * __restrict__ y,
         const int * __restrict__ ids_dst, float * __restrict__ dst, float * __restrict__ tmp_fixup,
         const int stride_row_x, const int ncols_y, const int stride_col_dst,
     const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop,
-    const bool use_rdna4_moe_mmq_staging) {
+    const bool use_rdna4_moe_mmq_staging, const bool use_q3k_padded_storage) {
 
     constexpr int              warp_size  = ggml_cuda_get_physical_warp_size();
     constexpr int              nwarps     = mmq_get_nwarps_device();
     constexpr int              qk         = ggml_cuda_type_traits<type>::qk;
     constexpr int              mmq_y      = get_mmq_y_device();
-    constexpr load_tiles_mmq_t load_tiles = mmq_type_traits<mmq_x, mmq_y, need_check, type>::load_tiles;
 
     extern __shared__ int data_mul_mat_q[];
     int * tile_y = data_mul_mat_q + mmq_x;
@@ -3509,7 +3536,8 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
         int * tile_x_next = tile_x + tile_x_ints + lds_bank_pad;
 
         if (kb0_start < kb0_stop) {
-            load_tiles(x, tile_x_cur, offset_x + kb0_start, tile_x_max_i, stride_row_x);
+            mul_mat_q_load_tiles<type, mmq_x, mmq_y, need_check>(
+                x, tile_x_cur, offset_x + kb0_start, tile_x_max_i, stride_row_x, use_q3k_padded_storage);
         }
         __syncthreads();
 
@@ -3526,7 +3554,8 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
             }
 
             if (kb0_next < kb0_stop) {
-                load_tiles(x, tile_x_next, offset_x + kb0_next, tile_x_max_i, stride_row_x);
+                mul_mat_q_load_tiles<type, mmq_x, mmq_y, need_check>(
+                    x, tile_x_next, offset_x + kb0_next, tile_x_max_i, stride_row_x, use_q3k_padded_storage);
             }
 
             __syncthreads();
@@ -3563,7 +3592,8 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
 #endif
     {
     for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
-        load_tiles(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
+        mul_mat_q_load_tiles<type, mmq_x, mmq_y, need_check>(
+            x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x, use_q3k_padded_storage);
         {
             const int * by0 = y + ncols_y * (kb0 * qk / ne_block) * sz;
 #pragma unroll
@@ -3626,7 +3656,7 @@ static __global__ void mul_mat_q(
         const uint3 blocks_per_ne00, const int nrows_x, const int ncols_dst, const int stride_row_x, const int ncols_y, const int stride_col_dst,
         const uint3 channel_ratio, const uint3 nchannels_y, const int stride_channel_x, const int stride_channel_y, const int stride_channel_dst,
         const uint3 sample_ratio, const uint3 nsamples_y, const int stride_sample_x, const int stride_sample_y, const int stride_sample_dst,
-        const uint3 ntx, const bool use_rdna4_moe_mmq_staging) {
+        const uint3 ntx, const bool use_rdna4_moe_mmq_staging, const bool use_q3k_padded_storage) {
 
     // Skip unused template specializations for faster compilation:
     if (mmq_x > get_mmq_x_max_device() || mmq_x % mmq_get_granularity_device(mmq_x) != 0) {
@@ -3711,7 +3741,7 @@ static __global__ void mul_mat_q(
         constexpr bool fixup = false;
         mul_mat_q_process_tile<type, mmq_x, need_check, fixup>
             (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, stride_row_x, ncols_y, stride_col_dst,
-             tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00.z, use_rdna4_moe_mmq_staging);
+             tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00.z, use_rdna4_moe_mmq_staging, use_q3k_padded_storage);
         return;
     }
 #endif // (defined(GGML_USE_HIP) && !defined(CDNA4) && !defined(CDNA3)) || __CUDA_ARCH__ < GGML_CUDA_CC_VOLTA
@@ -3791,7 +3821,7 @@ static __global__ void mul_mat_q(
         constexpr bool fixup = false; // All but (potentially) the last iterations write their data to dst rather than the fixup buffer.
         mul_mat_q_process_tile<type, mmq_x, need_check, fixup>
             (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, stride_row_x, ncols_y, stride_col_dst,
-             tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop, use_rdna4_moe_mmq_staging);
+             tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop, use_rdna4_moe_mmq_staging, use_q3k_padded_storage);
 
         kbc += blocks_per_ne00.z;
         kbc -= fastmodulo(kbc, blocks_per_ne00);
@@ -3860,7 +3890,7 @@ static __global__ void mul_mat_q(
     constexpr bool fixup = true; // Last index writes its data to fixup buffer to avoid data races with other blocks.
     mul_mat_q_process_tile<type, mmq_x, need_check, fixup>
         (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, stride_row_x, ncols_y, stride_col_dst,
-         tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop, use_rdna4_moe_mmq_staging);
+         tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop, use_rdna4_moe_mmq_staging, use_q3k_padded_storage);
 }
 
 template <ggml_type type, int mmq_x, bool need_check>
@@ -4007,7 +4037,7 @@ struct mmq_args {
     int64_t ncols_x; int64_t nrows_x; int64_t ncols_dst; int64_t stride_row_x; int64_t ncols_y; int64_t nrows_dst;
     int64_t nchannels_x; int64_t nchannels_y; int64_t stride_channel_x; int64_t stride_channel_y; int64_t stride_channel_dst;
     int64_t nsamples_x; int64_t nsamples_y; int64_t stride_sample_x; int64_t stride_sample_y; int64_t stride_sample_dst;
-    bool use_stream_k; int64_t ncols_max;
+    bool use_stream_k; int64_t ncols_max; bool q3k_padded_storage;
 };
 
 static bool mmq_rdna4_moe_mmq_staging_enabled(const mmq_args & args, const int cc) {
@@ -4089,7 +4119,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
                  blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
                  channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
                  sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-                 ntx_fd, use_rdna4_moe_mmq_staging);
+                 ntx_fd, use_rdna4_moe_mmq_staging, args.q3k_padded_storage);
         } else {
             constexpr bool need_check = true;
             mul_mat_q<type, mmq_x, need_check><<<block_nums_xy_tiling, block_dims, nbytes_shared, stream>>>
@@ -4097,7 +4127,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
                  blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
                  channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
                  sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-                 ntx_fd, use_rdna4_moe_mmq_staging);
+                 ntx_fd, use_rdna4_moe_mmq_staging, args.q3k_padded_storage);
         }
         return;
     }
@@ -4129,7 +4159,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
              blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
              channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
              sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-             ntx_fd, use_rdna4_moe_mmq_staging);
+             ntx_fd, use_rdna4_moe_mmq_staging, args.q3k_padded_storage);
 
         if (!fixup_needed) {
             return;
@@ -4147,7 +4177,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
              blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
              channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
              sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-             ntx_fd, use_rdna4_moe_mmq_staging);
+             ntx_fd, use_rdna4_moe_mmq_staging, args.q3k_padded_storage);
 
         if (!fixup_needed) {
             return;
@@ -4384,7 +4414,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
         }
 
         GGML_LOG_INFO(
-            "%s: timing type=%d cc=%d nrows_x=%lld ncols_max=%lld ncols_dst=%lld mmq_x_best=%d mmq_x_forced=%d mmq_y=%d rdna4_staging_req=%d rdna4_staging_eff=%d sync_req=%d pre_sync_applied=%d sync_applied=%d capture=%d trace_resources=%d block_threads=%d nbytes_shared=%d smpbo=%zu shared_pct=%.2f regs=%d static_shared=%zu max_dyn_shared=%d max_blocks_per_sm=%d max_threads_per_sm=%d occupancy_pct=%.2f waves_per_sm=%.2f pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+            "%s: timing type=%d cc=%d nrows_x=%lld ncols_max=%lld ncols_dst=%lld mmq_x_best=%d mmq_x_forced=%d mmq_y=%d q3k_padded=%d rdna4_staging_req=%d rdna4_staging_eff=%d sync_req=%d pre_sync_applied=%d sync_applied=%d capture=%d trace_resources=%d block_threads=%d nbytes_shared=%d smpbo=%zu shared_pct=%.2f regs=%d static_shared=%zu max_dyn_shared=%d max_blocks_per_sm=%d max_threads_per_sm=%d occupancy_pct=%.2f waves_per_sm=%.2f pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
             __func__,
             (int) type,
             cc,
@@ -4394,6 +4424,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
             mmq_x_best,
             mmq_x_forced,
             mmq_y,
+            args.q3k_padded_storage ? 1 : 0,
             use_rdna4_moe_mmq_staging_requested ? 1 : 0,
             use_rdna4_moe_mmq_staging_effective ? 1 : 0,
             trace_timing_sync ? 1 : 0,
@@ -4420,7 +4451,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
 
     if (trace_path) {
         GGML_LOG_INFO(
-            "%s: type=%d cc=%d ncols_max=%lld mmq_x_max=%d mmq_y=%d nwarps=%d mmq_x_best=%d mmq_x_forced=%d ntiles_x_best=%d trace_resources=%d block_threads=%d nbytes_shared=%d smpbo=%zu shared_pct=%.2f regs=%d max_blocks_per_sm=%d occupancy_pct=%.2f waves_per_sm=%.2f rdna4_staging_req=%d rdna4_staging_eff=%d\n",
+            "%s: type=%d cc=%d ncols_max=%lld mmq_x_max=%d mmq_y=%d nwarps=%d mmq_x_best=%d mmq_x_forced=%d ntiles_x_best=%d q3k_padded=%d trace_resources=%d block_threads=%d nbytes_shared=%d smpbo=%zu shared_pct=%.2f regs=%d max_blocks_per_sm=%d occupancy_pct=%.2f waves_per_sm=%.2f rdna4_staging_req=%d rdna4_staging_eff=%d\n",
             __func__,
             (int) type,
             cc,
@@ -4431,6 +4462,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
             mmq_x_best,
             mmq_x_forced,
             ntiles_x_best,
+            args.q3k_padded_storage ? 1 : 0,
             trace_resources ? 1 : 0,
             kernel_trace.block_threads,
             kernel_trace.nbytes_shared,
