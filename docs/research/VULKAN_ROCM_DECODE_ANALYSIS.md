@@ -98,6 +98,15 @@
   small-k route, похоже, выигрывает от своего K-split/latency-hiding schedule.
   Следующие ROCm parity кандидаты должны уменьшать реальную Q3_K работу/трафик
   или менять layout, а не только форму редукции.
+- E198 проверил более близкий к Vulkan route-level механизм: cache уже
+  квантизованного q8 activation внутри одного HIP graph compute. Гипотеза была
+  частично верна: trace показал `303` hits / `777` misses (`28.1%`) на
+  повторных `attn_norm-*` и `attn_post_norm-*`. Но clean same-binary A/B не
+  дал прироста: baseline r1 `31.9368 TPS`, cache r1 `31.8573 TPS`, decode
+  `32.50 -> 32.405 tok/s`. Значит standalone q8 activation reuse не является
+  главным Vulkan преимуществом: buffers малы (`~11.5-39.2 KB`), HIP graph
+  capture уже убирает host-launch стоимость, а Q3_K dot/dequant body остаётся
+  основным лимитером. Этот код был reverted.
 - Sequential graph-disable diagnostic не показал пользы от launch/graph
   гипотезы на short-decode gate: clean `27.1129 TPS` / `29.15 tok/s decode`
   против `GGML_CUDA_DISABLE_GRAPHS=1` `27.2063 TPS` / `29.28 tok/s`.

@@ -136,8 +136,12 @@
   - resource/timing gate was negative on the dominant hot buckets: fused `ncols_x=5120` `676.110 -> 681.567 ms`, direct `5120` `554.893 -> 557.519 ms`, fused `17408` `415.253 -> 418.187 ms`;
   - clean r1 was non-positive (`31.6788 TPS`, decode `32.365 tok/s`) vs E196 clean ROCm r3 (`31.9233 TPS`, decode `32.3833 tok/s`);
   - conclusion: removing the explicit cross-warp reduction without changing real Q3_K work does not move the bottleneck. Keep baseline `(32,2,1)` small-k topology and do not repeat row-warp/wave64-style reductions without a fresh low-level signal.
+- Done: MMVQ q8 activation cache gate (`E198`):
+  - env-gated per-graph q8 activation cache built and activated; short trace showed real reuse (`303` hits / `777` misses, `28.1%` hit rate), mainly `attn_norm-*` and `attn_post_norm-*`;
+  - same-binary clean A/B was non-positive: baseline r1 `31.9368 TPS`, candidate r1 `31.8573 TPS`, decode `32.50 -> 32.405 tok/s`;
+  - conclusion: q8 activation reuse exists, but the buffers are small (`~11.5-39.2 KB`) and HIP graph capture already removes most launch-overhead value. Standalone q8 activation caching does not reduce the real Q3_K dot/dequant body, so the patch was reverted.
 - Next guided step:
-  - do not repeat pair/preload-style shared-`q8_1` helpers without a fresh measured load-pressure signal;
+  - do not repeat pair/preload-style shared-`q8_1` helpers or graph-local q8 activation caches without a fresh synchronized trace proving q8 quantization is a large node-time share;
   - do not repeat `--no-mmap` or primitive `sdot4` source swaps unless a new lower-level residency/toolchain feature gate changes the premise;
   - do not pursue static branch-removal/no-bias fusion micro-specializations without instruction-level proof; lower VGPR alone is not enough on this route;
   - do not pursue wave64/row-warp MMVQ topology as a standalone branch; it preserved row batching but still lost, so the missing Vulkan advantage is not simply "avoid shared cross-warp reduction";
