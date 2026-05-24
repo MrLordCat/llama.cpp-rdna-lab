@@ -144,6 +144,10 @@
   - Vulkan's packed32 Q3_K advantage is tied to a backend storage contract: `Q3_K/Q6_K` device blocks are padded from `110` to `112` bytes, while ROCm CUDA/HIP currently copies raw GGUF `block_q3_K` bytes and all Q3_K kernels assume `110`-byte pointer arithmetic;
   - analytic model shows replacing all Q3_K storage would add only `179.47 MiB` (`1.818%`), but duplicating a padded copy beside current ROCm weights would add a full multi-GiB Q3_K model copy and is rejected for the 16 GiB lane;
   - conclusion: transient repack, duplicate padded copy, and `vecdotq.cuh`-only 32-bit load rewrites are not valid transfers. The only plausible Vulkan-like layout route is a broad backend-private ROCm Q3_K storage branch with buffer set/get/view-offset work and full Q3_K kernel correctness audit.
+- Done: Q3_K padded-storage inventory (`E200`):
+  - static map found the required blast radius: plain CUDA buffer API, split buffer API, async/view/copy helpers, Q3_K dequant/getrows, MMVQ vecdot, MMQ load/dot, MMVQ dispatch/policy, and type traits;
+  - current-tree cheap correctness smokes pass for Q3_K `MUL_MAT` on `ROCm0` at `m=16,n=1,k=256` and `m=1,n=64,k=256`;
+  - conclusion: a padded-storage prototype is technically sliceable only if P1/P2 starts with non-split storage set/get plus padded-aware dequant/MMVQ/MMQ, then passes `test-backend-ops` before any real-server speed run. Decode-only MMVQ padding is not a valid first cut.
 - Next guided step:
   - do not repeat pair/preload-style shared-`q8_1` helpers or graph-local q8 activation caches without a fresh synchronized trace proving q8 quantization is a large node-time share;
   - do not repeat `--no-mmap` or primitive `sdot4` source swaps unless a new lower-level residency/toolchain feature gate changes the premise;
@@ -152,5 +156,5 @@
   - do not pursue local padded-layout or packed32 load patches while ROCm storage still uses `110`-byte Q3_K blocks; a real padded-layout branch must start from backend storage/correctness, not `vecdotq.cuh`;
   - for practical real-context wall, choose a larger H35 route: non-persistent fused/direct Q3_K x F16 or graph scheduling that avoids repeated source staging without broad fp16 residency;
   - for pure H39 decode parity, E196/E197/E199 leave Q3_K route-body work open only if it changes real work/layout toward the Vulkan q8_1 matvec family without the known rejected failure modes: lower grid width, VDR2 register cliff, pair-dot live-state growth, static fusion branch removal, wave64/row-warp reduction-only topology, or storage-blind packed-load rewrites;
-  - choose next between a full ROCm padded-storage E2xx design with a correctness smoke first, or a different structural Q3_K route that reduces dot/dequant work without changing the global tensor storage contract;
+  - if continuing padded storage, start with an env-gated P1/P2 correctness prototype and run `test-backend-ops` Q3_K `MUL_MAT` before real server;
   - keep the strict sequence `baseline r3 -> resource/timing trace -> candidate r3 -> post-check`.

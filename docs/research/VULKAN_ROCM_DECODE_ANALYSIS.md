@@ -117,6 +117,13 @@
   `vecdotq.cuh` 32-bit load rewrite отвергнуты аналитически. Если переносить
   это преимущество в ROCm, нужен отдельный backend-private storage branch с
   padded set/get/view offsets и full Q3_K kernel correctness audit.
+- E200 разложил этот storage branch на проверяемый cut. Минимальная корректная
+  ветка должна покрыть не только MMVQ decode, но и non-split CUDA buffer
+  set/get, Q3_K dequant/getrows, MMVQ, MMQ, затем split/async/copy/view
+  offsets. Current-tree cheap smoke через `test-backend-ops` проходит для
+  Q3_K `MUL_MAT` (`m=16,n=1,k=256` и `m=1,n=64,k=256` на `ROCm0`), поэтому
+  следующий padded-storage код должен сначала сохранить этот correctness gate
+  под env knob, а уже потом идти к real-server speed.
 - Sequential graph-disable diagnostic не показал пользы от launch/graph
   гипотезы на short-decode gate: clean `27.1129 TPS` / `29.15 tok/s decode`
   против `GGML_CUDA_DISABLE_GRAPHS=1` `27.2063 TPS` / `29.28 tok/s`.
