@@ -9,7 +9,7 @@ bool ggml_cuda_mmvq_dispatch_qwen_hot(ggml_type type_x, GGML_CUDA_MMVQ_TYPED_DIS
                 nchannels_x, nchannels_y, nchannels_dst,
                 stride_channel_x, stride_channel_y, stride_channel_dst,
                 nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst,
-                ids_stride, stream);
+                ids_stride, q3k_padded_storage, stream);
             return true;
         case GGML_TYPE_Q4_K:
             ggml_cuda_mmvq_dispatch_type_GGML_TYPE_Q4_K(
@@ -18,7 +18,7 @@ bool ggml_cuda_mmvq_dispatch_qwen_hot(ggml_type type_x, GGML_CUDA_MMVQ_TYPED_DIS
                 nchannels_x, nchannels_y, nchannels_dst,
                 stride_channel_x, stride_channel_y, stride_channel_dst,
                 nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst,
-                ids_stride, stream);
+                ids_stride, q3k_padded_storage, stream);
             return true;
         case GGML_TYPE_Q6_K:
             ggml_cuda_mmvq_dispatch_type_GGML_TYPE_Q6_K(
@@ -27,7 +27,7 @@ bool ggml_cuda_mmvq_dispatch_qwen_hot(ggml_type type_x, GGML_CUDA_MMVQ_TYPED_DIS
                 nchannels_x, nchannels_y, nchannels_dst,
                 stride_channel_x, stride_channel_y, stride_channel_dst,
                 nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst,
-                ids_stride, stream);
+                ids_stride, q3k_padded_storage, stream);
             return true;
         default:
             return false;

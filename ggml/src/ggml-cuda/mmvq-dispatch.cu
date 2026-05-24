@@ -8,6 +8,37 @@ static bool ggml_cuda_trace_mmvq_path_enabled() {
     return enabled;
 }
 
+static size_t ggml_cuda_q3k_padded_storage_alloc_size_for_tensor(const ggml_tensor * tensor) {
+    GGML_ASSERT(tensor->type == GGML_TYPE_Q3_K);
+    GGML_ASSERT(tensor->ne[0] % QK_K == 0);
+    GGML_ASSERT(ggml_nelements(tensor) % QK_K == 0);
+
+    size_t size = (ggml_nelements(tensor) / QK_K) * sizeof(block_q3_K_padded);
+
+    if (tensor->ne[0] % MATRIX_ROW_PADDING != 0) {
+        const int64_t pad_elems = MATRIX_ROW_PADDING - tensor->ne[0] % MATRIX_ROW_PADDING;
+        GGML_ASSERT(pad_elems % QK_K == 0);
+        size += (pad_elems / QK_K) * sizeof(block_q3_K_padded);
+    }
+
+    return size;
+}
+
+static bool ggml_cuda_mmvq_q3k_padded_storage_tensor(const ggml_tensor * tensor) {
+    if (!(std::getenv("GGML_CUDA_Q3K_PADDED_STORAGE") != nullptr &&
+            tensor->type == GGML_TYPE_Q3_K &&
+            tensor->view_src == nullptr &&
+            ggml_is_contiguous(tensor) &&
+            tensor->ne[0] % QK_K == 0 &&
+            ggml_nelements(tensor) % QK_K == 0 &&
+            tensor->buffer != nullptr)) {
+        return false;
+    }
+
+    return ggml_backend_buffer_get_alloc_size(tensor->buffer, tensor) ==
+        ggml_cuda_q3k_padded_storage_alloc_size_for_tensor(tensor);
+}
+
 void ggml_cuda_mmvq_switch_type(
         const void * vx, const ggml_type type_x, const void * vy, const int32_t * ids, const ggml_cuda_mm_fusion_args_device fusion, float * dst,
         const int ncols_x, const int nrows_x, const int ncols_dst,
@@ -15,7 +46,7 @@ void ggml_cuda_mmvq_switch_type(
         const int nchannels_x, const int nchannels_y, const int nchannels_dst,
         const int stride_channel_x, const int stride_channel_y, const int stride_channel_dst,
         const int nsamples_x, const int nsamples_dst, const int stride_sample_x, const int stride_sample_y, const int stride_sample_dst,
-        const int ids_stride, cudaStream_t stream) {
+        const int ids_stride, const bool q3k_padded_storage, cudaStream_t stream) {
     const bool trace_path = ggml_cuda_trace_mmvq_path_enabled();
     const bool has_fusion = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr;
 
@@ -25,7 +56,7 @@ void ggml_cuda_mmvq_switch_type(
             nchannels_x, nchannels_y, nchannels_dst,
             stride_channel_x, stride_channel_y, stride_channel_dst,
             nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst,
-            ids_stride, stream)) {
+            ids_stride, q3k_padded_storage, stream)) {
         if (trace_path) {
             GGML_LOG_INFO(
                 "%s: type=%d/%s route=qwen-hot ncols_x=%d nrows_x=%d ncols_dst=%d ids=%d fusion=%d\n",
@@ -47,7 +78,7 @@ void ggml_cuda_mmvq_switch_type(
             nchannels_x, nchannels_y, nchannels_dst,
             stride_channel_x, stride_channel_y, stride_channel_dst,
             nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst,
-            ids_stride, stream)) {
+            ids_stride, q3k_padded_storage, stream)) {
         if (trace_path) {
             GGML_LOG_INFO(
                 "%s: type=%d/%s route=rest ncols_x=%d nrows_x=%d ncols_dst=%d ids=%d fusion=%d\n",
@@ -158,12 +189,16 @@ void ggml_cuda_mul_mat_vec_q(
     const int64_t stride_channel_y   = ids ? s11  : s12;
 
     const int64_t ids_stride = ids ? ids->nb[1] / ggml_type_size(ids->type) : 0;
+    const bool q3k_padded_storage = ggml_cuda_mmvq_q3k_padded_storage_tensor(src0);
+    if (q3k_padded_storage && fusion && fusion->gate) {
+        GGML_ASSERT(ggml_cuda_mmvq_q3k_padded_storage_tensor(fusion->gate));
+    }
 
     ggml_cuda_mmvq_switch_type(
         src0->data, src0->type, src1_q8_1.get(), ids_d, fusion_local, dst_d, ne00,
         ne01,              ncols_dst,     s01, stride_col_y,     stride_col_dst,
         ne02, nchannels_y, nchannels_dst, s02, stride_channel_y, stride_channel_dst,
-        ne03,              ne3,           s03, s13,              s3,               ids_stride, stream);
+        ne03,              ne3,           s03, s13,              s3,               ids_stride, q3k_padded_storage, stream);
 }
 
 void ggml_cuda_op_mul_mat_vec_q(
@@ -192,7 +227,7 @@ void ggml_cuda_op_mul_mat_vec_q(
     ggml_cuda_mm_fusion_args_device fusion_local{};
     ggml_cuda_mmvq_switch_type(
         src0_dd_i, src0->type, src1_ddq_i, nullptr, fusion_local, dst_dd_i, ne00, row_diff, src1_ncols, stride_row_x, stride_col_y, nrows_dst,
-        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, stream);
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, false, stream);
 
     GGML_UNUSED_VARS(src1, dst, src1_ddf_i, src1_ncols, src1_padded_row_size);
 }

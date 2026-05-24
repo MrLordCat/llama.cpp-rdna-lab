@@ -16,7 +16,7 @@ void ggml_cuda_mmvq_switch_type(
     const int nchannels_x, const int nchannels_y, const int nchannels_dst,
     const int stride_channel_x, const int stride_channel_y, const int stride_channel_dst,
     const int nsamples_x, const int nsamples_dst, const int stride_sample_x, const int stride_sample_y, const int stride_sample_dst,
-    const int ids_stride, cudaStream_t stream);
+    const int ids_stride, const bool q3k_padded_storage, cudaStream_t stream);
 
 #define GGML_CUDA_MMVQ_TYPED_DISPATCH_ARGS \
     const void * vx, const void * vy, const int32_t * ids, const ggml_cuda_mm_fusion_args_device fusion, float * dst, \
@@ -25,7 +25,7 @@ void ggml_cuda_mmvq_switch_type(
     const int nchannels_x, const int nchannels_y, const int nchannels_dst, \
     const int stride_channel_x, const int stride_channel_y, const int stride_channel_dst, \
     const int nsamples_x, const int nsamples_dst, const int stride_sample_x, const int stride_sample_y, const int stride_sample_dst, \
-    const int ids_stride, cudaStream_t stream
+    const int ids_stride, const bool q3k_padded_storage, cudaStream_t stream
 
 #define GGML_CUDA_MMVQ_TYPE_LIST(X) \
     X(GGML_TYPE_Q1_0) \

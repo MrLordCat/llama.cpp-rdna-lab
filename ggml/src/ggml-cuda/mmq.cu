@@ -28,14 +28,40 @@ static int ggml_rdna4_q4k_mmq_max_ne11() {
     return max_ne11;
 }
 
+static size_t ggml_cuda_q3k_padded_storage_alloc_size_for_tensor(const ggml_tensor * tensor) {
+    GGML_ASSERT(tensor->type == GGML_TYPE_Q3_K);
+    GGML_ASSERT(tensor->ne[0] % QK_K == 0);
+    GGML_ASSERT(ggml_nelements(tensor) % QK_K == 0);
+
+    size_t size = (ggml_nelements(tensor) / QK_K) * sizeof(block_q3_K_padded);
+
+    if (tensor->ne[0] % MATRIX_ROW_PADDING != 0) {
+        const int64_t pad_elems = MATRIX_ROW_PADDING - tensor->ne[0] % MATRIX_ROW_PADDING;
+        GGML_ASSERT(pad_elems % QK_K == 0);
+        size += (pad_elems / QK_K) * sizeof(block_q3_K_padded);
+    }
+
+    return size;
+}
+
+static bool ggml_cuda_q3k_padded_storage_tensor(const ggml_tensor * tensor) {
+    if (!(std::getenv("GGML_CUDA_Q3K_PADDED_STORAGE") != nullptr &&
+            tensor->type == GGML_TYPE_Q3_K &&
+            tensor->view_src == nullptr &&
+            ggml_is_contiguous(tensor) &&
+            tensor->ne[0] % QK_K == 0 &&
+            ggml_nelements(tensor) % QK_K == 0 &&
+            tensor->buffer != nullptr)) {
+        return false;
+    }
+
+    return ggml_backend_buffer_get_alloc_size(tensor->buffer, tensor) ==
+        ggml_cuda_q3k_padded_storage_alloc_size_for_tensor(tensor);
+}
+
 static bool ggml_cuda_q3k_padded_storage_mmq_tensor(const ggml_tensor * tensor) {
-    return std::getenv("GGML_CUDA_Q3K_PADDED_STORAGE") != nullptr &&
-        std::getenv("GGML_CUDA_Q3K_PADDED_STORAGE_MMQ") != nullptr &&
-        tensor->type == GGML_TYPE_Q3_K &&
-        tensor->view_src == nullptr &&
-        ggml_is_contiguous(tensor) &&
-        tensor->ne[0] % QK_K == 0 &&
-        ggml_nelements(tensor) % QK_K == 0;
+    return std::getenv("GGML_CUDA_Q3K_PADDED_STORAGE_MMQ") != nullptr &&
+        ggml_cuda_q3k_padded_storage_tensor(tensor);
 }
 
 static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
