@@ -3896,6 +3896,19 @@ static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tens
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
+    if (ggml_cuda_q3k_padded_storage_tensor(tensor)) {
+        const size_t raw_size = ggml_cuda_q3k_padded_storage_raw_size(tensor);
+        GGML_ASSERT(offset == 0);
+        GGML_ASSERT(size == raw_size);
+
+        std::vector<block_q3_K_padded> packed;
+        ggml_cuda_q3k_pack_host_to_padded(data, packed, ggml_cuda_q3k_padded_storage_nblocks(tensor));
+        CUDA_CHECK(cudaMemcpyAsync(tensor->data, packed.data(), packed.size() * sizeof(block_q3_K_padded),
+            cudaMemcpyHostToDevice, cuda_ctx->stream()));
+        CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
+        return;
+    }
+
     CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()));
 }
 
@@ -3904,6 +3917,19 @@ static void ggml_backend_cuda_get_tensor_async(ggml_backend_t backend, const ggm
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
+
+    if (ggml_cuda_q3k_padded_storage_tensor(tensor)) {
+        const size_t raw_size = ggml_cuda_q3k_padded_storage_raw_size(tensor);
+        GGML_ASSERT(offset == 0);
+        GGML_ASSERT(size == raw_size);
+
+        std::vector<block_q3_K_padded> packed(ggml_cuda_q3k_padded_storage_nblocks(tensor));
+        CUDA_CHECK(cudaMemcpyAsync(packed.data(), tensor->data, packed.size() * sizeof(block_q3_K_padded),
+            cudaMemcpyDeviceToHost, cuda_ctx->stream()));
+        CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
+        ggml_cuda_q3k_unpack_padded_to_host(packed, data, packed.size());
+        return;
+    }
 
     CUDA_CHECK(cudaMemcpyAsync(data, (const char *) tensor->data + offset, size, cudaMemcpyDeviceToHost, cuda_ctx->stream()));
 }
@@ -3915,6 +3941,10 @@ static void ggml_backend_cuda_set_tensor_2d_async(ggml_backend_t backend, struct
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
+    if (ggml_cuda_q3k_padded_storage_tensor(tensor)) {
+        GGML_ABORT("%s: Q3_K padded storage does not support partial 2D async set yet", __func__);
+    }
+
     CUDA_CHECK(cudaMemcpy2DAsync(
         (char *) tensor->data + offset, stride_tensor, data, stride_data, size, n_copies, cudaMemcpyHostToDevice, cuda_ctx->stream()));
 }
@@ -3925,6 +3955,10 @@ static void ggml_backend_cuda_get_tensor_2d_async(ggml_backend_t backend, const 
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
+
+    if (ggml_cuda_q3k_padded_storage_tensor(tensor)) {
+        GGML_ABORT("%s: Q3_K padded storage does not support partial 2D async get yet", __func__);
+    }
 
     CUDA_CHECK(cudaMemcpy2DAsync(
         data, stride_data, (const char *) tensor->data + offset, stride_tensor, size, n_copies, cudaMemcpyDeviceToHost, cuda_ctx->stream()));
@@ -3939,6 +3973,10 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
     }
 
     if (!ggml_backend_buffer_is_cuda(buf_src) || !ggml_backend_buffer_is_cuda(buf_dst)) {
+        return false;
+    }
+
+    if (ggml_cuda_q3k_padded_storage_tensor(src) || ggml_cuda_q3k_padded_storage_tensor(dst)) {
         return false;
     }
 
