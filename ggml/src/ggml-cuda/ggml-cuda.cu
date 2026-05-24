@@ -838,6 +838,8 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
     }
 }
 
+static bool ggml_backend_buft_is_cuda_split(ggml_backend_buffer_type_t buft);
+
 static bool ggml_cuda_q3k_padded_dequant_probe_enabled() {
     static bool result = [] {
         const bool enabled = getenv("GGML_CUDA_Q3K_PADDED_DEQUANT_PROBE") != nullptr;
@@ -875,12 +877,16 @@ static bool ggml_cuda_q3k_padded_storage_mmq_enabled() {
 }
 
 static bool ggml_cuda_q3k_padded_storage_tensor(const ggml_tensor * tensor) {
-    return ggml_cuda_q3k_padded_storage_enabled() &&
+    if (!(ggml_cuda_q3k_padded_storage_enabled() &&
         tensor->type == GGML_TYPE_Q3_K &&
         tensor->view_src == nullptr &&
         ggml_is_contiguous(tensor) &&
         tensor->ne[0] % QK_K == 0 &&
-        ggml_nelements(tensor) % QK_K == 0;
+        ggml_nelements(tensor) % QK_K == 0)) {
+        return false;
+    }
+
+    return tensor->buffer == nullptr || !ggml_backend_buft_is_cuda_split(tensor->buffer->buft);
 }
 
 static size_t ggml_cuda_q3k_padded_storage_nblocks(const ggml_tensor * tensor) {
