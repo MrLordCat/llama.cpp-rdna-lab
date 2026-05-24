@@ -1,6 +1,6 @@
 # Vulkan vs ROCm Decode Performance: Глубокий Анализ
 
-Дата: 2026-05-22
+Дата: 2026-05-24
 
 ## 0. Codex Audit / Status Check
 
@@ -87,6 +87,17 @@
   `mul_mat_q_direct 11.72%`; Vulkan split `MUL_MAT_VEC q3_K 72.32%`,
   `MUL_MAT_ADD_VEC q3_K 27.68%`. Следующий ROCm-кандидат должен менять
   Q3_K topology, а не generic fusion/graph/static-branch/occupancy-only policy.
+- E197 проверил самый прямой topology перенос "Vulkan-like wider subgroup":
+  `Q3_K/ncols_dst=1/small_k=1` был env-gated на wave64 `block=(64,1,1)` при
+  сохранении `rows_per_block=2`. Route activation сработал и build прошёл, но
+  hot buckets стали чуть медленнее: fused `ncols_x=5120`
+  `676.110 -> 681.567 ms`, direct `5120` `554.893 -> 557.519 ms`, fused
+  `17408` `415.253 -> 418.187 ms`; clean r1 также не вырос
+  (`31.6788 TPS`, decode `32.365 tok/s`). Это закрывает простую гипотезу
+  "ROCm проигрывает из-за shared cross-warp reduction"; текущий `(32,2,1)`
+  small-k route, похоже, выигрывает от своего K-split/latency-hiding schedule.
+  Следующие ROCm parity кандидаты должны уменьшать реальную Q3_K работу/трафик
+  или менять layout, а не только форму редукции.
 - Sequential graph-disable diagnostic не показал пользы от launch/graph
   гипотезы на short-decode gate: clean `27.1129 TPS` / `29.15 tok/s decode`
   против `GGML_CUDA_DISABLE_GRAPHS=1` `27.2063 TPS` / `29.28 tok/s`.

@@ -131,10 +131,16 @@
   - fresh ROCm Q3_K route split remains `mul_mat_vec_q_fused 56.95%`, `mul_mat_vec_q_direct 31.33%`, `mul_mat_q_direct 11.72%`;
   - fresh Vulkan perf-log remains `MUL_MAT_VEC q3_K 72.32%` and `MUL_MAT_ADD_VEC q3_K 27.68%`;
   - top aligned shapes are still `m=17408,n=1,k=5120`, `m=5120,n=1,k=17408`, `m=10240,n=1,k=5120`, `m=6144,n=1,k=5120`.
+- Done: Q3_K wave64 topology gate (`E197`):
+  - env-gated `Q3_K/ncols_dst=1/small_k=1` wave64 route built and activated as `block=(64,1,1)`;
+  - resource/timing gate was negative on the dominant hot buckets: fused `ncols_x=5120` `676.110 -> 681.567 ms`, direct `5120` `554.893 -> 557.519 ms`, fused `17408` `415.253 -> 418.187 ms`;
+  - clean r1 was non-positive (`31.6788 TPS`, decode `32.365 tok/s`) vs E196 clean ROCm r3 (`31.9233 TPS`, decode `32.3833 tok/s`);
+  - conclusion: removing the explicit cross-warp reduction without changing real Q3_K work does not move the bottleneck. Keep baseline `(32,2,1)` small-k topology and do not repeat row-warp/wave64-style reductions without a fresh low-level signal.
 - Next guided step:
   - do not repeat pair/preload-style shared-`q8_1` helpers without a fresh measured load-pressure signal;
   - do not repeat `--no-mmap` or primitive `sdot4` source swaps unless a new lower-level residency/toolchain feature gate changes the premise;
   - do not pursue static branch-removal/no-bias fusion micro-specializations without instruction-level proof; lower VGPR alone is not enough on this route;
+  - do not pursue wave64/row-warp MMVQ topology as a standalone branch; it preserved row batching but still lost, so the missing Vulkan advantage is not simply "avoid shared cross-warp reduction";
   - for practical real-context wall, choose a larger H35 route: non-persistent fused/direct Q3_K x F16 or graph scheduling that avoids repeated source staging without broad fp16 residency;
-  - for pure H39 decode parity, E196 reopens Q3_K route-body work only if it changes topology toward the Vulkan q8_1 matvec family without the known rejected failure modes: lower grid width, VDR2 register cliff, pair-dot live-state growth, or static fusion branch removal;
+  - for pure H39 decode parity, E196/E197 leave Q3_K route-body work open only if it changes real work/layout toward the Vulkan q8_1 matvec family without the known rejected failure modes: lower grid width, VDR2 register cliff, pair-dot live-state growth, static fusion branch removal, or wave64/row-warp reduction-only topology;
   - keep the strict sequence `baseline r3 -> resource/timing trace -> candidate r3 -> post-check`.

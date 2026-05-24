@@ -61,7 +61,7 @@ Where:
 
 ## Priority (Start Here)
 
-Current user focus (2026-05-23): H39 ROCm decode parity remains open, but E191/E192 show the practical real-context wall lane is currently H35 large-Q3_K prefill dominated. Keep pure decode-parity experiments separate from repo-snapshot wall experiments. H38 remains documented and paused; do not mix its 64k prefill targets with the short-decode ROCm-vs-Vulkan target unless a separate long-context decode trace is being collected.
+Current user focus (2026-05-24): H39 ROCm decode parity remains open, but E197 rejects the simple wave64/row-warp topology transfer, so the next useful ROCm decode branch must reduce real Q3_K work/layout traffic rather than only changing the reduction shape. E191/E192 still show the practical real-context wall lane is H35 large-Q3_K prefill dominated. Keep pure decode-parity experiments separate from repo-snapshot wall experiments. H38 remains documented and paused; do not mix its 64k prefill targets with the short-decode ROCm-vs-Vulkan target unless a separate long-context decode trace is being collected.
 
 1. H11 is completed and kept: E008 confirms ROCm compute vbuffer chunking fixes the native `ub904/1024` residency cliff. E123 post-driver 12k scout found no new speed from retuning chunk size (`128 MiB`, `64 MiB`, and single-chunk all below E113), so allocator chunking is a guard/negative-control path, not the next speed source.
 2. H08 remains useful for symptom triage, but caps/planners are now diagnostic tools rather than the preferred final fix when allocator layout can be repaired.
