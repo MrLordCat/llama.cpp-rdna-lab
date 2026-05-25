@@ -199,6 +199,8 @@ class LlamaCppGUI(QMainWindow):
             self.server_tab.save_settings()
         if hasattr(self.inference_tab, "save_settings"):
             self.inference_tab.save_settings()
+        if hasattr(self.benchmark_tab, "save_settings"):
+            self.benchmark_tab.save_settings()
         
         event.accept()
     

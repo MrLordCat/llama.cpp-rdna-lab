@@ -158,6 +158,7 @@ class BenchmarkTabWidget(QWidget):
     def __init__(self, parent):
         super().__init__()
         self.parent = parent
+        self.settings = getattr(parent, "settings", None)
         self.models_dir = parent.models_dir if hasattr(parent, "models_dir") else Path("models")
         self.project_root = parent.project_root if hasattr(parent, "project_root") else Path.cwd()
         self.history_csv = self.project_root / "build_logs" / "agent-workload" / "BENCH_HISTORY.csv"
@@ -178,7 +179,72 @@ class BenchmarkTabWidget(QWidget):
         self.create_ui()
         self.refresh_models_list()
         self.refresh_build_choices()
+        self.load_settings()
         self.refresh_saved_presets_table()
+
+    def load_settings(self) -> None:
+        if self.settings is None:
+            return
+
+        try:
+            self.at_batch_min_spin.setValue(self.settings.value("benchmark/autotune/batch_min", self.at_batch_min_spin.value(), type=int))
+            self.at_batch_max_spin.setValue(self.settings.value("benchmark/autotune/batch_max", self.at_batch_max_spin.value(), type=int))
+            self.at_batch_step_spin.setValue(self.settings.value("benchmark/autotune/batch_step", self.at_batch_step_spin.value(), type=int))
+
+            self.at_ubatch_min_spin.setValue(self.settings.value("benchmark/autotune/ubatch_min", self.at_ubatch_min_spin.value(), type=int))
+            self.at_ubatch_max_spin.setValue(self.settings.value("benchmark/autotune/ubatch_max", self.at_ubatch_max_spin.value(), type=int))
+            self.at_ubatch_step_spin.setValue(self.settings.value("benchmark/autotune/ubatch_step", self.at_ubatch_step_spin.value(), type=int))
+
+            for name, checkbox in self.autotune_kv_checks.items():
+                checkbox.setChecked(self.settings.value(f"benchmark/autotune/kv/{name}", checkbox.isChecked(), type=bool))
+
+            for name, checkbox in self.autotune_spec_checks.items():
+                checkbox.setChecked(self.settings.value(f"benchmark/autotune/spec/{name}", checkbox.isChecked(), type=bool))
+
+            for name, checkbox in self.autotune_extra_checks.items():
+                checkbox.setChecked(self.settings.value(f"benchmark/autotune/extra/{name}", checkbox.isChecked(), type=bool))
+
+            self.autotune_custom_extra_input.setText(
+                self.settings.value("benchmark/autotune/custom_extra", self.autotune_custom_extra_input.text())
+            )
+            self.autotune_resume_checkbox.setChecked(
+                self.settings.value("benchmark/autotune/resume_session", self.autotune_resume_checkbox.isChecked(), type=bool)
+            )
+            self.autotune_reset_session_checkbox.setChecked(
+                self.settings.value("benchmark/autotune/reset_session", self.autotune_reset_session_checkbox.isChecked(), type=bool)
+            )
+
+            self._update_autotune_grid_preview()
+        except Exception as exc:
+            self.log_output.append(f"[WARN] Failed to load autotune settings: {exc}")
+
+    def save_settings(self) -> None:
+        if self.settings is None:
+            return
+
+        try:
+            self.settings.setValue("benchmark/autotune/batch_min", self.at_batch_min_spin.value())
+            self.settings.setValue("benchmark/autotune/batch_max", self.at_batch_max_spin.value())
+            self.settings.setValue("benchmark/autotune/batch_step", self.at_batch_step_spin.value())
+
+            self.settings.setValue("benchmark/autotune/ubatch_min", self.at_ubatch_min_spin.value())
+            self.settings.setValue("benchmark/autotune/ubatch_max", self.at_ubatch_max_spin.value())
+            self.settings.setValue("benchmark/autotune/ubatch_step", self.at_ubatch_step_spin.value())
+
+            for name, checkbox in self.autotune_kv_checks.items():
+                self.settings.setValue(f"benchmark/autotune/kv/{name}", checkbox.isChecked())
+
+            for name, checkbox in self.autotune_spec_checks.items():
+                self.settings.setValue(f"benchmark/autotune/spec/{name}", checkbox.isChecked())
+
+            for name, checkbox in self.autotune_extra_checks.items():
+                self.settings.setValue(f"benchmark/autotune/extra/{name}", checkbox.isChecked())
+
+            self.settings.setValue("benchmark/autotune/custom_extra", self.autotune_custom_extra_input.text())
+            self.settings.setValue("benchmark/autotune/resume_session", self.autotune_resume_checkbox.isChecked())
+            self.settings.setValue("benchmark/autotune/reset_session", self.autotune_reset_session_checkbox.isChecked())
+        except Exception as exc:
+            self.log_output.append(f"[WARN] Failed to save autotune settings: {exc}")
 
     @staticmethod
     def _create_scroll_panel(widget: QWidget) -> QScrollArea:
@@ -580,10 +646,15 @@ class BenchmarkTabWidget(QWidget):
             self.at_ubatch_step_spin,
         ]:
             spin_box.valueChanged.connect(self._update_autotune_grid_preview)
+            spin_box.valueChanged.connect(self.save_settings)
 
         for checkbox in list(self.autotune_kv_checks.values()) + list(self.autotune_spec_checks.values()) + list(self.autotune_extra_checks.values()):
             checkbox.toggled.connect(self._update_autotune_grid_preview)
+            checkbox.toggled.connect(self.save_settings)
         self.autotune_custom_extra_input.textChanged.connect(self._update_autotune_grid_preview)
+        self.autotune_custom_extra_input.textChanged.connect(self.save_settings)
+        self.autotune_resume_checkbox.toggled.connect(self.save_settings)
+        self.autotune_reset_session_checkbox.toggled.connect(self.save_settings)
         self._update_autotune_grid_preview()
 
         btn_grid = QGridLayout()
@@ -1140,6 +1211,12 @@ class BenchmarkTabWidget(QWidget):
             autotune_kv_values,
             "--autotune-spec-values",
             ",".join(spec_values),
+            "--autotune-ngram-min",
+            str(self.NGRAM_MOD_N_MIN),
+            "--autotune-ngram-match",
+            str(self.NGRAM_MOD_N_MATCH),
+            "--autotune-ngram-max",
+            str(self.NGRAM_MOD_N_MAX),
             "--autotune-max-configs",
             str(max(64, config_count + 8)),
             "--autotune-update-preset",
@@ -1211,12 +1288,6 @@ class BenchmarkTabWidget(QWidget):
         if skipped_spec_values:
             self.log_output.append(
                 "[INFO] Spec skipped (unsupported by server/model): "
-            "--autotune-ngram-min",
-            str(self.NGRAM_MOD_N_MIN),
-            "--autotune-ngram-match",
-            str(self.NGRAM_MOD_N_MATCH),
-            "--autotune-ngram-max",
-            str(self.NGRAM_MOD_N_MAX),
                 + ",".join(skipped_spec_values)
             )
         self.log_output.append(f"[INFO] Spec effective: {','.join(spec_values)}")

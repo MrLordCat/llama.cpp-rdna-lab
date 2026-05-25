@@ -835,6 +835,21 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
         if (cublas_handles[i] != nullptr) {
             CUBLAS_CHECK(cublasDestroy(cublas_handles[i]));
         }
+        for (int j = 0; j < 2; ++j) {
+            if (q3k_pipeline_cublas_handles[i][j] != nullptr) {
+                CUBLAS_CHECK(cublasDestroy(q3k_pipeline_cublas_handles[i][j]));
+            }
+        }
+        if (cublas_src1_f16_reuse_buffers[i] != nullptr) {
+            ggml_cuda_set_device(i);
+            CUDA_CHECK(cudaFree(cublas_src1_f16_reuse_buffers[i]));
+        }
+        if (!cublas_src1_f16_reuse_retired_buffers[i].empty()) {
+            ggml_cuda_set_device(i);
+            for (half * ptr : cublas_src1_f16_reuse_retired_buffers[i]) {
+                CUDA_CHECK(cudaFree(ptr));
+            }
+        }
     }
 }
 
@@ -1970,6 +1985,19 @@ struct q3k_hot_direct_route_config {
     int64_t match_ncols = 0;
 };
 
+struct q3k_cublas_pipeline_config {
+    bool enabled = false;
+    bool allow_graphs = false;
+    int64_t min_ncols = 1024;
+    int64_t min_rows = 4096;
+    int64_t chunk_rows = 6144;
+};
+
+struct cublas_src1_f16_reuse_config {
+    bool enabled = false;
+    int64_t min_ncols = 1024;
+};
+
 static const cublas_q3k_route_trace_config & ggml_cuda_cublas_get_q3k_route_trace_config() {
     static const cublas_q3k_route_trace_config config = [] {
         cublas_q3k_route_trace_config result;
@@ -2043,6 +2071,62 @@ static const q3k_hot_direct_route_config & ggml_cuda_get_q3k_hot_direct_route_co
                 (long long) result.match_row_diff,
                 (long long) result.match_ne00,
                 (long long) result.match_ncols);
+        }
+
+        return result;
+    }();
+
+    return config;
+}
+
+static const q3k_cublas_pipeline_config & ggml_cuda_get_q3k_cublas_pipeline_config() {
+    static const q3k_cublas_pipeline_config config = [] {
+        q3k_cublas_pipeline_config result;
+
+        result.enabled = getenv("GGML_EXPERIMENTAL_Q3K_CUBLAS_PIPELINE") != nullptr;
+        result.allow_graphs = getenv("GGML_EXPERIMENTAL_Q3K_CUBLAS_PIPELINE_ALLOW_GRAPHS") != nullptr;
+
+        if (const char * env = getenv("GGML_EXPERIMENTAL_Q3K_CUBLAS_PIPELINE_MIN_NCOLS")) {
+            result.min_ncols = std::max<int64_t>(0, std::atoll(env));
+        }
+
+        if (const char * env = getenv("GGML_EXPERIMENTAL_Q3K_CUBLAS_PIPELINE_MIN_ROWS")) {
+            result.min_rows = std::max<int64_t>(0, std::atoll(env));
+        }
+
+        if (const char * env = getenv("GGML_EXPERIMENTAL_Q3K_CUBLAS_PIPELINE_CHUNK_ROWS")) {
+            result.chunk_rows = std::max<int64_t>(1, std::atoll(env));
+        }
+
+        if (result.enabled) {
+            GGML_LOG_INFO(
+                "Detected GGML_EXPERIMENTAL_Q3K_CUBLAS_PIPELINE min_ncols=%lld min_rows=%lld chunk_rows=%lld allow_graphs=%d\n",
+                (long long) result.min_ncols,
+                (long long) result.min_rows,
+                (long long) result.chunk_rows,
+                result.allow_graphs ? 1 : 0);
+        }
+
+        return result;
+    }();
+
+    return config;
+}
+
+static const cublas_src1_f16_reuse_config & ggml_cuda_get_cublas_src1_f16_reuse_config() {
+    static const cublas_src1_f16_reuse_config config = [] {
+        cublas_src1_f16_reuse_config result;
+
+        result.enabled = getenv("GGML_EXPERIMENTAL_CUBLAS_SRC1_F16_REUSE") != nullptr;
+
+        if (const char * env = getenv("GGML_EXPERIMENTAL_CUBLAS_SRC1_F16_REUSE_MIN_NCOLS")) {
+            result.min_ncols = std::max<int64_t>(0, std::atoll(env));
+        }
+
+        if (result.enabled) {
+            GGML_LOG_INFO(
+                "Detected GGML_EXPERIMENTAL_CUBLAS_SRC1_F16_REUSE min_ncols=%lld\n",
+                (long long) result.min_ncols);
         }
 
         return result;
@@ -2267,6 +2351,83 @@ static double ggml_cuda_cublas_split_timing_sync_elapsed(
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
+static void ggml_cuda_q3k_cublas_pipeline_sync(
+        ggml_backend_cuda_context & ctx,
+        const char * src0_dd_i, const half * src1_ptr, float * dst_dd_i,
+        const int id, const int64_t row_diff, const int64_t ne00, const int64_t ne10,
+        const int64_t src1_ncols, const int64_t ldc, const bool use_q3k_padded_storage,
+        const int64_t configured_chunk_rows, cudaStream_t main_stream) {
+    constexpr int buffers = 2;
+
+    const int64_t chunk_rows = std::max<int64_t>(1, std::min<int64_t>(configured_chunk_rows, row_diff));
+    const size_t chunk_elems = (size_t) chunk_rows * (size_t) ne00;
+
+    ggml_cuda_pool_alloc<half> chunk0(ctx.pool(id));
+    ggml_cuda_pool_alloc<half> chunk1(ctx.pool(id));
+    chunk0.alloc(chunk_elems);
+    chunk1.alloc(chunk_elems);
+    half * chunks[buffers] = { chunk0.get(), chunk1.get() };
+
+    cudaStream_t dequant_streams[buffers] = {
+        ctx.stream(id, 4),
+        ctx.stream(id, 5),
+    };
+    cudaStream_t gemm_streams[buffers] = {
+        ctx.stream(id, 6),
+        ctx.stream(id, 7),
+    };
+    cudaEvent_t src1_ready_event = nullptr;
+    cudaEvent_t ready_events[buffers] = { nullptr, nullptr };
+    CUDA_CHECK(cudaEventCreateWithFlags(&src1_ready_event, cudaEventDisableTiming));
+    CUDA_CHECK(cudaEventRecord(src1_ready_event, main_stream));
+    for (int i = 0; i < buffers; ++i) {
+        CUDA_CHECK(cudaEventCreateWithFlags(&ready_events[i], cudaEventDisableTiming));
+        CUDA_CHECK(cudaStreamWaitEvent(gemm_streams[i], src1_ready_event, 0));
+        CUBLAS_CHECK(cublasSetStream(ctx.q3k_pipeline_cublas_handle(id, i), gemm_streams[i]));
+    }
+
+    const to_fp16_cuda_t to_fp16_cuda = ggml_get_to_fp16_cuda(GGML_TYPE_Q3_K);
+    GGML_ASSERT(to_fp16_cuda != nullptr);
+    GGML_ASSERT(ne00 % QK_K == 0);
+    const size_t blocks_per_row = (size_t) ne00 / QK_K;
+    const size_t q3_block_size = use_q3k_padded_storage ? sizeof(block_q3_K_padded) : ggml_type_size(GGML_TYPE_Q3_K);
+
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    for (int64_t row_start = 0, chunk = 0; row_start < row_diff; row_start += chunk_rows, ++chunk) {
+        const int64_t rows = std::min<int64_t>(chunk_rows, row_diff - row_start);
+        const int buf = chunk % buffers;
+        if (chunk >= buffers) {
+            CUDA_CHECK(cudaStreamSynchronize(gemm_streams[buf]));
+        }
+
+        const char * src0_chunk = src0_dd_i + (size_t) row_start * blocks_per_row * q3_block_size;
+        const int64_t ne = rows * ne00;
+        if (use_q3k_padded_storage) {
+            ggml_cuda_q3_K_padded_to_fp16(src0_chunk, chunks[buf], ne, dequant_streams[buf]);
+        } else {
+            to_fp16_cuda(src0_chunk, chunks[buf], ne, dequant_streams[buf]);
+        }
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaEventRecord(ready_events[buf], dequant_streams[buf]));
+        CUDA_CHECK(cudaStreamWaitEvent(gemm_streams[buf], ready_events[buf], 0));
+        CUBLAS_CHECK(
+            cublasGemmEx(ctx.q3k_pipeline_cublas_handle(id, buf), CUBLAS_OP_T, CUBLAS_OP_N,
+                    rows, src1_ncols, ne10,
+                    &alpha, chunks[buf], CUDA_R_16F, ne00,
+                            src1_ptr,    CUDA_R_16F, ne10,
+                    &beta,  dst_dd_i + row_start, CUDA_R_32F, ldc,
+                    CUBLAS_COMPUTE_32F,
+                    CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+    }
+
+    for (int i = 0; i < buffers; ++i) {
+        CUDA_CHECK(cudaStreamSynchronize(gemm_streams[i]));
+        CUDA_CHECK(cudaEventDestroy(ready_events[i]));
+    }
+    CUDA_CHECK(cudaEventDestroy(src1_ready_event));
+}
+
 static void ggml_cuda_op_mul_mat_cublas(
     ggml_backend_cuda_context & ctx,
     const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const char * src0_dd_i, const float * src1_ddf_i,
@@ -2381,9 +2542,42 @@ static void ggml_cuda_op_mul_mat_cublas(
         const bool use_q3k_padded_dequant_probe =
             src0->type == GGML_TYPE_Q3_K && !use_q3k_padded_storage && ggml_cuda_q3k_padded_dequant_probe_enabled();
         const bool use_q3k_padded_dequant = use_q3k_padded_storage || use_q3k_padded_dequant_probe;
+        const auto & force_compute_type = ggml_cuda_cublas_get_force_compute_type();
+        const auto & q3k_cublas_pipeline_config = ggml_cuda_get_q3k_cublas_pipeline_config();
+        const auto & src1_f16_reuse_config = ggml_cuda_get_cublas_src1_f16_reuse_config();
+        const uint64_t src1_f16_reuse_epoch = ++ctx.cublas_src1_f16_reuse_epoch[id];
+        const bool use_compute32 = !force_compute_type.fp16 && (GGML_CUDA_CC_IS_CDNA(cc)
+                                        || GGML_CUDA_CC_IS_RDNA4(cc)
+                                        || cc == GGML_CUDA_CC_VOLTA
+                                        || force_compute_type.fp32);
+        bool q3k_cublas_pipeline_graph_blocked = false;
+#ifdef USE_CUDA_GRAPH
+        if (q3k_cublas_pipeline_config.enabled && !q3k_cublas_pipeline_config.allow_graphs) {
+#ifdef GGML_USE_HIP
+            hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+            CUDA_CHECK(hipStreamIsCapturing(stream, &capture_status));
+            q3k_cublas_pipeline_graph_blocked = ctx.any_cuda_graph_enabled() || capture_status != hipStreamCaptureStatusNone;
+#else
+            cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+            CUDA_CHECK(cudaStreamIsCapturing(stream, &capture_status));
+            q3k_cublas_pipeline_graph_blocked = ctx.any_cuda_graph_enabled() || capture_status != cudaStreamCaptureStatusNone;
+#endif // GGML_USE_HIP
+        }
+#endif // USE_CUDA_GRAPH
+        const bool use_q3k_cublas_pipeline =
+            q3k_cublas_pipeline_config.enabled &&
+            !q3k_cublas_pipeline_graph_blocked &&
+            ctx.curr_stream_no == 0 &&
+            use_compute32 &&
+            src0->type == GGML_TYPE_Q3_K &&
+            src0->op == GGML_OP_NONE &&
+            !use_q3k_padded_dequant_probe &&
+            src1_ncols >= q3k_cublas_pipeline_config.min_ncols &&
+            row_diff >= q3k_cublas_pipeline_config.min_rows &&
+            ne00 % QK_K == 0;
         double src0_alloc_ms = 0.0;
         double src0_convert_ms = 0.0;
-        if (src0->type != GGML_TYPE_F16) {
+        if (src0->type != GGML_TYPE_F16 && !use_q3k_cublas_pipeline) {
             const to_fp16_cuda_t to_fp16_cuda = ggml_get_to_fp16_cuda(src0->type);
             GGML_ASSERT(to_fp16_cuda != nullptr);
             size_t ne = row_diff*ne00;
@@ -2415,7 +2609,8 @@ static void ggml_cuda_op_mul_mat_cublas(
                 src0_convert_ms = trace_stage_ms(true);
             }
         }
-        const double src0_ms = split_timing_config.detail ? src0_alloc_ms + src0_convert_ms : trace_stage_ms(src0->type != GGML_TYPE_F16);
+        const double src0_ms = use_q3k_cublas_pipeline ? 0.0 :
+            (split_timing_config.detail ? src0_alloc_ms + src0_convert_ms : trace_stage_ms(src0->type != GGML_TYPE_F16));
         const half * src0_ptr = src0->type == GGML_TYPE_F16 ? (const half *) src0_dd_i : src0_as_f16.get();
         ggml_cuda_cublas_trace_q3k_route(
             q3k_route_trace_config, src0, src1, dst, src0_dd_i, id, cc,
@@ -2427,38 +2622,82 @@ static void ggml_cuda_op_mul_mat_cublas(
         ggml_cuda_pool_alloc<half> src1_as_f16(ctx.pool(id));
         double src1_alloc_ms = 0.0;
         double src1_convert_ms = 0.0;
+        const bool can_reuse_src1_f16 =
+            src1_f16_reuse_config.enabled &&
+            ctx.curr_stream_no == 0 &&
+            src1->type != GGML_TYPE_F16 &&
+            src1_ncols >= src1_f16_reuse_config.min_ncols;
+        const bool reuse_src1_f16 =
+            can_reuse_src1_f16 &&
+            ctx.cublas_src1_f16_reuse_valid[id] &&
+            ctx.cublas_src1_f16_reuse_key_epoch[id] + 1 == src1_f16_reuse_epoch &&
+            ctx.cublas_src1_f16_reuse_tensor[id] == src1 &&
+            ctx.cublas_src1_f16_reuse_tensor_data[id] == src1->data &&
+            ctx.cublas_src1_f16_reuse_src_ptr[id] == src1_ddf_i &&
+            ctx.cublas_src1_f16_reuse_ne10[id] == ne10 &&
+            ctx.cublas_src1_f16_reuse_ncols[id] == src1_ncols &&
+            ctx.cublas_src1_f16_reuse_stream_no[id] == ctx.curr_stream_no;
         if (src1->type != GGML_TYPE_F16) {
-            const to_fp16_cuda_t to_fp16_cuda = ggml_get_to_fp16_cuda(src1->type);
-            GGML_ASSERT(to_fp16_cuda != nullptr);
             size_t ne = src1_ncols*ne10;
-            if (split_timing_config.detail) {
-                const auto src1_alloc_start = std::chrono::high_resolution_clock::now();
-                src1_as_f16.alloc(ne);
-                const auto src1_alloc_end = std::chrono::high_resolution_clock::now();
-                src1_alloc_ms = std::chrono::duration<double, std::milli>(src1_alloc_end - src1_alloc_start).count();
-                trace_stage_start = std::chrono::high_resolution_clock::now();
+            if (reuse_src1_f16) {
+                ctx.cublas_src1_f16_reuse_key_epoch[id] = src1_f16_reuse_epoch;
+                if (trace_split_timing) {
+                    trace_stage_start = std::chrono::high_resolution_clock::now();
+                }
             } else {
-                src1_as_f16.alloc(ne);
-            }
-            to_fp16_cuda(src1_ddf_i, src1_as_f16.get(), ne, stream);
-            if (split_timing_config.detail) {
-                src1_convert_ms = trace_stage_ms(true);
+                const to_fp16_cuda_t to_fp16_cuda = ggml_get_to_fp16_cuda(src1->type);
+                GGML_ASSERT(to_fp16_cuda != nullptr);
+                half * src1_f16_dst = nullptr;
+                if (split_timing_config.detail) {
+                    const auto src1_alloc_start = std::chrono::high_resolution_clock::now();
+                    src1_f16_dst = can_reuse_src1_f16 ? ctx.cublas_src1_f16_reuse_buffer(id, ne) : src1_as_f16.alloc(ne);
+                    const auto src1_alloc_end = std::chrono::high_resolution_clock::now();
+                    src1_alloc_ms = std::chrono::duration<double, std::milli>(src1_alloc_end - src1_alloc_start).count();
+                    trace_stage_start = std::chrono::high_resolution_clock::now();
+                } else {
+                    src1_f16_dst = can_reuse_src1_f16 ? ctx.cublas_src1_f16_reuse_buffer(id, ne) : src1_as_f16.alloc(ne);
+                }
+                to_fp16_cuda(src1_ddf_i, src1_f16_dst, ne, stream);
+                if (can_reuse_src1_f16) {
+                    ctx.cublas_src1_f16_reuse_tensor[id] = src1;
+                    ctx.cublas_src1_f16_reuse_tensor_data[id] = src1->data;
+                    ctx.cublas_src1_f16_reuse_src_ptr[id] = src1_ddf_i;
+                    ctx.cublas_src1_f16_reuse_ne10[id] = ne10;
+                    ctx.cublas_src1_f16_reuse_ncols[id] = src1_ncols;
+                    ctx.cublas_src1_f16_reuse_stream_no[id] = ctx.curr_stream_no;
+                    ctx.cublas_src1_f16_reuse_key_epoch[id] = src1_f16_reuse_epoch;
+                    ctx.cublas_src1_f16_reuse_valid[id] = true;
+                }
+                if (split_timing_config.detail) {
+                    src1_convert_ms = trace_stage_ms(true);
+                }
             }
         }
-        const double src1_ms = split_timing_config.detail ? src1_alloc_ms + src1_convert_ms : trace_stage_ms(src1->type != GGML_TYPE_F16);
+        const double src1_ms = split_timing_config.detail ? src1_alloc_ms + src1_convert_ms : trace_stage_ms(src1->type != GGML_TYPE_F16 && !reuse_src1_f16);
         ggml_cuda_cublas_trace_src1_reuse(
             src1_reuse_trace_config, src0, src1, dst, src1_ddf_i, id, cc,
             row_diff, ne00, ne10, src1_ncols, src1_ms);
-        const half * src1_ptr = src1->type == GGML_TYPE_F16 ? (const half *) src1_ddf_i : src1_as_f16.get();
+        const half * src1_ptr = src1->type == GGML_TYPE_F16 ? (const half *) src1_ddf_i :
+            (can_reuse_src1_f16 ? ctx.cublas_src1_f16_reuse_buffers[id] : src1_as_f16.get());
 
         CUBLAS_CHECK(cublasSetStream(ctx.cublas_handle(id), stream));
 
-        const auto & force_compute_type = ggml_cuda_cublas_get_force_compute_type();
-
-        if (!force_compute_type.fp16 && (GGML_CUDA_CC_IS_CDNA(cc)
-                                        || GGML_CUDA_CC_IS_RDNA4(cc)
-                                        || cc == GGML_CUDA_CC_VOLTA
-                                        || force_compute_type.fp32))
+        if (use_q3k_cublas_pipeline)
+        {
+            ggml_cuda_q3k_cublas_pipeline_sync(
+                ctx, src0_dd_i, src1_ptr, dst_dd_i, id, row_diff, ne00, ne10,
+                src1_ncols, ldc, use_q3k_padded_storage, q3k_cublas_pipeline_config.chunk_rows, stream);
+            const double pipeline_ms = trace_stage_ms(true);
+            if (trace_split_timing) {
+                GGML_LOG_INFO(
+                    "GGML_TRACE_CUBLAS_SPLIT_TIMING: path=q3k_pipeline_sync compute=32f dst=%s src0_type=%s src1_type=%s dev=%d cc=%d row_diff=%lld ne00=%lld ne10=%lld ncols=%lld ldc=%lld src0_ms=0.000 src1_ms=%.3f gemm_ms=%.3f dst_ms=0.000 sum_ms=%.3f pipe_chunk=%lld capture=%d\n",
+                    dst->name, ggml_type_name(src0->type), ggml_type_name(src1->type), id, cc,
+                    (long long) row_diff, (long long) ne00, (long long) ne10, (long long) src1_ncols, (long long) ldc,
+                    src1_ms, pipeline_ms, src1_ms + pipeline_ms,
+                    (long long) q3k_cublas_pipeline_config.chunk_rows, trace_capture_active);
+            }
+        }
+        else if (use_compute32)
         {
             const float alpha = 1.0f;
             const float beta = 0.0f;

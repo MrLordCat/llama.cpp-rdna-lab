@@ -109,6 +109,18 @@ E243 rechecked GDN block geometry after the driver/code changes. A temporary
 Conclusion: GDN warp-count/block-geometry tuning is below the current cold +20%
 target; keep focusing on Q3_K route body/layout/topology.
 
+E244 checked a heavier graph-scheduling idea: combine prompt chunks for the same
+hot Q3_K weight into one wider rocBLAS GEMM. Standalone scout results were real
+but moderate: `17408x5120` separate `3*n2048+n1345` took `11.7008 ms` versus
+`10.9411 ms` for `n=7489` (`1.0694x`), and `5120x17408` took `11.4727 ->
+10.7176 ms` (`1.0705x`). The `n=6144` check removed the tail effect and still
+showed only `1.0562x` / `1.0361x` on the two main full-chunk shapes. Even with
+optimistic src0 conversion reuse, the route ceiling is about `1.0756x` wall
+before overhead (`~8.28 TPS` from the E241 baseline, below the `9.23 TPS` +20%
+target). Keep this as a possible stack component only for a residency-safe
+streaming design; do not implement a naive full-prompt FFN route that keeps
+hundreds of MiB of f32 intermediates resident.
+
 ## Vulkan 64k full-context rebaseline (2026-05-21)
 
 Фокус переключён на Vulkan `ctx=65536`: пользователь заметил, что длинный контекст ощущается сильно медленнее, несмотря на быстрый Vulkan decode. Проверка была сделана через реальный `llama-server` request в `scripts\repo_snapshot_context_bench.py`, не через синтетический bench. Финальная калибровка prompt: `152000` chars, `57409` prompt tokens, `120` completion tokens, Qwen3.6-27B-Q3_K_S, q4/q4 KV, FlashAttention on, full offload, `spec=none`, thinking on, no reuse (`--cache-ram 0 --ctx-checkpoints 0`).

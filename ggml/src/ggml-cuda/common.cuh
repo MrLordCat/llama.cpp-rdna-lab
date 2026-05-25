@@ -1376,6 +1376,19 @@ struct ggml_backend_cuda_context {
 
     cudaStream_t streams[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = { { nullptr } };
     cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES] = {nullptr};
+    cublasHandle_t q3k_pipeline_cublas_handles[GGML_CUDA_MAX_DEVICES][2] = {{nullptr}};
+    half * cublas_src1_f16_reuse_buffers[GGML_CUDA_MAX_DEVICES] = {nullptr};
+    size_t cublas_src1_f16_reuse_buffer_elems[GGML_CUDA_MAX_DEVICES] = {0};
+    std::vector<half *> cublas_src1_f16_reuse_retired_buffers[GGML_CUDA_MAX_DEVICES];
+    const ggml_tensor * cublas_src1_f16_reuse_tensor[GGML_CUDA_MAX_DEVICES] = {nullptr};
+    const void * cublas_src1_f16_reuse_tensor_data[GGML_CUDA_MAX_DEVICES] = {nullptr};
+    const float * cublas_src1_f16_reuse_src_ptr[GGML_CUDA_MAX_DEVICES] = {nullptr};
+    int64_t cublas_src1_f16_reuse_ne10[GGML_CUDA_MAX_DEVICES] = {0};
+    int64_t cublas_src1_f16_reuse_ncols[GGML_CUDA_MAX_DEVICES] = {0};
+    int cublas_src1_f16_reuse_stream_no[GGML_CUDA_MAX_DEVICES] = {0};
+    uint64_t cublas_src1_f16_reuse_epoch[GGML_CUDA_MAX_DEVICES] = {0};
+    uint64_t cublas_src1_f16_reuse_key_epoch[GGML_CUDA_MAX_DEVICES] = {0};
+    bool cublas_src1_f16_reuse_valid[GGML_CUDA_MAX_DEVICES] = {false};
 
     int curr_stream_no = 0;
 
@@ -1463,6 +1476,29 @@ struct ggml_backend_cuda_context {
 
     cublasHandle_t cublas_handle() {
         return cublas_handle(device);
+    }
+
+    cublasHandle_t q3k_pipeline_cublas_handle(int device, int index) {
+        GGML_ASSERT(index >= 0 && index < 2);
+        if (q3k_pipeline_cublas_handles[device][index] == nullptr) {
+            ggml_cuda_set_device(device);
+            CUBLAS_CHECK(cublasCreate(&q3k_pipeline_cublas_handles[device][index]));
+            CUBLAS_CHECK(cublasSetMathMode(q3k_pipeline_cublas_handles[device][index], CUBLAS_TF32_TENSOR_OP_MATH));
+        }
+        return q3k_pipeline_cublas_handles[device][index];
+    }
+
+    half * cublas_src1_f16_reuse_buffer(int device, size_t elems) {
+        if (cublas_src1_f16_reuse_buffer_elems[device] < elems) {
+            ggml_cuda_set_device(device);
+            if (cublas_src1_f16_reuse_buffers[device] != nullptr) {
+                cublas_src1_f16_reuse_retired_buffers[device].push_back(cublas_src1_f16_reuse_buffers[device]);
+            }
+            CUDA_CHECK(cudaMalloc(&cublas_src1_f16_reuse_buffers[device], elems * sizeof(half)));
+            cublas_src1_f16_reuse_buffer_elems[device] = elems;
+            cublas_src1_f16_reuse_valid[device] = false;
+        }
+        return cublas_src1_f16_reuse_buffers[device];
     }
 
     // pool
