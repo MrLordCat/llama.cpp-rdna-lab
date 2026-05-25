@@ -71,7 +71,8 @@ Where:
 - E233 rejected transposed fp16 staging for rocBLAS: the hypothetical `A*B` contract was `3.5%` to `16.3%` slower than the current `A^T*B` contract before staging cost.
 - E234 rejected current-compatible f16-output+convert: standalone GEMM had some f16-output signal, but runtime shifted cost into convert-back and narrow wall A/B regressed `7.89 -> 7.63 TPS`.
 - E235 rejected broad FFN f16-intermediate fusion as the next route: the main `n=2048` FFN scout regressed `9.7029 -> 10.8515 ms`; tail `n=1382` improved but has too little solo ceiling and requires correctness-heavy graph work.
-- Next H42 work must change real Q3_K body/layout/topology or start from a correctness-first storage contract extension; library selector, batching, row split, launch-count, A-layout, f16-output-with-convert, and broad f16-intermediate FFN routes are now exhausted for this cold lane.
+- E236 rejected f32-first secondary-route work: robust `cublas_backend/f32` is only `443.826 ms` in the E228 trace, and the broad SSM `ncols=2048/1382` shapes are not covered by current direct f32 kernels without a low-ceiling selector-only force.
+- Next H42 work must change real Q3_K body/layout/topology or start from a correctness-first storage contract extension; library selector, batching, row split, launch-count, A-layout, f16-output-with-convert, broad f16-intermediate FFN routes, and f32-first secondary routing are now exhausted for this cold lane.
 
 ## Priority (Start Here)
 
