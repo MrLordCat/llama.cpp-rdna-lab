@@ -1882,9 +1882,9 @@ def parse_args() -> argparse.Namespace:
             "format 'name::args' or plain args token"
         ),
     )
-    parser.add_argument("--autotune-ngram-min", type=int, default=48)
-    parser.add_argument("--autotune-ngram-match", type=int, default=24)
-    parser.add_argument("--autotune-ngram-max", type=int, default=64)
+    parser.add_argument("--autotune-ngram-min", type=int, default=12)
+    parser.add_argument("--autotune-ngram-match", type=int, default=16)
+    parser.add_argument("--autotune-ngram-max", type=int, default=32)
     parser.add_argument("--autotune-mtp-draft-n-max", type=int, default=3)
     parser.add_argument("--autotune-max-configs", type=int, default=48, help="safety cap for sweep size")
     parser.add_argument(

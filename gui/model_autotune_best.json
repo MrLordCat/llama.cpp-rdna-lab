@@ -27,7 +27,7 @@
     "kv_v": "q4_0",
     "spec_mode": "ngram-mod",
     "extra_preset": "session-ngram121632",
-    "extra_args": "--spec-type ngram-mod --spec-ngram-mod-n-match 12 --spec-ngram-mod-n-min 16 --spec-ngram-mod-n-max 32",
+    "extra_args": "--spec-type ngram-mod --spec-ngram-mod-n-min 12 --spec-ngram-mod-n-match 16 --spec-ngram-mod-n-max 32",
     "build_id": "",
     "run_id": "",
     "label": "e113-driver5012-rocm-reuse-ngram121632-r3b",

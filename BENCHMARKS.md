@@ -35,7 +35,8 @@ build_logs\agent-workload\<label>.server.log
 
 ## ROCm 12k cold-first gate after ngram GUI profile (2026-05-25)
 
-GUI/server ngram launches now use the measured repeated-session profile
+GUI/server, Bench/Autotune, agent autotune defaults, large-context helper
+scripts, and bundled ngram presets now use the measured repeated-session profile
 `ngram-mod 12/16/32`, but E227 confirms this is not a cold-first speed route.
 The cold reference remains E226 same-task no-reuse r3:
 `7.8890 TPS`, prompt mean `5978.04 ms`, decode `30.45 tok/s`.
@@ -52,6 +53,12 @@ Conclusion: keep `12/16/32` for repeated/session workflows where prompt reuse
 exposes draftable spans, but the cold +20% target still requires structural
 ROCm route work. From the E226 cold r3 baseline the +20% target is about
 `9.47 TPS`.
+
+E241 recentered the immediate current-snapshot cold control after the GUI/default
+alignment: `7.6932 TPS`, prompt `6204.02 ms`, prompt eval `1207.12 tok/s`,
+decode `30.74 tok/s`, errors `0`. For the next same-snapshot r1 gates, the
+current +20% cold target is about `9.23 TPS`; with decode unchanged, the route
+model says a prefill-only solution needs roughly `1.30x` local prefill speed.
 
 ## ROCm 12k cold Q3_K route recenter (2026-05-25)
 

@@ -151,6 +151,10 @@ class NumericTableWidgetItem(QTableWidgetItem):
 class BenchmarkTabWidget(QWidget):
     """Dedicated Bench & Autotune tab."""
 
+    NGRAM_MOD_N_MIN = 12
+    NGRAM_MOD_N_MATCH = 16
+    NGRAM_MOD_N_MAX = 32
+
     def __init__(self, parent):
         super().__init__()
         self.parent = parent
@@ -486,13 +490,18 @@ class BenchmarkTabWidget(QWidget):
         extra_grid.addWidget(QLabel("Extra presets:"), 0, 0)
         self._autotune_extra_presets_map: dict[str, str] = {
             "base": "base",
-            "ngram-balanced": "ngram-balanced::--spec-ngram-mod-n-min 48 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-max 64",
+            "ngram-balanced": (
+                "ngram-balanced::"
+                f"--spec-ngram-mod-n-min {self.NGRAM_MOD_N_MIN} "
+                f"--spec-ngram-mod-n-match {self.NGRAM_MOD_N_MATCH} "
+                f"--spec-ngram-mod-n-max {self.NGRAM_MOD_N_MAX}"
+            ),
             "ngram-wide": "ngram-wide::--spec-ngram-mod-n-min 64 --spec-ngram-mod-n-match 32 --spec-ngram-mod-n-max 96",
         }
         self.autotune_extra_checks: dict[str, QCheckBox] = {}
         for index, (key, enabled, hint) in enumerate([
             ("base", True, "No extra server arguments"),
-            ("ngram-balanced", False, "Balanced ngram knobs for ngram-mod"),
+            ("ngram-balanced", False, "Measured ngram-mod profile: 12/16/32"),
             ("ngram-wide", False, "Wider ngram window for ngram-mod"),
         ]):
             checkbox = QCheckBox(key)
@@ -928,9 +937,9 @@ class BenchmarkTabWidget(QWidget):
         spec_mode = self.spec_combo.currentText()
         spec_extra = [f"--spec-type {spec_mode}"]
         if spec_mode in {"ngram-mod", "ngram-mtp"}:
-            spec_extra.append("--spec-ngram-mod-n-min 48")
-            spec_extra.append("--spec-ngram-mod-n-match 24")
-            spec_extra.append("--spec-ngram-mod-n-max 64")
+            spec_extra.append(f"--spec-ngram-mod-n-min {self.NGRAM_MOD_N_MIN}")
+            spec_extra.append(f"--spec-ngram-mod-n-match {self.NGRAM_MOD_N_MATCH}")
+            spec_extra.append(f"--spec-ngram-mod-n-max {self.NGRAM_MOD_N_MAX}")
         if spec_mode in {"mtp", "ngram-mtp"}:
             spec_extra.append("--spec-draft-n-max 3")
 
@@ -1202,6 +1211,12 @@ class BenchmarkTabWidget(QWidget):
         if skipped_spec_values:
             self.log_output.append(
                 "[INFO] Spec skipped (unsupported by server/model): "
+            "--autotune-ngram-min",
+            str(self.NGRAM_MOD_N_MIN),
+            "--autotune-ngram-match",
+            str(self.NGRAM_MOD_N_MATCH),
+            "--autotune-ngram-max",
+            str(self.NGRAM_MOD_N_MAX),
                 + ",".join(skipped_spec_values)
             )
         self.log_output.append(f"[INFO] Spec effective: {','.join(spec_values)}")

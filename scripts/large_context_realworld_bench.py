@@ -22,6 +22,9 @@ DEFAULT_OUT_DIR = ROOT / "build_logs" / "agent-workload"
 DEFAULT_RUNNER = ROOT / "scripts" / "agent_workload_bench.py"
 DEFAULT_CTX_FAST64 = "32768,65536"
 DEFAULT_CTX_SENTINEL128 = "65536,131072"
+NGRAM_MOD_N_MIN = 12
+NGRAM_MOD_N_MATCH = 16
+NGRAM_MOD_N_MAX = 32
 
 
 def parse_args() -> argparse.Namespace:
@@ -123,9 +126,9 @@ def build_server_extra(spec_profile: str, server_extra: str) -> str:
     parts.extend(
         [
             "--spec-type ngram-mod",
-            "--spec-ngram-mod-n-match 24",
-            "--spec-ngram-mod-n-min 48",
-            "--spec-ngram-mod-n-max 64",
+            f"--spec-ngram-mod-n-min {NGRAM_MOD_N_MIN}",
+            f"--spec-ngram-mod-n-match {NGRAM_MOD_N_MATCH}",
+            f"--spec-ngram-mod-n-max {NGRAM_MOD_N_MAX}",
         ]
     )
     return " ".join(parts).strip()
