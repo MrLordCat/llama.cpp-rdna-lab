@@ -76,7 +76,9 @@ Where:
 - E238 rejected graph-level FFN tall GEMM: standalone rocBLAS tall-pair timing looked positive, but the in-runtime point gate timed out and robust main `ncols=2048` tall route took `4304.43 ms` on `187` rows versus E217 current `1415.111 ms` on `189` pairs; the in-runtime GEMM alone regressed before GLU/output cost.
 - E239 rejected a padded Q3_K dequant half2 store rewrite: correctness passed and `src0_ms` improved only `517.104 -> 495.805 ms` (`-4.12%`), below the point gate, while trace-context prompt eval tied/slightly regressed.
 - E240 rejected the only targeted mid-ubatch recapture: `ubatch=3072` was viable but slower than E226 (`7.7050` vs `7.8890` TPS), so the `2048..4096` boundary is not the next speed route.
-- Next H42 work must change real Q3_K body/layout/topology or start from a correctness-first storage contract extension; library selector, batching, row split, launch-count, A-layout, f16-output-with-convert, broad f16-intermediate FFN routes, f32-first secondary routing, dense reuse of the MoE/RDNA4 staging body, current hipBLAS/cublas tall-FFN pairing, staging-only padded-dequant store rewrites, and nearby ubatch recapture are now exhausted for this cold lane.
+- E242 rejected concurrent rocBLAS stream pairing: the dominant `17408x5120@n2048` pair was slightly slower, and the tail-only win was too small for graph-pairing complexity.
+- E243 rejected GDN warp-count/block-geometry tuning: `GGML_GDN_NUM_WARPS=2` improved synchronized GDN timing only `~1.5%`, below wall A/B threshold after E230's larger GDN point win failed to convert.
+- Next H42 work must change real Q3_K body/layout/topology or start from a correctness-first storage contract extension; library selector, batching, row split, launch-count/block-geometry, A-layout, f16-output-with-convert, broad f16-intermediate FFN routes, f32-first secondary routing, dense reuse of the MoE/RDNA4 staging body, current hipBLAS/cublas tall-FFN pairing, staging-only padded-dequant store rewrites, GDN geometry, and nearby ubatch recapture are now exhausted for this cold lane.
 
 ## Priority (Start Here)
 

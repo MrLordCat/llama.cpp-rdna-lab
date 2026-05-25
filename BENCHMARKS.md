@@ -102,6 +102,13 @@ gate/up pair (`6.9594 -> 7.0088 ms`, `1.007x` slower). The `n1345` tail improved
 locally (`4.4483 -> 3.8136 ms`), but that bucket is too small to justify graph
 pairing complexity. Continue only with a real Q3_K body/layout/topology change.
 
+E243 rechecked GDN block geometry after the driver/code changes. A temporary
+`GGML_GDN_NUM_WARPS=2` point probe moved synchronized GDN total only
+`1002.233 -> 987.097 ms` (`-1.5%` local) with trace-context wall tied
+(`7.4809 -> 7.4870`). The probe was reverted and `build-rocm-vec` rebuilt.
+Conclusion: GDN warp-count/block-geometry tuning is below the current cold +20%
+target; keep focusing on Q3_K route body/layout/topology.
+
 ## Vulkan 64k full-context rebaseline (2026-05-21)
 
 Фокус переключён на Vulkan `ctx=65536`: пользователь заметил, что длинный контекст ощущается сильно медленнее, несмотря на быстрый Vulkan decode. Проверка была сделана через реальный `llama-server` request в `scripts\repo_snapshot_context_bench.py`, не через синтетический bench. Финальная калибровка prompt: `152000` chars, `57409` prompt tokens, `120` completion tokens, Qwen3.6-27B-Q3_K_S, q4/q4 KV, FlashAttention on, full offload, `spec=none`, thinking on, no reuse (`--cache-ram 0 --ctx-checkpoints 0`).
