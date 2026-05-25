@@ -4,6 +4,7 @@
 #include <hip/hip_runtime.h>
 #include <rocblas/rocblas.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -200,6 +201,57 @@ static int run_batched(
     return 0;
 }
 
+static int run_concurrent(
+        rocblas_handle handle0,
+        rocblas_handle handle1,
+        hipStream_t stream0,
+        hipStream_t stream1,
+        const args_t & args,
+        const void * a0,
+        const void * a1,
+        const void * b,
+        float * d0,
+        float * d1,
+        double & avg_pair_ms) {
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    const int lda = args.k;
+    const int ldb = args.k;
+    const int ldc = args.m;
+    const int ldd = args.m;
+
+    auto gemm = [&](rocblas_handle handle, const void * a, float * d) -> rocblas_status {
+        return rocblas_gemm_ex(
+            handle, rocblas_operation_transpose, rocblas_operation_none,
+            args.m, args.n, args.k,
+            &alpha, a, rocblas_datatype_f16_r, lda,
+            b, rocblas_datatype_f16_r, ldb,
+            &beta, d, rocblas_datatype_f32_r, ldc,
+            d, rocblas_datatype_f32_r, ldd,
+            rocblas_datatype_f32_r, rocblas_gemm_algo_standard, 0, 0);
+    };
+
+    for (int i = 0; i < args.warmup; ++i) {
+        ROCBLAS_CHECK(gemm(handle0, a0, d0));
+        ROCBLAS_CHECK(gemm(handle1, a1, d1));
+    }
+    HIP_CHECK(hipStreamSynchronize(stream0));
+    HIP_CHECK(hipStreamSynchronize(stream1));
+
+    const auto start = std::chrono::high_resolution_clock::now();
+    for (int i = 0; i < args.iters; ++i) {
+        ROCBLAS_CHECK(gemm(handle0, a0, d0));
+        ROCBLAS_CHECK(gemm(handle1, a1, d1));
+    }
+    HIP_CHECK(hipStreamSynchronize(stream0));
+    HIP_CHECK(hipStreamSynchronize(stream1));
+    const auto stop = std::chrono::high_resolution_clock::now();
+
+    avg_pair_ms = std::chrono::duration<double, std::milli>(stop - start).count() /
+        static_cast<double>(args.iters);
+    return 0;
+}
+
 int main(int argc, char ** argv) {
     args_t args;
     if (!parse_args(argc, argv, args)) {
@@ -210,11 +262,17 @@ int main(int argc, char ** argv) {
 
     hipStream_t stream = nullptr;
     HIP_CHECK(hipStreamCreate(&stream));
+    hipStream_t stream1 = nullptr;
+    HIP_CHECK(hipStreamCreate(&stream1));
 
     rocblas_handle handle = nullptr;
     ROCBLAS_CHECK(rocblas_create_handle(&handle));
     ROCBLAS_CHECK(rocblas_set_stream(handle, stream));
     ROCBLAS_CHECK(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_host));
+    rocblas_handle handle1 = nullptr;
+    ROCBLAS_CHECK(rocblas_create_handle(&handle1));
+    ROCBLAS_CHECK(rocblas_set_stream(handle1, stream1));
+    ROCBLAS_CHECK(rocblas_set_pointer_mode(handle1, rocblas_pointer_mode_host));
 
     const size_t a_elems = static_cast<size_t>(args.k) * static_cast<size_t>(args.m);
     const size_t b_elems = static_cast<size_t>(args.k) * static_cast<size_t>(args.n);
@@ -256,7 +314,12 @@ int main(int argc, char ** argv) {
 
     double separate_ms = 0.0;
     double batched_ms = 0.0;
+    double concurrent_ms = 0.0;
     int status = run_separate(handle, stream, args, a0, a1, b, d0, d1, separate_ms);
+    if (status != 0) {
+        return status;
+    }
+    status = run_concurrent(handle, handle1, stream, stream1, args, a0, a1, b, d0, d1, concurrent_ms);
     if (status != 0) {
         return status;
     }
@@ -272,6 +335,11 @@ int main(int argc, char ** argv) {
               << std::fixed << std::setprecision(4) << (separate_ms / 2.0) << ",1.0000\n";
     std::cout << args.m << "," << args.n << "," << args.k << ","
               << args.warmup << "," << args.iters
+              << ",concurrent_streams," << std::fixed << std::setprecision(4) << concurrent_ms << ","
+              << std::fixed << std::setprecision(4) << (concurrent_ms / 2.0) << ","
+              << std::fixed << std::setprecision(4) << (concurrent_ms / separate_ms) << "\n";
+    std::cout << args.m << "," << args.n << "," << args.k << ","
+              << args.warmup << "," << args.iters
               << ",batched," << std::fixed << std::setprecision(4) << batched_ms << ","
               << std::fixed << std::setprecision(4) << (batched_ms / 2.0) << ","
               << std::fixed << std::setprecision(4) << (batched_ms / separate_ms) << "\n";
@@ -284,7 +352,9 @@ int main(int argc, char ** argv) {
     HIP_CHECK(hipFree(b));
     HIP_CHECK(hipFree(d0));
     HIP_CHECK(hipFree(d1));
+    ROCBLAS_CHECK(rocblas_destroy_handle(handle1));
     ROCBLAS_CHECK(rocblas_destroy_handle(handle));
+    HIP_CHECK(hipStreamDestroy(stream1));
     HIP_CHECK(hipStreamDestroy(stream));
     return 0;
 }

@@ -96,6 +96,12 @@ was `7.8474 TPS`, while chunk `4096` was `7.7753 TPS` with prompt mean worsening
 from `6036.77` to `6118.88 ms`. Conclusion: keep current GDN default; the chunk
 route is a bottleneck-shift example, not a cold-first TPS improvement.
 
+E242 closed another FFN library-scheduling branch before runtime integration:
+two concurrent rocBLAS streams did not improve the dominant `17408x5120@n2048`
+gate/up pair (`6.9594 -> 7.0088 ms`, `1.007x` slower). The `n1345` tail improved
+locally (`4.4483 -> 3.8136 ms`), but that bucket is too small to justify graph
+pairing complexity. Continue only with a real Q3_K body/layout/topology change.
+
 ## Vulkan 64k full-context rebaseline (2026-05-21)
 
 Фокус переключён на Vulkan `ctx=65536`: пользователь заметил, что длинный контекст ощущается сильно медленнее, несмотря на быстрый Vulkan decode. Проверка была сделана через реальный `llama-server` request в `scripts\repo_snapshot_context_bench.py`, не через синтетический bench. Финальная калибровка prompt: `152000` chars, `57409` prompt tokens, `120` completion tokens, Qwen3.6-27B-Q3_K_S, q4/q4 KV, FlashAttention on, full offload, `spec=none`, thinking on, no reuse (`--cache-ram 0 --ctx-checkpoints 0`).
