@@ -33,6 +33,62 @@ build_logs\agent-workload\<label>.server.log
 
 Для коротких агентных ответов runner по умолчанию добавляет `--chat-template-kwargs {"enable_thinking":false,"preserve_thinking":false}`. Это можно отключить флагом `--no-disable-thinking`.
 
+## ROCm 12k cold-first gate after ngram GUI profile (2026-05-25)
+
+GUI/server ngram launches now use the measured repeated-session profile
+`ngram-mod 12/16/32`, but E227 confirms this is not a cold-first speed route.
+The cold reference remains E226 same-task no-reuse r3:
+`7.8890 TPS`, prompt mean `5978.04 ms`, decode `30.45 tok/s`.
+
+| Route | Aggregate TPS | Prompt ms mean | Decode tok/s mean | Decision |
+| --- | ---: | ---: | ---: | --- |
+| ROCm cold baseline, `spec=none` | `7.8890` | `5978.04` | `30.45` | baseline |
+| ROCm `ngram-mod 12/16/32` | `7.8987` | `5995.01` | `30.845` | cold tie |
+| ROCm `ngram-mod 24/48/64` | `7.8976` | `5996.79` | `30.85` | cold tie |
+| Vulkan q4/q4 `spec=none` | `6.7552` | `7854.255` | `40.56` | reject for cold 12k |
+| Vulkan q4/q4 graphics queue + `--no-mmap` | `7.0101` | `7522.98` | `40.88` | still below ROCm |
+
+Conclusion: keep `12/16/32` for repeated/session workflows where prompt reuse
+exposes draftable spans, but the cold +20% target still requires structural
+ROCm route work. From the E226 cold r3 baseline the +20% target is about
+`9.47 TPS`.
+
+## ROCm 12k cold Q3_K route recenter (2026-05-25)
+
+E228 re-ran point-level traces on the current H43-default ROCm build and updated
+driver. These are trace diagnostics, not wall speed claims. The Q3_K split trace
+completed without errors, but sync/detail tracing lowered wall TPS to `7.0592`.
+
+Robust Q3_K cuBLAS split, excluding one long `sum_ms >= 20` outlier:
+
+| Scope | Calls | Total ms | src0 convert | src1 | GEMM | GEMM share |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Q3_K cuBLAS robust rows | `1395` | `3783.195` | `508.206` | `363.521` | `2906.403` | `76.82%` |
+| `17408x5120@2048` | `378` | `1398.159` | `177.540` | `84.195` | `1131.560` | `80.9%` |
+| `5120x17408@2048` | `189` | `786.054` | `89.144` | `98.414` | `598.457` | `76.1%` |
+
+Full kernel trace agrees: `MUL_MAT/q3_K` is `4159.323 ms`, or `54.16%` of
+traced total; `GATED_DELTA_NET/f32` is second at `998.759 ms` (`13.01%`).
+rocBLAS logging shows the dominant f16/f16->f32 GEMM_EX shapes are emitted with
+`solution_index 0`. The next cold-first ROCm candidate should therefore be a
+GEMM-side route/body/solution-index probe for the dominant Q3_K families, not
+another fp16 staging cache or current-MMQ selector salvage.
+
+E229 added `scripts/research/rocm_rocblas_solution_scout.cpp` and checked exact
+rocBLAS solution indices. The only confirmed local win on a large repeated
+family was `(5120,2048,17408)` with solution `60017`: `3.1253 -> 2.5927 ms`
+(`0.8296x`). The dominant `(17408,2048,5120)` family rejected solution override
+on confirm (`3.3551 -> 3.3833 ms`), and rocBLAS metric/flag gates regressed.
+Projected confirmed savings are only about `121 ms` on the trace before runtime
+overhead, so no runtime solution-index route was added.
+
+E230 checked the second hotspot, `GATED_DELTA_NET`. Larger GDN chunk sizes moved
+sync point timing from `1017.705 ms` down to `813.862 ms` (`GGML_GDN_CHUNK_SIZE=4096`,
+about `-20%` local), but no-trace cold wall did not convert: paired r1 control
+was `7.8474 TPS`, while chunk `4096` was `7.7753 TPS` with prompt mean worsening
+from `6036.77` to `6118.88 ms`. Conclusion: keep current GDN default; the chunk
+route is a bottleneck-shift example, not a cold-first TPS improvement.
+
 ## Vulkan 64k full-context rebaseline (2026-05-21)
 
 Фокус переключён на Vulkan `ctx=65536`: пользователь заметил, что длинный контекст ощущается сильно медленнее, несмотря на быстрый Vulkan decode. Проверка была сделана через реальный `llama-server` request в `scripts\repo_snapshot_context_bench.py`, не через синтетический bench. Финальная калибровка prompt: `152000` chars, `57409` prompt tokens, `120` completion tokens, Qwen3.6-27B-Q3_K_S, q4/q4 KV, FlashAttention on, full offload, `spec=none`, thinking on, no reuse (`--cache-ram 0 --ctx-checkpoints 0`).
