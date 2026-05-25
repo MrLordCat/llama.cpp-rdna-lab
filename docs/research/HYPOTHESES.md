@@ -68,7 +68,9 @@ Where:
 - E229 rejected direct rocBLAS solution-index plumbing for the dominant shape: `(17408,2048,5120)` default remained best/tied, and the smaller confirmed wins project to only about `121 ms` before runtime overhead.
 - E231 rejected a host/scheduler-first branch: graph build, alloc, and inputs were about `42 ms` total in a sync-timed `6525 ms` ubatch run.
 - E232 rejected rocBLAS batched gate/up pairing: `rocblas_gemm_batched_ex` batch=2 was about `27x` slower than two separate default GEMMs on the hot/tail `17408x5120` shapes.
-- Next H42 work must change real Q3_K body/layout/topology or start from a correctness-first storage contract extension; library selector, batching, row split, and launch-count routes are now exhausted for this cold lane.
+- E233 rejected transposed fp16 staging for rocBLAS: the hypothetical `A*B` contract was `3.5%` to `16.3%` slower than the current `A^T*B` contract before staging cost.
+- E234 rejected current-compatible f16-output+convert: standalone GEMM had some f16-output signal, but runtime shifted cost into convert-back and narrow wall A/B regressed `7.89 -> 7.63 TPS`.
+- Next H42 work must change real Q3_K body/layout/topology or start from a correctness-first storage contract extension; library selector, batching, row split, launch-count, A-layout, and f16-output-with-convert routes are now exhausted for this cold lane.
 
 ## Priority (Start Here)
 
