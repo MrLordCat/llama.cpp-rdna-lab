@@ -72,7 +72,8 @@ Where:
 - E234 rejected current-compatible f16-output+convert: standalone GEMM had some f16-output signal, but runtime shifted cost into convert-back and narrow wall A/B regressed `7.89 -> 7.63 TPS`.
 - E235 rejected broad FFN f16-intermediate fusion as the next route: the main `n=2048` FFN scout regressed `9.7029 -> 10.8515 ms`; tail `n=1382` improved but has too little solo ceiling and requires correctness-heavy graph work.
 - E236 rejected f32-first secondary-route work: robust `cublas_backend/f32` is only `443.826 ms` in the E228 trace, and the broad SSM `ncols=2048/1382` shapes are not covered by current direct f32 kernels without a low-ceiling selector-only force.
-- Next H42 work must change real Q3_K body/layout/topology or start from a correctness-first storage contract extension; library selector, batching, row split, launch-count, A-layout, f16-output-with-convert, broad f16-intermediate FFN routes, and f32-first secondary routing are now exhausted for this cold lane.
+- E237 rejected dense Q3_K reuse of the existing RDNA4 MMQ staging body: exact `17408x5120@2048` current-MMQ point regressed `2053.749 -> 2496.968 ms` while shared memory rose `40448 -> 61956 B`.
+- Next H42 work must change real Q3_K body/layout/topology or start from a correctness-first storage contract extension; library selector, batching, row split, launch-count, A-layout, f16-output-with-convert, broad f16-intermediate FFN routes, f32-first secondary routing, and dense reuse of the MoE/RDNA4 staging body are now exhausted for this cold lane.
 
 ## Priority (Start Here)
 
