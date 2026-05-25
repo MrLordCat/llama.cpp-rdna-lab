@@ -70,11 +70,11 @@ class SettingsManager:
         if hasattr(self.gui, 'server_spec_draft_n_max_spin'):
             self.gui.server_spec_draft_n_max_spin.setValue(self.settings.value("server_spec_draft_n_max", 3, type=int))
         if hasattr(self.gui, 'server_spec_ngram_match_spin'):
-            self.gui.server_spec_ngram_match_spin.setValue(self.settings.value("server_spec_ngram_match", 24, type=int))
+            self.gui.server_spec_ngram_match_spin.setValue(self.settings.value("server_spec_ngram_match", 16, type=int))
         if hasattr(self.gui, 'server_spec_ngram_n_min_spin'):
-            self.gui.server_spec_ngram_n_min_spin.setValue(self.settings.value("server_spec_ngram_n_min", 48, type=int))
+            self.gui.server_spec_ngram_n_min_spin.setValue(self.settings.value("server_spec_ngram_n_min", 12, type=int))
         if hasattr(self.gui, 'server_spec_ngram_n_max_spin'):
-            self.gui.server_spec_ngram_n_max_spin.setValue(self.settings.value("server_spec_ngram_n_max", 64, type=int))
+            self.gui.server_spec_ngram_n_max_spin.setValue(self.settings.value("server_spec_ngram_n_max", 32, type=int))
         if hasattr(self.gui, 'server_vision_checkbox'):
             self.gui.server_vision_checkbox.setChecked(self.settings.value("server_vision", False, type=bool))
         if hasattr(self.gui, 'server_mmproj_path_edit'):

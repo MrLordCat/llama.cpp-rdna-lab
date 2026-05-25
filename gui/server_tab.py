@@ -17,6 +17,10 @@ from threads import ServerThread
 
 class ServerTabWidget(QWidget):
     """Tab for launching llama-server"""
+
+    NGRAM_MOD_N_MIN = 12
+    NGRAM_MOD_N_MATCH = 16
+    NGRAM_MOD_N_MAX = 32
     
     def __init__(self, parent):
         super().__init__()
@@ -275,21 +279,21 @@ class ServerTabWidget(QWidget):
         self.server_ngram_min = QSpinBox()
         self.server_ngram_min.setMinimum(1)
         self.server_ngram_min.setMaximum(512)
-        self.server_ngram_min.setValue(1)
+        self.server_ngram_min.setValue(self.NGRAM_MOD_N_MIN)
         ngram_layout.addWidget(self.server_ngram_min)
 
         ngram_layout.addWidget(QLabel("Match:"))
         self.server_ngram_match = QSpinBox()
         self.server_ngram_match.setMinimum(1)
         self.server_ngram_match.setMaximum(512)
-        self.server_ngram_match.setValue(80)
+        self.server_ngram_match.setValue(self.NGRAM_MOD_N_MATCH)
         ngram_layout.addWidget(self.server_ngram_match)
 
         ngram_layout.addWidget(QLabel("Max:"))
         self.server_ngram_max = QSpinBox()
         self.server_ngram_max.setMinimum(1)
         self.server_ngram_max.setMaximum(512)
-        self.server_ngram_max.setValue(128)
+        self.server_ngram_max.setValue(self.NGRAM_MOD_N_MAX)
         ngram_layout.addWidget(self.server_ngram_max)
         ngram_layout.addStretch()
         spec_layout.addLayout(ngram_layout)
@@ -458,12 +462,55 @@ class ServerTabWidget(QWidget):
         """Handle speculative type change"""
         spec_type = self.server_spec_type_combo.currentText()
         is_ngram = spec_type == "ngram-mod"
+        if is_ngram:
+            self._apply_ngram_mod_profile()
         if hasattr(self, "ngram_layout_group"):
             # Enable/disable ngram widgets
             for i in range(self.ngram_layout_group.count()):
                 widget = self.ngram_layout_group.itemAt(i).widget()
                 if widget:
                     widget.setEnabled(is_ngram)
+
+    def _apply_ngram_mod_profile(self):
+        """Apply the measured E226 ROCm repeated/session ngram profile."""
+        self.server_ngram_min.setValue(self.NGRAM_MOD_N_MIN)
+        self.server_ngram_match.setValue(self.NGRAM_MOD_N_MATCH)
+        self.server_ngram_max.setValue(self.NGRAM_MOD_N_MAX)
+
+    def _ngram_mod_args(self) -> list[str]:
+        return [
+            "--spec-type", "ngram-mod",
+            "--spec-ngram-mod-n-min", str(self.NGRAM_MOD_N_MIN),
+            "--spec-ngram-mod-n-match", str(self.NGRAM_MOD_N_MATCH),
+            "--spec-ngram-mod-n-max", str(self.NGRAM_MOD_N_MAX),
+        ]
+
+    @staticmethod
+    def _spec_type_from_tokens(tokens: list[str]) -> str | None:
+        for i, tok in enumerate(tokens[:-1]):
+            if tok == "--spec-type":
+                return tokens[i + 1].strip().lower()
+        return None
+
+    def _normalize_ngram_extra_tokens(self, tokens: list[str]) -> list[str]:
+        skip_value_for = {
+            "--spec-type",
+            "--spec-ngram-mod-n-min",
+            "--spec-ngram-mod-n-match",
+            "--spec-ngram-mod-n-max",
+        }
+        normalized = []
+        skip_next = False
+        for tok in tokens:
+            if skip_next:
+                skip_next = False
+                continue
+            if tok in skip_value_for:
+                skip_next = True
+                continue
+            normalized.append(tok)
+        normalized.extend(self._ngram_mod_args())
+        return normalized
 
     def browse_server_model(self):
         """Browse for model file"""
@@ -640,12 +687,16 @@ class ServerTabWidget(QWidget):
 
         if spec_type == "ngram-mod":
             self.server_spec_type_combo.setCurrentText("ngram-mod")
+            self._apply_ngram_mod_profile()
         elif spec_type == "mtp":
             self.server_spec_type_combo.setCurrentText("mtp")
         elif spec_type == "draft":
             self.server_spec_type_combo.setCurrentText("draft")
         elif spec_type == "none":
             self.server_spec_type_combo.setCurrentText("None")
+
+        if spec_type == "ngram-mod":
+            ngram_min = ngram_max = ngram_match = None
 
         if ngram_min is not None:
             try:
@@ -773,6 +824,9 @@ class ServerTabWidget(QWidget):
             except ValueError:
                 extra_tokens = extra_args.split()
 
+        if self._spec_type_from_tokens(extra_tokens) == "ngram-mod":
+            extra_tokens = self._normalize_ngram_extra_tokens(extra_tokens)
+
         # Avoid duplicate speculative flags when preset already supplies them via Extra Arguments.
         has_spec_in_extra = any(tok.startswith("--spec-") or tok == "--spec-type" for tok in extra_tokens)
         has_no_mmap_in_extra = "--no-mmap" in extra_tokens
@@ -786,12 +840,8 @@ class ServerTabWidget(QWidget):
                     self.server_log.append("[INFO] MTP requires --parallel 1, overriding selected value")
                     command.extend(["--parallel", "1"])
             elif spec_type == "ngram-mod":
-                command.extend([
-                    "--spec-type", "ngram-mod",
-                    "--spec-ngram-mod-n-match", str(self.server_ngram_match.value()),
-                    "--spec-ngram-mod-n-min", str(self.server_ngram_min.value()),
-                    "--spec-ngram-mod-n-max", str(self.server_ngram_max.value()),
-                ])
+                self._apply_ngram_mod_profile()
+                command.extend(self._ngram_mod_args())
 
         if self.server_flash_attn_check.isChecked():
             command.extend(["--flash-attn", "on"])
@@ -1145,9 +1195,9 @@ class ServerTabWidget(QWidget):
         self.server_spec_type_combo.setCurrentText(settings.value("server/spec_type", "None"))
         self.server_spec_draft_n.setValue(int(settings.value("server/spec_draft_n", 5)))
         self.server_spec_draft_n_max.setValue(int(settings.value("server/spec_draft_n_max", 3)))
-        self.server_ngram_min.setValue(int(settings.value("server/spec_ngram_min", 1)))
-        self.server_ngram_match.setValue(int(settings.value("server/spec_ngram_match", 80)))
-        self.server_ngram_max.setValue(int(settings.value("server/spec_ngram_max", 128)))
+        self.server_ngram_min.setValue(int(settings.value("server/spec_ngram_min", self.NGRAM_MOD_N_MIN)))
+        self.server_ngram_match.setValue(int(settings.value("server/spec_ngram_match", self.NGRAM_MOD_N_MATCH)))
+        self.server_ngram_max.setValue(int(settings.value("server/spec_ngram_max", self.NGRAM_MOD_N_MAX)))
 
         self.server_flash_attn_check.setChecked(settings.value("server/flash_attn", True, type=bool))
         self.server_no_warmup_check.setChecked(settings.value("server/no_warmup", True, type=bool))

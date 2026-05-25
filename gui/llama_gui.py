@@ -34,6 +34,10 @@ from threads import ServerThread, InferenceThread, UpdateForkThread
 
 class LlamaCppGUI(QMainWindow):
     """Main window for llama.cpp GUI"""
+
+    NGRAM_MOD_N_MIN = 12
+    NGRAM_MOD_N_MATCH = 16
+    NGRAM_MOD_N_MAX = 32
     
     # Build directory names for different backends
     BUILD_DIRS = {
@@ -700,21 +704,21 @@ class LlamaCppGUI(QMainWindow):
         speculative_layout.addWidget(QLabel("n-match:"), 1, 2)
         self.server_spec_ngram_match_spin = QSpinBox()
         self.server_spec_ngram_match_spin.setRange(1, 256)
-        self.server_spec_ngram_match_spin.setValue(24)
+        self.server_spec_ngram_match_spin.setValue(self.NGRAM_MOD_N_MATCH)
         self.server_spec_ngram_match_spin.setToolTip("Used for ngram-mod via --spec-ngram-mod-n-match.")
         speculative_layout.addWidget(self.server_spec_ngram_match_spin, 1, 3)
 
         speculative_layout.addWidget(QLabel("n-min:"), 2, 0)
         self.server_spec_ngram_n_min_spin = QSpinBox()
         self.server_spec_ngram_n_min_spin.setRange(1, 256)
-        self.server_spec_ngram_n_min_spin.setValue(48)
+        self.server_spec_ngram_n_min_spin.setValue(self.NGRAM_MOD_N_MIN)
         self.server_spec_ngram_n_min_spin.setToolTip("Used for ngram-mod via --spec-ngram-mod-n-min.")
         speculative_layout.addWidget(self.server_spec_ngram_n_min_spin, 2, 1)
 
         speculative_layout.addWidget(QLabel("n-max:"), 2, 2)
         self.server_spec_ngram_n_max_spin = QSpinBox()
         self.server_spec_ngram_n_max_spin.setRange(1, 256)
-        self.server_spec_ngram_n_max_spin.setValue(64)
+        self.server_spec_ngram_n_max_spin.setValue(self.NGRAM_MOD_N_MAX)
         self.server_spec_ngram_n_max_spin.setToolTip("Used for ngram-mod via --spec-ngram-mod-n-max.")
         speculative_layout.addWidget(self.server_spec_ngram_n_max_spin, 2, 3)
 
@@ -1757,6 +1761,8 @@ class LlamaCppGUI(QMainWindow):
         spec_type = self._get_server_speculative_type()
         mtp_enabled = spec_type == "mtp"
         ngram_enabled = spec_type == "ngram-mod"
+        if ngram_enabled:
+            self._apply_server_ngram_mod_profile()
 
         for attr in ("server_spec_draft_n_max_spin",):
             widget = getattr(self, attr, None)
@@ -1782,12 +1788,21 @@ class LlamaCppGUI(QMainWindow):
             self.server_spec_status_label.setStyleSheet("color: #FF9800; font-style: italic; padding: 2px 0px;")
         elif spec_type == "ngram-mod":
             self.server_spec_status_label.setText(
-                "ngram-mod is already benchmarked on this hardware and uses --spec-ngram-mod-* flags."
+                "ngram-mod uses the measured E226 profile: n-min=12, n-match=16, n-max=32."
             )
             self.server_spec_status_label.setStyleSheet("color: #4CAF50; font-style: italic; padding: 2px 0px;")
         else:
             self.server_spec_status_label.setText("Speculative decoding disabled.")
             self.server_spec_status_label.setStyleSheet("color: #888; font-style: italic; padding: 2px 0px;")
+
+    def _apply_server_ngram_mod_profile(self):
+        """Apply the measured E226 ROCm repeated/session ngram profile."""
+        if hasattr(self, "server_spec_ngram_n_min_spin"):
+            self.server_spec_ngram_n_min_spin.setValue(self.NGRAM_MOD_N_MIN)
+        if hasattr(self, "server_spec_ngram_match_spin"):
+            self.server_spec_ngram_match_spin.setValue(self.NGRAM_MOD_N_MATCH)
+        if hasattr(self, "server_spec_ngram_n_max_spin"):
+            self.server_spec_ngram_n_max_spin.setValue(self.NGRAM_MOD_N_MAX)
 
     def _looks_like_mtp_model(self, model_path: Path) -> bool:
         """Detect common MTP/NextN markers in model filenames."""
@@ -2200,21 +2215,13 @@ class LlamaCppGUI(QMainWindow):
                 "--spec-draft-n-max", str(self.server_spec_draft_n_max_spin.value()),
             ])
         elif spec_type == "ngram-mod":
-            ngram_n_min = self.server_spec_ngram_n_min_spin.value()
-            ngram_n_max = self.server_spec_ngram_n_max_spin.value()
-            if ngram_n_min > ngram_n_max:
-                QMessageBox.warning(
-                    self,
-                    "Invalid ngram-mod Range",
-                    "n-min must be less than or equal to n-max for ngram-mod."
-                )
-                return
+            self._apply_server_ngram_mod_profile()
 
             command.extend([
                 "--spec-type", "ngram-mod",
-                "--spec-ngram-mod-n-match", str(self.server_spec_ngram_match_spin.value()),
-                "--spec-ngram-mod-n-min", str(ngram_n_min),
-                "--spec-ngram-mod-n-max", str(ngram_n_max),
+                "--spec-ngram-mod-n-min", str(self.NGRAM_MOD_N_MIN),
+                "--spec-ngram-mod-n-match", str(self.NGRAM_MOD_N_MATCH),
+                "--spec-ngram-mod-n-max", str(self.NGRAM_MOD_N_MAX),
             ])
 
         # KV cache type (TurboQuant support)
@@ -3642,11 +3649,11 @@ class LlamaCppGUI(QMainWindow):
         if hasattr(self, 'server_spec_draft_n_max_spin'):
             self.server_spec_draft_n_max_spin.setValue(self.settings.value("server_spec_draft_n_max", 3, type=int))
         if hasattr(self, 'server_spec_ngram_match_spin'):
-            self.server_spec_ngram_match_spin.setValue(self.settings.value("server_spec_ngram_match", 24, type=int))
+            self.server_spec_ngram_match_spin.setValue(self.settings.value("server_spec_ngram_match", self.NGRAM_MOD_N_MATCH, type=int))
         if hasattr(self, 'server_spec_ngram_n_min_spin'):
-            self.server_spec_ngram_n_min_spin.setValue(self.settings.value("server_spec_ngram_n_min", 48, type=int))
+            self.server_spec_ngram_n_min_spin.setValue(self.settings.value("server_spec_ngram_n_min", self.NGRAM_MOD_N_MIN, type=int))
         if hasattr(self, 'server_spec_ngram_n_max_spin'):
-            self.server_spec_ngram_n_max_spin.setValue(self.settings.value("server_spec_ngram_n_max", 64, type=int))
+            self.server_spec_ngram_n_max_spin.setValue(self.settings.value("server_spec_ngram_n_max", self.NGRAM_MOD_N_MAX, type=int))
         if hasattr(self, 'server_vision_checkbox'):
             self.server_vision_checkbox.setChecked(self.settings.value("server_vision", False, type=bool))
         if hasattr(self, 'server_mmproj_path_edit'):
