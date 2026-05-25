@@ -44,8 +44,51 @@ static size_t ggml_cuda_q3k_padded_storage_alloc_size_for_tensor(const ggml_tens
     return size;
 }
 
+static bool ggml_cuda_q3k_padded_storage_enabled() {
+    static bool result = [] {
+        const char * env = std::getenv("GGML_CUDA_Q3K_PADDED_STORAGE");
+#ifdef GGML_USE_HIP
+        const bool enabled = env == nullptr ? true : std::atoi(env) != 0;
+#else
+        const bool enabled = env != nullptr && std::atoi(env) != 0;
+#endif
+        return enabled;
+    }();
+
+    return result;
+}
+
+static bool ggml_cuda_q3k_padded_storage_mmq_enabled() {
+    static bool result = [] {
+        const char * env = std::getenv("GGML_CUDA_Q3K_PADDED_STORAGE_MMQ");
+#ifdef GGML_USE_HIP
+        const bool enabled = env == nullptr ? true : std::atoi(env) != 0;
+#else
+        const bool enabled = env != nullptr && std::atoi(env) != 0;
+#endif
+        return enabled;
+    }();
+
+    return result;
+}
+
 static bool ggml_cuda_q3k_padded_storage_tensor(const ggml_tensor * tensor) {
-    if (!(std::getenv("GGML_CUDA_Q3K_PADDED_STORAGE") != nullptr &&
+    if (tensor->type == GGML_TYPE_Q3_K &&
+            tensor->view_src != nullptr &&
+            tensor->view_src->type == GGML_TYPE_Q3_K &&
+            ggml_is_contiguous(tensor->view_src) &&
+            tensor->view_src->ne[0] % QK_K == 0 &&
+            ggml_nelements(tensor->view_src) % QK_K == 0 &&
+            tensor->view_src->buffer != nullptr) {
+        const size_t owner_raw_size = (ggml_nelements(tensor->view_src) / QK_K) * sizeof(block_q3_K);
+        const size_t owner_alloc_size = ggml_backend_buffer_get_alloc_size(tensor->view_src->buffer, tensor->view_src);
+
+        if (owner_alloc_size > owner_raw_size) {
+            GGML_ABORT("Q3_K padded MMQ path does not support tensor views yet");
+        }
+    }
+
+    if (!(ggml_cuda_q3k_padded_storage_enabled() &&
             tensor->type == GGML_TYPE_Q3_K &&
             tensor->view_src == nullptr &&
             ggml_is_contiguous(tensor) &&
@@ -60,7 +103,7 @@ static bool ggml_cuda_q3k_padded_storage_tensor(const ggml_tensor * tensor) {
 }
 
 static bool ggml_cuda_q3k_padded_storage_mmq_tensor(const ggml_tensor * tensor) {
-    return std::getenv("GGML_CUDA_Q3K_PADDED_STORAGE_MMQ") != nullptr &&
+    return ggml_cuda_q3k_padded_storage_mmq_enabled() &&
         ggml_cuda_q3k_padded_storage_tensor(tensor);
 }
 

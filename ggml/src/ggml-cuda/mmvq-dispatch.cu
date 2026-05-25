@@ -25,8 +25,7 @@ static size_t ggml_cuda_q3k_padded_storage_alloc_size_for_tensor(const ggml_tens
 }
 
 static bool ggml_cuda_mmvq_q3k_padded_storage_tensor(const ggml_tensor * tensor) {
-    if (!(std::getenv("GGML_CUDA_Q3K_PADDED_STORAGE") != nullptr &&
-            tensor->type == GGML_TYPE_Q3_K &&
+    if (!(tensor->type == GGML_TYPE_Q3_K &&
             tensor->view_src == nullptr &&
             ggml_is_contiguous(tensor) &&
             tensor->ne[0] % QK_K == 0 &&

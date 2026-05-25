@@ -171,6 +171,38 @@ Artifacts:
 - `build_logs/agent-workload/e201-rocm-q3k-padded-storage-p1.md`
 - `build_logs/agent-workload/e201-rocm-q3k-padded-storage-mmq-p2.md`
 
+### E223: Q3_K padded HIP default rollout (2026-05-24)
+
+После E219-E222 safety/hardening H43 переведён в HIP default-on с явным opt-out:
+
+- default (без env): `GGML_CUDA_Q3K_PADDED_STORAGE=1`, `GGML_CUDA_Q3K_PADDED_STORAGE_MMQ=1` на HIP;
+- fallback: `GGML_CUDA_Q3K_PADDED_STORAGE=0 GGML_CUDA_Q3K_PADDED_STORAGE_MMQ=0`.
+
+Correctness gate (`test-backend-ops`, Q3_K `MUL_MAT` + `MUL_MAT_ID`) прошёл во всех трёх режимах:
+
+- no-env default: `13/13`;
+- explicit-off: `13/13`;
+- explicit-on: `13/13`.
+
+Контрольные A/B бенчи (runs=1) после rollout:
+
+| Lane | Control (explicit-off) | Candidate (default/no-env) | Delta |
+| --- | ---: | ---: | ---: |
+| 12k prompt-heavy (`ctx=12288,b=4096,ub=1024`, `quick/triage_diff`, `max_tokens=64`) | `7.20` | `7.25` | `+0.69%` |
+| 32k control (`ctx=32768,b=5120,ub=1024`, `v2-mini/v2_write_function`, `max_tokens=120`) | `11.03` | `11.07` | `+0.36%` |
+
+Решение: keep default-on rollout для HIP с сохранением явного opt-out env. Это закрывает H43 default-policy цель; дальнейший speed-up трек для больших prefill shape остаётся в H42.
+
+Артефакты:
+- `docs/research/experiments/E223_rocm_q3k_padded_default_on_rollout.md`
+- `build_logs/agent-workload/e223-rocm-q3k-noenv-broad-smoke.txt`
+- `build_logs/agent-workload/e223-rocm-q3k-explicit-off-broad-smoke.txt`
+- `build_logs/agent-workload/e223-rocm-q3k-explicit-on-broad-smoke.txt`
+- `build_logs/agent-workload/e223-rocm12k-defaultoff-control-r1.diagnostics.md`
+- `build_logs/agent-workload/e223-rocm12k-defaulton-candidate-r1.diagnostics.md`
+- `build_logs/agent-workload/e223-rocm32k-defaultoff-control-r1.diagnostics.md`
+- `build_logs/agent-workload/e223-rocm32k-defaulton-candidate-r1.diagnostics.md`
+
 ## H03 ngram+MTP chain smoke (2026-05-19)
 
 Добавлен экспериментальный `--spec-type ngram-mtp`: в одном server run сначала пробуется `ngram-mod`, затем MTP fallback. Это opt-in режим для проверки совместимости двух speculative источников, не новый default.

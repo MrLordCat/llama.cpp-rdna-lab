@@ -839,6 +839,7 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
 }
 
 static bool ggml_backend_buft_is_cuda_split(ggml_backend_buffer_type_t buft);
+static size_t ggml_cuda_q3k_padded_storage_alloc_size(const ggml_tensor * tensor);
 
 static bool ggml_cuda_q3k_padded_dequant_probe_enabled() {
     static bool result = [] {
@@ -854,10 +855,21 @@ static bool ggml_cuda_q3k_padded_dequant_probe_enabled() {
 
 static bool ggml_cuda_q3k_padded_storage_enabled() {
     static bool result = [] {
-        const bool enabled = getenv("GGML_CUDA_Q3K_PADDED_STORAGE") != nullptr;
-        if (enabled) {
-            GGML_LOG_INFO("Detected GGML_CUDA_Q3K_PADDED_STORAGE=1\n");
+        const char * env = getenv("GGML_CUDA_Q3K_PADDED_STORAGE");
+#ifdef GGML_USE_HIP
+        const bool enabled = env == nullptr ? true : std::atoi(env) != 0;
+#else
+        const bool enabled = env != nullptr && std::atoi(env) != 0;
+#endif
+
+        if (env != nullptr) {
+            GGML_LOG_INFO("Detected GGML_CUDA_Q3K_PADDED_STORAGE=%d\n", enabled ? 1 : 0);
+#ifdef GGML_USE_HIP
+        } else if (enabled) {
+            GGML_LOG_INFO("Using default GGML_CUDA_Q3K_PADDED_STORAGE=1 on HIP\n");
+#endif
         }
+
         return enabled;
     }();
 
@@ -866,10 +878,21 @@ static bool ggml_cuda_q3k_padded_storage_enabled() {
 
 static bool ggml_cuda_q3k_padded_storage_mmq_enabled() {
     static bool result = [] {
-        const bool enabled = getenv("GGML_CUDA_Q3K_PADDED_STORAGE_MMQ") != nullptr;
-        if (enabled) {
-            GGML_LOG_INFO("Detected GGML_CUDA_Q3K_PADDED_STORAGE_MMQ=1\n");
+        const char * env = getenv("GGML_CUDA_Q3K_PADDED_STORAGE_MMQ");
+#ifdef GGML_USE_HIP
+        const bool enabled = env == nullptr ? true : std::atoi(env) != 0;
+#else
+        const bool enabled = env != nullptr && std::atoi(env) != 0;
+#endif
+
+        if (env != nullptr) {
+            GGML_LOG_INFO("Detected GGML_CUDA_Q3K_PADDED_STORAGE_MMQ=%d\n", enabled ? 1 : 0);
+#ifdef GGML_USE_HIP
+        } else if (enabled) {
+            GGML_LOG_INFO("Using default GGML_CUDA_Q3K_PADDED_STORAGE_MMQ=1 on HIP\n");
+#endif
         }
+
         return enabled;
     }();
 
@@ -877,6 +900,23 @@ static bool ggml_cuda_q3k_padded_storage_mmq_enabled() {
 }
 
 static bool ggml_cuda_q3k_padded_storage_tensor(const ggml_tensor * tensor) {
+    if (ggml_cuda_q3k_padded_storage_enabled() &&
+            tensor->type == GGML_TYPE_Q3_K &&
+            tensor->view_src != nullptr &&
+            tensor->view_src->type == GGML_TYPE_Q3_K &&
+            ggml_is_contiguous(tensor->view_src) &&
+            tensor->view_src->ne[0] % QK_K == 0 &&
+            ggml_nelements(tensor->view_src) % QK_K == 0 &&
+            tensor->view_src->buffer != nullptr &&
+            !ggml_backend_buft_is_cuda_split(tensor->view_src->buffer->buft)) {
+        const size_t owner_raw_size = (ggml_nelements(tensor->view_src) / QK_K) * sizeof(block_q3_K);
+        const size_t owner_alloc_size = ggml_backend_buffer_get_alloc_size(tensor->view_src->buffer, tensor->view_src);
+
+        if (owner_alloc_size > owner_raw_size) {
+            GGML_ABORT("Q3_K padded storage does not support tensor views yet");
+        }
+    }
+
     if (!(ggml_cuda_q3k_padded_storage_enabled() &&
         tensor->type == GGML_TYPE_Q3_K &&
         tensor->view_src == nullptr &&
@@ -887,6 +927,15 @@ static bool ggml_cuda_q3k_padded_storage_tensor(const ggml_tensor * tensor) {
     }
 
     return tensor->buffer == nullptr || !ggml_backend_buft_is_cuda_split(tensor->buffer->buft);
+}
+
+static bool ggml_cuda_q3k_padded_storage_tensor_physical(const ggml_tensor * tensor) {
+    if (!ggml_cuda_q3k_padded_storage_tensor(tensor) || tensor->buffer == nullptr) {
+        return false;
+    }
+
+    return ggml_backend_buffer_get_alloc_size(tensor->buffer, tensor) ==
+        ggml_cuda_q3k_padded_storage_alloc_size(tensor);
 }
 
 static size_t ggml_cuda_q3k_padded_storage_nblocks(const ggml_tensor * tensor) {
@@ -1019,7 +1068,7 @@ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
-    if (ggml_cuda_q3k_padded_storage_tensor(tensor)) {
+    if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
         const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
         const size_t padded_offset = ggml_cuda_q3k_padded_storage_offset_from_raw(offset);
 
@@ -1039,7 +1088,7 @@ static void ggml_backend_cuda_buffer_get_tensor(ggml_backend_buffer_t buffer, co
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
-    if (ggml_cuda_q3k_padded_storage_tensor(tensor)) {
+    if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
         const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
         const size_t padded_offset = ggml_cuda_q3k_padded_storage_offset_from_raw(offset);
 
@@ -1060,7 +1109,7 @@ static void ggml_backend_cuda_buffer_set_tensor_2d(ggml_backend_buffer_t buffer,
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
-    if (ggml_cuda_q3k_padded_storage_tensor(tensor)) {
+    if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
         const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
         std::vector<block_q3_K_padded> packed;
         for (size_t i = 0; i < n_copies; ++i) {
@@ -1085,7 +1134,7 @@ static void ggml_backend_cuda_buffer_get_tensor_2d(ggml_backend_buffer_t buffer,
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
 
     ggml_cuda_set_device(ctx->device);
-    if (ggml_cuda_q3k_padded_storage_tensor(tensor)) {
+    if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
         const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
         std::vector<block_q3_K_padded> packed(nblocks);
         for (size_t i = 0; i < n_copies; ++i) {
@@ -1106,7 +1155,7 @@ static void ggml_backend_cuda_buffer_get_tensor_2d(ggml_backend_buffer_t buffer,
 }
 
 static bool ggml_backend_cuda_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * src, ggml_tensor * dst) {
-    if (ggml_cuda_q3k_padded_storage_tensor(src) || ggml_cuda_q3k_padded_storage_tensor(dst)) {
+    if (ggml_cuda_q3k_padded_storage_tensor_physical(src) || ggml_cuda_q3k_padded_storage_tensor_physical(dst)) {
         return false;
     }
 
@@ -2328,7 +2377,7 @@ static void ggml_cuda_op_mul_mat_cublas(
         ggml_cuda_pool_alloc<half> src0_as_f16(ctx.pool(id));
         ggml_cuda_pool_alloc<block_q3_K_padded> src0_as_q3k_padded(ctx.pool(id));
         const bool use_q3k_padded_storage =
-            src0->type == GGML_TYPE_Q3_K && ggml_cuda_q3k_padded_storage_tensor(src0);
+            src0->type == GGML_TYPE_Q3_K && ggml_cuda_q3k_padded_storage_tensor_physical(src0);
         const bool use_q3k_padded_dequant_probe =
             src0->type == GGML_TYPE_Q3_K && !use_q3k_padded_storage && ggml_cuda_q3k_padded_dequant_probe_enabled();
         const bool use_q3k_padded_dequant = use_q3k_padded_storage || use_q3k_padded_dequant_probe;
@@ -3334,7 +3383,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         use_mul_mat_q = false;
     }
 
-    if (src0->type == GGML_TYPE_Q3_K && ggml_cuda_q3k_padded_storage_tensor(src0) &&
+    if (src0->type == GGML_TYPE_Q3_K && ggml_cuda_q3k_padded_storage_tensor_physical(src0) &&
             !ggml_cuda_q3k_padded_storage_mmq_enabled()) {
         use_mul_mat_q = false;
     }
@@ -4041,7 +4090,7 @@ static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tens
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
-    if (ggml_cuda_q3k_padded_storage_tensor(tensor)) {
+    if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
         const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
         const size_t padded_offset = ggml_cuda_q3k_padded_storage_offset_from_raw(offset);
 
@@ -4062,7 +4111,7 @@ static void ggml_backend_cuda_get_tensor_async(ggml_backend_t backend, const ggm
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
-    if (ggml_cuda_q3k_padded_storage_tensor(tensor)) {
+    if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
         const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
         const size_t padded_offset = ggml_cuda_q3k_padded_storage_offset_from_raw(offset);
 
@@ -4084,7 +4133,7 @@ static void ggml_backend_cuda_set_tensor_2d_async(ggml_backend_t backend, struct
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
-    if (ggml_cuda_q3k_padded_storage_tensor(tensor)) {
+    if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
         const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
         std::vector<block_q3_K_padded> packed;
         for (size_t i = 0; i < n_copies; ++i) {
@@ -4110,7 +4159,7 @@ static void ggml_backend_cuda_get_tensor_2d_async(ggml_backend_t backend, const 
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
-    if (ggml_cuda_q3k_padded_storage_tensor(tensor)) {
+    if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
         const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
         std::vector<block_q3_K_padded> packed(nblocks);
         for (size_t i = 0; i < n_copies; ++i) {
@@ -4141,7 +4190,7 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
         return false;
     }
 
-    if (ggml_cuda_q3k_padded_storage_tensor(src) || ggml_cuda_q3k_padded_storage_tensor(dst)) {
+    if (ggml_cuda_q3k_padded_storage_tensor_physical(src) || ggml_cuda_q3k_padded_storage_tensor_physical(dst)) {
         return false;
     }
 
