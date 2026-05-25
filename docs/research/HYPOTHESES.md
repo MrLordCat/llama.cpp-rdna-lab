@@ -74,7 +74,8 @@ Where:
 - E236 rejected f32-first secondary-route work: robust `cublas_backend/f32` is only `443.826 ms` in the E228 trace, and the broad SSM `ncols=2048/1382` shapes are not covered by current direct f32 kernels without a low-ceiling selector-only force.
 - E237 rejected dense Q3_K reuse of the existing RDNA4 MMQ staging body: exact `17408x5120@2048` current-MMQ point regressed `2053.749 -> 2496.968 ms` while shared memory rose `40448 -> 61956 B`.
 - E238 rejected graph-level FFN tall GEMM: standalone rocBLAS tall-pair timing looked positive, but the in-runtime point gate timed out and robust main `ncols=2048` tall route took `4304.43 ms` on `187` rows versus E217 current `1415.111 ms` on `189` pairs; the in-runtime GEMM alone regressed before GLU/output cost.
-- Next H42 work must change real Q3_K body/layout/topology or start from a correctness-first storage contract extension; library selector, batching, row split, launch-count, A-layout, f16-output-with-convert, broad f16-intermediate FFN routes, f32-first secondary routing, dense reuse of the MoE/RDNA4 staging body, and current hipBLAS/cublas tall-FFN pairing are now exhausted for this cold lane.
+- E239 rejected a padded Q3_K dequant half2 store rewrite: correctness passed and `src0_ms` improved only `517.104 -> 495.805 ms` (`-4.12%`), below the point gate, while trace-context prompt eval tied/slightly regressed.
+- Next H42 work must change real Q3_K body/layout/topology or start from a correctness-first storage contract extension; library selector, batching, row split, launch-count, A-layout, f16-output-with-convert, broad f16-intermediate FFN routes, f32-first secondary routing, dense reuse of the MoE/RDNA4 staging body, current hipBLAS/cublas tall-FFN pairing, and staging-only padded-dequant store rewrites are now exhausted for this cold lane.
 
 ## Priority (Start Here)
 
