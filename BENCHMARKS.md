@@ -203,6 +203,33 @@ Correctness gate (`test-backend-ops`, Q3_K `MUL_MAT` + `MUL_MAT_ID`) прошё�
 - `build_logs/agent-workload/e223-rocm32k-defaultoff-control-r1.diagnostics.md`
 - `build_logs/agent-workload/e223-rocm32k-defaulton-candidate-r1.diagnostics.md`
 
+### E226: ROCm repeated/session route after H43 default-on (2026-05-25)
+
+This is a practical GUI/agent-session result, not a cold-first kernel claim. Same
+ROCm lane as E224/E223: `ctx=12288`, `batch=6144`, `ubatch=2048`, q4/q4 KV,
+FlashAttention on, thinking on, `max_tokens=64`, real repo-snapshot prompt,
+`build-rocm-vec/bin/llama-server.exe`.
+
+| Route | Runs | Aggregate TPS | Prompt eval mean | Decode eval mean | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| cold-control, reuse off, `spec=none` | 3 | `7.8890` | `5978.04 ms` | `30.45 tok/s` | baseline |
+| prompt cache/checkpoints, `spec=none` | 3 | `13.5774` | `2590.05 ms` | `30.605 tok/s` | `+72.11%` vs cold |
+| prompt cache/checkpoints + `ngram-mod 12/16/32` | 3 | `14.1202` | `2606.59 ms` | `35.0967 tok/s` | keep, `+78.99%` vs cold, `+4.00%` vs reuse-only |
+
+The main win is checkpoint restore of the shared repo prompt prefix: after the
+first request, the server restored a `5437`-token context checkpoint and reduced
+repeated prompt work to about `2033-2052` tokens. `ngram-mod` added a smaller
+decode-side lift after reuse exposed draftable repeated spans; final stats were
+`196` generated draft tokens and `155` accepted tokens (`0.7908` local
+acceptance). Two accidentally parallel control runs timed out and are marked
+invalid in E226; heavy ROCm real-server benchmarks must be run sequentially.
+
+Artifacts:
+- `docs/research/experiments/E226_rocm_session_reuse_post_h43.md`
+- `build_logs/agent-workload/e226-rocm12k-cold-two-task-specnone-r3-seq.diagnostics.md`
+- `build_logs/agent-workload/e226-rocm12k-session-reuse-specnone-r3.diagnostics.md`
+- `build_logs/agent-workload/e226-rocm12k-session-reuse-ngram12-16-32-r3-seq.diagnostics.md`
+
 ## H03 ngram+MTP chain smoke (2026-05-19)
 
 Добавлен экспериментальный `--spec-type ngram-mtp`: в одном server run сначала пробуется `ngram-mod`, затем MTP fallback. Это opt-in режим для проверки совместимости двух speculative источников, не новый default.
