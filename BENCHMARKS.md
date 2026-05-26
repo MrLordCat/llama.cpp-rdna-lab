@@ -33,6 +33,33 @@ build_logs\agent-workload\<label>.server.log
 
 Для коротких агентных ответов runner по умолчанию добавляет `--chat-template-kwargs {"enable_thinking":false,"preserve_thinking":false}`. Это можно отключить флагом `--no-disable-thinking`.
 
+## ROCm 10 TPS cold-target route gates (2026-05-25)
+
+Current user target: reach `10 TPS` on a cold/no-reuse run. Two high-ceiling
+routes were gated after E248:
+
+Practical result: E255 confirms `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf` clears the
+cold 12k target with the same no-reuse benchmark contract: r3 aggregate
+`22.1407 TPS`, prompt mean `2179.07 ms`, decode mean `678.62 ms`, errors `0`.
+This is now available as the first-match GUI preset
+`Qwen3.6-35B-A3B-UD-IQ3_XXS (RX 9070 XT cold 12k)`. It is a practical local
+Qwen3.6 profile, not an apples-to-apples speedup of the dense 27B-Q3 model.
+
+| Route | Result | Decision |
+| --- | --- | --- |
+| E249 `hipBLASLt` grouped FFN GEMM | Scout built, but ROCm 7.1 Windows exposed no grouped algorithms for the hot `17408x5120@n2048` pair, including f32-output and f16/fast16 variants | reject runtime integration |
+| E250 local Q3 MTP GGUF | `Qwen3.6-27B-Q3_K_S_mtp.gguf` hard-timed out before prompt eval completion on exact `b6144/ub2048` control and smaller `b4096/ub512` MTP probe | reject as cold 10 TPS route |
+| E251 Q4 MTP fit-auto | Full-offload Q4 MTP still failed fit; omitting `-ngl` allowed a run but only reached `1.17 TPS` | reject as pragmatic cold escape |
+| E252 f32-output fast16 hipBLAS compute | Opt-in `HIPBLAS_COMPUTE_32F_FAST_16F` reached first Q3_K GEMM then failed with `CUBLAS_STATUS_NOT_SUPPORTED`; prototype knob reverted | reject compute-contract route |
+| E253 E248 reuse + `batch=8192` stack | `batch=8192` control was only `7.2756 TPS`; src1 reuse collapsed to `2.4701 TPS`, and guarded revalidation still collapsed on both `8192` and `6144` | reject stack; do not recommend src1 reuse opt-in |
+
+Conclusion: current `hipBLASLt` grouping, local Q3/Q4 MTP detours, and the
+f32-output fast16 hipBLAS compute contract are not valid paths to the `10 TPS`
+cold target. E253 also removes E248 src1 reuse from practical launch/autotune
+recommendations. The next cold-first route must change the Q3_K large-prefill
+body more deeply or use a lighter compatible speculative model that does not add
+prompt-time overhead.
+
 ## ROCm 12k cold-first gate after ngram GUI profile (2026-05-25)
 
 GUI/server, Bench/Autotune, agent autotune defaults, large-context helper
@@ -602,6 +629,14 @@ Rejected probes in this phase: f16 dequant arithmetic, unsigned scale arithmetic
 
 Active Q3_K pipeline stats after E086/E102: `matmul_q3_k_f32_f16acc_aligned_l` uses `113 VGPR`, `45 SGPR`, `20480 B LDS`, `0 scratch` (`118 VGPR` before E086). E093/E097 static warptile scout downgraded E091's `wn48` result because the requested `WN=48` layout is invalid for the current `BN=128` route (`128 % 48 != 0`) and should runtime-fallback to base. Accepted H31 source baseline remains E082 stride18 + E086 corrected `LOAD_VEC_A=4`: fixed pp7488 `961.82 ± 25.60`, workload r1 `6.6277`, prompt eval `934.80`. E102 makes this fast AMD large-matmul route the no-env default on the local eligible AMD proprietary coopmat device; the no-env pp7488 recheck after cleanup was `983.48`, while `GGML_VK_DISABLE_AMD_LARGE_MATMUL=1` dropped to `708.19`.
 
+E257 refreshed the dense `Qwen3.6-27B-Q3_K_S` Vulkan 12k cold lane after refocusing away from A3B/MoE profiles. The previous Vulkan q4 control shape (`ctx=12288,b=6144,ub=2048`, spec off, no reuse, no prime) confirmed at `6.6895 TPS` r3 with `947.36 tok/s` prompt eval. A focused shape gate found that Vulkan prefers `ub=1024` here, with `b7168/ub1024` confirmed at `7.0319 TPS` r3, `999.22 tok/s` prompt eval, and `40.93 tok/s` decode; lower `ub=768/512` follow-ups stayed below it. That is a measured `+5.12%` wall and `+5.47%` prompt improvement over the previous Vulkan control, so the GUI exact `Qwen3.6-27B-Q3_K_S.gguf` preset now uses `ctx=12288,b=7168,ub=1024,q4_0/spec=none` for the active Vulkan cold profile. The E257 intrusive trace still puts Q3_K `MUL_MAT` at `82.71%` of parsed time and FlashAttention at `9.60%`; future source changes still need a real Q3_K topology, not another nearby helper/tile retune.
+
+E258 tested a larger Q3_K topology change: backend-private transposed Q3_K storage with a dedicated `matmul_q3_k_f32_transa_f16acc_aligned_l` route. The route activated on the hot Q3_K shapes and prompt eval rose slightly (`994.75 -> 1008.34 tok/s` vs paired control), but decode fell hard (`40.09 -> 35.76 tok/s`) and wall regressed (`6.9827 -> 6.9053 TPS`). The source prototype was reverted. E259 then closed two practical no-code follow-ups on the E257 shape: `batch=7680` lost (`6.9795 TPS` r1), while f16/f16 KV looked good in r1 (`7.1417`) but confirmed as a noise-level tie in r3 (`7.0543 TPS`, prompt `1008.37`, decode `40.00`). Do not change the 12k dense 27B Vulkan preset to f16 KV; q4/q4 `b7168/ub1024` remains the current default.
+
+E260/E261 closed the older Vulkan transfer gates on the exact E257 shape. `GGML_VK_ALLOW_GRAPHICS_QUEUE=1` measured `6.8663 TPS`, graphics queue plus `--no-mmap` measured `6.8743 TPS`, and `batch=8192/ub1024` measured `6.7312 TPS`; all three lost prompt throughput against E257. The older 64k graphics-queue/no-mmap lesson does not transfer to this dense 27B 12k lane, and a single `7489/7489` prompt chunk at `b8192` is slower than the current `b7168` shape. The broad f16-disable/f32acc-style pivot is also rejected: `GGML_VK_DISABLE_F16=1` measured only `5.2700 TPS` with prompt eval `710.49 tok/s`.
+
+E264 tested a source-level graph topology gate: cast Q3_K FFN `src1` activations to F16 so Vulkan could use the existing f16-src1 matmul route. It lost decisively. Paired control measured `7.1320 TPS`, gate/up F16 src1 measured `5.9323 TPS`, and down-only F16 src1 measured `6.8000 TPS`. The prototype was reverted; per-layer activation casts are not the missing Vulkan Q3_K route.
+
 12k workload validation for E091 (`GGML_VK_FORCE_AMD_LARGE_MATMUL=1`, `GGML_VK_AMD_LARGE_MATMUL_VARIANT=wn48`) reached `6.7981` aggregate TPS r3, prompt eval `962.8567 tok/s`, decode `40.0967 tok/s`, prompt tokens `7489`, errors `0`, but this is now a suspect measurement rather than an accepted improvement. Do not use `wn48` as an opt-in profile unless a later backend log proves a different active valid prepared tile. Future tile/env variants must pass `python scripts/research/vulkan_warptile_static_scout.py` before benchmark claims.
 
 After E093/E097 correction, the no-build gate estimates that matching ROCm pp7488 from the accepted E086/E102 baseline requires a large local speedup in the active Q3_K hotspot. This is too large for repeated helper-only or neighboring-stride probes unless the gate identifies a new high-share mechanism.
@@ -632,6 +667,11 @@ Artifacts:
 - `docs/research/experiments/E100_vulkan_current_controls_store_and_shape_gates.md`
 - `docs/research/experiments/E101_vulkan_q3k_dequant_micro_antipatterns.md`
 - `docs/research/experiments/E102_vulkan_amd_auto_large_matmul_default.md`
+- `docs/research/experiments/E257_vulkan12k_27b_prefill_rebaseline.md`
+- `docs/research/experiments/E258_vulkan_q3k_transpose_a_route.md`
+- `docs/research/experiments/E259_vulkan12k_practical_kv_shape_gates.md`
+- `docs/research/experiments/E260_vulkan12k_queue_mmap_batch_gates.md`
+- `docs/research/experiments/E264_vulkan12k_ffn_f16_src1_gate.md`
 - `build_logs/agent-workload/e086-vulkan-q3-correct-loadvec4-pp7488-r3.md`
 - `build_logs/agent-workload/e086-vulkan12k-q3-correct-loadvec4-r1.diagnostics.md`
 - `build_logs/agent-workload/e086-vulkan-q3-correct-loadvec4-pipeline-stats.log`
@@ -651,6 +691,16 @@ Artifacts:
 - `build_logs/agent-workload/e101-q3k-scale-int-pp7488-r1.txt`
 - `build_logs/agent-workload/e102-vulkan-auto-large-noenv-pp7488-r1.txt`
 - `build_logs/agent-workload/e102-vulkan32k-auto-large-noenv-r1.diagnostics.md`
+- `build_logs/agent-workload/e257-vulkan12k-shape-b7168-ub1024-r3.diagnostics.md`
+- `build_logs/agent-workload/e258-vulkan12k-q3k-transa-r1.diagnostics.md`
+- `build_logs/agent-workload/e258-vulkan12k-control-postbuild-r1.diagnostics.md`
+- `build_logs/agent-workload/e259-vulkan12k-kvf16-b7168-ub1024-r3.diagnostics.md`
+- `build_logs/agent-workload/e260-vulkan12k-graphicsq-b7168-ub1024-r1.diagnostics.md`
+- `build_logs/agent-workload/e260-vulkan12k-graphicsq-nommap-b7168-ub1024-r1.diagnostics.md`
+- `build_logs/agent-workload/e261-vulkan12k-b8192-ub1024-r1.diagnostics.md`
+- `build_logs/agent-workload/e263-vulkan12k-disable-f16-b7168-ub1024-r1.diagnostics.md`
+- `build_logs/agent-workload/e264-vulkan12k-ffn-f16src1-gate-r1.diagnostics.md`
+- `build_logs/agent-workload/e264-vulkan12k-ffn-f16src1-down-r1.diagnostics.md`
 
 ## TurboKV direct FlashAttention smoke (2026-05-13)
 

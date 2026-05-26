@@ -1,10 +1,15 @@
 # Research Hub: Next Efficiency Wave
 
-## Archive Status
+## Current Status
 
-The current Qwen3.6/RDNA4 acceleration cycle is archived as of 2026-05-18. Start with `PERFORMANCE_ARCHIVE_2026-05-18.md` before reopening any performance work.
+The 2026-05-18 acceleration cycle remains archived in
+`PERFORMANCE_ARCHIVE_2026-05-18.md`, but a new post-E264 major-topology research
+mode is open for dense `Qwen3.6-27B-Q3_K_S` on RDNA4/Vulkan.
 
-No active default speedup branch remains. Parked leads are H28 selector parity, H29 gfx12 direct quantized prefill design, future MTP with an MTP-enabled GGUF, and any new upstream/RDNA4 evidence that changes the current route mix.
+Start with `MAJOR_TOPOLOGY_WORKFLOW.md` before opening new backend prototypes.
+The short version: the quick E### loop has exhausted nearby no-code, f16,
+helper, and simple layout probes. New work must begin as a design/topology note
+under `major-topology/`, with route evidence and a ceiling model before code.
 
 This folder is a local R&D workspace for ideas beyond current ngram speculative decoding and Flash Attention baselines.
 
@@ -38,6 +43,8 @@ Primary lane (project policy):
 
 - HYPOTHESES.md: prioritized candidate ideas and why they might work
 - PERF_WORKSPACE.md: VS Code agent/tool/task workflow for reproducible TPS work
+- MAJOR_TOPOLOGY_WORKFLOW.md: post-E264 workflow for large architecture changes
+- major-topology/: program board and design notes before source prototypes
 - PERFORMANCE_ARCHIVE_2026-05-18.md: final pause/archive summary for the current cycle
 - EXPERIMENT_TEMPLATE.md: standard template for each experiment
 - RESULTS_LOG.md: compact ledger of executed experiments
@@ -121,11 +128,14 @@ python scripts/research/spec_effective_acceptance.py \
   --log build_logs/agent-workload/postrebuild-vec-b6144-ub512-ngram-prime.server.log --json
 ```
 
-## Current Status
+## Recent Status
 
 - E059 external RDNA4 research completed: `experiments/E059_external_rdna4_llama_research.md`.
-- Current acceleration cycle archived: `PERFORMANCE_ARCHIVE_2026-05-18.md`.
-- Do not continue low/medium-risk local probing by inertia; reopen only via the archive protocol.
+- E249-E264 close the latest ROCm/Vulkan tail of cold-lane gates.
+- E257 is the current dense Vulkan 12k baseline: `7.0319 TPS` r3 at
+  `ctx=12288,b=7168,ub=1024,q4_0/q4_0,spec=none`.
+- E258/E259/E260/E264 reject nearby Vulkan Q3_K transfer routes; do not continue
+  low/medium-risk local probing by inertia.
 
 - E001 analytic gate completed: `experiments/E001_H02_analytic_gate.md`
 - E002 measured ubatch cliff completed: `experiments/E002_H08_measured_ubatch_cliff.md`

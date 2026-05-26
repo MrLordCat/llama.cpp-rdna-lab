@@ -39,14 +39,15 @@ Main cold-first lane for code-speed claims:
 | Field | Value |
 | --- | --- |
 | Model | `models/Qwen3.6-27B-Q3_K_S.gguf` |
-| Backend | ROCm/HIP SDK 7.1 on RX 9070 XT / `gfx1201` |
+| Backend | Vulkan on RX 9070 XT / AMD proprietary driver for the current post-E257 focus; ROCm remains the preferred production backend and comparison route |
 | Context | `ctx=12288` |
-| Batch | `batch=6144`, `ubatch=2048` |
+| Batch | `batch=7168`, `ubatch=1024` for the active Vulkan 12k profile |
 | KV | `q4_0/q4_0` |
 | Speculation | `--spec-type none` |
 | Reuse | `--cache-ram 0 --ctx-checkpoints 0`, no reuse |
 | Thinking | on / `--no-disable-thinking` |
-| Metric type | cold-first baseline only |
+| Current best | E257 r3 `7.0319 TPS`, prompt `999.22 tok/s`, decode `40.93 tok/s` |
+| Metric type | cold-first baseline only; do not compare with repeated/session or A3B practical profiles |
 
 Active ROCm decode parity lane:
 

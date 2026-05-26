@@ -23,15 +23,23 @@
     "presets": [
         {
             "pattern": "Qwen3\\.6\\-27B\\-Q3_K_S\\.gguf",
-            "name": "History Default Qwen3.6-27B-Q3_K_S.gguf",
-            "ctx": 32768,
-            "batch_size": 5120,
+            "name": "Qwen3.6-27B-Q3_K_S (Vulkan active 12k cold)",
+            "ctx": 12288,
+            "batch_size": 7168,
             "ubatch_size": 1024,
-            "gpu_layers": -1,
+            "gpu_layers": 999,
             "parallel": 1,
             "flash_attn": true,
             "kv_cache": 7,
-            "notes": "Applied from Autotune Runs History: run_id=run-8db6438fa3, tps=11.2201, time=2026-05-24 18:24:25, spec=none, extra=base"
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "top_k": 20,
+            "min_p": 0.0,
+            "presence_penalty": 0.0,
+            "repeat_penalty": 1.0,
+            "disable_thinking": false,
+            "extra_args": "--spec-type none",
+            "notes": "E257 Vulkan dense 27B cold lane: ctx=12288, q4_0 KV, b7168/ub1024, FlashAttention, thinking ON, spec off. Confirmed 7.0319 TPS r3 on triage_diff vs 6.6895 TPS for b6144/ub2048; prompt eval 999.22 tok/s."
         },
         {
             "pattern": "Qwen3\\.6\\-27B\\-Q3_K_S\\.gguf",
@@ -49,9 +57,9 @@
             "pattern": "Qwen3\\.6\\-27B\\-Q3_K_S\\.gguf",
             "name": "Qwen3.6-27B-Q3_K_S (RX 9070 XT active 12k)",
             "ctx": 12288,
-            "batch_size": 6144,
-            "ubatch_size": 2048,
-            "gpu_layers": -1,
+            "batch_size": 7168,
+            "ubatch_size": 1024,
+            "gpu_layers": 999,
             "parallel": 1,
             "flash_attn": true,
             "kv_cache": 7,
@@ -63,7 +71,7 @@
             "repeat_penalty": 1.0,
             "disable_thinking": false,
             "extra_args": "--spec-type none",
-            "notes": "Driver 32.0.31007.5012 active 12k preset: q4_0 KV, b6144/ub2048, thinking ON. ROCm is the cold short prompt-heavy route; Vulkan with the same q4_0 preset is faster for repeated/session answers of about 128+ generated tokens. Keep ngram off for Vulkan."
+            "notes": "E257 active Vulkan 12k preset: q4_0 KV, b7168/ub1024, thinking ON, spec off. This is the current dense Qwen3.6-27B Vulkan cold profile; keep ngram off for cold-first comparisons."
         },
         {
             "pattern": "Qwen3\\.6\\-27B\\-Q3_K_S_mtp\\.gguf",
@@ -96,6 +104,26 @@
             "disable_thinking": false,
             "extra_args": "--spec-type none\n-fit off",
             "notes": "RX 9070 XT 16GB active Q4 speed preset: ctx=12288, b4096/ub1024, q4_0 KV, thinking ON, full offload. If VRAM is busy and startup fails, close other GPU apps or remove -fit off."
+        },
+        {
+            "pattern": "Qwen3\\.6\\-35B\\-A3B\\-UD\\-IQ3_XXS\\.gguf",
+            "name": "Qwen3.6-35B-A3B-UD-IQ3_XXS (RX 9070 XT cold 12k)",
+            "ctx": 12288,
+            "batch_size": 6144,
+            "ubatch_size": 2048,
+            "gpu_layers": 999,
+            "parallel": 1,
+            "flash_attn": true,
+            "kv_cache": 7,
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "top_k": 20,
+            "min_p": 0.0,
+            "presence_penalty": 0.0,
+            "repeat_penalty": 1.0,
+            "disable_thinking": false,
+            "extra_args": "--spec-type none",
+            "notes": "Measured cold/no-reuse local profile: ctx=12288, b6144/ub2048, q4_0 KV, thinking ON, spec off. E255 r3 reached 22.14 TPS aggregate on triage_diff. This is the practical cold >10 TPS A3B profile, separate from the dense 27B-Q3 kernel target."
         },
         {
             "pattern": "Qwen3\\.6\\-35B\\-A3B\\-UD\\-IQ3_XXS\\.gguf",

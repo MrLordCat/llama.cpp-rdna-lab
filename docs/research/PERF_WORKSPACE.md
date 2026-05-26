@@ -24,8 +24,10 @@ For performance work, read these in order:
 2. `docs/research/PERF_WORKSPACE.md`
 3. `docs/research/HYPOTHESES.md`
 4. `docs/research/RESULTS_LOG.md`
-5. The latest relevant experiment note under `docs/research/experiments/`
-6. `build_logs/agent-workload/BENCH_HISTORY_V2.md`
+5. For major topology work after E264: `docs/research/MAJOR_TOPOLOGY_WORKFLOW.md`
+   and `docs/research/major-topology/README.md`
+6. The latest relevant experiment note under `docs/research/experiments/`
+7. `build_logs/agent-workload/BENCH_HISTORY_V2.md`
 
 For paused decode/perf work, also read:
 
@@ -250,3 +252,8 @@ Stop and document instead of continuing to probe when:
 - benchmark shape drifted from the lane contract
 - a code probe requires broad refactoring before proving a local mechanism
 - another agent/user change makes the current A/B incomparable
+
+For post-E264 Vulkan/ROCm Q3_K work, stop the normal E### loop and use
+`MAJOR_TOPOLOGY_WORKFLOW.md` when the candidate requires broad storage,
+graph-level fusion, a new kernel body, or a route design that cannot be proven by
+a narrow patch.

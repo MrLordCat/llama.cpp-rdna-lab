@@ -2,13 +2,29 @@
 
 Local navigation map for Qwen3.6 ROCm performance work in this fork. This is not upstream llama.cpp documentation.
 
-## Archived Status
+## Current Status
 
-The current acceleration cycle is archived as of 2026-05-18.
+The 2026-05-18 acceleration cycle is archived in
+`docs/research/PERFORMANCE_ARCHIVE_2026-05-18.md`. A new post-E264 research mode
+is active for major RDNA4/Vulkan topology work, starting from:
 
-Start here before resuming: `docs/research/PERFORMANCE_ARCHIVE_2026-05-18.md`.
+- `docs/research/MAJOR_TOPOLOGY_WORKFLOW.md`
+- `docs/research/major-topology/README.md`
+- `docs/research/HYPOTHESES.md`
+- `docs/research/RESULTS_LOG.md`
 
-Final practical no-spec lane:
+Use the archive only for historical context. Do not resume the old quick-probe
+cycle by inertia.
+
+Current dense Vulkan 12k lane:
+
+- Model: `models/Qwen3.6-27B-Q3_K_S.gguf`.
+- Backend: Vulkan on RX 9070 XT / AMD proprietary driver.
+- Workload: `scripts/agent_workload_bench.py --tasks quick --task-ids triage_diff --ctx-size 12288 --batch-size 7168 --ubatch-size 1024 --cache-type-k q4_0 --cache-type-v q4_0 --real-context-mode repo-snapshot --no-reuse --no-v2-prime-pass --no-disable-thinking --max-tokens 64 --server-extra "--spec-type none"`.
+- Current best: E257 r3 `7.0319 TPS`, prompt `999.22 tok/s`, decode `40.93 tok/s`.
+- Rejected nearby transfers: E258 transpose-A, E259 `b7680`/f16 KV default, E260 graphics queue/no-mmap/`b8192`/f16-disable, E264 FFN F16 src1 casts.
+
+Archived final practical no-spec ROCm lane:
 
 - Model: `models/Qwen3.6-27B-Q3_K_S.gguf`.
 - Backend: ROCm/HIP, target `gfx1201`, preferred build `build-rocm-vec`.
