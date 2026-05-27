@@ -82,7 +82,7 @@ Status: implemented and enabled by default for eligible local TKV lanes, includi
 Minimum checks after Phase 1:
 
 ```powershell
-python -m py_compile gui\llama_gui.py gui\build_manager.py gui\dependency_checker.py gui\hardware_detector.py
+python -m py_compile run.py gui\main_window.py gui\server_tab.py gui\benchmark_tab.py gui\build_tab.py gui\build_manager.py gui\dependency_checker.py gui\hardware_detector.py
 cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUILD_TYPE=Release
 cmake --build build-rocm --target llama-bench --config Release -j
 build-rocm\bin\llama-bench.exe -m models\Qwen3.6-27B-Q3_K_S.gguf -p 512 -n 16 -b 256 -ub 128 -ctk turbo3 -ctv turbo3 -fa 1 -ngl 99 -r 1

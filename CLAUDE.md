@@ -10,7 +10,12 @@
 ```
 llama.cpp-with-GUI/
 ├── gui/                    # PyQt6 GUI (весь GUI-код здесь)
-│   ├── llama_gui.py        # Главное приложение (~2150 строк, 6 вкладок)
+│   ├── main_window.py      # Координатор модульного GUI
+│   ├── server_tab.py       # Запуск llama-server
+│   ├── inference_tab.py    # Запуск llama-cli
+│   ├── download_tab.py     # HuggingFace downloads
+│   ├── build_tab.py        # Build/setup tab
+│   ├── benchmark_tab.py    # Bench/autotune tab
 │   ├── build_manager.py    # CMake оркестрация сборки (~850 строк)
 │   ├── build_manager_v2.py # Альтернативный build manager (~400 строк)
 │   ├── dependency_checker.py    # Проверка зависимостей
@@ -124,20 +129,21 @@ typedef struct {
 - CLI квантизатор: `tools/quantize/quantize.cpp` (строки ~46-47)
 - Бенчмарки: `tools/llama-bench/llama-bench.cpp` (строки ~494-501)
 - CLI аргументы: `common/arg.cpp` (строки ~393-395)
-- GUI интеграция: `gui/llama_gui.py` (строки ~821-829, GUI ставит `--ngl 0` для TBQ)
+- GUI интеграция: `gui/server_tab.py`, `gui/benchmark_tab.py` (GUI ставит `--ngl 0` для CPU-only TBQ)
 
 ---
 
 ## GUI — Архитектура
 
-### Главные классы (gui/llama_gui.py)
+### Главные классы модульного GUI
 
 | Класс | Назначение |
 |-------|-----------|
-| `LlamaCppGUI(QMainWindow)` | Главное окно, 6 вкладок, QSettings |
-| `ServerThread(QThread)` | Запуск llama-server в фоне |
-| `InferenceThread(QThread)` | Запуск llama-cli для инференса |
-| `UpdateForkThread(QThread)` | Git операции синхронизации с upstream |
+| `main_window.LlamaCppGUI(QMainWindow)` | Главное окно, вкладки, QSettings |
+| `server_tab.ServerTabWidget(QWidget)` | Запуск llama-server |
+| `benchmark_tab.BenchmarkTabWidget(QWidget)` | Бенчи и autotune |
+| `threads.ServerThread(QThread)` | Запуск llama-server в фоне |
+| `threads.InferenceThread(QThread)` | Запуск llama-cli для инференса |
 
 ### 6 вкладок GUI
 

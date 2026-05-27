@@ -110,7 +110,7 @@ CLI and GUI route:
   `iq4_nl`, `q5_0`, `q5_1`, and local TurboKV/TBQ aliases.
 - Runtime context copies those into `llama_context_params.type_k/type_v`, then
   KV tensors are allocated in `src/llama-kv-cache.cpp`.
-- GUI exposes the KV cache combo in `gui/llama_gui.py`.
+- GUI exposes the KV cache combo in `gui/server_tab.py`.
 
 Attention route interaction:
 

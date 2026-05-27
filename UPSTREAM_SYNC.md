@@ -97,7 +97,7 @@ git add README.md AGENTS.md CLAUDE.md MTP.md UPSTREAM_SYNC.md .github docs gui/R
 8. Проверить:
 
 ```powershell
-python -m py_compile gui\llama_gui.py gui\build_manager.py gui\dependency_checker.py gui\hardware_detector.py
+python -m py_compile run.py gui\main_window.py gui\server_tab.py gui\benchmark_tab.py gui\build_tab.py gui\build_manager.py gui\dependency_checker.py gui\hardware_detector.py
 git diff --check
 ```
 

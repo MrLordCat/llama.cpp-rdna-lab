@@ -39,7 +39,17 @@
             "args": [
                 "-m",
                 "py_compile",
-                "gui/llama_gui.py",
+                "run.py",
+                "gui/main_window.py",
+                "gui/server_tab.py",
+                "gui/inference_tab.py",
+                "gui/download_tab.py",
+                "gui/build_tab.py",
+                "gui/benchmark_tab.py",
+                "gui/builds_info_tab.py",
+                "gui/hardware_tab.py",
+                "gui/gui_api.py",
+                "gui/threads.py",
                 "gui/build_manager.py",
                 "gui/dependency_checker.py",
                 "gui/hardware_detector.py"

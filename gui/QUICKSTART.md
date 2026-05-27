@@ -12,7 +12,7 @@ pip install -r gui\requirements-gui.txt
 ### Шаг 2: Запуск GUI (10 секунд)
 
 ```bash
-python gui\llama_gui.py
+python run.py
 ```
 
 ### Шаг 3: Первоначальная настройка (2 минуты)

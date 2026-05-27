@@ -139,7 +139,7 @@ Goal: make implementation start deterministic once active ROCm work is free.
 
 ## Target files
 
-- `gui/llama_gui.py` and/or modular GUI tab files
+- modular GUI tab files, mainly `gui/server_tab.py`, `gui/benchmark_tab.py`, and `gui/build_tab.py`
 - `gui/model_presets.json` if preset support is added
 
 ## Deliverables

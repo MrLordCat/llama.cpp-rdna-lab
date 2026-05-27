@@ -35,7 +35,7 @@ echo Запуск GUI...
 echo.
 
 REM Запуск GUI
-python gui\llama_gui.py
+python run.py
 
 if errorlevel 1 (
     echo.

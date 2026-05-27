@@ -229,8 +229,20 @@ class ServerTabWidget(QWidget):
         kv_layout = QHBoxLayout()
         kv_layout.addWidget(QLabel("KV Cache Type:"))
         self.server_kv_type_combo = QComboBox()
-        self.server_kv_type_combo.addItems(["f16", "bf16", "f32", "q8_0", "q4_0"])
+        self.server_kv_type_combo.addItems([
+            "f16", "bf16", "f32", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl",
+            "tbq4_0", "tbq3_0", "tq3_0",
+        ])
         self.server_kv_type_combo.setCurrentText("f16")
+        self.server_kv_type_combo.setToolTip(
+            "KV cache quantization types:\n"
+            "f16: default half-precision\n"
+            "bf16: bfloat16, recommended for Qwen3.5/3.6\n"
+            "q8_0/q5_x/q4_x/iq4_nl: quantized KV cache\n"
+            "tbq4_0/tbq3_0: TurboQuant CPU-only, forces -ngl 0\n"
+            "tq3_0: TurboQuant GPU KV cache\n"
+            "TurboQuant KV types force flash_attn=on."
+        )
         kv_layout.addWidget(self.server_kv_type_combo)
 
         kv_layout.addWidget(QLabel("KV Quantize:"))
@@ -594,7 +606,14 @@ class ServerTabWidget(QWidget):
             1: "bf16",
             2: "f32",
             3: "q8_0",
+            4: "q5_1",
+            5: "q5_0",
+            6: "q4_1",
             7: "q4_0",
+            8: "iq4_nl",
+            9: "tbq4_0",
+            10: "tbq3_0",
+            11: "tq3_0",
         }
         kv_value = match.get("kv_cache")
         if isinstance(kv_value, int) and kv_value in kv_map:
@@ -807,12 +826,15 @@ class ServerTabWidget(QWidget):
             "--parallel", str(self.server_parallel_spinbox.value()),
         ]
 
-        if self.server_backend_combo.currentText() == "GPU":
+        kv_type = self.server_kv_type_combo.currentText().strip()
+        turboq_cpu_only = kv_type.startswith("tbq")
+        turboq_kv = turboq_cpu_only or kv_type.startswith("tq")
+
+        if self.server_backend_combo.currentText() == "GPU" and not turboq_cpu_only:
             command.extend(["-ngl", str(self.server_gpu_layers_spinbox.value())])
         else:
             command.extend(["-ngl", "0"])
 
-        kv_type = self.server_kv_type_combo.currentText().strip()
         if kv_type and kv_type != "f16":
             command.extend(["--cache-type-k", kv_type, "--cache-type-v", kv_type])
 
@@ -843,7 +865,7 @@ class ServerTabWidget(QWidget):
                 self._apply_ngram_mod_profile()
                 command.extend(self._ngram_mod_args())
 
-        if self.server_flash_attn_check.isChecked():
+        if self.server_flash_attn_check.isChecked() or turboq_kv:
             command.extend(["--flash-attn", "on"])
 
         if self.server_no_warmup_check.isChecked():
@@ -858,7 +880,7 @@ class ServerTabWidget(QWidget):
                 '{"enable_thinking":false,"preserve_thinking":false}',
             ])
 
-        if not self.server_auto_fit_check.isChecked():
+        if turboq_cpu_only or not self.server_auto_fit_check.isChecked():
             command.extend(["-fit", "off"])
 
         if extra_tokens:

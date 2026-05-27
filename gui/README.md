@@ -60,7 +60,7 @@ cmake --build build --config Release -j
 
 ```bash
 # Убедитесь, что виртуальное окружение активировано
-python gui/llama_gui.py
+python run.py
 ```
 
 ## 📖 Использование
@@ -215,7 +215,7 @@ python gui/llama_gui.py
 
 ```
 gui/
-├── llama_gui.py           # Главное GUI приложение
+├── main_window.py         # Координатор модульного GUI
 ├── model_downloader.py    # Загрузка моделей из HuggingFace
 ├── hardware_detector.py   # Определение железа и GPU
 ├── build_manager.py       # Управление сборкой llama.cpp

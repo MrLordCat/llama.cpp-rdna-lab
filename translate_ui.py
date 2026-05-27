@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script to translate Russian UI strings to English in llama_gui.py
+Script to translate Russian UI strings to English in modular GUI files.
 """
 
 translations = {
@@ -180,6 +180,6 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         filepath = sys.argv[1]
     else:
-        filepath = "gui/llama_gui.py"
+        filepath = "gui/main_window.py"
     
     translate_file(filepath)

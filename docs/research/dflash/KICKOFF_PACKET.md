@@ -33,7 +33,7 @@ Primary references:
 
 1. `git status --short --branch`
 2. `cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUILD_TYPE=Release`
-3. `python -m py_compile gui/llama_gui.py gui/build_manager.py gui/dependency_checker.py gui/hardware_detector.py`
+3. `python -m py_compile run.py gui/main_window.py gui/server_tab.py gui/benchmark_tab.py gui/build_tab.py gui/build_manager.py gui/dependency_checker.py gui/hardware_detector.py`
 4. `git diff --check`
 
 ## Commit Slices (Phase 0)

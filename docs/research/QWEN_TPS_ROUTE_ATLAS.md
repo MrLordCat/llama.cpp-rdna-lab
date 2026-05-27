@@ -171,8 +171,7 @@ The active request path is:
 
 | Layer | Code | TPS relevance |
 | --- | --- | --- |
-| GUI server tab | `gui/server_tab.py` | Current GUI launch route; default FA on in newer server tab; emits `--cache-type-k/v` and `--flash-attn on` |
-| Legacy/main GUI route | `gui/llama_gui.py` | Exposes KV combo, FA checkbox, TurboQuant warnings, and command construction |
+| GUI server tab | `gui/server_tab.py` | Current GUI launch route; exposes KV combo/TurboQuant handling, default FA on in newer server tab; emits `--cache-type-k/v` and `--flash-attn on` |
 | Benchmark tab | `gui/benchmark_tab.py` | Emits repeatable benchmark commands and saves presets/history |
 | Profiles | `gui/model_presets.json`, `gui/optimization_profiles.py` | Can silently change batch, ubatch, KV, FA, backend, and spec mode |
 | CLI parser | `common/arg.cpp` | Authoritative route for `--flash-attn`, `--cache-type-k/v`, `--spec-type`, `--batch-size`, `--ubatch-size` |

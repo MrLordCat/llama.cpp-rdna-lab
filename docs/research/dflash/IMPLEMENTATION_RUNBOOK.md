@@ -119,7 +119,7 @@ Goal: expose DFlash safely without changing existing defaults.
 
 Primary file order:
 
-1. `gui/llama_gui.py`
+1. `gui/server_tab.py`, `gui/benchmark_tab.py`, `gui/build_tab.py`
 2. `gui/model_presets.json` (if presets are added)
 3. GUI docs touched by UX changes
 
@@ -133,7 +133,7 @@ Definition of done:
 
 Run after each phase:
 
-1. `python -m py_compile gui/llama_gui.py gui/build_manager.py gui/dependency_checker.py gui/hardware_detector.py`
+1. `python -m py_compile run.py gui/main_window.py gui/server_tab.py gui/benchmark_tab.py gui/build_tab.py gui/build_manager.py gui/dependency_checker.py gui/hardware_detector.py`
 2. `git diff --check`
 3. CPU configure/build sanity if touched paths require it:
    - `cmake -B build-cpu -DCMAKE_BUILD_TYPE=Release`

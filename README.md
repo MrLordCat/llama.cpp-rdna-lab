@@ -70,11 +70,9 @@ python run.py
 ```powershell
 run.bat
 start-gui.bat
-python gui\llama_gui.py
 ```
 
-`run.py` добавляет `gui/` в `PYTHONPATH`, проверяет Python-зависимости через `dependency_checker.py` и запускает `gui/llama_gui.py`.
-Текущая точка входа GUI использует модульную структуру и запускает `gui/main_window.py`.
+`run.py` добавляет `gui/` в `PYTHONPATH`, проверяет Python-зависимости через `dependency_checker.py` и запускает модульный GUI через `gui/main_window.py`.
 
 ## Возможности GUI
 
