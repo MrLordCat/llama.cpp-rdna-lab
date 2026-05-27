@@ -2,8 +2,8 @@
 """Run a real-scenario context benchmark using a large repository snapshot prompt.
 
 Unlike agent_workload_bench tasks (short prompts), this script builds a large prompt
-from real repository files and scales prompt size with context so 64K and 128K
-comparisons are meaningful for long-prefill behavior.
+from real repository files and scales prompt size with context. The active default
+is now the 130k lane; older 12k/16k/64k profiles are historical probes.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR_DEFAULT = ROOT / "build_logs" / "agent-workload"
-PRIMARY_MAX_CTX = 16384
+PRIMARY_MAX_CTX = 131072
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
-    parser.add_argument("--ctx-values", default="12288,16384")
+    parser.add_argument("--ctx-values", default="131072")
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--ubatch-size", type=int, default=512)
     parser.add_argument("--cache-type-k", default="q4_0")
@@ -47,19 +47,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parallel", type=int, default=1)
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--threads-http", type=int, default=8)
-    parser.add_argument("--max-tokens", type=int, default=350)
+    parser.add_argument("--max-tokens", type=int, default=64)
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--top-p", type=float, default=0.9)
-    parser.add_argument("--startup-timeout", type=float, default=300.0)
+    parser.add_argument("--startup-timeout", type=float, default=900.0)
     parser.add_argument("--request-timeout", type=float, default=1800.0)
     parser.add_argument("--server-extra", default="", help="extra llama-server args appended as-is")
-    parser.add_argument("--base-char-budget", type=int, default=430000)
+    parser.add_argument("--base-char-budget", type=int, default=386000)
     parser.add_argument("--min-char-budget", type=int, default=120000)
-    parser.add_argument("--base-ctx", type=int, default=16384)
+    parser.add_argument("--base-ctx", type=int, default=131072)
     parser.add_argument(
         "--allow-ctx-above-16k",
         action="store_true",
-        help="allow ctx > 16384 for archival experiments; default policy keeps primary lane at <=16k",
+        help="legacy compatibility flag; active policy allows ctx up to 131072 and uses this only for explicit over-130k probes",
     )
     parser.add_argument("--spec-type", choices=["none", "ngram-mod"], default="none")
     parser.add_argument(
@@ -98,7 +98,7 @@ def apply_quick_profile(args: argparse.Namespace) -> None:
 def parse_ctx_values(raw: str) -> list[int]:
     values = [int(part.strip()) for part in raw.split(",") if part.strip()]
     if not values:
-        raise ValueError("--ctx-values must contain at least one value, e.g. 12288")
+        raise ValueError("--ctx-values must contain at least one value, e.g. 131072")
     if len(set(values)) != len(values):
         raise ValueError("--ctx-values must not contain duplicates")
     if any(v < 4096 for v in values):
@@ -507,8 +507,8 @@ def main() -> int:
         over_limit = [ctx for ctx in ctx_values if ctx > PRIMARY_MAX_CTX]
         if over_limit:
             print(
-                "ERROR: ctx-values above 16384 are disabled by current benchmark policy. "
-                "Use --allow-ctx-above-16k for archival runs."
+                f"ERROR: ctx-values above {PRIMARY_MAX_CTX} are disabled by current 130k benchmark policy. "
+                "Use --allow-ctx-above-16k only for explicit over-130k exploratory runs."
             )
             return 2
 

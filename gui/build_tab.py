@@ -1058,15 +1058,15 @@ class BuildTabWidget(QWidget):
             "--build-id", self._active_build_record_id,
             "--artifact-mode", "unified",
             "--ctx-size", str(profile.min_ctx),
-            "--batch-size", "6144",
-            "--ubatch-size", "2048",
+            "--batch-size", "512",
+            "--ubatch-size", "128",
             "--cache-type-k", "q4_0",
             "--cache-type-v", "q4_0",
-            "--gpu-layers", "99",
+            "--gpu-layers", "999",
             "--parallel", "1",
             "--max-tokens", str(profile.max_tokens),
-            "--startup-timeout", "120",
-            "--request-timeout", "120",
+            "--startup-timeout", "900",
+            "--request-timeout", str(profile.request_timeout),
             "--real-context-mode", "repo-snapshot",
             "--real-context-chars", str(profile.real_context_chars),
             "--no-reuse",
@@ -1110,7 +1110,7 @@ class BuildTabWidget(QWidget):
                 QMessageBox.warning(self, "Auto-tune", "Missing llama-server binary for selected/active build")
             return False
 
-        spec_values = self._resolve_autotune_spec_values(server_bin, resolved_model)
+        spec_values = ["none"]
 
         profile = ACTIVE_PROMPT_PROFILE
         autotune_tasks = profile.tasks
@@ -1133,7 +1133,7 @@ class BuildTabWidget(QWidget):
             "--gpu-layers", "-1",
             "--parallel", "1",
             "--max-tokens", autotune_max_tokens,
-            "--startup-timeout", "120",
+            "--startup-timeout", "900",
             "--request-timeout", str(profile.request_timeout),
             "--task-hard-timeout", str(profile.task_hard_timeout),
             "--task-fail-timeout", str(profile.task_fail_timeout),
@@ -1147,7 +1147,7 @@ class BuildTabWidget(QWidget):
             "--autotune-ctx-values", profile.ctx_values,
             "--autotune-batch-values", ",".join(str(value) for value in batch_values),
             "--autotune-ubatch-values", ",".join(str(value) for value in ubatch_values),
-            "--autotune-kv-values", "q8_0,q4_0",
+            "--autotune-kv-values", "q4_0",
             "--autotune-spec-values", ",".join(spec_values),
             "--autotune-extra-presets", "base",
             "--autotune-max-configs", "96",
@@ -1177,7 +1177,7 @@ class BuildTabWidget(QWidget):
         if hasattr(self, "quick_bench_btn"):
             self.quick_bench_btn.setEnabled(False)
         self.build_status_label.setText(
-            f"Running active <16K autotune ({profile.lane_summary}) for {resolved_model.name}..."
+            f"Running active 130K autotune ({profile.lane_summary}) for {resolved_model.name}..."
         )
         self.bench_thread = QuickBenchmarkThread(command=command, working_dir=Path(self.parent.project_root))
         self.bench_thread.output.connect(self._on_autotune_output)

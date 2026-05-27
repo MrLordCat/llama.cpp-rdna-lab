@@ -7,11 +7,50 @@ This file is the fast handoff anchor when C01 work is paused and later resumed.
 Primary center:
 - `CUDA_NODE op=MUL_MAT kind=forward`
 
+## Current Pause Checkpoint (2026-05-27)
+
+The active performance branch is paused by user request before starting a
+separate public `llama-bench` comparison track. C01 itself remains historical;
+the current paused branch is P002 130k dense Qwen3.6 Vulkan/ROCm work.
+
+Active P002 lane:
+- model: `models/Qwen3.6-27B-Q3_K_S.gguf`
+- backend focus: Vulkan; ROCm is paused after D013-D027.
+- contract: `ctx=131072,batch=512,ubatch=256,q4_0/q4_0,FlashAttention,spec=none,--no-mmap`
+- workload: `quick:triage_diff`, `real-context-chars=24576`, `max_tokens=16`
+- cold-first: no reuse, no v2 prime pass, thinking on.
+
+Current accepted P002 baseline:
+- D012 `d012-vulkan-130k-glu-fast-q3quad-bn256-lowtile3-confirm3`
+- `2.0013 TPS`, prompt `1053.1067 tok/s`, decode `42.7233 tok/s`
+- opt-in env stack: `GGML_VK_ALLOW_GRAPHICS_QUEUE=1`,
+   `GGML_VK_AMD_LARGE_MATMUL_VARIANT=bn256`,
+   `GGML_VK_QK_LOW_TILE_SPLIT_K=3`, `GGML_VK_Q3K_QUAD_DEQUANT=1`.
+
+Latest decision before pause:
+- D034 closed the fresh `ctx=131072` slow-pocket recheck as diagnostic only.
+- Fresh full-server D012 controls can fall to `~0.37 TPS`, but direct
+   `llama-bench pp4096` and full-server `ctx=65536` stayed fast.
+- Best partial backend-host KV recovery was `1.9826 TPS`, below D012 and with
+   decode regressed to `36.98 tok/s`; all D034 code prototypes were reverted.
+- Do not use the `0.37 TPS` slow pocket as a speed baseline.
+
+First command to resume P002 should be a clean D012 same-lane control before any
+new code edit:
+
+```bash
+PATH="/c/Strawberry/c/bin:$PATH" GGML_VK_ALLOW_GRAPHICS_QUEUE=1 GGML_VK_AMD_LARGE_MATMUL_VARIANT=bn256 GGML_VK_QK_LOW_TILE_SPLIT_K=3 GGML_VK_Q3K_QUAD_DEQUANT=1 python scripts/agent_workload_bench.py --server-bin build-vulkan/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --label p002-resume-d012-control-r1 --ctx-size 131072 --batch-size 512 --ubatch-size 256 --gpu-layers 999 --cache-type-k q4_0 --cache-type-v q4_0 --flash-attn --parallel 1 --max-tokens 16 --tasks quick --task-ids triage_diff --real-context-mode repo-snapshot --real-context-chars 24576 --no-disable-thinking --no-reuse --no-v2-prime-pass --allow-ctx-above-16k --runs 1 --background-server-policy fail --server-extra "--spec-type none --no-mmap" --cache-ram 0 --ctx-checkpoints 0 --write-diagnostics
+```
+
+After that, resume from `docs/research/major-topology/README.md`, especially
+T3a. The next valid route must be a true Q3_K compute body/compressed-dot route
+or a lifetime design that preserves decode while recovering residency.
+
 ## Closed Status (2026-05-18)
 
 C01 is closed as the active default research branch for the current bench.
 
-Repository-wide performance work is archived in `docs/research/PERFORMANCE_ARCHIVE_2026-05-18.md`. Read that file before using this playbook.
+Repository-wide performance work is archived in `docs/research/archive/2026-05-fast-probe-cycle/PERFORMANCE_ARCHIVE_2026-05-18.md`. Read that file before using this playbook.
 
 Use this playbook only if C01 is intentionally reopened. Reopen requires one of:
 - a fresh current-bench trace showing a materially different `MUL_MAT forward` shape/route mix than the documented Q3_K `ncols_max=192` center,

@@ -1,11 +1,11 @@
 # Route Metrics and Bottleneck Map
 
-Updated: 2026-05-23.
+Updated: 2026-05-26.
 
 This document connects the ROCm and Vulkan route maps to the measured Qwen/RDNA4
 performance evidence. It answers a narrower question than the backend atlases:
-which active routes matter for TPS, why they are limiting, and which routes are
-already low-ceiling or rejected.
+which current and archived routes matter for TPS, why they are limiting, and
+which routes are already low-ceiling or rejected.
 
 Companion route maps:
 
@@ -15,33 +15,44 @@ Companion route maps:
 
 ## Completeness Snapshot
 
-The maps now cover the active Qwen TPS route surface. The remaining work is
-metric refresh as lanes change, not route discovery for the current profile.
+The maps cover the archived short-context Qwen TPS route surface and now include
+the E265 quick 130k baselines. The active profile is `ctx=131072`; older
+12k/32k/64k route shares are evidence, not current baselines.
 
 | Area | Coverage now | Metric refresh needed |
 | --- | --- | --- |
-| End-to-end active Qwen TPS route | High | Fresh metric updates as lanes change; not every non-Qwen architecture |
-| ROCm build/backend/dispatch routes | High | Fresh line-by-line timing for every supported op on the current `ubatch=2048` cold-first lane |
+| End-to-end active Qwen TPS route | Medium | E265 quick baselines exist; next refresh is per-route trace/residency split on this lane |
+| ROCm build/backend/dispatch routes | High | Fresh line-by-line timing for the 130k `ubatch=128` cold-first lane after baseline |
 | ROCm `MUL_MAT`/`MUL_MAT_ID` hot routes | High | A new fused large-Q3_K design is not mapped because it does not exist yet |
 | Vulkan build/backend/shader routes | Medium-high | Same-lane route timings for every non-matmul op; more FA/KV-specific Vulkan traces |
-| Q4 KV cache route | Medium | Fresh ROCm same-lane q4/q8/f16 A/B at `ctx=12288` and `ctx=32768`; existing evidence is enough to keep q4 as default |
-| FlashAttention | Medium | Fresh FA on/off A/B for the active `ubatch=2048` lane; existing trace says FA is not the main 12k bottleneck |
+| Q4 KV cache route | Medium | Fresh same-lane q4/q8/f16 A/B belongs after 130k baselines; existing evidence is enough to keep q4 as the starting default |
+| FlashAttention | Medium | Fresh FA diagnostics belong after 130k baselines; existing trace says FA was not the main archived 12k bottleneck |
 | Prompt cache/checkpoint session route | High | Refreshed in E113 after driver update; refresh again when prompt templates, driver/runtime, or server cache defaults change |
 | `ngram-mod` and speculative routes | High for current same-lane ngram; medium for MTP | E107 covered cold-first same-lane failure; E113 post-driver retuned repeated-session ngram to `12/16/32`. MTP still needs an MTP-enabled GGUF before speed claims |
 | GUI/server command route | Medium | Server launch generation and GUI knobs are identified, but not fully mapped node-by-node |
 | Cleanup/pruning guidance | Conservative | Any deletion still needs build-profile proof; current docs are not a deletion authorization |
 
-Short answer: the map is now strong enough to guide the next ROCm/Vulkan
-performance search, but not complete enough to delete backend source families.
-The current user focus is H39 ROCm decode parity against Vulkan, but E191/E192
-add an important route-chain correction: on the practical real-context
-repo-snapshot wall lane, the next measured bottleneck is large Q3_K
-`cublas_backend` prefill, not another MMVQ micro-bucket. Keep pure decode parity
-and real-context wall work separated when choosing the next branch.
+Short answer: the map is strong enough to avoid repeating old ROCm/Vulkan probes,
+but not complete enough to delete backend source families. The current user focus
+is dense 27B at 130k context; E265 captured the quick baselines, so next work
+interprets Q3_K/FA/decode route shares together with residency/RAM-spill evidence.
 
 ## Active Local Lanes
 
-Main cold-first prompt-heavy lane:
+Main cold-first 130k lane:
+
+- Model: `Qwen3.6-27B-Q3_K_S`.
+- Backend: Vulkan and ROCm measured separately on RX 9070 XT.
+- Context: `ctx=131072`.
+- Batch: `batch=512`; Vulkan `ubatch=256`, ROCm `ubatch=128` until rechecked.
+- Current quick baseline: Vulkan D005 `1.7898 TPS` r3; ROCm `1.5200 TPS` r3.
+- KV: `q4_0/q4_0`.
+- Speculative decoding: `spec=none`.
+- Reuse: off for cold-first claims; no v2 prime pass.
+- Thinking: on.
+- Residency: RAM-spill/system-RAM/PCIe/startup diagnostics are part of the result.
+
+Archived cold-first prompt-heavy lane:
 
 - Model: `Qwen3.6-27B-Q3_K_S`.
 - Backend: ROCm/HIP on RX 9070 XT / `gfx1201`.
@@ -63,7 +74,7 @@ Historical decode/C01 lane used by several trace documents:
 
 - `ctx=12288`, `batch=6144`, `ubatch=192`, KV `q4_0/q4_0`, `spec=none`.
 - Keep its per-route timing data, but do not mix its TPS headline with the
-  newer `ubatch=2048` prompt-heavy cold-first lane.
+  archived `ubatch=2048` prompt-heavy cold-first lane or the current 130k lane.
 
 Repeated/steady session lane:
 
@@ -203,7 +214,7 @@ Server route:
 - Context checkpoints can restore a shared prefix and then reprocess only the
   changed tail.
 
-Measured E111 behavior on the active 12k ROCm q4-KV lane:
+Measured E111 behavior on the archived 12k ROCm q4-KV lane:
 
 - cold-first reference: `11.8464 TPS`;
 - reuse r1: `14.6132 TPS`;

@@ -81,7 +81,7 @@ Do not restart these without new route evidence:
 1. Read this file first.
 2. Check `git status --short --branch` and avoid reverting user changes.
 3. If reopening C01, read `docs/research/decode-hotspots/C01_RESUME_PLAYBOOK.md` and `docs/research/decode-hotspots/DECODE_TRACE_CHECKLIST.md`.
-4. If reopening the current prefill lane, read `docs/research/POST_C01_ACCELERATION_SCAN_2026-05-18.md`, E053-E059, and `docs/research/HYPOTHESES.md` H25-H29.
+4. If reopening the current prefill lane, read `docs/research/archive/2026-05-fast-probe-cycle/POST_C01_ACCELERATION_SCAN_2026-05-18.md`, E053-E059, and `docs/research/HYPOTHESES.md` H25-H29.
 5. Re-establish a same-session control before making a speed claim.
 
 ## Final Decision

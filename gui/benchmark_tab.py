@@ -168,7 +168,7 @@ class BenchmarkTabWidget(QWidget):
         self._version_payloads: dict[str, dict[str, object]] = {}
         self._current_mode = "single"
         self._last_selected_model = ""
-        self._current_autotune_profile = "ctx32k-only"
+        self._current_autotune_profile = "ctx130k-only"
         self._current_build_id = ""
         self._live_best_by_key: dict[str, dict[str, str]] = {}
         self._summary_sweep_cache: dict[str, tuple[str, str]] = {}
@@ -374,7 +374,7 @@ class BenchmarkTabWidget(QWidget):
         single_layout.addWidget(QLabel("Tasks:"), 0, 0)
         self.tasks_combo = QComboBox()
         self.tasks_combo.addItems(["v2-mini", "v2", "quick", "full"])
-        self.tasks_combo.setCurrentText("v2-mini")
+        self.tasks_combo.setCurrentText("quick")
         single_layout.addWidget(self.tasks_combo, 0, 1)
 
         single_layout.addWidget(QLabel("Runs:"), 1, 0)
@@ -394,7 +394,7 @@ class BenchmarkTabWidget(QWidget):
         self.ctx_spin = QSpinBox()
         self.ctx_spin.setMinimum(8192)
         self.ctx_spin.setMaximum(131072)
-        self.ctx_spin.setValue(65536)
+        self.ctx_spin.setValue(131072)
         self.ctx_spin.setSingleStep(8192)
         single_layout.addWidget(self.ctx_spin, 3, 1)
 
@@ -402,7 +402,7 @@ class BenchmarkTabWidget(QWidget):
         self.batch_spin = QSpinBox()
         self.batch_spin.setMinimum(32)
         self.batch_spin.setMaximum(8192)
-        self.batch_spin.setValue(2048)
+        self.batch_spin.setValue(512)
         self.batch_spin.setSingleStep(32)
         single_layout.addWidget(self.batch_spin, 4, 1)
 
@@ -410,7 +410,7 @@ class BenchmarkTabWidget(QWidget):
         self.ubatch_spin = QSpinBox()
         self.ubatch_spin.setMinimum(32)
         self.ubatch_spin.setMaximum(8192)
-        self.ubatch_spin.setValue(512)
+        self.ubatch_spin.setValue(128)
         self.ubatch_spin.setSingleStep(32)
         single_layout.addWidget(self.ubatch_spin, 5, 1)
 
@@ -424,19 +424,19 @@ class BenchmarkTabWidget(QWidget):
         self.max_tokens_spin = QSpinBox()
         self.max_tokens_spin.setMinimum(8)
         self.max_tokens_spin.setMaximum(1024)
-        self.max_tokens_spin.setValue(80)
+        self.max_tokens_spin.setValue(16)
         single_layout.addWidget(self.max_tokens_spin, 7, 1)
         single_layout.setColumnStretch(1, 1)
 
         single_group.setLayout(single_layout)
         params_layout.addWidget(single_group)
 
-        autotune_group = QGroupBox("Auto-tune Grid (used by Run Auto-tune 32K)")
+        autotune_group = QGroupBox("Auto-tune Grid (used by Run Auto-tune 130K)")
         autotune_layout = QVBoxLayout()
 
         autotune_mode_info = QLabel(
-            "Fixed mode: ctx=32768, tasks=v2-mini, runs=1, prompt-heavy repo-snapshot, "
-            "no-reuse, no-prime, thinking on, request/task timeout=20s"
+            "Fixed mode: ctx=131072, tasks=quick:triage_diff, runs=1, repo-snapshot chars=24576, "
+            "max_tokens=16, no-reuse, no-prime, thinking on. 130K may spill KV/context into system RAM."
         )
         autotune_mode_info.setWordWrap(True)
         autotune_mode_info.setStyleSheet("color: #b0b0b0;")
@@ -449,7 +449,7 @@ class BenchmarkTabWidget(QWidget):
         self.at_batch_min_spin = QSpinBox()
         self.at_batch_min_spin.setMinimum(32)
         self.at_batch_min_spin.setMaximum(8192)
-        self.at_batch_min_spin.setValue(2048)
+        self.at_batch_min_spin.setValue(256)
         self.at_batch_min_spin.setSingleStep(32)
         self.at_batch_min_spin.setToolTip("Minimal batch value in sweep (>= 32)")
         batch_grid.addWidget(self.at_batch_min_spin, 0, 1)
@@ -458,7 +458,7 @@ class BenchmarkTabWidget(QWidget):
         self.at_batch_max_spin = QSpinBox()
         self.at_batch_max_spin.setMinimum(32)
         self.at_batch_max_spin.setMaximum(8192)
-        self.at_batch_max_spin.setValue(8192)
+        self.at_batch_max_spin.setValue(1024)
         self.at_batch_max_spin.setSingleStep(32)
         self.at_batch_max_spin.setToolTip("Maximal batch value in sweep")
         batch_grid.addWidget(self.at_batch_max_spin, 1, 1)
@@ -467,7 +467,7 @@ class BenchmarkTabWidget(QWidget):
         self.at_batch_step_spin = QSpinBox()
         self.at_batch_step_spin.setMinimum(1)
         self.at_batch_step_spin.setMaximum(8192)
-        self.at_batch_step_spin.setValue(2048)
+        self.at_batch_step_spin.setValue(256)
         self.at_batch_step_spin.setSingleStep(1)
         self.at_batch_step_spin.setToolTip("Increment for batch range")
         batch_grid.addWidget(self.at_batch_step_spin, 2, 1)
@@ -481,7 +481,7 @@ class BenchmarkTabWidget(QWidget):
         self.at_ubatch_min_spin = QSpinBox()
         self.at_ubatch_min_spin.setMinimum(32)
         self.at_ubatch_min_spin.setMaximum(8192)
-        self.at_ubatch_min_spin.setValue(128)
+        self.at_ubatch_min_spin.setValue(64)
         self.at_ubatch_min_spin.setSingleStep(32)
         self.at_ubatch_min_spin.setToolTip("Minimal ubatch value in sweep (>= 32)")
         ubatch_grid.addWidget(self.at_ubatch_min_spin, 0, 1)
@@ -490,7 +490,7 @@ class BenchmarkTabWidget(QWidget):
         self.at_ubatch_max_spin = QSpinBox()
         self.at_ubatch_max_spin.setMinimum(32)
         self.at_ubatch_max_spin.setMaximum(8192)
-        self.at_ubatch_max_spin.setValue(512)
+        self.at_ubatch_max_spin.setValue(256)
         self.at_ubatch_max_spin.setSingleStep(32)
         self.at_ubatch_max_spin.setToolTip("Maximal ubatch value in sweep")
         ubatch_grid.addWidget(self.at_ubatch_max_spin, 1, 1)
@@ -512,8 +512,8 @@ class BenchmarkTabWidget(QWidget):
         kv_grid.addWidget(QLabel("KV sweep:"), 0, 0)
         self.autotune_kv_checks: dict[str, QCheckBox] = {}
         for index, (kv_name, enabled, hint) in enumerate([
-            ("q4_0", True, "Main fast lane for current prompt-heavy target"),
-            ("q8_0", True, "Higher-quality KV cache variant"),
+            ("q4_0", True, "Main KV cache for the current 130K target"),
+            ("q8_0", False, "Higher-quality KV cache opt-in"),
             ("turbo4", False, "TurboKV 4-bit cache (128-block WHT, correctness path)"),
             ("turbo3", False, "TurboKV 3-bit cache (128-block WHT, correctness path)"),
             ("turbo2", False, "TurboKV 2-bit cache (128-block WHT, correctness path)"),
@@ -536,7 +536,7 @@ class BenchmarkTabWidget(QWidget):
         self.autotune_spec_checks: dict[str, QCheckBox] = {}
         for index, (mode, enabled, hint) in enumerate([
             ("none", True, "Always keep plain decoding baseline in sweep"),
-            ("ngram-mod", True, "Ngram speculative mode"),
+            ("ngram-mod", False, "Ngram speculative mode for explicit repeated/session probes"),
             ("draft", False, "Draft speculative mode when supported"),
             ("eagle3", False, "Eagle3 speculative mode when supported"),
             ("mtp", False, "MTP mode; requires server + MTP model support"),
@@ -665,8 +665,8 @@ class BenchmarkTabWidget(QWidget):
         self.run_bench_btn.clicked.connect(self.run_benchmark)
         btn_grid.addWidget(self.run_bench_btn, 0, 0)
 
-        self.run_autotune_btn = QPushButton("Run Auto-tune 32K")
-        self.run_autotune_btn.setToolTip("Run the 32K v2-mini x1 autotune grid")
+        self.run_autotune_btn = QPushButton("Run Auto-tune 130K")
+        self.run_autotune_btn.setToolTip("Run the 130K cold repo-snapshot autotune grid")
         self.run_autotune_btn.clicked.connect(self.run_autotune)
         btn_grid.addWidget(self.run_autotune_btn, 1, 0)
 
@@ -1006,6 +1006,7 @@ class BenchmarkTabWidget(QWidget):
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         label = f"gui-bench-{model.stem}-{stamp}"
         spec_mode = self.spec_combo.currentText()
+        server_extra = self._active_lane_base_server_extra(self.ctx_spin.value())
         spec_extra = [f"--spec-type {spec_mode}"]
         if spec_mode in {"ngram-mod", "ngram-mtp"}:
             spec_extra.append(f"--spec-ngram-mod-n-min {self.NGRAM_MOD_N_MIN}")
@@ -1013,6 +1014,7 @@ class BenchmarkTabWidget(QWidget):
             spec_extra.append(f"--spec-ngram-mod-n-max {self.NGRAM_MOD_N_MAX}")
         if spec_mode in {"mtp", "ngram-mtp"}:
             spec_extra.append("--spec-draft-n-max 3")
+        server_extra.extend(spec_extra)
 
         command = [
             sys.executable,
@@ -1042,20 +1044,34 @@ class BenchmarkTabWidget(QWidget):
             "--cache-type-v",
             self.kv_combo.currentText(),
             "--gpu-layers",
-            "99",
+            "999",
             "--parallel",
             "1",
             "--max-tokens",
             str(self.max_tokens_spin.value()),
             "--startup-timeout",
-            "180",
+            "900",
             "--request-timeout",
             "180",
+            "--task-hard-timeout",
+            "45",
             "--background-server-policy",
             "fail",
+            "--real-context-mode",
+            "repo-snapshot",
+            "--real-context-chars",
+            "24576",
+            "--real-context-safe-fill",
+            "0.88",
+            "--no-reuse",
+            "--no-v2-prime-pass",
+            "--no-disable-thinking",
             "--server-extra",
-            " ".join(spec_extra),
+            " ".join(server_extra),
         ]
+
+        if self.tasks_combo.currentText() == "quick":
+            command.extend(["--task-ids", "triage_diff"])
 
         bench_env = self._bench_env_overrides()
 
@@ -1069,6 +1085,8 @@ class BenchmarkTabWidget(QWidget):
         if bench_env:
             env_summary = ", ".join(f"{key}={value}" for key, value in sorted(bench_env.items()))
             self.log_output.append(f"[INFO] Env overrides: {env_summary}")
+        if server_extra:
+            self.log_output.append(f"[INFO] Server extra: {' '.join(server_extra)}")
         self.bench_thread = BenchCommandThread(command=command, working_dir=self.project_root, env=bench_env)
         self.bench_thread.output.connect(self._on_bench_output)
         self.bench_thread.finished_signal.connect(self._on_bench_finished)
@@ -1089,9 +1107,9 @@ class BenchmarkTabWidget(QWidget):
             QMessageBox.warning(self, "Auto-tune", "llama-server not found for selected build version")
             return
 
-        profile_key = "ctx32k-only"
-        autotune_min_ctx = 32768
-        autotune_ctx_values = "32768"
+        profile_key = "ctx130k-only"
+        autotune_min_ctx = 131072
+        autotune_ctx_values = "131072"
         batch_values = self._build_autotune_range_values(
             self.at_batch_min_spin.value(),
             self.at_batch_max_spin.value(),
@@ -1141,9 +1159,10 @@ class BenchmarkTabWidget(QWidget):
 
         autotune_extra_presets = "||".join(extra_presets)
         autotune_kv_values = ",".join(kv_values)
-        autotune_tasks = "v2-mini"
-        autotune_max_tokens = "120"
-        autotune_real_context_chars = "21872"
+        autotune_tasks = "quick"
+        autotune_task_ids = "triage_diff"
+        autotune_max_tokens = "16"
+        autotune_real_context_chars = "24576"
 
         ctx_count = len([v for v in autotune_ctx_values.split(",") if v.strip()])
         batch_count = len(batch_values)
@@ -1158,6 +1177,7 @@ class BenchmarkTabWidget(QWidget):
         session_label = f"gui-autotune-{model.stem}"
         autotune_session_file = self.project_root / "build_logs" / "agent-workload" / f"{session_label}-autotune-session.json"
         compatibility_notes: list[str] = []
+        base_server_extra = self._active_lane_base_server_extra(autotune_min_ctx)
 
         command = [
             sys.executable,
@@ -1184,11 +1204,11 @@ class BenchmarkTabWidget(QWidget):
             "--max-tokens",
             autotune_max_tokens,
             "--startup-timeout",
-            "180",
+            "900",
             "--request-timeout",
             "180",
             "--task-hard-timeout",
-            "60",
+            "45",
             "--background-server-policy",
             "fail",
             "--allow-ctx-above-16k",
@@ -1196,6 +1216,8 @@ class BenchmarkTabWidget(QWidget):
             "repo-snapshot",
             "--real-context-chars",
             autotune_real_context_chars,
+            "--real-context-safe-fill",
+            "0.88",
             "--no-reuse",
             "--no-v2-prime-pass",
             "--no-disable-thinking",
@@ -1224,8 +1246,14 @@ class BenchmarkTabWidget(QWidget):
             "gui/model_presets.json",
         ]
 
+        if base_server_extra:
+            command.extend(["--server-extra", " ".join(base_server_extra)])
+
+        if autotune_task_ids:
+            command.extend(["--task-ids", autotune_task_ids])
+
         if self._bench_supports_flag("--task-fail-timeout"):
-            command.extend(["--task-fail-timeout", "60"])
+            command.extend(["--task-fail-timeout", "0"])
         else:
             compatibility_notes.append("--task-fail-timeout not supported by this benchmark script; using timeout policy: off")
 
@@ -1279,10 +1307,12 @@ class BenchmarkTabWidget(QWidget):
         self.log_output.clear()
         self.log_output.append(f"[INFO] Starting autotune for {model.name}")
         self.log_output.append(f"[INFO] Build ID: {build_id or '-'}")
-        self.log_output.append(f"[INFO] Autotune profile: 32K fixed, configs: {config_count}")
+        self.log_output.append(f"[INFO] Autotune profile: 130K fixed, configs: {config_count}")
         if bench_env:
             env_summary = ", ".join(f"{key}={value}" for key, value in sorted(bench_env.items()))
             self.log_output.append(f"[INFO] Env overrides: {env_summary}")
+        if base_server_extra:
+            self.log_output.append(f"[INFO] Base server extra: {' '.join(base_server_extra)}")
         self.log_output.append(f"[INFO] Workload: {autotune_tasks}, max_tokens: {autotune_max_tokens}")
         self.log_output.append(f"[INFO] Spec selected: {','.join(requested_spec_values)}")
         if skipped_spec_values:
@@ -1311,7 +1341,7 @@ class BenchmarkTabWidget(QWidget):
             f"reset={'on' if self.autotune_reset_session_checkbox.isChecked() else 'off'}"
         )
 
-        self.log_output.append("[INFO] Task timeout policy: 60s hard + 60s fail")
+        self.log_output.append("[INFO] Task timeout policy: 45s hard, fail timeout off")
 
         for note in compatibility_notes:
             self.log_output.append(f"[INFO] Compatibility: {note}")
@@ -1415,6 +1445,12 @@ class BenchmarkTabWidget(QWidget):
             unique.append(item)
         return unique
 
+    def _active_lane_base_server_extra(self, ctx_size: int) -> list[str]:
+        backend_key = self._backend_key_from_display(self.build_backend_combo.currentText().strip()).lower()
+        if backend_key == "vulkan" and ctx_size >= 131072:
+            return ["--no-mmap"]
+        return []
+
     @staticmethod
     def _vulkan_runtime_env() -> dict[str, str]:
         return {
@@ -1482,8 +1518,8 @@ class BenchmarkTabWidget(QWidget):
             f"Spec modes (selected): {spec_text}",
             f"Extra presets: {extra_preview or '-'}",
             f"Estimated configs: {total_configs} (ctx=1 x kv x batch x ubatch x spec x extra)",
-            "Runtime lane: repo-snapshot chars=21872, no-reuse, no-prime, thinking on",
-            "Hint: for 32..128 set min=32, max=128, step=32",
+            "Runtime lane: ctx=131072 repo-snapshot chars=24576, no-reuse, no-prime, thinking on",
+            "Hint: for the active 130K quick lane use batch 256..1024 and ubatch 64..256",
         ]
 
         if has_runtime_context:
@@ -1732,13 +1768,13 @@ class BenchmarkTabWidget(QWidget):
         self.autotune_reset_session_checkbox.setEnabled(not running)
 
     def _live_key_for_current_profile(self) -> str:
-        profile_bucket = "ctx32k-only"
+        profile_bucket = "ctx130k-only"
         model_name = self._last_selected_model or Path(self.model_path_input.text().strip() or "model.gguf").name
         return f"{model_name}::{profile_bucket}"
 
     def _update_live_best_from_line(self, line: str) -> None:
         # Expected format:
-        # CURRENT BEST: ctx=65536 b=1024 ub=1024 kv=q8_0 spec=none extra=base aggregate_tps=48.27
+        # CURRENT BEST: ctx=131072 b=2048 ub=512 kv=q4_0 spec=none extra=base aggregate_tps=1.23
         match = re.search(
             r"ctx=(\d+)\s+b=(\d+)\s+ub=(\d+)\s+kv=([^\s,]+)\s+spec=([^\s,]+)(?:\s+extra=([^\s,]+))?\s+aggregate_tps=([0-9]+(?:\.[0-9]+)?)",
             line,
@@ -1751,7 +1787,7 @@ class BenchmarkTabWidget(QWidget):
         spec_mode = spec_mode.strip().rstrip(",;")
         extra_preset = (extra_preset or "base").strip().rstrip(",;")
         model_name = self._last_selected_model or Path(self.model_path_input.text().strip() or "model.gguf").name
-        profile_bucket = "ctx32k-only"
+        profile_bucket = "ctx130k-only"
         key = f"{model_name}::{profile_bucket}"
         self._live_best_by_key[key] = {
             "model": model_name,

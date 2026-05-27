@@ -1,7 +1,7 @@
 {
-  "Qwen3.6-27B-Q3_K_S.gguf::active-ctx12k": {
+  "Qwen3.6-27B-Q3_K_S.gguf::archived-ctx12k": {
     "model": "Qwen3.6-27B-Q3_K_S.gguf",
-    "profile": "active-ctx12k",
+    "profile": "archived-ctx12k",
     "best_tps": "11.9858",
     "ctx": "12288",
     "batch": "6144",
@@ -16,9 +16,9 @@
     "label": "e113-driver5012-rocm-cold-specnone-r3",
     "timestamp": "2026-05-21"
   },
-  "Qwen3.6-27B-Q3_K_S.gguf::active-ctx12k-session": {
+  "Qwen3.6-27B-Q3_K_S.gguf::archived-ctx12k-session": {
     "model": "Qwen3.6-27B-Q3_K_S.gguf",
-    "profile": "active-ctx12k-session",
+    "profile": "archived-ctx12k-session",
     "best_tps": "19.5051",
     "ctx": "12288",
     "batch": "6144",
@@ -33,9 +33,9 @@
     "label": "e113-driver5012-rocm-reuse-ngram121632-r3b",
     "timestamp": "2026-05-21"
   },
-  "Qwen3.6-27B-Q3_K_S.gguf::active-ctx12k-long-answer": {
+  "Qwen3.6-27B-Q3_K_S.gguf::archived-ctx12k-long-answer": {
     "model": "Qwen3.6-27B-Q3_K_S.gguf",
-    "profile": "active-ctx12k-long-answer",
+    "profile": "archived-ctx12k-long-answer",
     "backend": "vulkan",
     "best_tps": "32.1668",
     "warm_only_tps": "33.96",

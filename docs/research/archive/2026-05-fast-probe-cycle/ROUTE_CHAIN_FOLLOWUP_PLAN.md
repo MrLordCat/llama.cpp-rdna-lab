@@ -1,7 +1,7 @@
 # Route-Chain Follow-up Plan
 
 Дата: 2026-05-23
-Основание: [docs/research/NEUTRAL_SMALL_PLUS_AUDIT.md](docs/research/NEUTRAL_SMALL_PLUS_AUDIT.md), особенно Phase 3 route-chain pass.
+Основание: [docs/research/archive/2026-05-fast-probe-cycle/NEUTRAL_SMALL_PLUS_AUDIT.md](docs/research/archive/2026-05-fast-probe-cycle/NEUTRAL_SMALL_PLUS_AUDIT.md), особенно Phase 3 route-chain pass.
 
 ## Цель
 

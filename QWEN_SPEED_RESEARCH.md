@@ -1,20 +1,27 @@
 # Qwen Speed Research
 
-Дата среза: 2026-05-07.
+Дата среза: 2026-05-26.
 
-## ОБНОВЛЕНИЕ 2026-05-18: текущий acceleration cycle заархивирован
+## ОБНОВЛЕНИЕ 2026-05-26: активная цель перенесена на 130k context
 
-- Активная no-spec cold-first lane остановлена на `Qwen3.6-27B-Q3_K_S`, `ctx=12288`, `batch=6144`, `ubatch=2048`, KV `q4_0/q4_0`, `triage_diff,review_bug`, thinking on, no reuse.
+- Новый глобальный target: dense `Qwen3.6-27B-Q3_K_S`, `ctx=131072` (~130k), cold-first, repo-snapshot real context, thinking on, no reuse, no v2 prime pass.
+- Свежие 130k quick baselines получены: Vulkan current best `b512/ub256` = `1.7898 TPS` r3 после D005 split-K с `--no-mmap`; ROCm `b512/ub128` = `1.5200 TPS` r3. Старые 12k/32k/64k/128k цифры не являются текущим baseline.
+- Для `ctx=131072` ожидается RAM-spill: 16 GB VRAM недостаточно для полностью VRAM-resident dense 27B + long KV/working set. Поэтому residency, mmap/no-mmap, PCIe/system-RAM pressure и startup diagnostics теперь часть performance target.
+- Старый `ctx=12288` target и E257/E260-E264 остаются полезным коротким reference по Q3_K/Vulkan, но не задают текущую цель оптимизации.
+
+## ОБНОВЛЕНИЕ 2026-05-18: 12k acceleration cycle заархивирован
+
+- Архивная no-spec cold-first lane остановлена на `Qwen3.6-27B-Q3_K_S`, `ctx=12288`, `batch=6144`, `ubatch=2048`, KV `q4_0/q4_0`, `triage_diff,review_bug`, thinking on, no reuse.
 - Последние reference controls: E045 `11.6534 TPS`, E053 `11.7681 TPS`, E056 `11.6726 TPS`, E058 `11.6132 TPS`.
 - E053-E059 закрыли простые продолжения: broad/shape MMQ для `Q3_K ne11=2048`, compute16, hipBLASLt/Stream-K env sweeps, GDN chunking, Q3_K 128-thread/half2/unroll4 conversion variants.
-- Главный архивный документ: `docs/research/PERFORMANCE_ARCHIVE_2026-05-18.md`.
+- Главный архивный документ: `docs/research/archive/2026-05-fast-probe-cycle/PERFORMANCE_ARCHIVE_2026-05-18.md`.
 - Возобновлять работу только при новом upstream/RDNA4 сигнале, MTP-enabled GGUF, изменившемся route mix или новой high-ceiling design gate идее.
 
-## ОБНОВЛЕНИЕ 2026-05-10: стартовая точка <16k теперь главный performance target
+## ОБНОВЛЕНИЕ 2026-05-10: архивный сдвиг на стартовую точку <16k
 
-- После prompt-heavy context-wall проверки активный фокус смещён на стартовую точку ниже `16k` (текущий reference `ctx=12288`).
+- После prompt-heavy context-wall проверки тогдашний фокус сместился на стартовую точку ниже `16k` (`ctx=12288`).
 - Причина: даже на `16k-32k` при большом входящем prompt throughput резко деградирует, поэтому 64k уже не является ближайшей «точкой входа» для оптимизации.
-- Новая цель: `25-27 TPS` на стартовой prompt-heavy точке через изменения кода llama.cpp/ggml.
+- Историческая цель той фазы: `25-27 TPS` на стартовой prompt-heavy точке через изменения кода llama.cpp/ggml. На 2026-05-26 текущая цель перенесена на 130k context.
 
 ## ОБНОВЛЕНИЕ 2026-05-12: native `ub1024` cliff на RDNA4/ROCm исправлен
 

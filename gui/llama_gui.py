@@ -1997,6 +1997,12 @@ class LlamaCppGUI(QMainWindow):
         else:
             self.server_flash_attn_checkbox.setChecked(False)
 
+        if "no_mmap" in preset:
+            self.server_no_mmap_checkbox.setChecked(bool(preset["no_mmap"]))
+
+        if "extra_args" in preset:
+            self.server_extra_args_edit.setText(str(preset["extra_args"]).strip())
+
         kv_idx = preset.get("kv_cache", 0)
         if 0 <= kv_idx < self.server_kv_cache_combo.count():
             self.server_kv_cache_combo.setCurrentIndex(kv_idx)

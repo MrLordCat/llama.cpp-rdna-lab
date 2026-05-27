@@ -30,10 +30,16 @@ class ShapeProxy:
     count: int
 
 
-HOT_SHAPES: tuple[ShapeProxy, ...] = (
-    ShapeProxy("ffn_gate_up", 17408, 1024, 5120, 2),
-    ShapeProxy("ffn_down", 5120, 1024, 17408, 1),
-)
+HOT_SHAPE_PROFILES: dict[str, tuple[ShapeProxy, ...]] = {
+    "p002-130k": (
+        ShapeProxy("ffn_gate_up", 17408, 128, 5120, 2),
+        ShapeProxy("ffn_down", 5120, 128, 17408, 1),
+    ),
+    "p001-64k": (
+        ShapeProxy("ffn_gate_up", 17408, 1024, 5120, 2),
+        ShapeProxy("ffn_down", 5120, 1024, 17408, 1),
+    ),
+}
 
 
 def fmt_bytes(value: float) -> str:
@@ -96,28 +102,37 @@ def q3_workgroups(m: int, n: int, bm: int, bn: int, n_reuse: int = 1) -> int:
     return math.ceil(m / bm) * math.ceil(math.ceil(n / bn) / n_reuse)
 
 
-def print_hot_shape_proxy() -> None:
+def print_hot_shape_proxy(profile: str, shapes: tuple[ShapeProxy, ...]) -> None:
     bm = 128
     bn = 128
 
     base_pairs = 0
+    reuse2_pairs = 0
+    reuse4_pairs = 0
     base_wgs = 0
     print("## Hot Shape Proxy")
     print()
+    print(f"- shape_profile: `{profile}`")
+    print(f"- base_tile: `BM={bm},BN={bn}`")
+    print()
     print("| shape | count | base workgroups | base A pair-dequants | N-reuse2 A pairs | N-reuse4 A pairs |")
     print("|---|---:|---:|---:|---:|---:|")
-    for shape in HOT_SHAPES:
+    for shape in shapes:
         pairs = q3_a_pair_proxy(shape.m, shape.n, shape.k, bm, bn) * shape.count
         pairs2 = q3_a_pair_proxy(shape.m, shape.n, shape.k, bm, bn, 2) * shape.count
         pairs4 = q3_a_pair_proxy(shape.m, shape.n, shape.k, bm, bn, 4) * shape.count
         wgs = q3_workgroups(shape.m, shape.n, bm, bn) * shape.count
         base_pairs += pairs
+        reuse2_pairs += pairs2
+        reuse4_pairs += pairs4
         base_wgs += wgs
         print(f"| {shape.label} `{shape.m}x{shape.n}x{shape.k}` | {shape.count} | {wgs} | {pairs:,} | {pairs2:,} | {pairs4:,} |")
-    print(f"| total hot FFN proxy |  | {base_wgs} | {base_pairs:,} | {base_pairs // 2:,} | {base_pairs // 4:,} |")
+    print(f"| total hot FFN proxy |  | {base_wgs} | {base_pairs:,} | {reuse2_pairs:,} | {reuse4_pairs:,} |")
     print()
     print("- Important constraint: true A reuse across N-blocks requires either multiple accumulator sets alive across the full K-loop or global partial sums/reduce.")
     print("- A single-accumulator sequential N loop can only compute one N tile at a time; it then reloads/dequants A for the next tile and does not reduce this proxy.")
+    if all(shape.n <= bn for shape in shapes):
+        print("- For this profile, `n <= BN`, so N-reuse cannot reduce A-side Q3_K dequant work; FFN fusion must justify itself through B/activation reuse, launch reduction, or a new A layout.")
     print("- E137 already rejected the multiple-accumulator `niter2` implementation (`120 VGPR`, pp7488 `855.29` vs clean `974.92`).")
     print()
 
@@ -138,13 +153,13 @@ def print_memory_table(tensors: list[TensorInfo], pattern: str) -> None:
     print()
     print("| layout | absolute bytes | delta vs current Q3 device copy | decision |")
     print("|---|---:|---:|---|")
-    print(f"| persistent fp16 | {fmt_bytes(f16_bytes)} | {fmt_bytes(f16_bytes - q3_bytes)} | reject for 16 GiB 64k lane |")
+    print(f"| persistent fp16 | {fmt_bytes(f16_bytes)} | {fmt_bytes(f16_bytes - q3_bytes)} | reject for 16 GiB long-context lane |")
     print(f"| persistent int8 expanded values | {fmt_bytes(int8_bytes)} | {fmt_bytes(int8_bytes - q3_bytes)} | reject unless very narrow tensor subset |")
     print(f"| persistent signed-nibble values | {fmt_bytes(nibble_bytes)} | {fmt_bytes(nibble_bytes - q3_bytes)} | memory-plausible, but only removes bit unpack, not scale multiply or coopmat work |")
     print()
 
 
-def print_route_decision() -> None:
+def print_route_decision(profile: str) -> None:
     print("## Route Decision")
     print()
     print("| candidate | gate verdict | why |")
@@ -158,6 +173,8 @@ def print_route_decision() -> None:
     print()
     print("- Next buildable Q3_K branch should be a separate pipeline/layout, not a shared-source mutation of `mul_mm.comp`.")
     print("- The only memory-plausible persistent layout is a signed-nibble or similarly compact backend-private format; it needs an instruction-count/SPIR-V gate before code.")
+    if profile == "p002-130k":
+        print("- On P002 `ubatch=128`, broad FFN gate/up fusion is not the first code candidate unless its design proves B/activation reuse is large enough despite no N-tile A reuse.")
     print("- Because E088 scale reuse and E090 packed32 pair helpers were negative, this branch should not claim target-closing speed unless it removes a large share of Q3_K bit unpack work without raising registers.")
     print()
 
@@ -166,6 +183,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Analytic gate for Vulkan Q3_K persistent layout / route branches")
     parser.add_argument("--repo-root", default=".", help="repository root")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="GGUF model path")
+    parser.add_argument("--shape-profile", choices=sorted(HOT_SHAPE_PROFILES), default="p002-130k", help="hot-shape proxy profile")
     parser.add_argument("--patterns", default="ffn-all,ffn-gate-up,ffn-down,all-q3", help="comma-separated tensor groups")
     return parser.parse_args()
 
@@ -183,10 +201,10 @@ def main() -> int:
     print(f"- model: `{model}`")
     print(f"- tensors: {len(tensors)}")
     print()
-    print_hot_shape_proxy()
+    print_hot_shape_proxy(args.shape_profile, HOT_SHAPE_PROFILES[args.shape_profile])
     for pattern in [p.strip() for p in args.patterns.split(",") if p.strip()]:
         print_memory_table(tensors, pattern)
-    print_route_decision()
+    print_route_decision(args.shape_profile)
     return 0
 
 

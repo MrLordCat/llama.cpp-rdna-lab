@@ -976,33 +976,7 @@ static size_t ggml_cuda_q3k_padded_storage_alloc_size(const ggml_tensor * tensor
     return size;
 }
 
-static void ggml_cuda_q3k_pack_host_to_padded(
-        const void * src,
-        std::vector<block_q3_K_padded> & dst,
-        const size_t nblocks) {
-    const uint8_t * src_bytes = (const uint8_t *) src;
-    dst.resize(nblocks);
-
-    for (size_t i = 0; i < nblocks; ++i) {
-        std::memcpy(&dst[i], src_bytes + i * sizeof(block_q3_K), sizeof(block_q3_K));
-        dst[i].pad[0] = 0;
-        dst[i].pad[1] = 0;
-    }
-}
-
-static void ggml_cuda_q3k_unpack_padded_to_host(
-        const std::vector<block_q3_K_padded> & src,
-        void * dst,
-        const size_t nblocks) {
-    uint8_t * dst_bytes = (uint8_t *) dst;
-
-    for (size_t i = 0; i < nblocks; ++i) {
-        std::memcpy(dst_bytes + i * sizeof(block_q3_K), &src[i], sizeof(block_q3_K));
-    }
-}
-
 static size_t ggml_cuda_q3k_padded_storage_offset_from_raw(const size_t raw_offset) {
-    GGML_ASSERT(raw_offset % sizeof(block_q3_K) == 0);
     return (raw_offset / sizeof(block_q3_K)) * sizeof(block_q3_K_padded);
 }
 
@@ -1013,9 +987,99 @@ static size_t ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(
     const size_t raw_size = ggml_cuda_q3k_padded_storage_raw_size(tensor);
     GGML_ASSERT(offset <= raw_size);
     GGML_ASSERT(size <= raw_size - offset);
-    GGML_ASSERT(offset % sizeof(block_q3_K) == 0);
-    GGML_ASSERT(size % sizeof(block_q3_K) == 0);
-    return size / sizeof(block_q3_K);
+    if (size == 0) {
+        return 0;
+    }
+
+    const size_t raw_block_size = sizeof(block_q3_K);
+    const size_t raw_block_offset = offset % raw_block_size;
+    return (raw_block_offset + size + raw_block_size - 1) / raw_block_size;
+}
+
+static void ggml_cuda_q3k_copy_host_to_padded_storage(
+        ggml_tensor * tensor,
+        const void * data,
+        const size_t offset,
+        const size_t size,
+        cudaStream_t stream) {
+    const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
+    if (nblocks == 0) {
+        return;
+    }
+
+    const size_t raw_block_size   = sizeof(block_q3_K);
+    const size_t raw_block_offset = offset % raw_block_size;
+    const size_t padded_offset    = ggml_cuda_q3k_padded_storage_offset_from_raw(offset);
+    const bool partial_edge = raw_block_offset != 0 || size % raw_block_size != 0;
+
+    std::vector<block_q3_K_padded> packed(nblocks);
+    if (partial_edge) {
+        CUDA_CHECK(cudaMemcpyAsync(packed.data(), (const char *) tensor->data + padded_offset,
+            packed.size() * sizeof(block_q3_K_padded), cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+    }
+
+    const uint8_t * src_bytes = (const uint8_t *) data;
+    size_t copied = 0;
+    size_t remaining = size;
+    size_t dst_offset = raw_block_offset;
+
+    for (size_t i = 0; i < nblocks; ++i) {
+        size_t chunk = raw_block_size - dst_offset;
+        if (chunk > remaining) {
+            chunk = remaining;
+        }
+
+        std::memcpy((uint8_t *) &packed[i] + dst_offset, src_bytes + copied, chunk);
+        packed[i].pad[0] = 0;
+        packed[i].pad[1] = 0;
+
+        copied += chunk;
+        remaining -= chunk;
+        dst_offset = 0;
+    }
+
+    CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + padded_offset, packed.data(),
+        packed.size() * sizeof(block_q3_K_padded), cudaMemcpyHostToDevice, stream));
+}
+
+static void ggml_cuda_q3k_copy_padded_storage_to_host(
+        const ggml_tensor * tensor,
+        void * data,
+        const size_t offset,
+        const size_t size,
+        cudaStream_t stream) {
+    const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
+    if (nblocks == 0) {
+        return;
+    }
+
+    const size_t raw_block_size   = sizeof(block_q3_K);
+    const size_t raw_block_offset = offset % raw_block_size;
+    const size_t padded_offset    = ggml_cuda_q3k_padded_storage_offset_from_raw(offset);
+
+    std::vector<block_q3_K_padded> packed(nblocks);
+    CUDA_CHECK(cudaMemcpyAsync(packed.data(), (const char *) tensor->data + padded_offset,
+        packed.size() * sizeof(block_q3_K_padded), cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    uint8_t * dst_bytes = (uint8_t *) data;
+    size_t copied = 0;
+    size_t remaining = size;
+    size_t src_offset = raw_block_offset;
+
+    for (size_t i = 0; i < nblocks; ++i) {
+        size_t chunk = raw_block_size - src_offset;
+        if (chunk > remaining) {
+            chunk = remaining;
+        }
+
+        std::memcpy(dst_bytes + copied, (const uint8_t *) &packed[i] + src_offset, chunk);
+
+        copied += chunk;
+        remaining -= chunk;
+        src_offset = 0;
+    }
 }
 
 
@@ -1084,13 +1148,7 @@ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
 
     ggml_cuda_set_device(ctx->device);
     if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
-        const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
-        const size_t padded_offset = ggml_cuda_q3k_padded_storage_offset_from_raw(offset);
-
-        std::vector<block_q3_K_padded> packed;
-        ggml_cuda_q3k_pack_host_to_padded(data, packed, nblocks);
-        CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + padded_offset, packed.data(), packed.size() * sizeof(block_q3_K_padded),
-            cudaMemcpyHostToDevice, cudaStreamPerThread));
+        ggml_cuda_q3k_copy_host_to_padded_storage(tensor, data, offset, size, cudaStreamPerThread);
         CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
         return;
     }
@@ -1104,14 +1162,7 @@ static void ggml_backend_cuda_buffer_get_tensor(ggml_backend_buffer_t buffer, co
 
     ggml_cuda_set_device(ctx->device);
     if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
-        const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
-        const size_t padded_offset = ggml_cuda_q3k_padded_storage_offset_from_raw(offset);
-
-        std::vector<block_q3_K_padded> packed(nblocks);
-        CUDA_CHECK(cudaMemcpyAsync(packed.data(), (const char *) tensor->data + padded_offset, packed.size() * sizeof(block_q3_K_padded),
-            cudaMemcpyDeviceToHost, cudaStreamPerThread));
-        CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
-        ggml_cuda_q3k_unpack_padded_to_host(packed, data, packed.size());
+        ggml_cuda_q3k_copy_padded_storage_to_host(tensor, data, offset, size, cudaStreamPerThread);
         return;
     }
 
@@ -1125,15 +1176,10 @@ static void ggml_backend_cuda_buffer_set_tensor_2d(ggml_backend_buffer_t buffer,
 
     ggml_cuda_set_device(ctx->device);
     if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
-        const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
-        std::vector<block_q3_K_padded> packed;
         for (size_t i = 0; i < n_copies; ++i) {
             const size_t raw_offset = offset + i * stride_tensor;
-            (void) ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, raw_offset, size);
-            const size_t padded_offset = ggml_cuda_q3k_padded_storage_offset_from_raw(raw_offset);
-            ggml_cuda_q3k_pack_host_to_padded((const char *) data + i * stride_data, packed, nblocks);
-            CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + padded_offset, packed.data(), packed.size() * sizeof(block_q3_K_padded),
-                cudaMemcpyHostToDevice, cudaStreamPerThread));
+            ggml_cuda_q3k_copy_host_to_padded_storage(tensor, (const char *) data + i * stride_data,
+                raw_offset, size, cudaStreamPerThread);
         }
         CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
         return;
@@ -1150,16 +1196,10 @@ static void ggml_backend_cuda_buffer_get_tensor_2d(ggml_backend_buffer_t buffer,
 
     ggml_cuda_set_device(ctx->device);
     if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
-        const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
-        std::vector<block_q3_K_padded> packed(nblocks);
         for (size_t i = 0; i < n_copies; ++i) {
             const size_t raw_offset = offset + i * stride_tensor;
-            (void) ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, raw_offset, size);
-            const size_t padded_offset = ggml_cuda_q3k_padded_storage_offset_from_raw(raw_offset);
-            CUDA_CHECK(cudaMemcpyAsync(packed.data(), (const char *) tensor->data + padded_offset, packed.size() * sizeof(block_q3_K_padded),
-                cudaMemcpyDeviceToHost, cudaStreamPerThread));
-            CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
-            ggml_cuda_q3k_unpack_padded_to_host(packed, (char *) data + i * stride_data, packed.size());
+            ggml_cuda_q3k_copy_padded_storage_to_host(tensor, (char *) data + i * stride_data,
+                raw_offset, size, cudaStreamPerThread);
         }
         return;
     }
@@ -4330,13 +4370,7 @@ static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tens
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
     if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
-        const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
-        const size_t padded_offset = ggml_cuda_q3k_padded_storage_offset_from_raw(offset);
-
-        std::vector<block_q3_K_padded> packed;
-        ggml_cuda_q3k_pack_host_to_padded(data, packed, nblocks);
-        CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + padded_offset, packed.data(), packed.size() * sizeof(block_q3_K_padded),
-            cudaMemcpyHostToDevice, cuda_ctx->stream()));
+        ggml_cuda_q3k_copy_host_to_padded_storage(tensor, data, offset, size, cuda_ctx->stream());
         CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
         return;
     }
@@ -4351,14 +4385,7 @@ static void ggml_backend_cuda_get_tensor_async(ggml_backend_t backend, const ggm
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
     if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
-        const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
-        const size_t padded_offset = ggml_cuda_q3k_padded_storage_offset_from_raw(offset);
-
-        std::vector<block_q3_K_padded> packed(nblocks);
-        CUDA_CHECK(cudaMemcpyAsync(packed.data(), (const char *) tensor->data + padded_offset, packed.size() * sizeof(block_q3_K_padded),
-            cudaMemcpyDeviceToHost, cuda_ctx->stream()));
-        CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
-        ggml_cuda_q3k_unpack_padded_to_host(packed, data, packed.size());
+        ggml_cuda_q3k_copy_padded_storage_to_host(tensor, data, offset, size, cuda_ctx->stream());
         return;
     }
 
@@ -4373,15 +4400,10 @@ static void ggml_backend_cuda_set_tensor_2d_async(ggml_backend_t backend, struct
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
     if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
-        const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
-        std::vector<block_q3_K_padded> packed;
         for (size_t i = 0; i < n_copies; ++i) {
             const size_t raw_offset = offset + i * stride_tensor;
-            (void) ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, raw_offset, size);
-            const size_t padded_offset = ggml_cuda_q3k_padded_storage_offset_from_raw(raw_offset);
-            ggml_cuda_q3k_pack_host_to_padded((const char *) data + i * stride_data, packed, nblocks);
-            CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + padded_offset, packed.data(), packed.size() * sizeof(block_q3_K_padded),
-                cudaMemcpyHostToDevice, cuda_ctx->stream()));
+            ggml_cuda_q3k_copy_host_to_padded_storage(tensor, (const char *) data + i * stride_data,
+                raw_offset, size, cuda_ctx->stream());
         }
         CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
         return;
@@ -4399,16 +4421,10 @@ static void ggml_backend_cuda_get_tensor_2d_async(ggml_backend_t backend, const 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
     if (ggml_cuda_q3k_padded_storage_tensor_physical(tensor)) {
-        const size_t nblocks = ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, offset, size);
-        std::vector<block_q3_K_padded> packed(nblocks);
         for (size_t i = 0; i < n_copies; ++i) {
             const size_t raw_offset = offset + i * stride_tensor;
-            (void) ggml_cuda_q3k_padded_storage_nblocks_from_raw_slice(tensor, raw_offset, size);
-            const size_t padded_offset = ggml_cuda_q3k_padded_storage_offset_from_raw(raw_offset);
-            CUDA_CHECK(cudaMemcpyAsync(packed.data(), (const char *) tensor->data + padded_offset, packed.size() * sizeof(block_q3_K_padded),
-                cudaMemcpyDeviceToHost, cuda_ctx->stream()));
-            CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
-            ggml_cuda_q3k_unpack_padded_to_host(packed, (char *) data + i * stride_data, packed.size());
+            ggml_cuda_q3k_copy_padded_storage_to_host(tensor, (char *) data + i * stride_data,
+                raw_offset, size, cuda_ctx->stream());
         }
         return;
     }

@@ -1261,7 +1261,14 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     }
 
     // assign the output layer
-    pimpl->dev_output = get_layer_buft_list(n_layer);
+    const bool no_output_offload       = getenv("LLAMA_NO_OUTPUT_OFFLOAD") != nullptr;
+    const bool output_host_gpu_dev     = getenv("LLAMA_OUTPUT_HOST_GPU_DEV") != nullptr && !devices.empty();
+    const bool output_not_device_local = no_output_offload || output_host_gpu_dev;
+    if (output_host_gpu_dev) {
+        pimpl->dev_output = { devices.front().dev, &pimpl->cpu_buft_list };
+    } else {
+        pimpl->dev_output = no_output_offload ? llama_model::impl::layer_dev{cpu_dev, &pimpl->cpu_buft_list} : get_layer_buft_list(n_layer);
+    }
 
     const auto TENSOR_NOT_REQUIRED = llama_model_loader::TENSOR_NOT_REQUIRED;
 
@@ -1521,16 +1528,21 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         const int n_gpu = std::min(n_gpu_layers, int(hparams.n_layer));
 
         int n_repeating = n_gpu;
-        if (n_repeating > 0) {
+        if (n_repeating > 0 && !output_not_device_local) {
             LLAMA_LOG_INFO("%s: offloading output layer to GPU\n", __func__);
             n_repeating--;
+        } else if (n_repeating > 0 && output_host_gpu_dev) {
+            LLAMA_LOG_INFO("%s: keeping output layer in host buffer with GPU output device (LLAMA_OUTPUT_HOST_GPU_DEV)\n", __func__);
+        } else if (n_repeating > 0) {
+            LLAMA_LOG_INFO("%s: keeping output layer on CPU (LLAMA_NO_OUTPUT_OFFLOAD)\n", __func__);
         }
         LLAMA_LOG_INFO("%s: offloading %d repeating layers to GPU\n", __func__, n_repeating);
 
         const int max_backend_supported_layers = hparams.n_layer + 1;
         const int max_offloadable_layers       = hparams.n_layer + 1;
 
-        LLAMA_LOG_INFO("%s: offloaded %d/%d layers to GPU\n", __func__, std::min(n_gpu_layers, max_offloadable_layers), max_backend_supported_layers);
+        const int offloaded_layers = std::min(n_gpu_layers, output_not_device_local ? int(hparams.n_layer) : max_offloadable_layers);
+        LLAMA_LOG_INFO("%s: offloaded %d/%d layers to GPU\n", __func__, offloaded_layers, max_backend_supported_layers);
     }
 
     // print memory requirements per buffer type

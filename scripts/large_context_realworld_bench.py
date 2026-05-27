@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Run a realistic two-point large-context benchmark (32K + 64K).
+"""Run realistic large-context benchmark profiles.
 
-This script wraps scripts/agent_workload_bench.py and executes two scenarios
-with matching settings so context length is the only intentional variable.
-It writes a compact summary CSV/Markdown for quick before/after comparisons.
+The active repository profile is now a single 130K lane. The older 32K/64K and
+64K/128K profiles remain available for historical comparisons.
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT_DIR = ROOT / "build_logs" / "agent-workload"
 DEFAULT_RUNNER = ROOT / "scripts" / "agent_workload_bench.py"
+DEFAULT_CTX_ACTIVE130K = "131072"
 DEFAULT_CTX_FAST64 = "32768,65536"
 DEFAULT_CTX_SENTINEL128 = "65536,131072"
 NGRAM_MOD_N_MIN = 12
@@ -30,31 +30,33 @@ NGRAM_MOD_N_MAX = 32
 def parse_args() -> argparse.Namespace:
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     parser = argparse.ArgumentParser(
-        description="Large-context realistic benchmark runner (32K and 64K for faster agentic sessions)",
+        description="Large-context realistic benchmark runner (active 130K profile by default)",
     )
     parser.add_argument("--label-prefix", default=f"largectx-real-{stamp}")
     parser.add_argument("--runner", default=str(DEFAULT_RUNNER), help="path to agent_workload_bench.py")
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
     parser.add_argument(
         "--profile",
-        choices=["fast64", "sentinel128", "custom"],
-        default="fast64",
-        help="fast64=32K/64K quick loop, sentinel128=64K/128K periodic check, custom=use --ctx-values",
+        choices=["active130k", "fast64", "sentinel128", "custom"],
+        default="active130k",
+        help="active130k=single 131072 ctx baseline, fast64=32K/64K historical loop, sentinel128=64K/128K historical check, custom=use --ctx-values",
     )
 
-    parser.add_argument("--tasks", choices=["v2", "v2-mini"], default="v2")
+    parser.add_argument("--tasks", choices=["v2", "v2-mini", "quick"], default="quick")
+    parser.add_argument("--task-ids", default="triage_diff")
     parser.add_argument("--runs", type=int, default=1)
-    parser.add_argument("--max-tokens", type=int, default=700)
-    parser.add_argument("--request-timeout", type=float, default=600.0)
-    parser.add_argument("--startup-timeout", type=float, default=300.0)
+    parser.add_argument("--max-tokens", type=int, default=16)
+    parser.add_argument("--request-timeout", type=float, default=180.0)
+    parser.add_argument("--startup-timeout", type=float, default=900.0)
+    parser.add_argument("--task-hard-timeout", type=float, default=45.0)
 
     parser.add_argument(
         "--ctx-values",
         default="",
         help="optional comma-separated context sizes override; when omitted, selected from --profile",
     )
-    parser.add_argument("--batch-size", type=int, default=2048)
-    parser.add_argument("--ubatch-size", type=int, default=512)
+    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--ubatch-size", type=int, default=128)
     parser.add_argument("--cache-type-k", default="q4_0")
     parser.add_argument("--cache-type-v", default="q4_0")
     parser.add_argument("--parallel", type=int, default=1)
@@ -76,6 +78,16 @@ def parse_args() -> argparse.Namespace:
         help="none=disable speculative; ngram-mod=repo default tuned profile; custom=use --server-extra as-is",
     )
     parser.add_argument("--server-extra", default="", help="extra llama-server args")
+    parser.add_argument("--real-context-mode", choices=["off", "repo-snapshot"], default="repo-snapshot")
+    parser.add_argument("--real-context-chars", type=int, default=24576)
+    parser.add_argument(
+        "--real-context-safe-fill",
+        type=float,
+        default=0.88,
+        help="fallback ctx fill fraction used only when --real-context-chars is 0",
+    )
+    parser.add_argument("--no-reuse", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--no-v2-prime-pass", action=argparse.BooleanOptionalAction, default=True)
 
     parser.add_argument("--server-bin", default=None)
     parser.add_argument("--model", default=None)
@@ -94,19 +106,21 @@ def parse_args() -> argparse.Namespace:
 
 def parse_ctx_values(raw: str) -> list[int]:
     values = [int(part.strip()) for part in raw.split(",") if part.strip()]
-    if len(values) < 2:
-        raise ValueError("--ctx-values must contain at least two values, for example 32768,65536")
+    if len(values) < 1:
+        raise ValueError("--ctx-values must contain at least one value, for example 131072")
     if len(set(values)) != len(values):
         raise ValueError("--ctx-values must not contain duplicates")
     for value in values:
         if value < 32768:
-            raise ValueError("all --ctx-values must be >= 32768 for the fast large-context comparison")
+            raise ValueError("all --ctx-values must be >= 32768 for large-context comparison")
     return values
 
 
 def resolve_ctx_values(args: argparse.Namespace) -> str:
     if args.ctx_values.strip():
         return args.ctx_values.strip()
+    if args.profile == "active130k":
+        return DEFAULT_CTX_ACTIVE130K
     if args.profile == "sentinel128":
         return DEFAULT_CTX_SENTINEL128
     return DEFAULT_CTX_FAST64
@@ -176,8 +190,17 @@ def run_single_case(args: argparse.Namespace, runner: Path, ctx_size: int, label
         str(args.startup_timeout),
         "--max-tokens",
         str(args.max_tokens),
+        "--task-hard-timeout",
+        str(args.task_hard_timeout),
         "--server-seed",
         str(args.server_seed),
+        "--real-context-mode",
+        args.real_context_mode,
+        "--real-context-chars",
+        str(args.real_context_chars),
+        "--real-context-safe-fill",
+        str(args.real_context_safe_fill),
+        "--allow-ctx-above-16k",
     ]
 
     if args.server_bin:
@@ -186,6 +209,8 @@ def run_single_case(args: argparse.Namespace, runner: Path, ctx_size: int, label
         cmd.extend(["--model", args.model])
     if args.build_id:
         cmd.extend(["--build-id", args.build_id])
+    if args.task_ids:
+        cmd.extend(["--task-ids", args.task_ids])
     if server_extra:
         cmd.extend(["--server-extra", server_extra])
 
@@ -193,6 +218,10 @@ def run_single_case(args: argparse.Namespace, runner: Path, ctx_size: int, label
     cmd.append("--warmup" if args.warmup else "--no-warmup")
     cmd.append("--stats-ignore-first-run" if args.stats_ignore_first_run else "--no-stats-ignore-first-run")
     cmd.append("--disable-thinking" if args.disable_thinking else "--no-disable-thinking")
+    if args.no_reuse:
+        cmd.append("--no-reuse")
+    if args.no_v2_prime_pass:
+        cmd.append("--no-v2-prime-pass")
 
     print(f"Running ctx={ctx_size} label={label}")
     subprocess.run(cmd, check=True, cwd=ROOT)

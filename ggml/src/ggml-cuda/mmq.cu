@@ -3,6 +3,7 @@
 #include "quantize.cuh"
 #include "mmid.cuh"
 
+#include <chrono>
 #include <cstdlib>
 
 static int ggml_rdna4_stream_k_min_ne11() {
@@ -202,6 +203,12 @@ void ggml_cuda_mul_mat_q(
     const float * src1_d = (const float *) src1->data;
     float       *  dst_d = (float       *)  dst->data;
     const bool q3k_padded_storage = ggml_cuda_q3k_padded_storage_mmq_tensor(src0);
+    const bool trace_src1_quant_timing = src0->type == GGML_TYPE_Q3_K &&
+        std::getenv("GGML_TRACE_MMQ_SRC1_QUANT_TIMING") != nullptr;
+    const bool trace_src1_quant_timing_sync = trace_src1_quant_timing &&
+        std::getenv("GGML_TRACE_MMQ_SRC1_QUANT_TIMING_SYNC") != nullptr;
+    const bool trace_src1_quant_timing_pre_sync = trace_src1_quant_timing_sync &&
+        std::getenv("GGML_TRACE_MMQ_SRC1_QUANT_TIMING_PRE_SYNC") != nullptr;
 
     // If src0 is a temporary compute buffer, clear any potential padding.
     if (ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
@@ -237,6 +244,28 @@ void ggml_cuda_mul_mat_q(
             const int64_t s11 = src1->nb[1] / ts_src1;
             const int64_t s12 = src1->nb[2] / ts_src1;
             const int64_t s13 = src1->nb[3] / ts_src1;
+            double pre_sync_ms = 0.0;
+            bool pre_sync_applied = false;
+            int pre_sync_capture_active = 0;
+            if (trace_src1_quant_timing_pre_sync) {
+#ifdef GGML_USE_HIP
+                hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+                CUDA_CHECK(hipStreamIsCapturing(stream, &capture_status));
+                pre_sync_capture_active = capture_status != hipStreamCaptureStatusNone;
+#else
+                cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+                CUDA_CHECK(cudaStreamIsCapturing(stream, &capture_status));
+                pre_sync_capture_active = capture_status != cudaStreamCaptureStatusNone;
+#endif
+                if (!pre_sync_capture_active) {
+                    const auto pre_sync_start = std::chrono::high_resolution_clock::now();
+                    CUDA_CHECK(cudaStreamSynchronize(stream));
+                    const auto pre_sync_end = std::chrono::high_resolution_clock::now();
+                    pre_sync_ms = std::chrono::duration<double, std::milli>(pre_sync_end - pre_sync_start).count();
+                    pre_sync_applied = true;
+                }
+            }
+            const auto timing_start = trace_src1_quant_timing ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
             if (use_native_fp4) {
                 static_assert(sizeof(block_fp4_mmq) == 4 * sizeof(block_q8_1));
                 quantize_mmq_fp4_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded,
@@ -247,6 +276,54 @@ void ggml_cuda_mul_mat_q(
                                        ne11, ne12, ne13, stream);
             }
             CUDA_CHECK(cudaGetLastError());
+            if (trace_src1_quant_timing) {
+                const auto timing_after_launch = std::chrono::high_resolution_clock::now();
+                const double enqueue_ms = std::chrono::duration<double, std::milli>(timing_after_launch - timing_start).count();
+                double sync_ms = 0.0;
+                int capture_active = 0;
+                bool sync_applied = false;
+                if (trace_src1_quant_timing_sync) {
+#ifdef GGML_USE_HIP
+                    hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+                    CUDA_CHECK(hipStreamIsCapturing(stream, &capture_status));
+                    capture_active = capture_status != hipStreamCaptureStatusNone;
+#else
+                    cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+                    CUDA_CHECK(cudaStreamIsCapturing(stream, &capture_status));
+                    capture_active = capture_status != cudaStreamCaptureStatusNone;
+#endif
+                    if (!capture_active) {
+                        CUDA_CHECK(cudaStreamSynchronize(stream));
+                        const auto timing_after_sync = std::chrono::high_resolution_clock::now();
+                        sync_ms = std::chrono::duration<double, std::milli>(timing_after_sync - timing_after_launch).count();
+                        sync_applied = true;
+                    }
+                }
+                GGML_LOG_INFO(
+                    "GGML_TRACE_MMQ_SRC1_QUANT_TIMING: type=%d cc=%d dst=%s src0=%s src1=%s ne00=%lld ne01=%lld ne10=%lld ne11=%lld ne12=%lld ne13=%lld ne10_padded=%lld q3k_padded=%d sync_req=%d pre_sync_applied=%d sync_applied=%d pre_capture=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+                    (int) src0->type,
+                    cc,
+                    dst->name,
+                    src0->name,
+                    src1->name,
+                    (long long) ne00,
+                    (long long) ne01,
+                    (long long) ne10,
+                    (long long) ne11,
+                    (long long) ne12,
+                    (long long) ne13,
+                    (long long) ne10_padded,
+                    q3k_padded_storage ? 1 : 0,
+                    trace_src1_quant_timing_sync ? 1 : 0,
+                    pre_sync_applied ? 1 : 0,
+                    sync_applied ? 1 : 0,
+                    pre_sync_capture_active,
+                    capture_active,
+                    pre_sync_ms,
+                    enqueue_ms,
+                    sync_ms,
+                    enqueue_ms + sync_ms);
+            }
         }
 
         // Stride depends on quantization format

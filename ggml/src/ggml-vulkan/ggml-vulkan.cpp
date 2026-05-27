@@ -701,6 +701,7 @@ struct vk_device_struct {
     vk_matmul_pipeline2 pipeline_dequant_mul_mat_mat[GGML_TYPE_COUNT];
     vk_matmul_pipeline2 pipeline_dequant_mul_mat_mat_f16[GGML_TYPE_COUNT];
     vk_matmul_pipeline2 pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_COUNT];
+    vk_matmul_pipeline2 pipeline_dequant_mul_mat_mat_q3_k_quad;
 
     vk_matmul_pipeline pipeline_matmul_id_f32 {};
     vk_matmul_pipeline pipeline_matmul_id_bf16 {};
@@ -2664,6 +2665,28 @@ static std::vector<uint32_t> ggml_vk_find_memory_properties(const vk::PhysicalDe
     return indices;
 }
 
+static float ggml_vk_memory_priority_for_allocation(size_t size) {
+    const char * threshold_env = getenv("GGML_VK_MEMORY_PRIORITY_LARGE_THRESHOLD_MB");
+    if (threshold_env == nullptr) {
+        return 1.0f;
+    }
+
+    const long threshold_mb = strtol(threshold_env, nullptr, 10);
+    if (threshold_mb <= 0) {
+        return 1.0f;
+    }
+
+    const uint64_t threshold = (uint64_t) threshold_mb * 1024ull * 1024ull;
+    if (size >= threshold) {
+        return 1.0f;
+    }
+
+    const char * small_priority_env = getenv("GGML_VK_MEMORY_PRIORITY_SMALL");
+    float small_priority = small_priority_env != nullptr ? (float) atof(small_priority_env) : 0.25f;
+    small_priority = std::max(0.0f, std::min(1.0f, small_priority));
+    return small_priority;
+}
+
 static vk_buffer ggml_vk_create_buffer(vk_device& device, size_t size, const std::initializer_list<vk::MemoryPropertyFlags> & req_flags_list,
                                        void *import_ptr = nullptr) {
     VK_LOG_DEBUG("ggml_vk_create_buffer(" << device->name << ", " << size << ", " << to_string(req_flags_list.begin()[0]) << ", " << to_string(req_flags_list.begin()[req_flags_list.size()-1]) << ")");
@@ -2706,7 +2729,8 @@ static vk_buffer ggml_vk_create_buffer(vk_device& device, size_t size, const std
 
     vk::PhysicalDeviceMemoryProperties mem_props = device->physical_device.getMemoryProperties();
 
-    const vk::MemoryPriorityAllocateInfoEXT mem_priority_info { 1.0f };
+    const float memory_priority = ggml_vk_memory_priority_for_allocation(size);
+    const vk::MemoryPriorityAllocateInfoEXT mem_priority_info { memory_priority };
 
     vk::MemoryAllocateFlagsInfo mem_flags_info { mem_flags };
 
@@ -3556,6 +3580,9 @@ static void ggml_vk_load_shaders(vk_device& device) {
                 } else if (variant == "bn64") {
                     l_warptile_mmq[2] = 64;
                     l_warptile_mmq_int[2] = 64;
+                } else if (variant == "bn256") {
+                    l_warptile_mmq[2] = 256;
+                    l_warptile_mmq_int[2] = 256;
                 } else if (variant == "bm64-bn64") {
                     l_warptile_mmq[1] = 64;
                     l_warptile_mmq[2] = 64;
@@ -3603,6 +3630,8 @@ static void ggml_vk_load_shaders(vk_device& device) {
                 l_mmq_wg_denoms = { 64, 128, 1 };
             } else if (variant == "bn64" || variant == "block128-bn64") {
                 l_mmq_wg_denoms = { 128, 64, 1 };
+            } else if (variant == "bn256") {
+                l_mmq_wg_denoms = { 128, 256, 1 };
             } else if (variant == "bm64-bn64" || variant == "wm32-wn32") {
                 l_mmq_wg_denoms = { 64, 64, 1 };
             }
@@ -3973,6 +4002,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
 
             CREATE_MM2(GGML_TYPE_Q2_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q2_K], matmul_q2_k_f32, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, );
             CREATE_MM2(GGML_TYPE_Q3_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q3_K], matmul_q3_k_f32, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, );
+            CREATE_MM2(GGML_TYPE_Q3_K, pipeline_dequant_mul_mat_mat_q3_k_quad, matmul_q3_k_f32_quad, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, );
             CREATE_MM2(GGML_TYPE_Q4_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q4_K], matmul_q4_k_f32, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, );
             CREATE_MM2(GGML_TYPE_Q5_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q5_K], matmul_q5_k_f32, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, );
             CREATE_MM2(GGML_TYPE_Q6_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q6_K], matmul_q6_k_f32, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, );
@@ -3997,6 +4027,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
 
             CREATE_MM(GGML_TYPE_Q2_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q2_K].f32acc, matmul_q2_k_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, );
             CREATE_MM(GGML_TYPE_Q3_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q3_K].f32acc, matmul_q3_k_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, );
+            CREATE_MM(GGML_TYPE_Q3_K, pipeline_dequant_mul_mat_mat_q3_k_quad.f32acc, matmul_q3_k_f32_quad, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, );
             CREATE_MM(GGML_TYPE_Q4_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q4_K].f32acc, matmul_q4_k_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, );
             CREATE_MM(GGML_TYPE_Q5_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q5_K].f32acc, matmul_q5_k_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, );
             CREATE_MM(GGML_TYPE_Q6_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q6_K].f32acc, matmul_q6_k_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, );
@@ -4099,6 +4130,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
 
         CREATE_MM2(GGML_TYPE_Q2_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q2_K], matmul_q2_k_f32, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
         CREATE_MM2(GGML_TYPE_Q3_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q3_K], matmul_q3_k_f32, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
+        CREATE_MM2(GGML_TYPE_Q3_K, pipeline_dequant_mul_mat_mat_q3_k_quad, matmul_q3_k_f32_quad, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
         CREATE_MM2(GGML_TYPE_Q4_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q4_K], matmul_q4_k_f32, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
         CREATE_MM2(GGML_TYPE_Q5_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q5_K], matmul_q5_k_f32, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
         CREATE_MM2(GGML_TYPE_Q6_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q6_K], matmul_q6_k_f32, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
@@ -4268,6 +4300,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
 
         CREATE_MM(GGML_TYPE_Q2_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q2_K].f32acc, matmul_q2_k_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
         CREATE_MM(GGML_TYPE_Q3_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q3_K].f32acc, matmul_q3_k_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
+        CREATE_MM(GGML_TYPE_Q3_K, pipeline_dequant_mul_mat_mat_q3_k_quad.f32acc, matmul_q3_k_f32_quad, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
         CREATE_MM(GGML_TYPE_Q4_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q4_K].f32acc, matmul_q4_k_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
         CREATE_MM(GGML_TYPE_Q5_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q5_K].f32acc, matmul_q5_k_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
         CREATE_MM(GGML_TYPE_Q6_K, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q6_K].f32acc, matmul_q6_k_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
@@ -7419,8 +7452,8 @@ static void ggml_vk_buffer_memset(vk_buffer& dst, size_t offset, uint32_t c, siz
     ggml_vk_queue_command_pools_cleanup(dst->device);
 }
 
-static uint32_t ggml_vk_guess_split_k(ggml_backend_vk_context * ctx, uint32_t m, uint32_t n, uint32_t k, bool disable_split_k, const vk_pipeline& pipeline) {
-    VK_LOG_DEBUG("ggml_vk_guess_split_k(" << m << ", " << n << ", " << k << ", " << disable_split_k << ")");
+static uint32_t ggml_vk_guess_split_k(ggml_backend_vk_context * ctx, uint32_t m, uint32_t n, uint32_t k, bool disable_split_k, ggml_type src0_type, const vk_pipeline& pipeline) {
+    VK_LOG_DEBUG("ggml_vk_guess_split_k(" << m << ", " << n << ", " << k << ", " << disable_split_k << ", " << ggml_type_name(src0_type) << ")");
 
     if (disable_split_k) {
         return 1;
@@ -7455,6 +7488,62 @@ static uint32_t ggml_vk_guess_split_k(ggml_backend_vk_context * ctx, uint32_t m,
                 }
                 split_k--;
             }
+        }
+    }
+
+    static const int ffn_down_split_k_override = []() -> int {
+        const char * env = getenv("GGML_VK_Q3K_FFN_DOWN_SPLIT_K");
+        if (env == nullptr) {
+            return -1;
+        }
+        return atoi(env);
+    }();
+    if (src0_type == GGML_TYPE_Q3_K && m == 5120 && k == 17408 && n >= 128) {
+        uint32_t target_split_k = 3;
+        if (ffn_down_split_k_override >= 0) {
+            if (ffn_down_split_k_override < 2) {
+                return split_k;
+            }
+            target_split_k = std::min<uint32_t>((uint32_t) ffn_down_split_k_override, 8u);
+        }
+
+        split_k = std::max(split_k, target_split_k);
+
+        while (split_k > 1) {
+            uint32_t k_split = CEIL_DIV(k, split_k);
+            k_split = ROUNDUP_POW2(k_split, 256);
+            if (k_split * (split_k - 1) < k) {
+                break;
+            }
+            split_k--;
+        }
+    }
+
+    static const int low_tile_split_k_override = []() -> int {
+        const char * env = getenv("GGML_VK_QK_LOW_TILE_SPLIT_K");
+        if (env == nullptr) {
+            return 0;
+        }
+        return atoi(env);
+    }();
+    const bool q3_low_tile_candidate =
+        src0_type == GGML_TYPE_Q3_K && n >= 128 &&
+        ((m == 10240 && k == 5120) ||
+         (m ==  6144 && k == 5120) ||
+         (m ==  5120 && k == 6144));
+    const bool q4_low_tile_candidate =
+        src0_type == GGML_TYPE_Q4_K && n >= 128 &&
+        m == 5120 && k == 6144;
+    if (low_tile_split_k_override >= 2 && (q3_low_tile_candidate || q4_low_tile_candidate)) {
+        split_k = std::max(split_k, std::min<uint32_t>((uint32_t) low_tile_split_k_override, 8u));
+
+        while (split_k > 1) {
+            uint32_t k_split = CEIL_DIV(k, split_k);
+            k_split = ROUNDUP_POW2(k_split, 256);
+            if (k_split * (split_k - 1) < k) {
+                break;
+            }
+            split_k--;
         }
     }
 
@@ -7890,6 +7979,33 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
 
     vk_pipeline pipeline = ggml_vk_guess_matmul_pipeline(ctx, mmp, ne01, ne11, aligned, qx_needs_dequant ? f16_type : src0->type, quantize_y ? GGML_TYPE_Q8_1 : (y_f32_kernel ? GGML_TYPE_F32 : src1->type));
 
+    static const bool q3_k_quad_dequant = std::getenv("GGML_VK_Q3K_QUAD_DEQUANT") != nullptr;
+    const bool q3_k_quad_shape =
+        ne11 >= 128 &&
+        ((ne01 == 17408 && ne10 ==  5120) ||
+         (ne01 ==  5120 && ne10 == 17408) ||
+         (ne01 ==  5120 && ne10 ==  6144) ||
+         (ne01 ==  6144 && ne10 ==  5120) ||
+         (ne01 == 12288 && ne10 ==  5120));
+    if (q3_k_quad_dequant && src0->type == GGML_TYPE_Q3_K && src1->type == GGML_TYPE_F32 &&
+        !quantize_y && !qx_needs_dequant && !qy_needs_dequant && aligned && q3_k_quad_shape) {
+        vk_matmul_pipeline q3_quad_mmp = nullptr;
+        const ggml_prec prec = (ggml_prec) dst->op_params[0];
+        if (ctx->device->coopmat_support) {
+            q3_quad_mmp = (ctx->device->fp16 && ctx->device->coopmat_acc_f16_support && prec == GGML_PREC_DEFAULT) ?
+                ctx->device->pipeline_dequant_mul_mat_mat_q3_k_quad.f16acc :
+                ctx->device->pipeline_dequant_mul_mat_mat_q3_k_quad.f32acc;
+        } else if (ctx->device->fp16 && prec == GGML_PREC_DEFAULT) {
+            q3_quad_mmp = ctx->device->pipeline_dequant_mul_mat_mat_q3_k_quad.f16acc;
+        } else {
+            q3_quad_mmp = ctx->device->pipeline_dequant_mul_mat_mat_q3_k_quad.f32acc;
+        }
+
+        if (q3_quad_mmp != nullptr && !q3_quad_mmp->is_empty()) {
+            pipeline = ggml_vk_guess_matmul_pipeline(ctx, q3_quad_mmp, ne01, ne11, aligned, src0->type, src1->type);
+        }
+    }
+
     if (ggml_vk_device_size(src0) > ctx->device->properties.limits.maxStorageBufferRange) {
         pipeline = ggml_vk_get_64b_indexing_pipeline(ctx, pipeline);
     }
@@ -7921,14 +8037,30 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
         }
     }
 
+    const uint32_t split_k = ggml_vk_guess_split_k(ctx, ne01, ne11, ne10, disable_split_k, src0->type, pipeline);
+    if (route_trace && split_k > 1 && pipeline) {
+        static std::mutex split_trace_mutex;
+        static std::set<std::string> split_trace_seen;
+
+        std::ostringstream key;
+        key << pipeline->name
+            << "|src0=" << ggml_type_name(src0->type)
+            << "|src1=" << ggml_type_name(src1->type)
+            << "|m=" << ne01 << "|n=" << ne11 << "|k=" << ne10
+            << "|split_k=" << split_k;
+
+        std::lock_guard<std::mutex> guard(split_trace_mutex);
+        if (split_trace_seen.insert(key.str()).second) {
+            std::cerr << "ggml_vulkan: matmul split-k route: " << key.str() << std::endl;
+        }
+    }
+
     // Reserve extra storage in the N dimension for the Y matrix, so we can avoid bounds-checking
     uint32_t padded_n = qy_needs_dequant ? ROUNDUP_POW2(ne11, pipeline->wg_denoms[1]) : ne11;
     const uint64_t x_ne = ggml_nelements(src0);
     // 128 elements per Q8_1 x4 block
     const uint64_t y_ne = padded_n * ne10 * ne12 * ne13;
     const uint64_t d_ne = ggml_nelements(dst);
-
-    const uint32_t split_k = ggml_vk_guess_split_k(ctx, ne01, ne11, ne10, disable_split_k, pipeline);
 
     const uint64_t qx_sz = ggml_vk_device_type_size(src0->type) * x_ne / ggml_blck_size(src0->type);
     const uint64_t qy_sz = ggml_vk_device_type_size(src1->type) * y_ne / ggml_blck_size(src1->type);
@@ -14583,17 +14715,135 @@ static bool ggml_vk_is_dense_ffn_glu_candidate(const struct ggml_cgraph * cgraph
     return true;
 }
 
+static bool ggml_vk_is_dense_ffn_block_candidate(const struct ggml_cgraph * cgraph, int node_idx, const ggml_tensor ** up, const ggml_tensor ** gate, const ggml_tensor ** glu, const ggml_tensor ** down) {
+    if (!ggml_can_fuse_subgraph(cgraph, node_idx, { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_GLU, GGML_OP_MUL_MAT }, { node_idx + 3 })) {
+        return false;
+    }
+
+    if (!ggml_vk_is_dense_ffn_glu_candidate(cgraph, node_idx, up, gate, glu)) {
+        return false;
+    }
+
+    const ggml_tensor * cur_down = cgraph->nodes[node_idx + 3];
+    if (cur_down->src[1] != *glu) {
+        return false;
+    }
+
+    if (cur_down->src[0]->type != (*up)->src[0]->type) {
+        return false;
+    }
+
+    *down = cur_down;
+    return true;
+}
+
+static bool ggml_vk_is_dense_ffn_view_block_candidate(const struct ggml_cgraph * cgraph, int node_idx, const ggml_tensor * up, const ggml_tensor * glu, const ggml_tensor ** down, int * view_count, bool * view_hazard, bool * fuse_reject) {
+    int block_node_idxs[8];
+    ggml_op block_ops[8];
+    int block_count = 0;
+
+    block_node_idxs[block_count] = node_idx;
+    block_ops[block_count++] = GGML_OP_MUL_MAT;
+    block_node_idxs[block_count] = node_idx + 1;
+    block_ops[block_count++] = GGML_OP_MUL_MAT;
+    block_node_idxs[block_count] = node_idx + 2;
+    block_ops[block_count++] = GGML_OP_GLU;
+
+    const ggml_tensor * activation = glu;
+    int next_node_idx = node_idx + 3;
+    *view_count = 0;
+    *view_hazard = false;
+    *fuse_reject = false;
+
+    while (next_node_idx < cgraph->n_nodes && cgraph->nodes[next_node_idx]->op == GGML_OP_VIEW && cgraph->nodes[next_node_idx]->src[0] == activation && *view_count < 4) {
+        const ggml_tensor * view = cgraph->nodes[next_node_idx];
+        if (view->type != activation->type || ggml_nelements(view) != ggml_nelements(activation) || view->view_offs != 0) {
+            *view_hazard = true;
+            return false;
+        }
+
+        block_node_idxs[block_count] = next_node_idx;
+        block_ops[block_count++] = GGML_OP_VIEW;
+        activation = view;
+        (*view_count)++;
+        next_node_idx++;
+    }
+
+    if (*view_count == 0 || next_node_idx >= cgraph->n_nodes || cgraph->nodes[next_node_idx]->op != GGML_OP_MUL_MAT) {
+        return false;
+    }
+
+    const ggml_tensor * cur_down = cgraph->nodes[next_node_idx];
+    if (cur_down->src[1] != activation || cur_down->src[0]->type != up->src[0]->type) {
+        return false;
+    }
+
+    block_node_idxs[block_count] = next_node_idx;
+    block_ops[block_count++] = GGML_OP_MUL_MAT;
+    const int output_idx = next_node_idx;
+    if (!ggml_can_fuse_subgraph_ext(cgraph, block_node_idxs, block_count, block_ops, &output_idx, 1)) {
+        *fuse_reject = true;
+        return false;
+    }
+
+    *down = cur_down;
+    return true;
+}
+
+static int ggml_vk_find_dense_ffn_down_node(const struct ggml_cgraph * cgraph, int node_idx, const ggml_tensor * up, const ggml_tensor * glu, int search_limit) {
+    const int search_end = std::min(cgraph->n_nodes, node_idx + search_limit);
+    for (int search_idx = node_idx + 3; search_idx < search_end; ++search_idx) {
+        const ggml_tensor * candidate = cgraph->nodes[search_idx];
+        if (candidate->op != GGML_OP_MUL_MAT) {
+            continue;
+        }
+        if (candidate->src[1] != glu) {
+            continue;
+        }
+        if (candidate->src[0]->type != up->src[0]->type) {
+            continue;
+        }
+        return search_idx;
+    }
+
+    return -1;
+}
+
+static bool ggml_vk_can_fuse_dense_ffn_nonadjacent_block(const struct ggml_cgraph * cgraph, int node_idx, int down_idx) {
+    int block_node_idxs[4] = { node_idx, node_idx + 1, node_idx + 2, down_idx };
+    ggml_op block_ops[4] = { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_GLU, GGML_OP_MUL_MAT };
+    return ggml_can_fuse_subgraph_ext(cgraph, block_node_idxs, 4, block_ops, &down_idx, 1);
+}
+
 static void ggml_vk_trace_dense_ffn_glu_candidates(const struct ggml_cgraph * cgraph) {
     int candidates = 0;
+    int block_candidates = 0;
+    int view_block_candidates = 0;
+    int scan_block_candidates = 0;
+    int scan_block_misses = 0;
+    int scan_block_fuse_reject = 0;
+    int view_block_hazard = 0;
+    int view_block_fuse_reject = 0;
+    int view_block_struct_reject = 0;
+    int block_missing_next = 0;
+    int block_next_not_mul_mat = 0;
+    int block_src_mismatch = 0;
+    int block_type_mismatch = 0;
+    int block_fuse_reject = 0;
     int prefill_candidates = 0;
     int q3_candidates = 0;
     std::map<std::string, int> shapes;
+    std::map<std::string, int> block_shapes;
+    std::map<std::string, int> view_block_shapes;
+    std::map<std::string, int> scan_block_shapes;
+    std::map<std::string, int> block_next_ops;
+    std::map<std::string, int> block_next_view_sources;
 
-    for (int i = 0; i + 2 < cgraph->n_nodes; ++i) {
+    for (int node_index = 0; node_index + 2 < cgraph->n_nodes; ++node_index) {
         const ggml_tensor * up = nullptr;
         const ggml_tensor * gate = nullptr;
         const ggml_tensor * glu = nullptr;
-        if (!ggml_vk_is_dense_ffn_glu_candidate(cgraph, i, &up, &gate, &glu)) {
+        if (!ggml_vk_is_dense_ffn_glu_candidate(cgraph, node_index, &up, &gate, &glu)) {
             continue;
         }
 
@@ -14612,6 +14862,95 @@ static void ggml_vk_trace_dense_ffn_glu_candidates(const struct ggml_cgraph * cg
             << " n=" << up->ne[1]
             << " k=" << up->src[1]->ne[0];
         shapes[key.str()]++;
+
+        const int scan_down_idx = ggml_vk_find_dense_ffn_down_node(cgraph, node_index, up, glu, 32);
+        if (scan_down_idx >= 0) {
+            const ggml_tensor * scan_down = cgraph->nodes[scan_down_idx];
+            if (ggml_vk_can_fuse_dense_ffn_nonadjacent_block(cgraph, node_index, scan_down_idx)) {
+                scan_block_candidates++;
+
+                std::ostringstream scan_key;
+                scan_key << ggml_type_name(up->src[0]->type)
+                         << " glu=" << ggml_glu_op_name(ggml_get_glu_op(glu))
+                         << " gap=" << (scan_down_idx - node_index)
+                         << " gate_up_m=" << up->ne[0]
+                         << " gate_up_n=" << up->ne[1]
+                         << " gate_up_k=" << up->src[1]->ne[0]
+                         << " down_m=" << scan_down->ne[0]
+                         << " down_n=" << scan_down->ne[1]
+                         << " down_k=" << scan_down->src[1]->ne[0];
+                scan_block_shapes[scan_key.str()]++;
+            } else {
+                scan_block_fuse_reject++;
+            }
+        } else {
+            scan_block_misses++;
+        }
+
+        const ggml_tensor * down = nullptr;
+        if (node_index + 3 >= cgraph->n_nodes) {
+            block_missing_next++;
+        } else {
+            down = cgraph->nodes[node_index + 3];
+            if (down->op != GGML_OP_MUL_MAT) {
+                block_next_not_mul_mat++;
+                block_next_ops[ggml_op_name(down->op)]++;
+                if (down->op == GGML_OP_VIEW) {
+                    std::ostringstream view_src_key;
+                    const ggml_tensor * view_src = down->src[0];
+                    view_src_key << "src=" << (view_src != nullptr ? ggml_op_name(view_src->op) : "null")
+                                 << " src_is_glu=" << (view_src == glu ? 1 : 0)
+                                 << " view_ne=" << down->ne[0] << "x" << down->ne[1]
+                                 << " glu_ne=" << glu->ne[0] << "x" << glu->ne[1];
+                    block_next_view_sources[view_src_key.str()]++;
+                }
+
+                int view_count = 0;
+                bool view_hazard = false;
+                bool fuse_reject = false;
+                const ggml_tensor * view_down = nullptr;
+                if (ggml_vk_is_dense_ffn_view_block_candidate(cgraph, node_index, up, glu, &view_down, &view_count, &view_hazard, &fuse_reject)) {
+                    view_block_candidates++;
+
+                    std::ostringstream view_block_key;
+                    view_block_key << ggml_type_name(up->src[0]->type)
+                                   << " glu=" << ggml_glu_op_name(ggml_get_glu_op(glu))
+                                   << " views=" << view_count
+                                   << " gate_up_m=" << up->ne[0]
+                                   << " gate_up_n=" << up->ne[1]
+                                   << " gate_up_k=" << up->src[1]->ne[0]
+                                   << " down_m=" << view_down->ne[0]
+                                   << " down_n=" << view_down->ne[1]
+                                   << " down_k=" << view_down->src[1]->ne[0];
+                    view_block_shapes[view_block_key.str()]++;
+                } else if (view_hazard) {
+                    view_block_hazard++;
+                } else if (fuse_reject) {
+                    view_block_fuse_reject++;
+                } else {
+                    view_block_struct_reject++;
+                }
+            } else if (down->src[1] != glu) {
+                block_src_mismatch++;
+            } else if (down->src[0]->type != up->src[0]->type) {
+                block_type_mismatch++;
+            } else if (!ggml_can_fuse_subgraph(cgraph, node_index, { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_GLU, GGML_OP_MUL_MAT }, { node_index + 3 })) {
+                block_fuse_reject++;
+            } else if (ggml_vk_is_dense_ffn_block_candidate(cgraph, node_index, &up, &gate, &glu, &down)) {
+                block_candidates++;
+
+                std::ostringstream block_key;
+                block_key << ggml_type_name(up->src[0]->type)
+                          << " glu=" << ggml_glu_op_name(ggml_get_glu_op(glu))
+                          << " gate_up_m=" << up->ne[0]
+                          << " gate_up_n=" << up->ne[1]
+                          << " gate_up_k=" << up->src[1]->ne[0]
+                          << " down_m=" << down->ne[0]
+                          << " down_n=" << down->ne[1]
+                          << " down_k=" << down->src[1]->ne[0];
+                block_shapes[block_key.str()]++;
+            }
+        }
     }
 
     if (candidates == 0) {
@@ -14619,11 +14958,53 @@ static void ggml_vk_trace_dense_ffn_glu_candidates(const struct ggml_cgraph * cg
     }
 
     std::cerr << "ggml_vulkan: ffn_route_trace candidates=" << candidates
+              << " blocks=" << block_candidates
+              << " view_blocks=" << view_block_candidates
+              << " scan_blocks=" << scan_block_candidates
               << " prefill=" << prefill_candidates
               << " q3=" << q3_candidates << std::endl;
     for (const auto & item : shapes) {
         std::cerr << "ggml_vulkan: ffn_route_trace " << item.first
                   << " count=" << item.second << std::endl;
+    }
+    for (const auto & item : block_shapes) {
+        std::cerr << "ggml_vulkan: ffn_block_trace " << item.first
+                  << " count=" << item.second << std::endl;
+    }
+    for (const auto & item : view_block_shapes) {
+        std::cerr << "ggml_vulkan: ffn_view_block_trace " << item.first
+                  << " count=" << item.second << std::endl;
+    }
+    for (const auto & item : scan_block_shapes) {
+        std::cerr << "ggml_vulkan: ffn_scan_block_trace " << item.first
+                  << " count=" << item.second << std::endl;
+    }
+    if (scan_block_misses != 0 || scan_block_fuse_reject != 0) {
+        std::cerr << "ggml_vulkan: ffn_scan_block_trace rejects"
+                  << " missing_down=" << scan_block_misses
+                  << " fuse_reject=" << scan_block_fuse_reject << std::endl;
+    }
+    if (view_block_hazard != 0 || view_block_fuse_reject != 0 || view_block_struct_reject != 0) {
+        std::cerr << "ggml_vulkan: ffn_view_block_trace rejects"
+                  << " view_hazard=" << view_block_hazard
+                  << " fuse_reject=" << view_block_fuse_reject
+                  << " struct_reject=" << view_block_struct_reject << std::endl;
+    }
+    if (block_missing_next != 0 || block_next_not_mul_mat != 0 || block_src_mismatch != 0 || block_type_mismatch != 0 || block_fuse_reject != 0) {
+        std::cerr << "ggml_vulkan: ffn_block_trace rejects"
+                  << " missing_next=" << block_missing_next
+                  << " next_not_mul_mat=" << block_next_not_mul_mat
+                  << " src_mismatch=" << block_src_mismatch
+                  << " type_mismatch=" << block_type_mismatch
+                  << " fuse_reject=" << block_fuse_reject << std::endl;
+        for (const auto & item : block_next_ops) {
+            std::cerr << "ggml_vulkan: ffn_block_trace reject_next_op " << item.first
+                      << " count=" << item.second << std::endl;
+        }
+        for (const auto & item : block_next_view_sources) {
+            std::cerr << "ggml_vulkan: ffn_block_trace reject_next_view " << item.first
+                      << " count=" << item.second << std::endl;
+        }
     }
 }
 

@@ -3,12 +3,22 @@
 This document starts the post-E264 research mode. The earlier E### loop was good
 for quick gates, but the active Vulkan/ROCm Q3_K lane has exhausted nearby
 flags, batch shapes, f16 pivots, helper rewrites, and simple layout flips. The
-next useful work should be treated as an architecture program, not as another
-micro-probe.
+current global target is now dense `Qwen3.6-27B-Q3_K_S` at `ctx=131072`
+(~130k), where RAM-spill/residency is expected on 16 GB VRAM. The next useful
+work should be treated as an architecture program, not as another micro-probe.
 
 ## Why Reset
 
-Current dense Qwen3.6-27B 12k Vulkan evidence:
+Current dense Qwen3.6-27B 130k objective:
+
+- Active lane: `ctx=131072,b=512,q4_0/q4_0,spec=none`, cold/no-reuse/no-prime, thinking on, `real-context-chars=24576`, `max_tokens=16`; Vulkan current best uses `ub=256` with `--no-mmap`, ROCm uses `ub=128`.
+- Required first evidence is the P002 130k quick baseline, historically recorded
+  by E265 and recentered after D005/ROCm checks: Vulkan `1.7898 TPS` r3, ROCm `1.5200 TPS` r3. Do
+  not promote any topology without beating the same-backend P002 quick lane or
+  explicitly labeling a heavier residency stress result.
+- Expected system behavior: the full working set will not be cleanly VRAM-resident on RX 9070 XT 16 GB, so mmap/no-mmap, startup time, host RAM pressure, PCIe movement, and allocator/residency diagnostics are part of the target.
+
+Archived dense Qwen3.6-27B 12k Vulkan evidence:
 
 - Current kept profile: E257, `ctx=12288,b=7168,ub=1024,q4_0/q4_0,spec=none`,
   cold/no-reuse/no-prime, thinking on.
@@ -50,10 +60,11 @@ Use more than one class of note. Not every idea should become a benchmark.
 | Program | `P` | Multi-experiment research theme | goal, lane, ceiling model, open questions |
 | Design | `D` | Architecture proposal before code | mechanism, resource model, risk list, rejection analogs |
 | Scout | `S` | Standalone tool or trace to answer one design question | script/log/table, no wall TPS claim unless it runs the lane |
-| Experiment | `E` | Real A/B or correctness gate | standard experiment note, artifacts, result log row |
+| Measured gate | `P`/`D`/`S` artifact, optional `E` only for narrow ledger entries | Real A/B or correctness gate | measured result attached to the owning topology note; result-log row only when promoted |
 
-E### remains the measured experiment ledger. New major ideas should start as a
-P/D note under `docs/research/major-topology/` before code is edited.
+For post-E264 topology work, P/D/S notes are the default home. E### is historical
+or a deliberate narrow measured ledger entry; do not use it for design scouts,
+tooling packs, or large route proposals before the owning topology note exists.
 
 ## Gate Ladder
 
@@ -101,8 +112,9 @@ Do not skip gates for a large topology.
   broad f16-disable, and per-layer activation casts can all lose wall time.
 - A prefill-only layout cannot break decode. E258 improved prompt slightly but
   hurt decode enough to lose wall time.
-- Queue/mmap lessons are lane-specific. E260 rejects transferring 64k Vulkan
-  graphics-queue/no-mmap behavior to the 12k dense lane.
+- Queue/mmap lessons are lane-specific. E260 rejected transferring 64k Vulkan
+  graphics-queue/no-mmap behavior to the 12k dense lane; the 130k lane must
+  re-test those knobs because RAM-spill/residency pressure is now central.
 - Point wins do not guarantee wall wins. If wall regresses, classify as
   bottleneck shift and stop iterating that local mechanism.
 
@@ -153,9 +165,9 @@ First design questions:
 
 ### T4: FA Shader-Body Work
 
-FlashAttention is a secondary share on the 12k lane but a major share on 64k.
-Only pursue this for the 12k target after Q3_K topology design stalls, or if a
-fresh trace shows FA share has grown.
+FlashAttention is a secondary share on the archived 12k lane but a major share
+on long-context lanes. For 130k, re-measure Q3_K vs FA shares before choosing
+between Q3_K topology and FA shader-body work.
 
 First design questions:
 
@@ -169,6 +181,15 @@ Build better tools before more code if the design cannot be ranked. The harness
 should compare Vulkan vs ROCm route buckets, resources, and shape timings for
 the same lane, then emit a short target table.
 
+First Vulkan piece added: `scripts/research/vulkan_evidence_pack.py`. It builds
+a label-scoped markdown pack from benchmark diagnostics/server logs, optional
+Vulkan perf rows, route trace lines, pipeline stats, and SPIR-V opcode summaries.
+Use the VS Code tasks `bench: vulkan q3 130k route trace`, `bench: vulkan q3
+130k q3 stats`, and `research: vulkan evidence pack` to capture a fresh
+P002-lane pack before a large shader or route rewrite. The pack also includes a
+diagnostic-only Amdahl ceiling sketch when `--baseline-tps` is provided; use it
+to rank candidates, not as a speed claim.
+
 First design questions:
 
 - Which exact shapes differ most between Vulkan and ROCm after matching lane
@@ -178,10 +199,10 @@ First design questions:
 
 ## Immediate Next Work
 
-1. Finish repository cleanup and commit the measured E249-E264 tail.
-2. Refresh route maps so they no longer say the active cycle is archived only.
-3. Create the first program note under `docs/research/major-topology/`.
-4. Collect a fresh evidence pack for the selected topology before editing code.
+1. Finish the 130k workspace prep and keep old 12k/64k lanes explicitly historical.
+2. Run the Vulkan and ROCm 130k baseline tasks sequentially, preserving diagnostics/server logs.
+3. Create or update the first 130k program note under `docs/research/major-topology/`.
+4. Collect a fresh route/residency evidence pack for the selected topology before editing code.
 5. Only then open a prototype branch/worktree.
 
 ## Stop Conditions For The New Mode
@@ -192,6 +213,6 @@ Stop and write a design rejection when:
 - the design requires broad tensor storage changes but has no fail-closed plan;
 - the resource model predicts near-limit LDS/VGPR without a compensating
   algorithmic reduction;
-- the proposal repeats an E257-E264 rejected route under a new name;
+- the proposal repeats an E257-E264 rejected route under a new name without explaining why 130k RAM-spill/residency changes the mechanism;
 - a prototype needs more than one subsystem changed before it can prove a local
   mechanism.

@@ -20,11 +20,12 @@
 
 - Сохранять работоспособный GUI в `gui/`.
 - Не ломать ROCm/RDNA4 workflow.
-- Для performance work считать текущей практической целью ускорение `Qwen3.6-27B` на стартовой prompt-heavy точке ниже `16k` (текущий reference `ctx=12288`) до `25-27 TPS`.
+- Для performance work считать текущей практической целью ускорение dense `Qwen3.6-27B-Q3_K_S` на длинном контексте `ctx=131072` (~130k). Текущий cold-first quick baseline: `real-context-chars=24576`, `max_tokens=16`; Vulkan D012 `b512/ub256` = `2.0013 TPS` r3 с q3quad/GLU opt-in stack и `--no-mmap` теперь является baseline, следующий Vulkan target = `2.4 TPS` (D028 gate: нужно `1.1992x` wall, около `1.387x` local на dense FFN или `1.260x` на all-Q3). D029-D033 закрывают activation-only/naive-streaming whole-FFN, старые all-Q3 storage/helper/Q8/tile семьи, compact Q3S layout-body, FA-only pivot и q3-octa/LOAD_VEC_A=8 repeat; следующий Vulkan route должен быть настоящим Q3_K compute body/compressed-dot route, не layout-only unpack simplification или wider per-invocation dequant. FA можно рассматривать только как stack-компонент после Q3 point/static evidence около `1.18-1.20x` local. ROCm baseline `b512/ub128` = `1.5200 TPS` r3 и ROCm временно paused после D013-D027 rejection fence. Сравнивать speed claims с тем же backend и shape.
+- На `ctx=131072` учитывать, что 16 GB VRAM RX 9070 XT недостаточно для полностью локального VRAM-resident сценария: значимая часть KV/context/working set может уходить в system RAM. Считать residency/RAM-spill/PCIe эффект частью целевой задачи, а не шумом измерения.
 - Сохранять TurboQuant типы и GUI-интеграцию KV cache.
 - Догонять upstream по core/runtime, но не импортировать upstream docs/actions/instructions поверх локальных.
 - Готовить MTP поддержку только после проверки конкретного upstream PR/commit и совместимого MTP GGUF.
-- Для Qwen performance work сначала читать `PROJECT_PROFILE.md`, `BENCHMARKS.md`, `MTP.md`, `MTP_IMPLEMENTATION_PLAN.md` и `QWEN_SPEED_RESEARCH.md`.
+- Для Qwen performance work сначала читать `PROJECT_PROFILE.md`, `docs/research/CONTEXT_130K_WORKFLOW.md`, `BENCHMARKS.md`, `MTP.md`, `MTP_IMPLEMENTATION_PLAN.md` и `QWEN_SPEED_RESEARCH.md`.
 
 ## Защищённые файлы и директории
 
@@ -108,7 +109,7 @@ cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUIL
 
 1. Перед запуском бенчей очищать override-окружение (`HSA_OVERRIDE_GFX_VERSION`) и убеждаться, что нет фонового `llama-server`.
 2. Для быстрых итераций по prompt-heavy lane по умолчанию использовать `--runs 1`; до `3 runs` повышать только финальное подтверждение пограничных или реально promising дельт.
-3. Любой speed claim соотносить с текущей стартовой точкой `ctx=12288` (или ближайшей <16k) в `scripts/agent_workload_bench.py --real-context-mode repo-snapshot`, а не со старыми 64k/128k headline.
+3. Любой speed claim соотносить с текущей active lane `ctx=131072` в `scripts/agent_workload_bench.py --real-context-mode repo-snapshot`, cold-first (`--no-reuse --no-v2-prime-pass`) и с явно указанным backend (`Vulkan`/`ROCm`). Старые 12k/32k/64k/128k результаты считать историческими reference, а не текущим baseline.
 4. Для измерений «чистой» стартовой точки отключать reuse (`--cache-ram 0 --ctx-checkpoints 0`) и фиксировать этот факт в label.
 5. Если новая идея не бьёт baseline или даёт нестабильность, откатывать экспериментальные правки до чистого дерева.
 6. Если идея подтверждена, фиксировать одновременно: код + запись в `BENCHMARKS.md` + артефакты в `build_logs/agent-workload/`.
@@ -121,6 +122,8 @@ cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUIL
 13. Для активного C01/perf трека вести две раздельные headline-метрики: `cold-first` и `repeated/steady session`; не смешивать их в один baseline.
 14. Для default/kernel claims сравнивать candidate только с cold-first baseline того же lane; speculative/session opt-in claims сравнивать только с repeated/steady baseline того же lane.
 15. В отчётах и документах явно помечать, какой baseline использован: `cold-first baseline` или `repeated/steady baseline`.
+16. Для новых benchmark-прогонов считать каноническими файлами истории `build_logs/agent-workload/BENCH_RUNS.csv`, `build_logs/agent-workload/BENCH_RECENT.md`, `build_logs/agent-workload/BENCH_LANES.md`; обновлять их через `scripts/agent_workload_bench.py`, а не создавать новые разрозненные history-файлы. Для 130k baseline обязательно сохранять diagnostics/server log, потому что startup/residency/RAM-spill сообщения являются частью результата.
+17. После E264 крупные Vulkan/ROCm Q3_K идеи сначала оформлять через `docs/research/MAJOR_TOPOLOGY_WORKFLOW.md` и `docs/research/major-topology/README.md`; обычный E###-цикл использовать только после design/scout gate.
 
 Цель: избегать «шума» и держать только воспроизводимые ускорения в `master`.
 
@@ -137,8 +140,9 @@ cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUIL
 4. В заметке явно помечать, где `projected` (модель), а где `measured` (реальный benchmark).
 5. Только после аналитического gate запускать microbench и затем lane benchmark.
 6. Любой результат фиксировать в `docs/research/RESULTS_LOG.md` с решением `keep/iterate/revert`.
-7. Новые утилиты для формул/проверок класть в `scripts/research/` и проверять `py_compile`.
-8. Для speculative-гипотез обязательно делать measured-vs-formula cross-check через:
+7. После обновления `RESULTS_LOG.md` запускать `python scripts/research/refresh_experiment_digest.py`, чтобы `docs/research/EXPERIMENTS_DIGEST.md` оставался компактной исторической базой.
+8. Новые утилиты для формул/проверок класть в `scripts/research/` и проверять `py_compile`.
+9. Для speculative-гипотез обязательно делать measured-vs-formula cross-check через:
     - `python scripts/research/bench_pair_compare.py ...`
     - `python scripts/research/spec_log_stats.py ...`
     - `python scripts/research/spec_effective_acceptance.py ...`
@@ -146,12 +150,12 @@ cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUIL
     - `python scripts/research/spec_model_compare.py ...`
     - `python scripts/research/spec_model_batch_compare.py ...`
     - `python scripts/research/required_spec_overhead.py ...`
-9. В отчёте явно разделять:
+10. В отчёте явно разделять:
     - local acceptance (внутри сгенерированных draft токенов),
     - coverage (доля шагов, где draft реально был),
     - effective acceptance (coverage * local acceptance).
-10. Для runtime/prototype A/B сначала восстановить текущий best из autotune/history (ctx/batch/ubatch/KV/spec/extra/real-context size) и повторять именно его без `--v2-prime-pass`; prime-результаты можно хранить только отдельно как steady-state diagnostics.
-11. Для allocator/layout гипотез документировать negative control: например, `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1` должен возвращать старый slow pocket, иначе причинность не доказана.
+11. Для runtime/prototype A/B сначала восстановить текущий best из autotune/history (ctx/batch/ubatch/KV/spec/extra/real-context size) и повторять именно его без `--v2-prime-pass`; prime-результаты можно хранить только отдельно как steady-state diagnostics.
+12. Для allocator/layout гипотез документировать negative control: например, `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1` должен возвращать старый slow pocket, иначе причинность не доказана.
 
 Цель: делать исследования воспроизводимыми и понятными даже без глубокого матбэкграунда.
 

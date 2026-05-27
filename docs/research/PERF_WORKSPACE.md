@@ -21,13 +21,16 @@ the runnable benchmark/check tasks.
 For performance work, read these in order:
 
 1. `AGENTS.md`
-2. `docs/research/PERF_WORKSPACE.md`
-3. `docs/research/HYPOTHESES.md`
-4. `docs/research/RESULTS_LOG.md`
-5. For major topology work after E264: `docs/research/MAJOR_TOPOLOGY_WORKFLOW.md`
+2. `docs/research/CONTEXT_130K_WORKFLOW.md`
+3. `docs/research/PERF_WORKSPACE.md`
+4. `docs/research/EXPERIMENTS_DIGEST.md`
+5. `docs/research/HYPOTHESES.md`
+6. `docs/research/RESULTS_LOG.md`
+7. `docs/research/BENCH_HISTORY_POLICY.md`
+8. For major topology work after E264: `docs/research/MAJOR_TOPOLOGY_WORKFLOW.md`
    and `docs/research/major-topology/README.md`
-6. The latest relevant experiment note under `docs/research/experiments/`
-7. `build_logs/agent-workload/BENCH_HISTORY_V2.md`
+9. The latest relevant experiment note under `docs/research/experiments/`
+10. `build_logs/agent-workload/BENCH_RECENT.md` and `build_logs/agent-workload/BENCH_LANES.md`
 
 For paused decode/perf work, also read:
 
@@ -89,30 +92,37 @@ not make unmeasured speed claims, and the upstream scout should not edit files.
 10. Update docs in the same work unit:
    - experiment note
    - `docs/research/RESULTS_LOG.md`
+   - `docs/research/EXPERIMENTS_DIGEST.md` via `python scripts/research/refresh_experiment_digest.py`
    - `BENCHMARKS.md` for meaningful user-facing benchmark decisions
    - `docs/research/HYPOTHESES.md` if priority/status changes
+11. Refresh canonical benchmark history when logs/schema changed:
+   - `python scripts/agent_workload_bench.py --refresh-canonical-history`
 
 ## Active Lanes
 
 Project policy primary lane:
 
 - `Qwen3.6-27B-Q3_K_S.gguf`
-- prompt-heavy cold-first lane below 16k
-- current reference context: `ctx=12288`
+- long-context cold-first lane at `ctx=131072` (~130k)
 - `--real-context-mode repo-snapshot`
-- no reuse: `--cache-ram 0 --ctx-checkpoints 0`
+- no reuse: `--no-reuse` (`--cache-ram 0 --ctx-checkpoints 0`)
+- no v2 prime pass: `--no-v2-prime-pass`
 - thinking enabled: use `--no-disable-thinking`
+- first baseline contract: `quick:triage_diff`, `max_tokens=16`, `q4_0/q4_0`, `b512`, `real-context-chars=24576`; Vulkan current best uses `ub256`, ROCm remains `ub128` until rechecked
+- expected constraint: `ctx=131072` will often spill KV/context/working set beyond 16 GB VRAM into system RAM; keep diagnostics/server logs and treat residency/RAM-spill as part of the result
 
-Current Vulkan-vs-ROCm diagnostic lane:
+Current Vulkan-vs-ROCm baseline lane:
 
 - model: `models/Qwen3.6-27B-Q3_K_S.gguf`
-- context: `32768`
-- batch/ubatch: `5120/1024`
+- context: `131072`
+- batch/ubatch: Vulkan `512/256`, ROCm `512/128`
 - KV: `q4_0/q4_0`
 - flash attention: on
-- max tokens: `120`
-- task: `v2-mini`, `v2_write_function`
-- Vulkan safe env: none on the local eligible AMD proprietary coopmat device; E102 auto-enables the fast AMD large-matmul path
+- max tokens: `16`
+- task: `quick`, `triage_diff`
+- Vulkan current target: `2.4 TPS` on the D012 lane. D012 remains the active baseline at `2.0013 TPS` r3, prompt `1053.11 tok/s`, decode `42.72 tok/s`, with q3quad/GLU opt-in stack plus `--no-mmap`; D005 split-K anchor remains `1.7898 TPS`
+- ROCm baseline: `1.5200 TPS` r3, prompt `801.71 tok/s`, decode `29.07 tok/s`, no `HSA_OVERRIDE_GFX_VERSION` on HIP SDK 7.1
+- ROCm pause/fence: D013-D027 reject ub256/storage/cublas/no-mmap/src1/y32w2/GLU/current-MMQ/Q3Flash/vbuffer/upstream-stock/streaming-cublas, pair-only FFN SwiGLU, naive whole-FFN streaming, expanded persistent Q3_K layout, and compact signed-nibble unpack-only layout routes. Leave ROCm paused unless a stronger Q3_K/FFN dataflow proof appears; active work is Vulkan `2.4 TPS`.
 - rollback/negative control: `GGML_VK_DISABLE_AMD_LARGE_MATMUL=1`
 - do not auto-enable `GGML_VK_AMD_LARGE_MATMUL_VARIANT=wm32-wn32`
 
@@ -141,27 +151,80 @@ Configure ROCm on Windows:
 cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUILD_TYPE=Release
 ```
 
-Run the safe Vulkan 32k control:
+Run the Vulkan 130k baseline:
 
 ```bash
 PATH="/c/Strawberry/c/bin:$PATH" \
+GGML_VK_ALLOW_GRAPHICS_QUEUE=1 \
 python scripts/agent_workload_bench.py \
   --server-bin build-vulkan/bin/llama-server.exe \
   --model models/Qwen3.6-27B-Q3_K_S.gguf \
-  --label vulkan32k-control-r1 \
-  --ctx-size 32768 --batch-size 5120 --ubatch-size 1024 \
+   --label vulkan130k-quick-c24k-b512-ub128-r1 \
+   --ctx-size 131072 --batch-size 512 --ubatch-size 128 \
   --gpu-layers 999 --cache-type-k q4_0 --cache-type-v q4_0 \
-  --flash-attn --parallel 1 --max-tokens 120 \
-  --tasks v2-mini --task-ids v2_write_function \
-  --real-context-mode repo-snapshot --real-context-chars 21872 \
-  --no-disable-thinking --no-reuse --allow-ctx-above-16k \
-  --runs 1 --background-server-policy fail
+   --flash-attn --parallel 1 --max-tokens 16 \
+   --tasks quick --task-ids triage_diff \
+   --real-context-mode repo-snapshot --real-context-chars 24576 \
+   --no-disable-thinking --no-reuse --no-v2-prime-pass \
+   --runs 1 --request-timeout 180 --startup-timeout 900 --task-hard-timeout 45 \
+   --background-server-policy fail --server-extra "--spec-type none --no-mmap" \
+   --write-diagnostics
+```
+
+Run the ROCm 130k baseline:
+
+```bash
+python scripts/agent_workload_bench.py \
+   --server-bin build-rocm-vec/bin/llama-server.exe \
+   --model models/Qwen3.6-27B-Q3_K_S.gguf \
+   --label rocm130k-quick-c24k-b512-ub128-r1 \
+   --ctx-size 131072 --batch-size 512 --ubatch-size 128 \
+   --gpu-layers 999 --cache-type-k q4_0 --cache-type-v q4_0 \
+   --flash-attn --parallel 1 --max-tokens 16 \
+   --tasks quick --task-ids triage_diff \
+   --real-context-mode repo-snapshot --real-context-chars 24576 \
+   --no-disable-thinking --no-reuse --no-v2-prime-pass \
+   --runs 1 --request-timeout 180 --startup-timeout 900 --task-hard-timeout 45 \
+   --background-server-policy fail --server-extra "--spec-type none" \
+   --write-diagnostics
 ```
 
 Use `GGML_VK_DISABLE_AMD_LARGE_MATMUL=1` only to prove rollback behavior or to
 diagnose the old slow route. `GGML_VK_FORCE_AMD_LARGE_MATMUL=1` remains useful
 for experiments on other devices, but it is no longer required for the local
 RX 9070 XT / AMD proprietary coopmat path.
+
+Run the Vulkan 2.4 target gate after retargeting or before a broad route design:
+
+```bash
+python scripts/research/vulkan_2p4_target_gate.py > build_logs/agent-workload/d028-vulkan-130k-2p4-target-gate.md
+```
+
+D028 shows the new target needs `1.1992x` wall over D012, about `1277 tok/s`
+prompt eval if decode and overhead stay flat, `1.387x` local on dense FFN, or
+`1.260x` local on all-Q3. Treat gate/up-only and down-only Vulkan routes as too
+small unless a new model beats those ceilings.
+
+D029 rejects activation-only whole-FFN fusion and naive full-FFN streaming as the
+first `2.4 TPS` route: hidden materialization traffic is too small, while
+streaming either recomputes gate/up per down-row tile or creates massive partial
+output traffic. The next Vulkan scout should target all-Q3/body-layout work or a
+whole-FFN design that reduces Q3_K matmul work itself.
+
+D030 rejects the old all-Q3/body-layout families as first moves: q3quad/tile is
+already in D012 and still short by about `1175 ms` all-Q3 point time;
+scale-only helpers, signed-nibble-only storage, Q8_1/int-dot, expanded layouts,
+and neighboring tile tweaks all have prior negative or residency evidence. D031
+also rejects compact Q3S/signed-nibble plus predecoded-scale layout-body work:
+static savings are below the target-closing budget, runtime evidence is
+negative, and residency cost is high. D032 must start from a true Q3_K compute
+body or compressed-dot route with a static resource/residency proof before full
+server A/B. D032 stack math says FA-only is not a target route: FA `1.5x` still
+requires Q3 `1.1987x` local and FA `2.0x` still requires Q3 `1.1702x` local.
+Treat FA as a stack component only after Q3 has point/static evidence near the
+`1.18-1.20x` local band. D033 rejects q3-octa/`LOAD_VEC_A=8` as a near-repeat
+of E087 (`-1.50%`), so wider per-invocation Q3_K dequant is not the next body
+candidate.
 
 Run the Vulkan Q3_K pre-build gate before shader experiments:
 
@@ -233,8 +296,18 @@ Every kept or rejected performance experiment needs:
 - CSV/JSONL/server log in `build_logs/agent-workload/`
 - experiment note under `docs/research/experiments/`
 - result row in `docs/research/RESULTS_LOG.md`
+- refresh of `docs/research/EXPERIMENTS_DIGEST.md` when route-family conclusions change
 - a benchmark summary in `BENCHMARKS.md` when the result affects presets,
   default behavior, or future user decisions
+
+Canonical benchmark history lives in:
+
+- `build_logs/agent-workload/BENCH_RUNS.csv`
+- `build_logs/agent-workload/BENCH_RECENT.md`
+- `build_logs/agent-workload/BENCH_LANES.md`
+
+Legacy `BENCH_HISTORY*.md/.csv` files are compatibility artifacts, not the first
+place to look.
 
 Never claim a TPS improvement from:
 

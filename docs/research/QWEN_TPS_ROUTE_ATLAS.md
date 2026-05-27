@@ -1,6 +1,6 @@
 # Qwen TPS Route Atlas
 
-Updated: 2026-05-22.
+Updated: 2026-05-26.
 
 This is the top-level route map for future TPS work on the local
 `llama.cpp-with-GUI` fork. It connects GUI/CLI/server parameters, Qwen graph
@@ -16,7 +16,7 @@ Detailed companions:
 
 ## Coverage Contract
 
-This document is complete for the active local Qwen TPS planning surface:
+This document includes current and archived local Qwen TPS planning surfaces:
 
 - launch/config route;
 - server request and slot route;
@@ -34,22 +34,38 @@ interfere with cleanup, backend dispatch, or future upstream sync.
 
 ## Active Lane Definitions
 
-Main cold-first lane for code-speed claims:
+Main cold-first lane for new code-speed claims:
 
 | Field | Value |
 | --- | --- |
 | Model | `models/Qwen3.6-27B-Q3_K_S.gguf` |
-| Backend | Vulkan on RX 9070 XT / AMD proprietary driver for the current post-E257 focus; ROCm remains the preferred production backend and comparison route |
+| Backend | Vulkan and ROCm measured separately on RX 9070 XT |
+| Context | `ctx=131072` (~130k) |
+| Batch | `batch=512`; Vulkan `ubatch=256`, ROCm `ubatch=128` until rechecked |
+| KV | `q4_0/q4_0` |
+| Speculation | `--spec-type none` |
+| Reuse | no reuse / no v2 prime pass |
+| Thinking | on / `--no-disable-thinking` |
+| Current best | P002 quick baseline: Vulkan D005 `1.7898 TPS` r3 at `ub=256` with `--no-mmap`; ROCm `1.5200 TPS` r3 at `ub=128` |
+| Residency note | 16 GB VRAM is not expected to keep the whole dense 27B + 130k KV/context/working set resident; RAM-spill/PCIe/startup diagnostics are part of the result |
+| Metric type | cold-first 130k quick baseline only; do not compare with archived 12k/32k/64k, full-fill stress, or tiny-prompt sentinel128 rows |
+
+Archived dense Vulkan 12k lane:
+
+| Field | Value |
+| --- | --- |
+| Model | `models/Qwen3.6-27B-Q3_K_S.gguf` |
+| Backend | Vulkan on RX 9070 XT / AMD proprietary driver for the archived post-E257 focus; ROCm remains the preferred production backend and comparison route |
 | Context | `ctx=12288` |
-| Batch | `batch=7168`, `ubatch=1024` for the active Vulkan 12k profile |
+| Batch | `batch=7168`, `ubatch=1024` for the archived Vulkan 12k profile |
 | KV | `q4_0/q4_0` |
 | Speculation | `--spec-type none` |
 | Reuse | `--cache-ram 0 --ctx-checkpoints 0`, no reuse |
 | Thinking | on / `--no-disable-thinking` |
-| Current best | E257 r3 `7.0319 TPS`, prompt `999.22 tok/s`, decode `40.93 tok/s` |
+| Reference best | E257 r3 `7.0319 TPS`, prompt `999.22 tok/s`, decode `40.93 tok/s` |
 | Metric type | cold-first baseline only; do not compare with repeated/session or A3B practical profiles |
 
-Active ROCm decode parity lane:
+Archived ROCm decode parity lane:
 
 | Field | Value |
 | --- | --- |
@@ -77,7 +93,7 @@ Important session/long-context lane:
 | Speculation | `ngram-mod` only as opt-in repeated/steady behavior |
 | Metric type | keep cold-first and repeated/steady separate |
 
-Active Vulkan 64k investigation lane:
+Archived Vulkan 64k investigation lane:
 
 | Field | Value |
 | --- | --- |
@@ -379,7 +395,7 @@ Server behavior:
 Metric interpretation:
 
 - `ngram-mod` has measured repeated/steady upside in older lanes, but E107
-  rejects the tested ngram settings for the current 12k q4-KV cold-first lane:
+  rejects the tested ngram settings for the archived 12k q4-KV cold-first lane:
   coverage/effective acceptance were near zero and wall TPS regressed.
 - E113 post-driver retunes the stacked route: `ngram-mod 12/16/32` on top of
   prompt cache/checkpoints measured `19.0148` and `19.5051 TPS`, with
@@ -407,7 +423,7 @@ Route mechanics:
    tail differs.
 4. The server reprocesses only the changed tail, then continues normal decode.
 
-E111 measured this route on the active 12k ROCm q4-KV lane with `spec=none`:
+E111 measured this route on the archived 12k ROCm q4-KV lane with `spec=none`:
 
 | Run | Aggregate TPS | Interpretation |
 | --- | ---: | --- |
@@ -645,7 +661,7 @@ Use these to keep future acceleration plans evidence-based:
 | P2 | Vulkan Q3_K prompt shader | Vulkan decode is strong but prompt Q3_K route trails ROCm; at 64k it is `47.79%` of traced time; E133 shows top forms `17408x1024x5120` and `5120x1024x17408` are `74.1%` of parsed Q3_K time; E134 says all-Q3_K needs `1.357x` local to close the lane alone; E135 proves the real 64k graph exposes `63 x q3_K SWIGLU` FFN gate/up candidates; E136 says dual-A/same-B FFN fusion alone projects below target unless it reduces A-side work; E143 rejects larger-N warptiles because A-reuse lost to VGPR/LDS/scratch; E144 rejects BK shrink because barriers dominate; E146 rejects BM256 because B/workgroup savings lose to near-limit LDS; E147 rejects broad persistent fp16/int8 layout and marks signed-nibble low-confidence | Active Vulkan 64k code target, but require route-ceiling, graph-pattern, resource, shape-level perf, and A-dequant/layout proof. Next Q3_K implementation should wait for a topology that reduces repeated A work without larger-tile live-state growth, near-limit LDS, fp16 temp, broad extra VRAM, or extra K-loop/reduce cadence; FFN fusion remains a stack component |
 | P3 | Vulkan q4 FA long-context route | `FLASH_ATTN_EXT` is `38.03%` of traced 64k Vulkan time; main route is `98 VGPR / 76 SGPR / 26112 B LDS / 0 scratch`; easy FA toggles have regressed; E133 shows tail KV chunks dominate the FA series; E134 says FA alone needs `1.494x` local; E141 says f16/f16 KV is only a small pp upper bound and does not fit the real 64k server lane; E142 says `Br32/Bc32` loses to VGPR pressure; E145 says `D_split=4/16` keeps the same resource fingerprint but regresses runtime | Keep q4/FA; optimize only with shader-body/resource evidence, per-KV tail timing, and same-lane A/B. Treat it as the second half of the combined Q3_K+FA stack; do not pivot to f16/q8 KV, larger-Br cm1, or `D_split` flips for H38 |
 | P4 | Prompt cache/checkpoint session route | Strong repeated/session gain by avoiding shared-prefix prefill | Keep enabled for practical sessions; do not mix with cold baseline |
-| P5 | `ngram-mod` session route | Can stack on prompt cache via accepted-token bursts; current 12k cold-first coverage is near zero; match-8 is too noisy | Keep `12/16/32` opt-in; require coverage/effective acceptance and burst evidence |
+| P5 | `ngram-mod` session route | Can stack on prompt cache via accepted-token bursts; archived 12k cold-first coverage is near zero; match-8 is too noisy | Keep `12/16/32` opt-in; require coverage/effective acceptance and burst evidence |
 | P6 | GDN/SSM/RMS/fusions | Visible but smaller; past simple probes negative | Revisit if a trace shows shared memory/residency slowdown |
 
 ## Cleanup and Deletion Boundaries
@@ -667,7 +683,7 @@ Not safe to delete from route maps alone:
 - server checkpoint/reuse code paths;
 - MoE or recurrent Qwen route code.
 
-Reason: many of these are low-share for the current 12k prompt-heavy bottleneck
+Reason: many of these are low-share for the archived 12k prompt-heavy bottleneck
 but required for long context, fallback correctness, GUI features, or future
 MTP/speculative work.
 

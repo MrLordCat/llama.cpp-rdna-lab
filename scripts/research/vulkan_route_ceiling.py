@@ -72,6 +72,10 @@ def aggregate_us(rows: list[PerfRow], predicate) -> float:
     return sum(row.total_us for row in rows if predicate(row))
 
 
+def has_mat_shape(row: PerfRow, m: int, k: int) -> bool:
+    return row.shape.startswith(f"m={m} ") and row.shape.endswith(f" k={k}")
+
+
 def route_speedup(total_share: float, local_speedup: float) -> float:
     return 1.0 / ((1.0 - total_share) + total_share / local_speedup)
 
@@ -85,19 +89,20 @@ def required_local_speedup(route_share: float, target_speedup: float) -> float |
 
 def build_routes(rows: list[PerfRow]) -> list[Route]:
     q3_all = aggregate_us(rows, lambda row: row.bucket == "MUL_MAT q3_K")
-    q3_gate_up = aggregate_us(rows, lambda row: row.bucket == "MUL_MAT q3_K" and row.shape == "m=17408 n=1024 k=5120")
-    q3_down = aggregate_us(rows, lambda row: row.bucket == "MUL_MAT q3_K" and row.shape == "m=5120 n=1024 k=17408")
+    q3_gate_up = aggregate_us(rows, lambda row: row.bucket == "MUL_MAT q3_K" and has_mat_shape(row, 17408, 5120))
+    q3_down = aggregate_us(rows, lambda row: row.bucket == "MUL_MAT q3_K" and has_mat_shape(row, 5120, 17408))
     q3_other_prefill = aggregate_us(
         rows,
         lambda row: row.bucket == "MUL_MAT q3_K"
-        and row.shape not in {"m=17408 n=1024 k=5120", "m=5120 n=1024 k=17408"},
+        and not has_mat_shape(row, 17408, 5120)
+        and not has_mat_shape(row, 5120, 17408),
     )
     fa_all = aggregate_us(rows, lambda row: row.bucket == "FLASH_ATTN_EXT")
     glu_all = aggregate_us(rows, lambda row: row.bucket == "GLU")
 
     return [
-        Route("q3_gate_up", "Dense FFN gate/up Q3_K", q3_gate_up, "two sibling 17408x5120 projections per layer; fusion must reuse B/activation tile to matter"),
-        Route("q3_down", "Dense FFN down Q3_K", q3_down, "5120x17408 projection after SwiGLU; not helped by gate/up-only fusion"),
+        Route("q3_gate_up", "Dense FFN gate/up Q3_K", q3_gate_up, "all n columns for two sibling 17408x5120 projections per layer; fusion must reuse B/activation tile to matter"),
+        Route("q3_down", "Dense FFN down Q3_K", q3_down, "all n columns for 5120x17408 projection after SwiGLU; not helped by gate/up-only fusion"),
         Route("q3_top2", "Dense FFN gate/up + down Q3_K", q3_gate_up + q3_down, "main dense FFN Q3_K route"),
         Route("q3_other", "Other Q3_K prefill shapes", q3_other_prefill, "GDN/SSM/attention-side Q3_K shapes outside top FFN pair"),
         Route("q3_all", "All Q3_K MUL_MAT", q3_all, "whole Q3_K large-prefill route"),

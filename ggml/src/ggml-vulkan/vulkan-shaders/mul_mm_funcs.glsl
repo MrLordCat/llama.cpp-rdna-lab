@@ -20,6 +20,31 @@ FLOAT_TYPEV2 dequant_q3_k_pair(const uint idx) {
             return FLOAT_TYPEV2(dl * (qs.x - hm.x),
                                 dl * (qs.y - hm.y));
 }
+
+FLOAT_TYPEV4 dequant_q3_k_quad(const uint idx) {
+            const uint ib = idx / 128;                   // 2 values per idx
+            const uint iqs = idx % 128;                  // even 0..126 for LOAD_VEC_A == 4
+
+            const uint n = iqs / 64;                     // 0,1
+            const uint qsi = n * 32 + (iqs % 16) * 2;    // 0,4,8..60 for even iqs
+            const uint hmi =          (iqs % 16) * 2;    // 0,4,8..28 for even iqs
+            const uint is = iqs / 8;                     // 0..15
+            const uint halfsplit = ((iqs % 64) / 16);    // 0,1,2,3
+            const uint bitshift = 4 * n + halfsplit;
+            const uint qsshift = halfsplit * 2;          // 0,2,4,6
+
+            const int8_t us = int8_t(((data_a[ib].scales[is % 8] >> (4 * int(is / 8))) & 0xF)
+                                  | (((data_a[ib].scales[8 + (is % 4)] >> (2 * int(is / 4))) & 3) << 4));
+            const float dl = float(data_a[ib].d) * float(us - 32);
+
+            const vec4 qs = vec4(unpack8((data_a_packed32[ib].qs[qsi / 4] >> qsshift) & 0x03030303));
+            const vec4 hm = vec4(unpack8((((data_a_packed32[ib].hmask[hmi / 4] >> bitshift) & 0x01010101) ^ 0x01010101) << 2));
+
+            return FLOAT_TYPEV4(dl * (qs.x - hm.x),
+                                dl * (qs.y - hm.y),
+                                dl * (qs.z - hm.z),
+                                dl * (qs.w - hm.w));
+}
 #endif
 
 void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uint idx_m, const uint block, const uint end_k) {
@@ -192,9 +217,14 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
             const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
             const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;
             const uint pair_idx = idx * 2;
-
+#ifdef Q3_K_QUAD_DEQUANT
+            const FLOAT_TYPEV4 v = dequant_q3_k_quad(pair_idx);
+            buf_a[buf_idx    ] = v.xy;
+            buf_a[buf_idx + 1] = v.zw;
+#else
             buf_a[buf_idx    ] = dequant_q3_k_pair(pair_idx);
             buf_a[buf_idx + 1] = dequant_q3_k_pair(pair_idx + 1);
+#endif
 #else
             const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
             const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;

@@ -1,6 +1,6 @@
-// Standalone ROCm Q3FlashMatmul P0 scout for llama.cpp ROCm route-body research.
-// This is not part of normal builds. It compares a direct tiled Q3_K matmul
-// against the current dequantize-to-f16 + rocBLAS GEMM contract.
+// Standalone ROCm Q3FlashMatmul scout for llama.cpp ROCm route-body research.
+// This is not part of normal builds. It compares direct tiled Q3_K matmul
+// variants against the current dequantize-to-f16 + rocBLAS GEMM contract.
 
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
@@ -501,6 +501,97 @@ __global__ static void q3flash_wmma_kstage_p3_kernel(
     }
 }
 
+template<int nwaves_m, int nwaves_n, int tile_k>
+__global__ static void q3flash_wmma_multim_p4_kernel(
+        const block_q3_K_padded * __restrict__ q3,
+        const __half * __restrict__ b,
+        float * __restrict__ d,
+        const int m,
+        const int n,
+        const int k) {
+    using halfx8_t = __attribute__((ext_vector_type(8))) _Float16;
+    using floatx8_t = __attribute__((ext_vector_type(8))) float;
+
+    static_assert(tile_k % 16 == 0, "tile_k must be a WMMA K multiple");
+
+    constexpr int tile_m = 16 * nwaves_m;
+    constexpr int tile_n = 16 * nwaves_n;
+    __shared__ __half sh_a[tile_m * tile_k];
+    __shared__ __half sh_b[tile_n * tile_k];
+
+    const int lane = threadIdx.x;
+    const int wave = threadIdx.y;
+    const int wave_m = wave / nwaves_n;
+    const int wave_n = wave - wave_m * nwaves_n;
+    const int linear = wave * 32 + lane;
+    const int threads = 32 * nwaves_m * nwaves_n;
+    const int tile_row = blockIdx.y * tile_m;
+    const int tile_col = blockIdx.x * tile_n;
+    const int blocks_per_row = k / QK_K;
+
+    const int frag_row = lane % 16;
+    const int frag_col0 = 8 * (lane / 16);
+    floatx8_t acc = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+
+    for (int k0 = 0; k0 < k; k0 += tile_k) {
+        for (int index = linear; index < tile_m * tile_k; index += threads) {
+            const int local_row = index / tile_k;
+            const int local_k = index - local_row * tile_k;
+            const int a_row = tile_row + local_row;
+            const int a_col = k0 + local_k;
+            float av = 0.0f;
+            if (a_row < m && a_col < k) {
+                const int block_index = a_row * blocks_per_row + a_col / QK_K;
+                av = q3_dequant_one(q3[block_index], a_col % QK_K);
+            }
+            sh_a[index] = __float2half(av);
+        }
+
+        for (int index = linear; index < tile_n * tile_k; index += threads) {
+            const int local_n = index / tile_k;
+            const int local_k = index - local_n * tile_k;
+            const int b_row = k0 + local_k;
+            const int b_col = tile_col + local_n;
+            float bv = 0.0f;
+            if (b_row < k && b_col < n) {
+                bv = __half2float(b[b_row + b_col * k]);
+            }
+            sh_b[index] = __float2half(bv);
+        }
+
+        __syncthreads();
+
+        for (int kk = 0; kk < tile_k; kk += 16) {
+            halfx8_t a_frag;
+            halfx8_t b_frag;
+#pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                const int local_k = kk + frag_col0 + i;
+                const int local_row = wave_m * 16 + frag_row;
+                const int local_col = wave_n * 16 + frag_row;
+                const float av = __half2float(sh_a[local_row * tile_k + local_k]);
+                const float bv = __half2float(sh_b[local_col * tile_k + local_k]);
+                a_frag[i] = static_cast<_Float16>(av);
+                b_frag[i] = static_cast<_Float16>(bv);
+            }
+
+            acc = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a_frag, b_frag, acc);
+        }
+
+        __syncthreads();
+    }
+
+    const int out_col = tile_col + wave_n * 16 + (lane % 16);
+    const int out_row0 = tile_row + wave_m * 16 + 8 * (lane / 16);
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        const int out_row = out_row0 + i;
+        if (out_row < m && out_col < n) {
+            d[out_row + out_col * m] = acc[i];
+        }
+    }
+}
+
 static rocblas_status gemm(
         rocblas_handle handle,
         const args_t & args,
@@ -581,16 +672,14 @@ static int time_baseline(
     return 0;
 }
 
-static int time_q3flash(
+template<int tile_m, int tile_n, int tile_k>
+static int time_q3flash_tiled(
         hipStream_t stream,
         const args_t & args,
         const block_q3_K_padded * q3,
         const __half * b,
         float * d,
         double & avg_ms) {
-    constexpr int tile_m = 16;
-    constexpr int tile_n = 16;
-    constexpr int tile_k = QK_K;
     const dim3 block(tile_n, tile_m);
     const dim3 grid((args.n + tile_n - 1) / tile_n, (args.m + tile_m - 1) / tile_m);
     const size_t shared_bytes = (tile_m * tile_k + tile_k * tile_n) * sizeof(__half);
@@ -620,6 +709,36 @@ static int time_q3flash(
     HIP_CHECK(hipEventDestroy(stop));
     avg_ms = static_cast<double>(elapsed_ms) / static_cast<double>(args.iters);
     return 0;
+}
+
+static int time_q3flash(
+        hipStream_t stream,
+        const args_t & args,
+        const block_q3_K_padded * q3,
+        const __half * b,
+        float * d,
+        double & avg_ms) {
+    return time_q3flash_tiled<16, 16, QK_K>(stream, args, q3, b, d, avg_ms);
+}
+
+static int time_q3flash_wide32(
+        hipStream_t stream,
+        const args_t & args,
+        const block_q3_K_padded * q3,
+        const __half * b,
+        float * d,
+        double & avg_ms) {
+    return time_q3flash_tiled<16, 32, QK_K>(stream, args, q3, b, d, avg_ms);
+}
+
+static int time_q3flash_wide64(
+        hipStream_t stream,
+        const args_t & args,
+        const block_q3_K_padded * q3,
+        const __half * b,
+        float * d,
+        double & avg_ms) {
+    return time_q3flash_tiled<16, 64, QK_K>(stream, args, q3, b, d, avg_ms);
 }
 
 static int time_q3flash_wmma(
@@ -723,6 +842,46 @@ static int time_q3flash_wmma_kstage(
 
     for (int i = 0; i < args.iters; ++i) {
         q3flash_wmma_kstage_p3_kernel<nwaves_n, tile_k><<<grid, block, 0, stream>>>(q3, b, d, args.m, args.n, args.k);
+        HIP_CHECK(hipGetLastError());
+    }
+
+    HIP_CHECK(hipEventRecord(stop, stream));
+    HIP_CHECK(hipEventSynchronize(stop));
+    float elapsed_ms = 0.0f;
+    HIP_CHECK(hipEventElapsedTime(&elapsed_ms, start, stop));
+    HIP_CHECK(hipEventDestroy(start));
+    HIP_CHECK(hipEventDestroy(stop));
+    avg_ms = static_cast<double>(elapsed_ms) / static_cast<double>(args.iters);
+    return 0;
+}
+
+static int time_q3flash_wmma_multim(
+        hipStream_t stream,
+        const args_t & args,
+        const block_q3_K_padded * q3,
+        const __half * b,
+        float * d,
+        double & avg_ms) {
+    constexpr int nwaves_m = 4;
+    constexpr int nwaves_n = 4;
+    constexpr int tile_k = 128;
+    const dim3 block(32, nwaves_m * nwaves_n);
+    const dim3 grid((args.n + 16 * nwaves_n - 1) / (16 * nwaves_n), (args.m + 16 * nwaves_m - 1) / (16 * nwaves_m));
+
+    for (int i = 0; i < args.warmup; ++i) {
+        q3flash_wmma_multim_p4_kernel<nwaves_m, nwaves_n, tile_k><<<grid, block, 0, stream>>>(q3, b, d, args.m, args.n, args.k);
+        HIP_CHECK(hipGetLastError());
+    }
+    HIP_CHECK(hipStreamSynchronize(stream));
+
+    hipEvent_t start = nullptr;
+    hipEvent_t stop = nullptr;
+    HIP_CHECK(hipEventCreate(&start));
+    HIP_CHECK(hipEventCreate(&stop));
+    HIP_CHECK(hipEventRecord(start, stream));
+
+    for (int i = 0; i < args.iters; ++i) {
+        q3flash_wmma_multim_p4_kernel<nwaves_m, nwaves_n, tile_k><<<grid, block, 0, stream>>>(q3, b, d, args.m, args.n, args.k);
         HIP_CHECK(hipGetLastError());
     }
 
@@ -862,9 +1021,12 @@ int main(int argc, char ** argv) {
     __half * d_b = nullptr;
     float * d_baseline = nullptr;
     float * d_q3flash = nullptr;
+    float * d_q3flash_wide32 = nullptr;
+    float * d_q3flash_wide64 = nullptr;
     float * d_wmma = nullptr;
     float * d_wmma_reuse = nullptr;
     float * d_wmma_kstage = nullptr;
+    float * d_wmma_multim = nullptr;
     float * d_pipeline = nullptr;
 
     HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&d_q3), q3_blocks * sizeof(block_q3_K_padded)));
@@ -872,9 +1034,12 @@ int main(int argc, char ** argv) {
     HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&d_b), b_elems * sizeof(__half)));
     HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&d_baseline), d_elems * sizeof(float)));
     HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&d_q3flash), d_elems * sizeof(float)));
+    HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&d_q3flash_wide32), d_elems * sizeof(float)));
+    HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&d_q3flash_wide64), d_elems * sizeof(float)));
     HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&d_wmma), d_elems * sizeof(float)));
     HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&d_wmma_reuse), d_elems * sizeof(float)));
     HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&d_wmma_kstage), d_elems * sizeof(float)));
+    HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&d_wmma_multim), d_elems * sizeof(float)));
     HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&d_pipeline), d_elems * sizeof(float)));
 
     HIP_CHECK(hipMemcpyAsync(d_q3, h_q3.data(), h_q3.size() * sizeof(block_q3_K_padded), hipMemcpyHostToDevice, stream));
@@ -883,14 +1048,23 @@ int main(int argc, char ** argv) {
 
     double baseline_ms = 0.0;
     double q3flash_ms = 0.0;
+    double q3flash_wide32_ms = 0.0;
+    double q3flash_wide64_ms = 0.0;
     double wmma_ms = 0.0;
     double wmma_reuse_ms = 0.0;
     double wmma_kstage_ms = 0.0;
+    double wmma_multim_ms = 0.0;
     double pipeline_ms = 0.0;
     if (time_baseline(handle, stream, args, d_q3, d_a, d_b, d_baseline, baseline_ms) != 0) {
         return 1;
     }
     if (time_q3flash(stream, args, d_q3, d_b, d_q3flash, q3flash_ms) != 0) {
+        return 1;
+    }
+    if (time_q3flash_wide32(stream, args, d_q3, d_b, d_q3flash_wide32, q3flash_wide32_ms) != 0) {
+        return 1;
+    }
+    if (time_q3flash_wide64(stream, args, d_q3, d_b, d_q3flash_wide64, q3flash_wide64_ms) != 0) {
         return 1;
     }
     if (time_q3flash_wmma(stream, args, d_q3, d_b, d_wmma, wmma_ms) != 0) {
@@ -902,51 +1076,75 @@ int main(int argc, char ** argv) {
     if (time_q3flash_wmma_kstage(stream, args, d_q3, d_b, d_wmma_kstage, wmma_kstage_ms) != 0) {
         return 1;
     }
+    if (time_q3flash_wmma_multim(stream, args, d_q3, d_b, d_wmma_multim, wmma_multim_ms) != 0) {
+        return 1;
+    }
     if (time_streaming_pipeline(args, d_q3, d_b, d_pipeline, pipeline_ms) != 0) {
         return 1;
     }
 
     compare_stats_t stats;
+    compare_stats_t wide32_stats;
+    compare_stats_t wide64_stats;
     compare_stats_t wmma_stats;
     compare_stats_t wmma_reuse_stats;
     compare_stats_t wmma_kstage_stats;
+    compare_stats_t wmma_multim_stats;
     compare_stats_t pipeline_stats;
     if (d_elems <= args.max_check_elems) {
         std::vector<float> h_baseline(d_elems);
         std::vector<float> h_q3flash(d_elems);
+        std::vector<float> h_q3flash_wide32(d_elems);
+        std::vector<float> h_q3flash_wide64(d_elems);
         std::vector<float> h_wmma(d_elems);
         std::vector<float> h_wmma_reuse(d_elems);
         std::vector<float> h_wmma_kstage(d_elems);
+        std::vector<float> h_wmma_multim(d_elems);
         std::vector<float> h_pipeline(d_elems);
         HIP_CHECK(hipMemcpy(h_baseline.data(), d_baseline, d_elems * sizeof(float), hipMemcpyDeviceToHost));
         HIP_CHECK(hipMemcpy(h_q3flash.data(), d_q3flash, d_elems * sizeof(float), hipMemcpyDeviceToHost));
+        HIP_CHECK(hipMemcpy(h_q3flash_wide32.data(), d_q3flash_wide32, d_elems * sizeof(float), hipMemcpyDeviceToHost));
+        HIP_CHECK(hipMemcpy(h_q3flash_wide64.data(), d_q3flash_wide64, d_elems * sizeof(float), hipMemcpyDeviceToHost));
         HIP_CHECK(hipMemcpy(h_wmma.data(), d_wmma, d_elems * sizeof(float), hipMemcpyDeviceToHost));
         HIP_CHECK(hipMemcpy(h_wmma_reuse.data(), d_wmma_reuse, d_elems * sizeof(float), hipMemcpyDeviceToHost));
         HIP_CHECK(hipMemcpy(h_wmma_kstage.data(), d_wmma_kstage, d_elems * sizeof(float), hipMemcpyDeviceToHost));
+        HIP_CHECK(hipMemcpy(h_wmma_multim.data(), d_wmma_multim, d_elems * sizeof(float), hipMemcpyDeviceToHost));
         HIP_CHECK(hipMemcpy(h_pipeline.data(), d_pipeline, d_elems * sizeof(float), hipMemcpyDeviceToHost));
         stats = compare_outputs(h_baseline, h_q3flash);
+        wide32_stats = compare_outputs(h_baseline, h_q3flash_wide32);
+        wide64_stats = compare_outputs(h_baseline, h_q3flash_wide64);
         wmma_stats = compare_outputs(h_baseline, h_wmma);
         wmma_reuse_stats = compare_outputs(h_baseline, h_wmma_reuse);
         wmma_kstage_stats = compare_outputs(h_baseline, h_wmma_kstage);
+        wmma_multim_stats = compare_outputs(h_baseline, h_wmma_multim);
         pipeline_stats = compare_outputs(h_baseline, h_pipeline);
     }
 
     const double speedup = q3flash_ms > 0.0 ? baseline_ms / q3flash_ms : 0.0;
+    const double wide32_speedup = q3flash_wide32_ms > 0.0 ? baseline_ms / q3flash_wide32_ms : 0.0;
+    const double wide64_speedup = q3flash_wide64_ms > 0.0 ? baseline_ms / q3flash_wide64_ms : 0.0;
     const double wmma_speedup = wmma_ms > 0.0 ? baseline_ms / wmma_ms : 0.0;
     const double wmma_reuse_speedup = wmma_reuse_ms > 0.0 ? baseline_ms / wmma_reuse_ms : 0.0;
     const double wmma_kstage_speedup = wmma_kstage_ms > 0.0 ? baseline_ms / wmma_kstage_ms : 0.0;
+    const double wmma_multim_speedup = wmma_multim_ms > 0.0 ? baseline_ms / wmma_multim_ms : 0.0;
     const double pipeline_speedup = pipeline_ms > 0.0 ? baseline_ms / pipeline_ms : 0.0;
     std::cout << std::fixed << std::setprecision(4)
               << "m=" << args.m << " n=" << args.n << " k=" << args.k
               << " baseline_ms=" << baseline_ms
               << " q3flash_ms=" << q3flash_ms
               << " speedup=" << speedup
+              << " q3flash_wide32_ms=" << q3flash_wide32_ms
+              << " q3flash_wide32_speedup=" << wide32_speedup
+              << " q3flash_wide64_ms=" << q3flash_wide64_ms
+              << " q3flash_wide64_speedup=" << wide64_speedup
               << " wmma_ms=" << wmma_ms
               << " wmma_speedup=" << wmma_speedup
               << " wmma_reuse_ms=" << wmma_reuse_ms
               << " wmma_reuse_speedup=" << wmma_reuse_speedup
               << " wmma_kstage_ms=" << wmma_kstage_ms
               << " wmma_kstage_speedup=" << wmma_kstage_speedup
+              << " wmma_multim_ms=" << wmma_multim_ms
+              << " wmma_multim_speedup=" << wmma_multim_speedup
               << " pipeline_ms=" << pipeline_ms
               << " pipeline_speedup=" << pipeline_speedup
               << " pipe_chunk=" << args.pipe_chunk
@@ -954,6 +1152,14 @@ int main(int argc, char ** argv) {
               << " max_abs=" << stats.max_abs
               << " max_rel=" << stats.max_rel
               << " rmse=" << stats.rmse
+              << " wide32_checked=" << wide32_stats.elems
+              << " wide32_max_abs=" << wide32_stats.max_abs
+              << " wide32_max_rel=" << wide32_stats.max_rel
+              << " wide32_rmse=" << wide32_stats.rmse
+              << " wide64_checked=" << wide64_stats.elems
+              << " wide64_max_abs=" << wide64_stats.max_abs
+              << " wide64_max_rel=" << wide64_stats.max_rel
+              << " wide64_rmse=" << wide64_stats.rmse
               << " wmma_checked=" << wmma_stats.elems
               << " wmma_max_abs=" << wmma_stats.max_abs
               << " wmma_max_rel=" << wmma_stats.max_rel
@@ -966,6 +1172,10 @@ int main(int argc, char ** argv) {
               << " wmma_kstage_max_abs=" << wmma_kstage_stats.max_abs
               << " wmma_kstage_max_rel=" << wmma_kstage_stats.max_rel
               << " wmma_kstage_rmse=" << wmma_kstage_stats.rmse
+              << " wmma_multim_checked=" << wmma_multim_stats.elems
+              << " wmma_multim_max_abs=" << wmma_multim_stats.max_abs
+              << " wmma_multim_max_rel=" << wmma_multim_stats.max_rel
+              << " wmma_multim_rmse=" << wmma_multim_stats.rmse
               << " pipeline_checked=" << pipeline_stats.elems
               << " pipeline_max_abs=" << pipeline_stats.max_abs
               << " pipeline_max_rel=" << pipeline_stats.max_rel
@@ -977,17 +1187,24 @@ int main(int argc, char ** argv) {
             std::cerr << "failed to open csv: " << args.csv << std::endl;
             return 1;
         }
-        std::fprintf(file, "m,n,k,warmup,iters,pipe_chunk,baseline_ms,q3flash_ms,speedup,wmma_ms,wmma_speedup,wmma_reuse_ms,wmma_reuse_speedup,wmma_kstage_ms,wmma_kstage_speedup,pipeline_ms,pipeline_speedup,checked_elems,max_abs,max_rel,rmse,wmma_checked_elems,wmma_max_abs,wmma_max_rel,wmma_rmse,wmma_reuse_checked_elems,wmma_reuse_max_abs,wmma_reuse_max_rel,wmma_reuse_rmse,wmma_kstage_checked_elems,wmma_kstage_max_abs,wmma_kstage_max_rel,wmma_kstage_rmse,pipeline_checked_elems,pipeline_max_abs,pipeline_max_rel,pipeline_rmse\n");
-        std::fprintf(file, "%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%zu,%.9f,%.9f,%.9f,%zu,%.9f,%.9f,%.9f,%zu,%.9f,%.9f,%.9f,%zu,%.9f,%.9f,%.9f,%zu,%.9f,%.9f,%.9f\n",
+        std::fprintf(file, "m,n,k,warmup,iters,pipe_chunk,baseline_ms,q3flash_ms,speedup,q3flash_wide32_ms,q3flash_wide32_speedup,q3flash_wide64_ms,q3flash_wide64_speedup,wmma_ms,wmma_speedup,wmma_reuse_ms,wmma_reuse_speedup,wmma_kstage_ms,wmma_kstage_speedup,wmma_multim_ms,wmma_multim_speedup,pipeline_ms,pipeline_speedup,checked_elems,max_abs,max_rel,rmse,wide32_checked_elems,wide32_max_abs,wide32_max_rel,wide32_rmse,wide64_checked_elems,wide64_max_abs,wide64_max_rel,wide64_rmse,wmma_checked_elems,wmma_max_abs,wmma_max_rel,wmma_rmse,wmma_reuse_checked_elems,wmma_reuse_max_abs,wmma_reuse_max_rel,wmma_reuse_rmse,wmma_kstage_checked_elems,wmma_kstage_max_abs,wmma_kstage_max_rel,wmma_kstage_rmse,wmma_multim_checked_elems,wmma_multim_max_abs,wmma_multim_max_rel,wmma_multim_rmse,pipeline_checked_elems,pipeline_max_abs,pipeline_max_rel,pipeline_rmse\n");
+        std::fprintf(file, "%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%zu,%.9f,%.9f,%.9f,%zu,%.9f,%.9f,%.9f,%zu,%.9f,%.9f,%.9f,%zu,%.9f,%.9f,%.9f,%zu,%.9f,%.9f,%.9f,%zu,%.9f,%.9f,%.9f,%zu,%.9f,%.9f,%.9f,%zu,%.9f,%.9f,%.9f\n",
             args.m, args.n, args.k, args.warmup, args.iters,
             args.pipe_chunk,
-            baseline_ms, q3flash_ms, speedup, wmma_ms, wmma_speedup,
+            baseline_ms, q3flash_ms, speedup,
+            q3flash_wide32_ms, wide32_speedup,
+            q3flash_wide64_ms, wide64_speedup,
+            wmma_ms, wmma_speedup,
             wmma_reuse_ms, wmma_reuse_speedup, wmma_kstage_ms, wmma_kstage_speedup,
+            wmma_multim_ms, wmma_multim_speedup,
             pipeline_ms, pipeline_speedup,
             stats.elems, stats.max_abs, stats.max_rel, stats.rmse,
+            wide32_stats.elems, wide32_stats.max_abs, wide32_stats.max_rel, wide32_stats.rmse,
+            wide64_stats.elems, wide64_stats.max_abs, wide64_stats.max_rel, wide64_stats.rmse,
             wmma_stats.elems, wmma_stats.max_abs, wmma_stats.max_rel, wmma_stats.rmse,
             wmma_reuse_stats.elems, wmma_reuse_stats.max_abs, wmma_reuse_stats.max_rel, wmma_reuse_stats.rmse,
             wmma_kstage_stats.elems, wmma_kstage_stats.max_abs, wmma_kstage_stats.max_rel, wmma_kstage_stats.rmse,
+            wmma_multim_stats.elems, wmma_multim_stats.max_abs, wmma_multim_stats.max_rel, wmma_multim_stats.rmse,
             pipeline_stats.elems, pipeline_stats.max_abs, pipeline_stats.max_rel, pipeline_stats.rmse);
         std::fclose(file);
     }
@@ -997,9 +1214,12 @@ int main(int argc, char ** argv) {
     HIP_CHECK(hipFree(d_b));
     HIP_CHECK(hipFree(d_baseline));
     HIP_CHECK(hipFree(d_q3flash));
+    HIP_CHECK(hipFree(d_q3flash_wide32));
+    HIP_CHECK(hipFree(d_q3flash_wide64));
     HIP_CHECK(hipFree(d_wmma));
     HIP_CHECK(hipFree(d_wmma_reuse));
     HIP_CHECK(hipFree(d_wmma_kstage));
+    HIP_CHECK(hipFree(d_wmma_multim));
     HIP_CHECK(hipFree(d_pipeline));
     ROCBLAS_CHECK(rocblas_destroy_handle(handle));
     HIP_CHECK(hipStreamDestroy(stream));

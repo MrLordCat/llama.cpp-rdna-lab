@@ -21,20 +21,21 @@ KV_NAME_TO_INDEX = {value: key for key, value in KV_INDEX_TO_NAME.items()}
 
 ACTIVE_QWEN36_27B_SERVER_PRESET = {
     "gpu_layers": 999,
-    "context": 12288,
-    "batch": 4096,
-    "ubatch": 1024,
+    "context": 131072,
+    "batch": 512,
+    "ubatch": 256,
     "threads": 8,
     "parallel": 1,
-    "kv": "f16",
+    "kv": "q4_0",
     "flash_attn": True,
+    "no_mmap": True,
     "disable_thinking": False,
     "spec_type": "None",
-    "extra_args": "--spec-type none\n-fit off",
+    "extra_args": "--spec-type none",
     "temperature": 0.6,
     "top_p": 0.95,
     "top_k": 20,
-    "notes": "Current cold-first prompt-heavy lane: ctx=12288, b=4096, ub=1024, f16 KV, no speculative decoding. Use q4_0 KV if VRAM is tight.",
+    "notes": "Active cold-first 130k quick baseline: ctx=131072, b=512, Vulkan ub=256 with --no-mmap, ROCm ub=128, q4_0 KV, real-context chars=24576, max_tokens=16, no speculative decoding. Expect residency pressure near 16 GB VRAM; capture diagnostics before speed claims.",
 }
 
 SERVER_PRESETS = {

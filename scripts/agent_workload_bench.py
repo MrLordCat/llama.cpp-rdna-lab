@@ -34,7 +34,12 @@ ROOT = Path(__file__).resolve().parents[1]
 HISTORY_DIR = ROOT / "build_logs" / "agent-workload"
 HISTORY_CSV_NAME = "BENCH_HISTORY.csv"
 HISTORY_MD_NAME = "BENCH_HISTORY.md"
-PRIMARY_MAX_CTX = 16384
+CANONICAL_BENCH_RUNS_CSV = "BENCH_RUNS.csv"
+CANONICAL_BENCH_RECENT_MD = "BENCH_RECENT.md"
+CANONICAL_BENCH_LANES_MD = "BENCH_LANES.md"
+CANONICAL_RECENT_LIMIT = 80
+PRIMARY_MAX_CTX = 131072
+PRIMARY_CTX_LABEL = "130k"
 
 KERNEL_FULL_TRACE_ENV = {
     "GGML_TRACE_FATTN_SELECTED": "1",
@@ -62,6 +67,23 @@ KERNEL_FULL_TRACE_ENV = {
     "LLAMA_UBATCH_TIMING_SYNC": "1",
 }
 
+VULKAN_ROUTE_TRACE_ENV = {
+    "GGML_VK_MATMUL_ROUTE_TRACE": "1",
+    "GGML_VK_FA_ROUTE_TRACE": "1",
+    "GGML_VK_FFN_ROUTE_TRACE": "1",
+}
+
+VULKAN_PERF_TRACE_ENV = {
+    **VULKAN_ROUTE_TRACE_ENV,
+    "GGML_VK_PERF_LOGGER": "1",
+    "GGML_VK_PERF_LOGGER_FREQUENCY": "1",
+}
+
+VULKAN_Q3_STATS_ENV = {
+    **VULKAN_ROUTE_TRACE_ENV,
+    "GGML_VK_PIPELINE_STATS": "matmul_q3_k",
+}
+
 HISTORY_FIELDS = [
     "timestamp",
     "run_id",
@@ -73,6 +95,7 @@ HISTORY_FIELDS = [
     "model",
     "is_mtp_model",
     "tasks",
+    "task_ids",
     "runs",
     "ctx",
     "batch",
@@ -87,11 +110,21 @@ HISTORY_FIELDS = [
     "parallel",
     "flash_attn",
     "max_tokens",
+    "real_context_mode",
+    "real_context_chars",
+    "real_context_safe_fill",
+    "no_v2_prime_pass",
     "temperature",
     "top_p",
     "aggregate_tps",
     "mean_task_tps",
+    "prompt_eval_tps",
+    "decode_eval_tps",
+    "prompt_eval_ms",
+    "decode_eval_ms",
     "errors",
+    "metric_scope",
+    "lane_key",
     "best_config",
     "jsonl_file",
     "csv_file",
@@ -486,6 +519,15 @@ def apply_trace_preset(env: dict[str, str], preset: str) -> None:
         return
     if preset == "kernel-full":
         env.update(KERNEL_FULL_TRACE_ENV)
+        return
+    if preset == "vulkan-routes":
+        env.update(VULKAN_ROUTE_TRACE_ENV)
+        return
+    if preset == "vulkan-perf":
+        env.update(VULKAN_PERF_TRACE_ENV)
+        return
+    if preset == "vulkan-q3-stats":
+        env.update(VULKAN_Q3_STATS_ENV)
         return
     raise ValueError(f"unknown trace preset: {preset}")
 
@@ -1338,6 +1380,200 @@ def _render_build_best_row(row: dict[str, str]) -> str:
     )
 
 
+def _history_truthy(value: Any) -> bool:
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "on"}
+
+
+def _history_float(value: Any) -> float:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _history_lane_key(row: dict[str, str]) -> str:
+    backend = str(row.get("build_backend", "") or "-").strip() or "-"
+    model = _model_display_name(row.get("model", "-"))
+    ctx = str(row.get("ctx", "") or "-").strip() or "-"
+    batch = str(row.get("batch", "") or "-").strip() or "-"
+    ubatch = str(row.get("ubatch", "") or "-").strip() or "-"
+    kv = f"{row.get('kv_k', '-') or '-'}/{row.get('kv_v', '-') or '-'}"
+    spec = str(row.get("spec_mode", "") or "-").strip() or "-"
+    reuse = "cold" if _history_truthy(row.get("no_reuse", "")) else "reuse"
+    tasks = str(row.get("tasks", "") or "-").strip() or "-"
+    task_ids = str(row.get("task_ids", "") or "").strip()
+    task_part = f"{tasks}:{task_ids}" if task_ids else tasks
+    max_tokens = str(row.get("max_tokens", "") or "-").strip() or "-"
+    real_context = str(row.get("real_context_mode", "") or "-").strip() or "-"
+    return f"{backend}|{model}|ctx{ctx}|b{batch}/ub{ubatch}|kv{kv}|spec={spec}|{reuse}|tasks={task_part}|max={max_tokens}|ctxsrc={real_context}"
+
+
+def _history_metric_scope(row: dict[str, str]) -> str:
+    mode = str(row.get("mode", "") or "").strip().lower()
+    if mode == "autotune":
+        return "autotune"
+    if _history_truthy(row.get("no_reuse", "")):
+        if _history_truthy(row.get("no_v2_prime_pass", "")):
+            return "cold-first"
+        return "cold/no-reuse"
+    return "repeated/steady"
+
+
+def _history_diag_mean(diag: dict[str, Any], key: str) -> str:
+    value = diag.get(key, {}) if isinstance(diag, dict) else {}
+    if not isinstance(value, dict):
+        return ""
+    mean = float(value.get("mean", 0.0) or 0.0)
+    return f"{mean:.4f}" if mean > 0 else ""
+
+
+def _fill_history_diagnostics(row: dict[str, str], out_dir: Path) -> None:
+    if row.get("prompt_eval_tps") and row.get("decode_eval_tps"):
+        return
+    server_log_name = str(row.get("server_log_file", "") or "").strip()
+    if not server_log_name:
+        return
+    diag = parse_server_log_diagnostics(out_dir / server_log_name)
+    if not diag.get("available"):
+        return
+    row["prompt_eval_tps"] = row.get("prompt_eval_tps") or _history_diag_mean(diag, "prompt_eval_tps")
+    row["decode_eval_tps"] = row.get("decode_eval_tps") or _history_diag_mean(diag, "decode_eval_tps")
+    row["prompt_eval_ms"] = row.get("prompt_eval_ms") or _history_diag_mean(diag, "prompt_eval_ms")
+    row["decode_eval_ms"] = row.get("decode_eval_ms") or _history_diag_mean(diag, "decode_eval_ms")
+
+
+def _normalize_history_row(row: dict[str, Any], out_dir: Path | None = None) -> dict[str, str]:
+    normalized = {k: str(row.get(k, "")) for k in HISTORY_FIELDS}
+    if not normalized["run_id"]:
+        normalized["run_id"] = _make_run_id(normalized)
+    if not normalized["jsonl_file"] and normalized["label"] and normalized["mode"] == "single-run":
+        normalized["jsonl_file"] = f"{normalized['label']}.jsonl"
+    if not normalized["csv_file"] and normalized["label"] and normalized["mode"] == "single-run":
+        normalized["csv_file"] = f"{normalized['label']}.csv"
+    if not normalized["server_log_file"] and normalized["label"]:
+        normalized["server_log_file"] = f"{normalized['label']}.server.log"
+    if out_dir is not None:
+        _fill_history_diagnostics(normalized, out_dir)
+    if not normalized["metric_scope"]:
+        normalized["metric_scope"] = _history_metric_scope(normalized)
+    if not normalized["lane_key"]:
+        normalized["lane_key"] = _history_lane_key(normalized)
+    return normalized
+
+
+def _read_history_csv(path: Path, out_dir: Path | None = None, *, enrich_diagnostics: bool = False) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, str]] = []
+    with path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(_normalize_history_row(row, out_dir=out_dir if enrich_diagnostics else None))
+    return rows
+
+
+def _dedupe_history_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    deduped: dict[str, dict[str, str]] = {}
+    order: list[str] = []
+    for row in rows:
+        key = row.get("run_id") or _make_run_id(row)
+        if key not in deduped:
+            order.append(key)
+        deduped[key] = row
+    return [deduped[key] for key in order]
+
+
+def _best_rows_by_lane(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    best: dict[str, dict[str, str]] = {}
+    for row in rows:
+        if int(float(row.get("errors", "0") or 0)) != 0:
+            continue
+        tps = _history_float(row.get("aggregate_tps", "0"))
+        if tps <= 0:
+            continue
+        lane = row.get("lane_key") or _history_lane_key(row)
+        if lane not in best or tps > _history_float(best[lane].get("aggregate_tps", "0")):
+            best[lane] = row
+    return best
+
+
+def write_canonical_bench_files(out_dir: Path, rows: list[dict[str, str]]) -> None:
+    rows = _dedupe_history_rows([_normalize_history_row(row) for row in rows])
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    runs_csv = out_dir / CANONICAL_BENCH_RUNS_CSV
+    with runs_csv.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=HISTORY_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: row.get(k, "") for k in HISTORY_FIELDS})
+
+    recent_rows = sorted(rows, key=lambda r: r.get("timestamp", ""), reverse=True)[:CANONICAL_RECENT_LIMIT]
+    recent_lines = [
+        "# Canonical Benchmark Recent Runs",
+        "",
+        "Автоматически обновляется `scripts/agent_workload_bench.py`.",
+        "Содержит последние прогоны с метриками, полезными для быстрого сравнения.",
+        "",
+        f"Limit: latest {CANONICAL_RECENT_LIMIT} rows from `{CANONICAL_BENCH_RUNS_CSV}`.",
+        "",
+        "| Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |",
+        "|---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|",
+    ]
+    for row in recent_rows:
+        recent_lines.append(
+            f"| {row.get('timestamp', '-')} | {row.get('metric_scope', '-')} | {row.get('build_backend', '-') or '-'} | "
+            f"{row.get('label', '-')} | {_model_display_name(row.get('model', '-'))} | {row.get('ctx', '-')} | "
+            f"{row.get('batch', '-')}/{row.get('ubatch', '-')} | {row.get('kv_k', '-')}/{row.get('kv_v', '-')} | "
+            f"{row.get('spec_mode', '-')} | {row.get('aggregate_tps', '-')} | {row.get('prompt_eval_tps', '-') or '-'} | "
+            f"{row.get('decode_eval_tps', '-') or '-'} | {row.get('errors', '-')} |"
+        )
+    (out_dir / CANONICAL_BENCH_RECENT_MD).write_text("\n".join(recent_lines) + "\n", encoding="utf-8")
+
+    lane_lines = [
+        "# Canonical Benchmark Best By Lane",
+        "",
+        "Автоматически обновляется `scripts/agent_workload_bench.py`.",
+        "Lane key включает backend, модель, ctx, batch/ubatch, KV, spec, reuse/task/max-token context.",
+        "",
+        "| Lane | Timestamp | Label | TPS | Prompt tok/s | Decode tok/s | Build | Artifacts |",
+        "|---|---|---|---:|---:|---:|---|---|",
+    ]
+    for lane, row in sorted(_best_rows_by_lane(rows).items(), key=lambda item: item[0].lower()):
+        artifacts = ", ".join(
+            p for p in [row.get("summary_file", ""), row.get("csv_file", ""), row.get("jsonl_file", ""), row.get("server_log_file", "")]
+            if p
+        )
+        lane_lines.append(
+            f"| {lane} | {row.get('timestamp', '-')} | {row.get('label', '-')} | {row.get('aggregate_tps', '-')} | "
+            f"{row.get('prompt_eval_tps', '-') or '-'} | {row.get('decode_eval_tps', '-') or '-'} | "
+            f"{row.get('build_name', '-') or '-'} | {artifacts or '-'} |"
+        )
+    (out_dir / CANONICAL_BENCH_LANES_MD).write_text("\n".join(lane_lines) + "\n", encoding="utf-8")
+
+    print(f"Wrote {runs_csv}")
+    print(f"Wrote {out_dir / CANONICAL_BENCH_RECENT_MD}")
+    print(f"Wrote {out_dir / CANONICAL_BENCH_LANES_MD}")
+
+
+def refresh_canonical_history(out_dir: Path) -> int:
+    candidates = [out_dir / CANONICAL_BENCH_RUNS_CSV]
+    candidates.extend(sorted(out_dir.glob("BENCH_HISTORY*.csv")))
+    rows: list[dict[str, str]] = []
+    for path in candidates:
+        rows.extend(_read_history_csv(path, out_dir=out_dir))
+    rows = _dedupe_history_rows(rows)
+    write_canonical_bench_files(out_dir, rows)
+    return len(rows)
+
+
+def append_canonical_history_entry(entry: dict[str, str], out_dir: Path) -> None:
+    existing = _read_history_csv(out_dir / CANONICAL_BENCH_RUNS_CSV)
+    existing.append(_normalize_history_row(entry, out_dir=out_dir))
+    write_canonical_bench_files(out_dir, existing)
+
+
 def write_history_md(history_md: Path, rows: list[dict[str, str]]) -> None:
     best = _best_rows_by_group(rows)
     best_by_model = _best_rows_by_model(rows)
@@ -1417,28 +1653,9 @@ def append_history_entry(
     history_md = history_dir / history_md_name
 
     rows: list[dict[str, str]] = []
-    if history_csv.exists():
-        with history_csv.open("r", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                normalized = {k: str(row.get(k, "")) for k in HISTORY_FIELDS}
-                if not normalized["run_id"]:
-                    normalized["run_id"] = _make_run_id(normalized)
-                # Keep old history useful when prior schema did not include csv_file/summary_file.
-                if not normalized["jsonl_file"] and normalized["label"] and normalized["mode"] == "single-run":
-                    normalized["jsonl_file"] = f"{normalized['label']}.jsonl"
-                if not normalized["csv_file"] and normalized["label"] and normalized["mode"] == "single-run":
-                    normalized["csv_file"] = f"{normalized['label']}.csv"
-                if not normalized["server_log_file"] and normalized["label"]:
-                    normalized["server_log_file"] = f"{normalized['label']}.server.log"
-                rows.append(normalized)
+    rows.extend(_read_history_csv(history_csv, out_dir=history_dir))
 
-    normalized_entry = {k: "" for k in HISTORY_FIELDS}
-    for key in HISTORY_FIELDS:
-        if key in entry:
-            normalized_entry[key] = str(entry[key])
-    if not normalized_entry["run_id"]:
-        normalized_entry["run_id"] = _make_run_id(normalized_entry)
+    normalized_entry = _normalize_history_row(entry, out_dir=history_dir)
     rows.append(normalized_entry)
 
     best = _best_rows_by_model(rows)
@@ -1457,6 +1674,7 @@ def append_history_entry(
     write_history_md(history_md, rows)
     print(f"Wrote {history_csv}")
     print(f"Wrote {history_md}")
+    append_canonical_history_entry(normalized_entry, history_dir)
 
 
 def cleanup_legacy_artifacts(
@@ -1660,7 +1878,7 @@ def update_model_preset_file(
 
     model_name = model_path.name
     escaped = re.escape(model_name)
-    name = f"AutoTune 32k+ {model_name}"
+    name = f"AutoTune 130k {model_name}"
     kv_map = {
         "f32": 0,
         "f16": 1,
@@ -1684,6 +1902,43 @@ def update_model_preset_file(
             f"(>= {args.autotune_min_ctx}). spec={best['spec_mode']}"
         ),
     }
+
+    extra_bits = []
+    base_server_extra = str(getattr(args, "server_extra", "") or "").strip()
+    best_extra_args = str(best.get("extra_args", "") or "").strip()
+    if base_server_extra:
+        extra_bits.append(base_server_extra)
+    if best_extra_args:
+        extra_bits.append(best_extra_args)
+
+    current_extra = " ".join(extra_bits).strip()
+    if not server_extra_has_flag(split_server_extra(current_extra), "--spec-type"):
+        spec_mode = str(best.get("spec_mode", "") or "").strip()
+        if spec_mode == "none":
+            extra_bits.append("--spec-type none")
+        elif spec_mode == "ngram-mod":
+            extra_bits.append("--spec-type ngram-mod")
+            extra_bits.append(f"--spec-ngram-mod-n-min {args.autotune_ngram_min}")
+            extra_bits.append(f"--spec-ngram-mod-n-match {args.autotune_ngram_match}")
+            extra_bits.append(f"--spec-ngram-mod-n-max {args.autotune_ngram_max}")
+        elif spec_mode == "ngram-mtp":
+            extra_bits.append("--spec-type ngram-mtp")
+            extra_bits.append(f"--spec-ngram-mod-n-min {args.autotune_ngram_min}")
+            extra_bits.append(f"--spec-ngram-mod-n-match {args.autotune_ngram_match}")
+            extra_bits.append(f"--spec-ngram-mod-n-max {args.autotune_ngram_max}")
+            extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")
+        elif spec_mode == "mtp":
+            extra_bits.append("--spec-type mtp")
+            extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")
+        elif spec_mode:
+            extra_bits.append(f"--spec-type {spec_mode}")
+
+    extra_tokens = split_server_extra(" ".join(extra_bits).strip())
+    if server_extra_has_flag(extra_tokens, "--no-mmap"):
+        preset["no_mmap"] = True
+        extra_tokens = [token for token in extra_tokens if token != "--no-mmap"]
+    if extra_tokens:
+        preset["extra_args"] = " ".join(extra_tokens)
 
     updated = False
     for idx, item in enumerate(presets):
@@ -1739,43 +1994,45 @@ def parse_args() -> argparse.Namespace:
                         help="history namespace/version, e.g. v1 (default), v2 -> BENCH_HISTORY_V2.csv/.md")
     parser.add_argument("--cleanup-legacy-artifacts", action="store_true",
                         help="cleanup old per-run benchmark artifacts in out-dir")
+    parser.add_argument("--refresh-canonical-history", action="store_true",
+                        help="rebuild BENCH_RUNS.csv, BENCH_RECENT.md, and BENCH_LANES.md from existing history CSV files")
     parser.add_argument("--cleanup-apply", action="store_true",
                         help="apply deletion for --cleanup-legacy-artifacts (default is dry-run)")
     parser.add_argument(
         "--cleanup-keep-patterns",
-        default=r"BENCH_HISTORY\.(csv|md)|BASELINE_.*|.*LOCK.*|.*autotune-summary\.(md|csv|json)|ROCM_BENCH_COMPARISON\.md",
+        default=r"BENCH_(HISTORY(_V[0-9]+)?|RUNS|RECENT|LANES)\.(csv|md)|BASELINE_.*|.*LOCK.*|.*autotune-summary\.(md|csv|json)|ROCM_BENCH_COMPARISON\.md",
         help="regex patterns (pipe-separated) for artifact names to keep during cleanup",
     )
 
     parser.add_argument("--gpu-layers", type=int, default=999)
     parser.add_argument("--parallel", type=int, default=1)
-    parser.add_argument("--ctx-size", type=int, default=12288)
-    parser.add_argument("--batch-size", type=int, default=2048)
-    parser.add_argument("--ubatch-size", type=int, default=2048)
-    parser.add_argument("--cache-type-k", default="q8_0")
-    parser.add_argument("--cache-type-v", default="q8_0")
+    parser.add_argument("--ctx-size", type=int, default=131072)
+    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--ubatch-size", type=int, default=128)
+    parser.add_argument("--cache-type-k", default="q4_0")
+    parser.add_argument("--cache-type-v", default="q4_0")
     parser.add_argument("--flash-attn", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--no-warmup", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--disable-thinking", action=argparse.BooleanOptionalAction, default=False,
                         help="disable model thinking by forcing chat-template kwargs; default keeps thinking enabled")
 
-    parser.add_argument("--max-tokens", type=int, default=160)
+    parser.add_argument("--max-tokens", type=int, default=16)
     parser.add_argument(
         "--real-context-mode",
         choices=["off", "repo-snapshot"],
-        default="off",
+        default="repo-snapshot",
         help="inject large incoming context into each task prompt",
     )
     parser.add_argument(
         "--real-context-chars",
         type=int,
-        default=0,
-        help="target character budget for injected incoming context; 0 disables injection",
+        default=24576,
+        help="target character budget for injected incoming context; 0 uses ctx-aware safe cap when repo-snapshot mode is enabled",
     )
     parser.add_argument(
         "--real-context-safe-fill",
         type=float,
-        default=0.70,
+        default=0.88,
         help="target fraction of ctx budget allocated to incoming context tokens (0..1)",
     )
     parser.add_argument(
@@ -1792,12 +2049,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--top-p", type=float, default=0.9)
-    parser.add_argument("--startup-timeout", type=float, default=300.0)
-    parser.add_argument("--request-timeout", type=float, default=240.0)
+    parser.add_argument("--startup-timeout", type=float, default=900.0)
+    parser.add_argument("--request-timeout", type=float, default=180.0)
     parser.add_argument(
         "--task-hard-timeout",
         type=float,
-        default=30.0,
+        default=45.0,
         help="abort a task request after this many seconds and terminate a server started by this script; 0 disables",
     )
     parser.add_argument(
@@ -1832,13 +2089,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--no-reuse",
+        dest="no_reuse",
         action="store_true",
-        help="disable llama-server prompt cache and context checkpoints for cold prompt-heavy measurements",
+        default=True,
+        help="disable llama-server prompt cache and context checkpoints for cold prompt-heavy measurements (default for the active 130k lane)",
+    )
+    parser.add_argument(
+        "--reuse",
+        dest="no_reuse",
+        action="store_false",
+        help="allow llama-server prompt cache/checkpoints for explicit repeated-session probes",
     )
     parser.add_argument(
         "--allow-ctx-above-16k",
         action="store_true",
-        help="allow ctx > 16384 for archival experiments; default policy keeps primary lane at <=16k",
+        help="legacy compatibility flag; the active policy now allows ctx up to 131072 by default",
     )
     parser.add_argument("--server-seed", type=int, default=42,
                         help="llama-server seed for deterministic decoding; set to -1 to disable fixed seed")
@@ -1862,18 +2127,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--trace-preset",
-        choices=["none", "kernel-full"],
+        choices=["none", "kernel-full", "vulkan-routes", "vulkan-perf", "vulkan-q3-stats"],
         default="none",
         help="enable a built-in trace environment preset for the started server",
     )
 
     parser.add_argument("--autotune", action="store_true", help="run parameter sweep")
-    parser.add_argument("--autotune-min-ctx", type=int, default=12288, help="minimum context for autotune")
-    parser.add_argument("--autotune-ctx-values", default="12288,14336,16384", help="comma-separated ctx values")
-    parser.add_argument("--autotune-batch-values", default="1024,2048,4096", help="comma-separated batch values")
-    parser.add_argument("--autotune-ubatch-values", default="1024,2048,4096", help="comma-separated ubatch values")
-    parser.add_argument("--autotune-kv-values", default="q8_0,q4_0", help="comma-separated kv cache values")
-    parser.add_argument("--autotune-spec-values", default="none,ngram-mod", help="comma-separated speculative modes")
+    parser.add_argument("--autotune-min-ctx", type=int, default=131072, help="minimum context for autotune")
+    parser.add_argument("--autotune-ctx-values", default="131072", help="comma-separated ctx values")
+    parser.add_argument("--autotune-batch-values", default="256,512,768,1024", help="comma-separated batch values")
+    parser.add_argument("--autotune-ubatch-values", default="64,128,256", help="comma-separated ubatch values")
+    parser.add_argument("--autotune-kv-values", default="q4_0", help="comma-separated kv cache values")
+    parser.add_argument("--autotune-spec-values", default="none", help="comma-separated speculative modes")
     parser.add_argument(
         "--autotune-extra-presets",
         default="base",
@@ -1992,8 +2257,8 @@ def main() -> int:
     args = parse_args()
     if args.ctx_size > PRIMARY_MAX_CTX and not args.allow_ctx_above_16k:
         print(
-            "ERROR: ctx-size > 16384 is disabled by current benchmark policy. "
-            "Use --allow-ctx-above-16k for archival runs."
+            f"ERROR: ctx-size > {PRIMARY_MAX_CTX} is above the active {PRIMARY_CTX_LABEL} benchmark policy. "
+            "Use --allow-ctx-above-16k only for explicit over-130k exploratory runs."
         )
         return 4
 
@@ -2005,7 +2270,15 @@ def main() -> int:
     args.build_id = build_meta["build_id"]
 
     if args.cleanup_legacy_artifacts:
-        protected_history = {HISTORY_CSV_NAME, HISTORY_MD_NAME, history_csv_name, history_md_name}
+        protected_history = {
+            HISTORY_CSV_NAME,
+            HISTORY_MD_NAME,
+            history_csv_name,
+            history_md_name,
+            CANONICAL_BENCH_RUNS_CSV,
+            CANONICAL_BENCH_RECENT_MD,
+            CANONICAL_BENCH_LANES_MD,
+        }
         count, items = cleanup_legacy_artifacts(
             out_dir,
             apply=args.cleanup_apply,
@@ -2018,6 +2291,11 @@ def main() -> int:
             print(f"  - {name}")
         if count > 200:
             print(f"  ... and {count - 200} more")
+        return 0
+
+    if args.refresh_canonical_history:
+        count = refresh_canonical_history(out_dir)
+        print(f"Canonical history refreshed from {count} row(s)")
         return 0
 
     if args.tasks in ("v2", "v2-mini", "v2-review"):
@@ -2097,6 +2375,7 @@ def main() -> int:
         diagnostics_artifacts = {"diagnostics_json": "", "diagnostics_md": ""}
         if args.write_diagnostics:
             diagnostics_artifacts = write_diagnostics_report(out_dir, args.label, args, rows)
+        server_diag = parse_server_log_diagnostics(out_dir / f"{args.label}.server.log")
 
         aggregate_tps = aggregate_completion_tps(rows)
         tps_values = [float(r["completion_tps_wall"]) for r in rows if r.get("completion_tps_wall") is not None]
@@ -2113,6 +2392,7 @@ def main() -> int:
                 "model": model_path,
                 "is_mtp_model": 1 if is_mtp_model_name(model_path) else 0,
                 "tasks": args.tasks,
+                "task_ids": args.task_ids,
                 "runs": args.runs,
                 "ctx": args.ctx_size,
                 "batch": args.batch_size,
@@ -2127,10 +2407,18 @@ def main() -> int:
                 "parallel": args.parallel,
                 "flash_attn": "on" if args.flash_attn else "off",
                 "max_tokens": args.max_tokens,
+                "real_context_mode": args.real_context_mode,
+                "real_context_chars": args.real_context_chars,
+                "real_context_safe_fill": args.real_context_safe_fill,
+                "no_v2_prime_pass": 0 if args.v2_prime_pass else 1,
                 "temperature": args.temperature,
                 "top_p": args.top_p,
                 "aggregate_tps": f"{aggregate_tps:.4f}",
                 "mean_task_tps": f"{statistics.mean(tps_values):.4f}" if tps_values else "0.0000",
+                "prompt_eval_tps": _history_diag_mean(server_diag, "prompt_eval_tps"),
+                "decode_eval_tps": _history_diag_mean(server_diag, "decode_eval_tps"),
+                "prompt_eval_ms": _history_diag_mean(server_diag, "prompt_eval_ms"),
+                "decode_eval_ms": _history_diag_mean(server_diag, "decode_eval_ms"),
                 "errors": sum(1 for row in rows if row.get("error")),
                 "best_config": "",
                 "jsonl_file": artifacts.get("jsonl_file", ""),
@@ -2149,8 +2437,8 @@ def main() -> int:
         over_limit = [v for v in ctx_values if v > PRIMARY_MAX_CTX]
         if over_limit or args.autotune_min_ctx > PRIMARY_MAX_CTX:
             print(
-                "ERROR: autotune ctx values above 16384 are disabled by current benchmark policy. "
-                "Use --allow-ctx-above-16k for archival runs."
+                f"ERROR: autotune ctx values above {PRIMARY_MAX_CTX} are above the active {PRIMARY_CTX_LABEL} policy. "
+                "Use --allow-ctx-above-16k only for explicit over-130k exploratory runs."
             )
             return 4
     batch_values = parse_int_csv(args.autotune_batch_values)
@@ -2327,6 +2615,8 @@ def main() -> int:
                                 extra_bits.append(f"--spec-ngram-mod-n-min {args.autotune_ngram_min}")
                                 extra_bits.append(f"--spec-ngram-mod-n-match {args.autotune_ngram_match}")
                                 extra_bits.append(f"--spec-ngram-mod-n-max {args.autotune_ngram_max}")
+                            elif spec_mode in {"none", ""}:
+                                extra_bits.append("--spec-type none")
                             elif spec_mode == "ngram-mtp":
                                 extra_bits.append("--spec-type ngram-mtp")
                                 extra_bits.append(f"--spec-ngram-mod-n-min {args.autotune_ngram_min}")
@@ -2531,6 +2821,7 @@ def main() -> int:
             "model": model_path,
             "is_mtp_model": 1 if is_mtp_model_name(model_path) else 0,
             "tasks": args.tasks,
+            "task_ids": args.task_ids,
             "runs": args.runs,
             "ctx": args.autotune_min_ctx,
             "batch": "sweep",
@@ -2545,6 +2836,10 @@ def main() -> int:
             "parallel": args.parallel,
             "flash_attn": "on" if args.flash_attn else "off",
             "max_tokens": args.max_tokens,
+            "real_context_mode": args.real_context_mode,
+            "real_context_chars": args.real_context_chars,
+            "real_context_safe_fill": args.real_context_safe_fill,
+            "no_v2_prime_pass": 0 if args.v2_prime_pass else 1,
             "temperature": args.temperature,
             "top_p": args.top_p,
             "aggregate_tps": f"{aggregate_tps:.4f}",

@@ -1,6 +1,19 @@
 # Prompt/Decode Speed - Trace Checklist (Current Focus)
 
-Archive status: performance R&D is paused in `docs/research/PERFORMANCE_ARCHIVE_2026-05-18.md`. This checklist is historical unless C01 is deliberately reopened through the archive resume protocol.
+Archive status: performance R&D is paused in `docs/research/archive/2026-05-fast-probe-cycle/PERFORMANCE_ARCHIVE_2026-05-18.md`. This checklist is historical unless C01 is deliberately reopened through the archive resume protocol.
+
+## Current P002 Pause Checkpoint (2026-05-27)
+
+- User paused acceleration work to switch to public `llama-bench` comparison.
+- Active paused branch: P002 130k dense Qwen3.6 Vulkan route, documented in
+  `docs/research/major-topology/README.md`.
+- Current accepted baseline remains D012 Vulkan opt-in stack:
+  `2.0013 TPS`, prompt `1053.1067 tok/s`, decode `42.7233 tok/s`.
+- Latest closure: D034 residency recheck is diagnostic only; best partial
+  backend-host KV recovery `1.9826 TPS` is below D012 and decode-regressed.
+- Code state: D034 prototypes reverted; D005/D012 kept code remains.
+- Resume rule: rerun a same-lane D012 control first, then continue only with a
+  true Q3_K body/compressed-dot route or a decode-preserving lifetime design.
 
 ## Baseline profile (current route)
 

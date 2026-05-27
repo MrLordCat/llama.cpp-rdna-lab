@@ -1,6 +1,6 @@
 # Project Profile
 
-Дата профиля: 2026-05-07.
+Дата профиля: 2026-05-26.
 
 ## Назначение форка
 
@@ -8,10 +8,10 @@
 
 ## Текущий performance target
 
-- Активный target: `Qwen3.6-27B-Q3_K_S` на ROCm в prompt-heavy no-reuse workload со стартовой точкой ниже `16k`.
-- Текущий reference стартовой точки: `ctx=12288` с входящим prompt около `~8k` токенов и throughput `~9.24 TPS`.
-- Цель на текущую фазу: `25-27 TPS` на стартовой точке (`ctx=12288` или ближайший контекст, где модель остаётся в prompt-heavy режиме).
-- `128k` и старый `64k` lane остаются только архивными reference-профилями и не являются активной целью.
+- Активный target: dense `Qwen3.6-27B-Q3_K_S` на длинном контексте `ctx=131072` (~130k), cold-first, repo-snapshot real context, no-reuse/no-prime, thinking enabled.
+- Первое обязательное действие новой фазы: получить свежие baseline для Vulkan и ROCm на одинаковом 130k lane, затем сравнивать любые ускорения только с ними.
+- Ключевое ограничение: RX 9070 XT имеет 16 GB VRAM, поэтому при `ctx=131072` значимая часть KV/context/working set может уходить в system RAM. RAM-spill/residency/PCIe поведение теперь является частью целевой задачи.
+- Старые `ctx=12288`, `32768`, `65536` и sentinel `128k` результаты остаются историческими reference; особенно старые sentinel128 с tiny prompt не считать 130k baseline.
 
 ## Машина
 
@@ -93,25 +93,34 @@
 
 ## Практичные defaults для RX 9070 XT
 
-Для Qwen3.6 text active research profile (rocWMMA enabled, 2026-05-10):
+Для Qwen3.6 dense 27B active 130k research profile (2026-05-26):
 
 ```text
-backend=ROCm (HIP SDK 7.1 + rocWMMA 2.0.0 + RDNA4 MMA configs)
+backend=Vulkan and ROCm, measured separately
 -ngl 999
 --flash-attn on
 -np 1
--c 12288 (current стартовая точка prompt-heavy lane)
--b 4096
--ub 512 (current working 64k corridor for Qwen3.6-27B speed research)
---cache-type-k q4_0 (slightly better than q8_0)
+-c 131072
+-b 512
+-ub 256    # Vulkan current best; use 128 for ROCm until rechecked
+--cache-type-k q4_0
 --cache-type-v q4_0
---spec-type none (current baseline for prompt-heavy no-reuse lane)
+--spec-type none
+--no-reuse
+--no-v2-prime-pass
+--real-context-mode repo-snapshot
+--real-context-chars 24576
+--max-tokens 16
+--tasks quick --task-ids triage_diff
+request timeout >= 180s, startup timeout >= 900s, task hard timeout >= 120s
 
 Optional experimental:
 --spec-type mtp --spec-draft-n-max 3 (MTP support already in codebase, awaiting MTP-enabled GGUF)
 ```
 
-Для 32k prompt-heavy ROCm/Qwen3.6-27B lane после native ubatch cliff fix (2026-05-12):
+На 130k нельзя интерпретировать slowdown как простой kernel regression без проверки residency: сохранять diagnostics/server log, startup messages, mmap/no-mmap settings, RAM pressure and prompt/decode split. Текущий короткий baseline: Vulkan `1.7898 TPS` r3 на `b512/ub256` после D005 split-K с `--no-mmap`; ROCm `1.5200 TPS` r3 на `b512/ub128`, оба с `real-context-chars=24576`.
+
+Для исторического 32k prompt-heavy ROCm/Qwen3.6-27B lane после native ubatch cliff fix (2026-05-12):
 
 ```text
 backend=ROCm (RX 9070 XT / gfx1201)
@@ -126,7 +135,7 @@ no reuse / no v2 prime for cold-first claims
 
 Важно: `-ub 1024` теперь должен идти нативно (`PP reserve outputs 1024 -> 1`), без cap до `900`. Если cliff возвращается, сначала проверять ROCm compute vbuffer chunking и negative control `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1`.
 
-Если не хватает VRAM:
+Если нужна короткая sanity-проверка вместо active benchmark:
 
 ```text
 -c 16384

@@ -45,6 +45,13 @@
 /tags
 /.build/
 /build*
+!/build_logs/
+/build_logs/*
+!/build_logs/agent-workload/
+/build_logs/agent-workload/*
+!/build_logs/agent-workload/BENCH_RUNS.csv
+!/build_logs/agent-workload/BENCH_RECENT.md
+!/build_logs/agent-workload/BENCH_LANES.md
 /release
 /debug
 /libllama.so

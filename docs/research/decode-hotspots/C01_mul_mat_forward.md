@@ -16,7 +16,7 @@ Current closeout note (2026-05-18):
 
 Archive note (2026-05-18):
 
-- Performance R&D is now archived in `docs/research/PERFORMANCE_ARCHIVE_2026-05-18.md`.
+- Performance R&D is now archived in `docs/research/archive/2026-05-fast-probe-cycle/PERFORMANCE_ARCHIVE_2026-05-18.md`.
 - Do not resume C01 from this file alone; use the archive resume protocol first.
 
 

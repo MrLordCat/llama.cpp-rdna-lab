@@ -5,6 +5,13 @@ void main() {
         return;
     }
 
+    if (p.mode == 2 && p.ne00 == p.ne20 &&
+        p.nb01 == p.ne00 && p.nb02 == p.ne00 * p.ne01 && p.nb03 == p.ne00 * p.ne01 * p.ne02 &&
+        p.nb11 == p.ne20 && p.nb12 == p.ne20 * p.ne11 && p.nb13 == p.ne20 * p.ne11 * p.ne12) {
+        data_d[i] = D_TYPE(op(float(data_a[i]), float(data_b[i])));
+        return;
+    }
+
     const uint row = i / p.ne20;
     const uint col = i - row * p.ne20;
 

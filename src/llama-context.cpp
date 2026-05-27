@@ -2418,6 +2418,7 @@ llm_graph_cb llama_context::graph_get_cb() const {
                 }
             }
         }
+
     };
 }
 

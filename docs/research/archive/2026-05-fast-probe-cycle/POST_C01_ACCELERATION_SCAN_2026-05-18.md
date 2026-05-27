@@ -1,6 +1,6 @@
 # Post-C01 Acceleration Scan (2026-05-18)
 
-Archive update: after E053-E059 and external RDNA4 research, the current acceleration cycle is archived in `docs/research/PERFORMANCE_ARCHIVE_2026-05-18.md`. The remaining targets below are parked leads, not an active work queue.
+Archive update: after E053-E059 and external RDNA4 research, the current acceleration cycle is archived in `docs/research/archive/2026-05-fast-probe-cycle/PERFORMANCE_ARCHIVE_2026-05-18.md`. The remaining targets below are parked leads, not an active work queue.
 
 ## Scope
 

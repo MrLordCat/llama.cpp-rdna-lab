@@ -3,10 +3,11 @@
 ## Current Status
 
 The 2026-05-18 acceleration cycle remains archived in
-`PERFORMANCE_ARCHIVE_2026-05-18.md`, but a new post-E264 major-topology research
-mode is open for dense `Qwen3.6-27B-Q3_K_S` on RDNA4/Vulkan.
+`archive/2026-05-fast-probe-cycle/PERFORMANCE_ARCHIVE_2026-05-18.md`, but a new
+post-E264 major-topology research mode is open for dense
+`Qwen3.6-27B-Q3_K_S` at `ctx=131072` (~130k) on RDNA4/Vulkan and ROCm.
 
-Start with `MAJOR_TOPOLOGY_WORKFLOW.md` before opening new backend prototypes.
+Start with `CONTEXT_130K_WORKFLOW.md`, then `MAJOR_TOPOLOGY_WORKFLOW.md` before opening new backend prototypes.
 The short version: the quick E### loop has exhausted nearby no-code, f16,
 helper, and simple layout probes. New work must begin as a design/topology note
 under `major-topology/`, with route evidence and a ceiling model before code.
@@ -17,12 +18,14 @@ For VS Code agent setup, fixed tasks, tool budgets, and benchmark workflow, star
 
 ## Goal
 
-Find reproducible changes that can improve wall TPS in the active prompt-heavy lane, not only synthetic microbenchmarks.
+Find reproducible changes that can improve wall TPS in the active 130k long-context lane, not only synthetic microbenchmarks.
 
 Primary lane (project policy):
 
-- context below 16k (reference: ctx=12288)
-- prompt-heavy, no reuse
+- `ctx=131072` (~130k), dense `Qwen3.6-27B-Q3_K_S`
+- cold-first, repo-snapshot real context, no reuse, no v2 prime pass
+- thinking enabled, q4_0/q4_0 KV, Vulkan and ROCm baselines measured separately
+- expected RAM-spill/residency pressure on 16 GB VRAM; diagnostics are part of the result
 - reproducible runs and artifact logging
 
 ## Benchmark Baseline Policy
@@ -42,16 +45,18 @@ Primary lane (project policy):
 ## Structure
 
 - HYPOTHESES.md: prioritized candidate ideas and why they might work
+- CONTEXT_130K_WORKFLOW.md: active 130k lane contract and baseline commands
 - PERF_WORKSPACE.md: VS Code agent/tool/task workflow for reproducible TPS work
+- EXPERIMENTS_DIGEST.md: compact historical base grouped by route family
+- BENCH_HISTORY_POLICY.md: canonical benchmark history file contract
 - MAJOR_TOPOLOGY_WORKFLOW.md: post-E264 workflow for large architecture changes
 - major-topology/: program board and design notes before source prototypes
-- PERFORMANCE_ARCHIVE_2026-05-18.md: final pause/archive summary for the current cycle
 - EXPERIMENT_TEMPLATE.md: standard template for each experiment
 - RESULTS_LOG.md: compact ledger of executed experiments
-- R0_post_ngram_flashattention.md: first deep-dive note with concrete discovery directions
 - DFLASH_IMPLEMENTATION_PREP.md: staged DFlash integration plan for this fork
 - experiments/: per-experiment notes (E001, E002, ...)
 - dflash/: source vendor manifest and DFlash-specific planning artifacts
+- archive/: historical plans and audits no longer used as active entry points
 
 DFlash planning directory currently includes:
 
@@ -131,8 +136,10 @@ python scripts/research/spec_effective_acceptance.py \
 ## Recent Status
 
 - E059 external RDNA4 research completed: `experiments/E059_external_rdna4_llama_research.md`.
-- E249-E264 close the latest ROCm/Vulkan tail of cold-lane gates.
-- E257 is the current dense Vulkan 12k baseline: `7.0319 TPS` r3 at
+- E249-E264 close the latest archived ROCm/Vulkan tail of short-context cold-lane gates.
+- Current active lane is 130k: `ctx=131072,b=512,q4_0/q4_0,spec=none`,
+  `real-context-chars=24576`, `max_tokens=16`; current Vulkan best is D005 `ub=256` with `--no-mmap` at `1.7898 TPS` r3, while ROCm is `ub=128` at `1.5200 TPS` r3.
+- E257 is the archived dense Vulkan 12k reference: `7.0319 TPS` r3 at
   `ctx=12288,b=7168,ub=1024,q4_0/q4_0,spec=none`.
 - E258/E259/E260/E264 reject nearby Vulkan Q3_K transfer routes; do not continue
   low/medium-risk local probing by inertia.
@@ -166,7 +173,8 @@ Latest root-cause lesson:
 ## If You Are New To Research
 
 1. Pick one hypothesis from HYPOTHESES.md.
-2. Fill EXPERIMENT_TEMPLATE.md.
-3. Run formula_sanity_checks.py and required_acceptance.py first.
-4. Only after that run microbench and lane benchmark.
-5. Record the result in RESULTS_LOG.md and add one experiment note.
+2. Read EXPERIMENTS_DIGEST.md to avoid repeating closed route families.
+3. Fill EXPERIMENT_TEMPLATE.md, or a major-topology design note when the change is broad.
+4. Run formula_sanity_checks.py and required_acceptance.py first when applicable.
+5. Only after that run microbench and lane benchmark.
+6. Record the result in RESULTS_LOG.md, refresh EXPERIMENTS_DIGEST.md, and add one experiment note.

@@ -31,12 +31,215 @@ build_logs\agent-workload\<label>.server.log
 
 По умолчанию runner выбирает свободный порт сам. Для уже запущенного сервера укажи `--no-start --port 8080`.
 
-Для коротких агентных ответов runner по умолчанию добавляет `--chat-template-kwargs {"enable_thinking":false,"preserve_thinking":false}`. Это можно отключить флагом `--no-disable-thinking`.
+Для активной 130k performance lane runner по умолчанию держит thinking включённым. Для явного отключения thinking укажи `--disable-thinking`.
 
-## ROCm 10 TPS cold-target route gates (2026-05-25)
+## Active 130k baseline plan (2026-05-27)
 
-Current user target: reach `10 TPS` on a cold/no-reuse run. Two high-ceiling
-routes were gated after E248:
+Current global performance target is dense `Qwen3.6-27B-Q3_K_S` at
+`ctx=131072` (~130k), not the older 12k cold route. Vulkan reached the old
+`2 TPS` target with D012; the active target is now Vulkan `2.4 TPS` on the same
+lane. ROCm is paused at the D013-D027 rejection fence unless a stronger
+compressed-GEMM/FFN dataflow proof appears. The measured same-lane baselines are:
+
+- `ctx=131072`, `batch=512`, `q4_0/q4_0`, FlashAttention on. Vulkan current best uses `ubatch=256`; ROCm current baseline uses `ubatch=128`.
+- `quick:triage_diff`, `max_tokens=16`, repo-snapshot real context with `--real-context-chars 24576`.
+- cold-first: `--no-reuse --no-v2-prime-pass`, thinking enabled, `--spec-type none`.
+- Vulkan starting route uses `GGML_VK_ALLOW_GRAPHICS_QUEUE=1` and `--no-mmap`; ROCm uses the native HIP 7.1 `gfx1201` path.
+
+Measured short-baseline results:
+
+| Backend | Label | Wall | TPS | Prompt tok/s | Decode tok/s | Prompt tokens |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Vulkan | `p002-vulkan-ub256-confirm3` | `~9.85s` | `1.6249` | `843.60` | `42.34` | `7947` |
+| Vulkan current check | `p002-vulkan-ub256-current-r1` | `9.61s` | `1.6654` | `866.47` | `43.42` | `7970` |
+| Vulkan current default | `d005-vulkan-default-splitk-confirm3` | `~8.94s` | `1.7898` | `934.81` | `43.59` | `7970` |
+| Vulkan current opt-in stack | `d012-vulkan-130k-glu-fast-q3quad-bn256-lowtile3-confirm3` | `~7.94s` | `2.0013` | `1053.11` | `42.72` | `7970` |
+| Vulkan old control | `p002-vulkan-ub128-confirm3` | `~10.23s` | `1.5635` | `811.02` | `42.41` | `7947` |
+| ROCm | `p002-rocm-ub128-current-confirm3` | `~10.52s` | `1.5200` | `801.71` | `29.07` | `7970` |
+| ROCm old control | `scout-rocm130k-quick-c24k-b512-ub128-r1` | `11.44s` | `1.3984` | `725.21` | `31.44` | `7904` |
+
+Vulkan `b512/ub256` was confirmed with 3 cold/no-reuse/no-prime runs and improves
+the same-lane control by about `+3.93%` (`1.5635 -> 1.6249 TPS`) through prompt
+eval (`811.02 -> 843.60 tok/s`) while decode stays tied. Rejected as default
+starting shapes: Vulkan `b512/ub64` (`0.9724 TPS`), `b512/ub192` (`1.4011 TPS`),
+`b512/ub320` (`0.3277 TPS`), `b512/ub384` (`0.3550 TPS`), `b512/ub512`
+(`0.3040 TPS`), `b1024/ub128` (`1.5703 TPS`), `threads16` (`1.5697 TPS`), old
+Vulkan `b2048/ub512` (`70.92s` on the 32k-char scout), and ROCm `b1024/ub256`
+timeout on the 32k-char scout. ROCm `b512/ub128` was rechecked on the current
+tree and recentered to `1.5200 TPS`; do not treat the older `1.3984 TPS` scout
+as the active comparator.
+
+The signed-nibble Q3_K layout route is not kept as runtime code: all-Q3 failed
+the 130k fit check, while a narrow `hot5` runtime prototype completed but
+regressed (`1.5186 TPS` vs `1.5798 TPS` same-session control). Keep only the
+static scout/tooling artifact unless a new zero-overhead layout mechanism appears.
+
+D002 ROCm stream-K threshold forcing is also rejected as a speed route:
+`GGML_MMQ_RDNA4_STREAM_K_MIN_NE11=1` moved traced Q3_K MMQ time only about
+`-3.17%` and did not convert to wall gain (`1.5196 TPS` candidate versus
+`1.5206 TPS` neighbor control). A single ROCm `ubatch=256` recheck on
+`build-rocm-vec` failed before readiness with
+`ggml-cuda.cu:1017 GGML_ASSERT(size % sizeof(block_q3_K) == 0)`, so ROCm stays
+at `ubatch=128` until the padded-storage/view/copy correctness path is handled.
+Disabling padded Q3_K storage avoided that assert but timed out on the first
+`max_tokens=1` request after only `6144 / 7970` prompt tokens, so raw-storage
+`ub256` is also rejected as a speed escape.
+
+D003 Vulkan larger-ubatch recovery is not a speed route. `ub320` and `ub384`
+fall into a prompt cliff under the active `GGML_VK_ALLOW_GRAPHICS_QUEUE=1`
+Vulkan lane. Existing-route fixes failed: forcing Q3_K `n>256` to the medium
+pipeline and splitting logical `n>256` into `n<=256` dispatches both regressed
+`ub384`. `GGML_VK_ENABLE_MEMORY_PRIORITY=1` recovered `ub320` prompt speed
+(`174.21 -> 808.73 tok/s` in the max-token-1 prompt gate), but the full
+`max_tokens=16` run reached only `1.5562 TPS`, below current `ub256`
+`1.6654 TPS`; the same knob on `ub256` tied at `1.6646 TPS`. Keep memory
+priority as diagnostic/recovery evidence only.
+
+D004 corrected the Vulkan route ceiling helper for the active `n=256` trace.
+The dense FFN route is now the clearest 2 TPS target: gate/up Q3_K is `34.91%`
+of parsed prompt time, down Q3_K is `24.61%`, dense FFN gate/up+down is
+`59.52%`, and all Q3_K MUL_MAT is `80.50%`. Reaching `2 TPS` requires about
+`1.391x` local speedup on dense FFN, or `1.262x` local speedup on all Q3_K.
+The old gate/up-only dual-A fusion idea remains too weak by itself: at
+`17408x256x5120` it projects only `1.114x` wall from the model ceiling. Next
+Vulkan source work should target a broader FFN/Q3_K route, not a simple
+gate/up-only shader.
+
+D005 is the first kept 130k code speedup. Vulkan now defaults Q3_K FFN-down
+`m=5120,n>=128,k=17408` to split-K 3. Point timing moved dense FFN down
+`2188.84 -> 1626.31 ms` (`-25.7%`) and parsed total `8893.65 -> 8245.34 ms`.
+The paired wall confirmation improved `1.6679 -> 1.7898 TPS` (`+7.31%`) and
+prompt eval `867.95 -> 934.81 tok/s`; decode stayed tied. `GGML_VK_Q3K_FFN_DOWN_SPLIT_K=0`
+or `1` disables the new default, and values `2..8` force a split count for
+future probes. Split-K 4 is rejected (`28214.79 ms` parsed trace), so do not
+increase the split count blindly.
+
+D006 checked the current Vulkan 130k residency/output branch after the GPU power
+limit was restored to `+10%`. A fresh D005 default/full-output run
+`d006-vulkan-130k-d005-default-powerplus-r1` still hit the residency cliff
+(`0.3252 TPS`, prompt `163.67 tok/s`, decode `41.65 tok/s`, `11434.19 MiB`
+Vulkan model buffer, `2` graph splits). Moving the output layer out of
+device-local VRAM recovered prompt eval but cut decode roughly in half:
+
+| Variant | Label | B/UB | TPS | Prompt tok/s | Decode tok/s | Decision |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| CPU output layer | `d006-vulkan-130k-no-output-ub512-powerplus-r1` | `512/512` | `1.7551` | `955.88` | `22.13` | diagnostic only |
+| Host output, GPU device | `d006-vulkan-130k-output-host-gpudev-ub512-r1` | `512/512` | `1.7769` | `968.32` | `22.28` | diagnostic only |
+
+Do not promote `LLAMA_NO_OUTPUT_OFFLOAD` or `LLAMA_OUTPUT_HOST_GPU_DEV` as
+launch defaults. They show that the output layer participates in the 130k
+residency problem, but they are not a 2 TPS path and are not better than the
+D005 r3 baseline. Further Vulkan work should follow the major-topology workflow
+with a source/topology design note; do not continue ubatch, queue, or output
+placement sweeps as the next step.
+
+D007 moved the Vulkan work back to source-level topology gates. A default-off
+`GGML_VK_FFN_ROUTE_TRACE=1` diagnostic now checks strict and non-adjacent
+whole-FFN block coverage in addition to the historical gate/up+GLU surface. The
+130k trace `d007-vulkan-130k-ffn-scanblock-trace-r1` showed `64` Q3_K
+gate/up+GLU candidates and `63` prefill candidates. Strict adjacent
+`MUL_MAT,MUL_MAT,GLU,MUL_MAT` matching only covers `16` prefill blocks; the
+other `47` have an unrelated next-op `VIEW` (`src=NONE`, not a GLU view). The
+dependency scan recovers `scan_blocks=64`, with the recovered prefill blocks at
+`gap=3` for `16` layers and `gap=4` for `47` layers. This is not a speed claim.
+It blocks a naive adjacent whole-FFN shader but keeps a non-adjacent whole-FFN
+route alive for the next ceiling/design/correctness gate.
+
+D012 is the current target-clearing Vulkan 130k checkpoint. It stacks D005 with
+the env-gated `bn256` large-matmul variant, low-tile split-K `3`, a separate
+compile-time Q3_K quad-dequant pipeline, and the default GLU contiguous split
+fast path. The confirmed command uses `GGML_VK_ALLOW_GRAPHICS_QUEUE=1`,
+`GGML_VK_AMD_LARGE_MATMUL_VARIANT=bn256`, `GGML_VK_QK_LOW_TILE_SPLIT_K=3`,
+`GGML_VK_Q3K_QUAD_DEQUANT=1`, plus `--no-mmap`. The r3 confirmation
+`d012-vulkan-130k-glu-fast-q3quad-bn256-lowtile3-confirm3` reached `2.0013 TPS`,
+prompt `1053.1067 tok/s`, decode `42.7233 tok/s`, errors `0`, improving the
+D005 anchor by `+11.82%` wall TPS. Treat this as an opt-in measured stack, not a
+plain default Vulkan claim, until q3quad/bn256/lowtile promotion hardening is
+done. Rejected neighbors: `m=10240,k=5120` q3quad inclusion (`0.3783 TPS` full
+cliff), vector-return q3quad (`1.9476 TPS`), `lowtile2` r3 (`1.9926 TPS`),
+`lowtile4` (`1.9877 TPS`), down split-K `6` (`1.9943 TPS`), disabling MMVQ
+(`1.9805 TPS` with decode collapse), and running without graphics queue
+(`~0.37 TPS` class cliff).
+
+D028 retargets Vulkan from the solved `2 TPS` goal to `2.4 TPS` on the same D012
+lane. The target gate calculates `1.1992x` required wall speedup over D012 and
+about `1277.25` prompt tok/s if decode and overhead stay flat. Gate/up-only FFN
+is too small for the new target (`1.908x` local needed), and down-only is worse
+(`3.077x`). The next Vulkan work should target whole dense FFN (`1.387x` local)
+or all-Q3 prefill (`1.260x` local), starting from
+`docs/research/major-topology/D028_P002_VULKAN_2P4_TARGET_GATE.md`.
+
+D029 closes the obvious whole-FFN follow-up before code. D007's non-adjacent
+whole-block graph surface is real, but activation-only fusion can save at most
+`2.09 GiB` of hidden write/read traffic across the active prefill graph while the
+target needs about `1166 ms` dense-FFN point savings. Naive full streaming is
+also blocked: recomputing gate/up per `64` down rows has a `222214 ms` lower
+bound, while hidden-tile partial output accumulation adds `83.67 GiB` of output
+traffic. Reopen whole-FFN only if it reduces Q3_K matmul work itself; otherwise
+move to a broader all-Q3 body/layout proof.
+
+D030 performs that all-Q3 proof and closes the nearby old families. The D012
+all-Q3 point is `5691.67 ms`; the `2.4 TPS` target needs it around `4517.10 ms`,
+or `1174.57 ms` faster. D008->D009 q3quad saved only `184.81 ms` and is already
+in the baseline. Scale-only helpers were negative, signed-nibble-only storage
+lost at runtime (`1.5186` vs `1.5798 TPS`) and failed broad 130k fit, Q8_1/int-dot
+was strongly negative, and expanded layouts are too large for 16 GB. The next
+candidate needs a new Q3_K compute body or layout-body pair, not another
+storage-only/tile-neighbor probe.
+
+D031 checks compact Q3S/signed-nibble plus predecoded-scale layout-body work and
+rejects it as the next `2.4 TPS` route. The old S001 static scout reduced op
+count only `1491 -> 1375`; even an optimistic linear all-Q3 upper bound is about
+`442.87 ms`, far below the required `1174.57 ms`. The runtime signed-nibble hot5
+probe was negative (`1.5186` vs `1.5798 TPS`), and D026 residency cost is still
+`+2.980 GiB` all-Q3 raw or `+4.206 GiB` aligned. D032 must be a true Q3_K compute
+body or compressed-dot route that reduces matrix work itself.
+
+D032 quantifies Q3+FA stacking. The D010 full-trace FA point is only `693.77 ms`,
+so FA-only cannot carry `2.4 TPS`: even FA `1.5x` leaves `943.31 ms` Q3 savings
+needed (`1.1987x` local), and FA `2.0x` leaves `827.68 ms` Q3 savings needed
+(`1.1702x` local). A stack is plausible only after a true Q3_K body reaches
+about `1.18-1.20x` local in point/static evidence.
+
+D033 rejects a q3-octa/`LOAD_VEC_A=8` successor before build. The prebuild gate
+matched E087 corrected Q3_K `LOAD_VEC_A=8`, which measured `-1.50%` (`947.44`
+pp7488 r1 vs E086 `961.82`), and the `+20%` estimate still projected below the
+target-closing gate. Wider per-invocation dequant is not the next body route.
+
+D034 rechecked the current 130k Vulkan slow pocket. Fresh D012 full-server
+controls in this session fell to `~0.36-0.39 TPS`, but direct `llama-bench`
+remained fast (`pp4096 1066.39 tok/s`) and the same full-server shape at
+`ctx=65536` reached `1.9212 TPS`, so the blocker is 130k server residency/
+paging rather than raw Q3_K shader selection. Memory-priority/pageable probes
+did not recover. Backend-host KV placement recovered prompt but paid decode back:
+the best diagnostic stack, `d034-vulkan-130k-kvhost14-fulltile-lowtile2-ub512-r1`,
+reached `1.9826 TPS`, prompt `1078.72 tok/s`, decode `36.98 tok/s`, still below
+D012 `2.0013 TPS` and far below the `2.4 TPS` target. A Q3_K aligned full-tile
+store prototype improved direct `pp4096` only `1066.39 -> 1085.72 tok/s` and was
+below the prebuild gate. D034 code prototypes were reverted; keep the artifacts
+as residency evidence only and do not use the `0.37 TPS` slow-pocket controls as
+a baseline for speed claims.
+
+GUI/autotune note: the incomplete run
+`gui-autotune-Qwen3.6-27B-Q3_K_S-20260526-161645` is not a valid `ub192` vs
+`ub256` comparison for D005 because it launched with `mmap = true`. Its
+`b512/ub256` config fell to `188.11` prompt tok/s, while the D005 lane uses
+`--no-mmap` and confirms `934.81` prompt tok/s. GUI 130k Vulkan bench/autotune
+now injects `--no-mmap` so the UI follows the active lane contract. A
+post-fix GUI-equivalent check `d005-gui-nommap-check-r1` returned to the fast
+path (`1.6857 TPS`, `881.26` prompt tok/s, `40.86` decode tok/s, `7983` prompt
+tokens), so the prior `ub256` slowdown was a residency/mmap mismatch.
+
+At 130k, RX 9070 XT 16 GB is expected to spill KV/context/working set into
+system RAM. Baseline notes must preserve diagnostics/server logs and report
+startup/residency behavior alongside TPS. Old `ctx=12288`, `32768`, `65536`, and
+sentinel `131072` rows are historical references only; especially tiny-prompt
+sentinel128 runs are not valid 130k real-context baselines.
+
+## Archived ROCm 10 TPS cold-target route gates (2026-05-25)
+
+Historical short-context target: reach `10 TPS` on a cold/no-reuse 12k run. Two
+high-ceiling routes were gated after E248:
 
 Practical result: E255 confirms `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf` clears the
 cold 12k target with the same no-reuse benchmark contract: r3 aggregate
@@ -53,12 +256,11 @@ Qwen3.6 profile, not an apples-to-apples speedup of the dense 27B-Q3 model.
 | E252 f32-output fast16 hipBLAS compute | Opt-in `HIPBLAS_COMPUTE_32F_FAST_16F` reached first Q3_K GEMM then failed with `CUBLAS_STATUS_NOT_SUPPORTED`; prototype knob reverted | reject compute-contract route |
 | E253 E248 reuse + `batch=8192` stack | `batch=8192` control was only `7.2756 TPS`; src1 reuse collapsed to `2.4701 TPS`, and guarded revalidation still collapsed on both `8192` and `6144` | reject stack; do not recommend src1 reuse opt-in |
 
-Conclusion: current `hipBLASLt` grouping, local Q3/Q4 MTP detours, and the
+Conclusion: archived `hipBLASLt` grouping, local Q3/Q4 MTP detours, and the
 f32-output fast16 hipBLAS compute contract are not valid paths to the `10 TPS`
-cold target. E253 also removes E248 src1 reuse from practical launch/autotune
-recommendations. The next cold-first route must change the Q3_K large-prefill
-body more deeply or use a lighter compatible speculative model that does not add
-prompt-time overhead.
+cold 12k target. E253 also removes E248 src1 reuse from practical launch/autotune
+recommendations. These results are historical references for the current 130k
+work, not current baselines.
 
 ## ROCm 12k cold-first gate after ngram GUI profile (2026-05-25)
 
@@ -1046,17 +1248,17 @@ python scripts\agent_workload_bench.py `
 | `sentinel128-qwen36q3` | `26.5825 TPS` | `26.0672 TPS` | Короткий sentinel, не годится как главный real-world сигнал |
 | `repo-real-64k128k` | `2.3128 TPS` | `0.8167 TPS` | Реальный repo snapshot prompt, корректный long-prefill сигнал |
 
-Текущий вывод:
+Исторический вывод на 2026-05-10:
 
 - не делать новые 128k прогоны по умолчанию;
 - не использовать 64k как стартовую «главную» точку оптимизации;
-- активный performance lane: prompt-heavy стартовая точка ниже `16k`.
+- тогдашний performance lane: prompt-heavy стартовая точка ниже `16k`.
 
-### New Primary Goal (2026-05-10)
+### Archived Primary Goal (2026-05-10)
 
-- Текущая стартовая точка: `ctx=12288` в prompt-heavy no-reuse режиме.
-- Текущий уровень: `~9.24 TPS`.
-- Цель: `25-27 TPS` на стартовой точке.
+- Тогдашняя стартовая точка: `ctx=12288` в prompt-heavy no-reuse режиме.
+- Тогдашний уровень: `~9.24 TPS`.
+- Историческая цель: `25-27 TPS` на стартовой точке.
 - Способ достижения: поиск и верификация изменений в кодовой базе llama.cpp/ggml (prefill/runtime path), не только параметрический тюнинг запуска.
 
 ### Agent Workload: prompt-heavy mode (incoming context fix)
@@ -1068,11 +1270,11 @@ python scripts\agent_workload_bench.py `
 - добавлен режим `--real-context-mode repo-snapshot`;
 - в каждый task prompt инжектится большой `repo snapshot` префикс;
 - добавлен ctx-aware safe cap, чтобы избегать `HTTP 400` от переполнения контекста:
-  - `--real-context-safe-fill` (default `0.70`),
+  - `--real-context-safe-fill` (historical default `0.70`; 130k fallback when explicit chars are set to `0`),
   - `--real-context-reserve-tokens` (default `2048`),
   - `--real-context-chars-per-token` (default `3.4`).
 
-Рекомендуемый запуск для реального входящего контекста без prompt-cache reuse:
+Исторический запуск для реального входящего контекста без prompt-cache reuse:
 
 ```powershell
 python scripts\agent_workload_bench.py `
@@ -1098,13 +1300,13 @@ python scripts\agent_workload_bench.py `
 
 Вывод: на реалистичном большом входящем prompt'е стена начинается намного раньше, чем показывал старый decode-heavy режим.
 
-Это теперь главный reference-коридор для всех новых speed claims.
+Это исторический reference-коридор. На 2026-05-26 активные speed claims требуют fresh 130k Vulkan/ROCm baseline.
 
 ### Archived: 64K real-scenario single-ctx sanity (`repo_snapshot_context_bench.py`)
 
-Эта секция сохранена как исторический reference. Активные speed claims теперь принимаются только по prompt-heavy стартовому lane `<16k`.
+Эта секция сохранена как исторический reference. Активные speed claims теперь принимаются только по 130k lane или явно помеченным отдельным lanes.
 
-Скрипт `scripts/repo_snapshot_context_bench.py` обновлён для нового workflow и теперь принимает одиночный `--ctx-values 65536`, без обязательного парного `128k` прогона.
+Скрипт `scripts/repo_snapshot_context_bench.py` теперь по умолчанию смотрит на одиночный 130k профиль; `64k`/`128k` значения нужно передавать явно как исторические probes.
 
 Первый 64k-only A/B на `build-rocm-compare`, `b=2048`, `ub=512`, `q4_0/q4_0`, prompt `62610` токенов, completion `120` токенов:
 
@@ -1200,7 +1402,7 @@ python scripts\large_context_realworld_bench.py `
 
 ### Archived Research Target: 120K Large Context Optimization
 
-Текущий baseline на `ctx=131072, ubatch=512, q4_0 KV, ngram-mod`:
+Архивный baseline на `ctx=131072, ubatch=512, q4_0 KV, ngram-mod`:
 - **Prefix (PP)**: ~215 TPS
 - **Generation (TG)**: ~8.5 TPS ← **узкое место**
 - **Spec acceptance rate**: ~18% (низко)
