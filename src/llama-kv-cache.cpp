@@ -5,6 +5,10 @@
 #include "llama-model.h"
 #include "llama-context.h"
 
+#ifdef GGML_USE_VULKAN
+#include "ggml-vulkan.h"
+#endif
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -108,6 +112,26 @@ llama_kv_cache::llama_kv_cache(
     if (const char * env = getenv("LLAMA_VK_KV_HOST_LAYERS")) {
         vk_host_kv_layers = atoi(env);
     }
+    bool vk_host_kv_direct = false;
+    bool vk_host_kv_direct_set = false;
+    if (const char * env = getenv("LLAMA_VK_KV_HOST_DIRECT")) {
+        vk_host_kv_direct = atoi(env) != 0;
+        vk_host_kv_direct_set = true;
+    }
+    bool vk_host_kv_from_first = false;
+    if (const char * env = getenv("LLAMA_VK_KV_HOST_POSITION")) {
+        vk_host_kv_from_first = strcmp(env, "first") == 0;
+    }
+    int vk_host_kv_mask = 3;
+    if (const char * env = getenv("LLAMA_VK_KV_HOST_MODE")) {
+        if (strcmp(env, "k") == 0) {
+            vk_host_kv_mask = 1;
+        } else if (strcmp(env, "v") == 0) {
+            vk_host_kv_mask = 2;
+        } else if (strcmp(env, "none") == 0) {
+            vk_host_kv_mask = 0;
+        }
+    }
 
     const bool auto_vk_host_kv =
         offload &&
@@ -120,7 +144,10 @@ llama_kv_cache::llama_kv_cache(
         type_v == GGML_TYPE_Q4_0 &&
         getenv("LLAMA_DISABLE_VK_KV_HOST_AUTO") == nullptr;
     if (auto_vk_host_kv) {
-        vk_host_kv_layers = 4;
+        vk_host_kv_layers = 3;
+        if (!vk_host_kv_direct_set) {
+            vk_host_kv_direct = true;
+        }
     }
     if (vk_host_kv_layers < 0) {
         vk_host_kv_layers = 0;
@@ -128,12 +155,14 @@ llama_kv_cache::llama_kv_cache(
     if (vk_host_kv_layers > 0 && (uint32_t) vk_host_kv_layers > n_layer_kv_filtered) {
         vk_host_kv_layers = (int) n_layer_kv_filtered;
     }
-    const uint32_t vk_host_kv_first = n_layer_kv_filtered > (uint32_t) vk_host_kv_layers ? n_layer_kv_filtered - (uint32_t) vk_host_kv_layers : 0;
+    const uint32_t vk_host_kv_first = vk_host_kv_from_first ? 0 : n_layer_kv_filtered > (uint32_t) vk_host_kv_layers ? n_layer_kv_filtered - (uint32_t) vk_host_kv_layers : 0;
+    const uint32_t vk_host_kv_last = vk_host_kv_first + (uint32_t) vk_host_kv_layers;
     uint32_t kv_layer_idx = 0;
 
-    if (vk_host_kv_layers > 0) {
-        LLAMA_LOG_INFO("%s: Vulkan host-KV residency guard enabled for last %d/%u KV layers%s\n", __func__,
-                vk_host_kv_layers, n_layer_kv_filtered, auto_vk_host_kv ? " (auto)" : "");
+    if (vk_host_kv_layers > 0 && vk_host_kv_mask != 0) {
+        LLAMA_LOG_INFO("%s: Vulkan host-KV residency guard enabled for %s %d/%u KV layers, mode=%s%s%s\n", __func__,
+                vk_host_kv_from_first ? "first" : "last", vk_host_kv_layers, n_layer_kv_filtered,
+            vk_host_kv_mask == 1 ? "k" : vk_host_kv_mask == 2 ? "v" : "kv", vk_host_kv_direct ? ", direct" : "", auto_vk_host_kv ? " (auto)" : "");
     }
 
     // define a comparator for the buft -> ctx map to ensure that the order is well-defined:
@@ -224,43 +253,65 @@ llama_kv_cache::llama_kv_cache(
         const uint32_t n_embd_k_gqa =            hparams.n_embd_k_gqa(il);
         const uint32_t n_embd_v_gqa = !v_trans ? hparams.n_embd_v_gqa(il) : hparams.n_embd_v_gqa_max();
 
-        const char * dev_name = "CPU";
+        const bool has_k = true;
+        const bool has_v = !is_mla;
 
-        ggml_backend_buffer_type_t buft = ggml_backend_cpu_buffer_type();
+        const char * dev_name_k = "CPU";
+        const char * dev_name_v = "CPU";
+
+        ggml_backend_buffer_type_t buft_k = ggml_backend_cpu_buffer_type();
+        ggml_backend_buffer_type_t buft_v = ggml_backend_cpu_buffer_type();
 
         if (offload) {
             auto * dev = model.dev_layer(il);
-            buft = ggml_backend_dev_buffer_type(dev);
+            buft_k = ggml_backend_dev_buffer_type(dev);
+            buft_v = buft_k;
 
-            dev_name = ggml_backend_dev_name(dev);
+            dev_name_k = ggml_backend_dev_name(dev);
+            dev_name_v = dev_name_k;
 
             const bool use_vk_host_buft =
                 vk_host_kv_layers > 0 &&
+                vk_host_kv_mask != 0 &&
                 kv_layer_idx >= vk_host_kv_first &&
-                strncmp(dev_name, "Vulkan", 6) == 0;
+                kv_layer_idx < vk_host_kv_last &&
+                strncmp(dev_name_k, "Vulkan", 6) == 0;
             if (use_vk_host_buft) {
                 auto * host_buft = ggml_backend_dev_host_buffer_type(dev);
+#ifdef GGML_USE_VULKAN
+                if (vk_host_kv_direct) {
+                    host_buft = ggml_backend_vk_host_direct_buffer_type();
+                }
+#endif
                 if (host_buft) {
-                    buft = host_buft;
-                    dev_name = ggml_backend_buft_name(host_buft);
+                    if (vk_host_kv_mask & 1) {
+                        buft_k = host_buft;
+                        dev_name_k = ggml_backend_buft_name(host_buft);
+                    }
+                    if (vk_host_kv_mask & 2) {
+                        buft_v = host_buft;
+                        dev_name_v = ggml_backend_buft_name(host_buft);
+                    }
                 }
             }
         }
 
         kv_layer_idx++;
 
-        LLAMA_LOG_DEBUG("%s: layer %3d: dev = %s\n", __func__, il, dev_name);
+        if (buft_k == buft_v) {
+            LLAMA_LOG_DEBUG("%s: layer %3d: dev = %s\n", __func__, il, dev_name_k);
+        } else {
+            LLAMA_LOG_DEBUG("%s: layer %3d: K dev = %s, V dev = %s\n", __func__, il, dev_name_k, dev_name_v);
+        }
 
-        ggml_context * ctx = ctx_for_buft(buft);
-        if (!ctx) {
+        ggml_context * ctx_k = ctx_for_buft(buft_k);
+        ggml_context * ctx_v = has_v ? ctx_for_buft(buft_v) : ctx_k;
+        if (!ctx_k || !ctx_v) {
             throw std::runtime_error("failed to create ggml context for kv cache");
         }
 
-        const bool has_k = true;
-        const bool has_v = !is_mla;
-
-        ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
-        ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
+        ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx_k, type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
+        ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx_v, type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
 
         has_k && ggml_format_name(k, "cache_k_l%d", il);
         has_v && ggml_format_name(v, "cache_v_l%d", il);
@@ -269,8 +320,8 @@ llama_kv_cache::llama_kv_cache(
         std::vector<ggml_tensor *> v_stream;
 
         for (uint32_t s = 0; s < n_stream; ++s) {
-            k_stream.push_back(has_k ? ggml_view_2d(ctx, k, n_embd_k_gqa, kv_size, k->nb[1], s*k->nb[2]) : nullptr);
-            v_stream.push_back(has_v ? ggml_view_2d(ctx, v, n_embd_v_gqa, kv_size, v->nb[1], s*v->nb[2]) : nullptr);
+            k_stream.push_back(has_k ? ggml_view_2d(ctx_k, k, n_embd_k_gqa, kv_size, k->nb[1], s*k->nb[2]) : nullptr);
+            v_stream.push_back(has_v ? ggml_view_2d(ctx_v, v, n_embd_v_gqa, kv_size, v->nb[1], s*v->nb[2]) : nullptr);
         }
 
         map_layer_ids[il] = layers.size();

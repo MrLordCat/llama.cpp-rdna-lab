@@ -6836,10 +6836,11 @@ static vk_subbuffer ggml_vk_tensor_subbuffer(
 
     vk_buffer buffer = nullptr;
     size_t offset = 0;
-    if (ctx->device->uma) {
+    if (ctx->device->uma || ggml_backend_buffer_is_host(tensor->buffer)) {
         ggml_vk_host_get(ctx->device, tensor->data, buffer, offset);
     }
     if (!buffer) {
+        GGML_ASSERT(!ggml_backend_buffer_is_host(tensor->buffer));
         auto buf_ctx = (ggml_backend_vk_buffer_context *)tensor->buffer->context;
         buffer = buf_ctx->dev_buffer;
         offset = vk_tensor_view_offset(tensor);
@@ -13500,17 +13501,37 @@ static bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgr
             if (unsynced_nodes.size() == 0) {
                 return false;
             }
-            auto n_base = vk_tensor_view_offset(node);
-            auto n_size = ggml_vk_device_size(node);
-            ggml_backend_vk_buffer_context * a_buf_ctx = (ggml_backend_vk_buffer_context *)node->buffer->context;
-            vk_buffer a_buf = a_buf_ctx->dev_buffer;
-            for (auto &other : unsynced_nodes) {
-                ggml_backend_vk_buffer_context * o_buf_ctx = (ggml_backend_vk_buffer_context *)other->buffer->context;
-                vk_buffer o_buf = o_buf_ctx->dev_buffer;
-                if (a_buf == o_buf) {
-                    auto o_base = vk_tensor_view_offset(other);
-                    auto o_size = ggml_vk_device_size(other);
+            auto tensor_storage = [&](const ggml_tensor * tensor, vk_buffer & buffer, size_t & base, size_t & size) {
+                buffer = nullptr;
+                base = 0;
+                size = ggml_vk_device_size(tensor);
 
+                if (ggml_backend_buffer_is_host(tensor->buffer)) {
+                    ggml_vk_host_get(ctx->device, tensor->data, buffer, base);
+                    return;
+                }
+
+                ggml_backend_vk_buffer_context * buf_ctx = (ggml_backend_vk_buffer_context *)tensor->buffer->context;
+                buffer = buf_ctx->dev_buffer;
+                base = vk_tensor_view_offset(tensor);
+            };
+
+            size_t n_base = 0;
+            size_t n_size = 0;
+            vk_buffer a_buf = nullptr;
+            tensor_storage(node, a_buf, n_base, n_size);
+            if (!a_buf) {
+                return true;
+            }
+            for (auto &other : unsynced_nodes) {
+                size_t o_base = 0;
+                size_t o_size = 0;
+                vk_buffer o_buf = nullptr;
+                tensor_storage(other, o_buf, o_base, o_size);
+                if (!o_buf) {
+                    return true;
+                }
+                if (a_buf == o_buf) {
                     if ((o_base <= n_base && n_base < o_base + o_size) ||
                         (n_base <= o_base && o_base < n_base + n_size)) {
                         return true;
@@ -14314,6 +14335,12 @@ static const char * ggml_backend_vk_host_buffer_type_name(ggml_backend_buffer_ty
     UNUSED(buft);
 }
 
+static const char * ggml_backend_vk_host_direct_buffer_type_name(ggml_backend_buffer_type_t buft) {
+    return GGML_VK_NAME "_Host_Direct";
+
+    UNUSED(buft);
+}
+
 static const char * ggml_backend_vk_host_buffer_name(ggml_backend_buffer_t buffer) {
     return GGML_VK_NAME "_Host";
 
@@ -14380,6 +14407,26 @@ ggml_backend_buffer_type_t ggml_backend_vk_host_buffer_type() {
     ggml_vk_get_device(0);
 
     return &ggml_backend_vk_buffer_type_host;
+}
+
+ggml_backend_buffer_type_t ggml_backend_vk_host_direct_buffer_type() {
+    static struct ggml_backend_buffer_type ggml_backend_vk_buffer_type_host_direct = {
+        /* .iface    = */ {
+            /* .get_name         = */ ggml_backend_vk_host_direct_buffer_type_name,
+            /* .alloc_buffer     = */ ggml_backend_vk_host_buffer_type_alloc_buffer,
+            /* .get_alignment    = */ ggml_backend_vk_host_buffer_type_get_alignment,
+            /* .get_max_size     = */ ggml_backend_vk_host_buffer_type_get_max_size,
+            /* .get_alloc_size   = */ ggml_backend_cpu_buffer_type()->iface.get_alloc_size,
+            /* .is_host          = */ ggml_backend_cpu_buffer_type()->iface.is_host,
+        },
+        /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_vk_reg(), 0),
+        /* .context  = */ nullptr,
+    };
+
+    ggml_vk_instance_init();
+    ggml_vk_get_device(0);
+
+    return &ggml_backend_vk_buffer_type_host_direct;
 }
 
 
@@ -16852,6 +16899,9 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
 }
 
 static bool ggml_backend_vk_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
+    if (buft->iface.get_name == ggml_backend_vk_host_direct_buffer_type_name) {
+        return true;
+    }
     if (buft->iface.get_name != ggml_backend_vk_buffer_type_name) {
         return false;
     }

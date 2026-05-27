@@ -55,6 +55,7 @@ Measured short-baseline and recovery results:
 | Vulkan current default | `d005-vulkan-default-splitk-confirm3` | `~8.94s` | `1.7898` | `934.81` | `43.59` | `7970` |
 | Vulkan current opt-in stack | `d012-vulkan-130k-glu-fast-q3quad-bn256-lowtile3-confirm3` | `~7.94s` | `2.0013` | `1053.11` | `42.72` | `7970` |
 | Vulkan default guard recovery | `vscode-vulkan130k-defaultguard-b512-ub256-r2` | `~8.54s` | `1.8736` | `1014.61` | `37.59` | `8189` |
+| Vulkan direct-KV default recovery | `d036-vulkan130k-default-directkv-last3-b512-ub256-r3` | `~8.24s` | `1.9410` | `1049.28` | `40.20` | `8189` |
 | Vulkan old control | `p002-vulkan-ub128-confirm3` | `~10.23s` | `1.5635` | `811.02` | `42.41` | `7947` |
 | ROCm | `p002-rocm-ub128-current-confirm3` | `~10.52s` | `1.5200` | `801.71` | `29.07` | `7970` |
 | ROCm old control | `scout-rocm130k-quick-c24k-b512-ub128-r1` | `11.44s` | `1.3984` | `725.21` | `31.44` | `7904` |
@@ -68,7 +69,11 @@ starting shapes: Vulkan `b512/ub64` (`0.9724 TPS`), `b512/ub192` (`1.4011 TPS`),
 Vulkan `b2048/ub512` (`70.92s` on the 32k-char scout), and ROCm `b1024/ub256`
 timeout on the 32k-char scout. ROCm `b512/ub128` was rechecked on the current
 tree and recentered to `1.5200 TPS`; do not treat the older `1.3984 TPS` scout
-as the active comparator.
+as the active comparator. D036 is the current guarded default-stability state for
+the Vulkan 130k lane: it uses a narrow Qwen35-like direct pinned host-KV guard
+(`Vulkan_Host_Direct` last `3/16` KV layers) and confirmed decode above
+`40 tok/s`, but it remains below the accepted D012 speed baseline, so D012 stays
+the speed comparator.
 
 The signed-nibble Q3_K layout route is not kept as runtime code: all-Q3 failed
 the 130k fit check, while a narrow `hot5` runtime prototype completed but

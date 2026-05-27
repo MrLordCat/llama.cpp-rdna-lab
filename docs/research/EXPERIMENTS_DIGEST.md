@@ -31,10 +31,11 @@ This is the compact historical base for performance work. `RESULTS_LOG.md` remai
 
 ## Compact Experiment Ledger
 
-Rows parsed from `docs/research/RESULTS_LOG.md`: 290.
+Rows parsed from `docs/research/RESULTS_LOG.md`: 291.
 
 | Date | ID | Short name | Delta | Decision | Artifacts |
 | --- | --- | --- | --- | --- | --- |
+| 2026-05-27 | D036 | Vulkan direct host-KV decode recovery | `+3.60%` wall vs D035 and decode restored above `40 tok/s`; still `-3.01%` wall vs acce... | Keep as default-stability/decode recovery: auto Qwen35-like 130k Vulkan guard now uses last `3/16` direct pinned host-KV layers. Do not call this a new speed baseline; D012 remains comparator and next speed route stil... | docs/research/major-topology/D036_P002_VULKAN_DIRECT_HOST_KV_DECODE_RECOVERY.md, build_logs/agent-workload/d036-vulkan130k-default-directkv-last3-b512-ub256-... |
 | 2026-05-27 | D035 | Vulkan D012 default guard hardening | recovery `+423%` vs fresh slow pocket; still `-6.38%` vs accepted D012 r3 and decode be... | Keep guarded source defaults for AMD `bn256`, Q3_K quad dequant, Q3 low-tile split-K, and the narrow Qwen35-like Vulkan host-KV residency guard. Treat this as default-stability hardening, not a new speed baseline; run... | docs/research/major-topology/D035_P002_VULKAN_D012_DEFAULT_GUARD_HARDENING.md, build_logs/agent-workload/vscode-vulkan130k-defaultguard-b512-ub256-r2.diagnos... |
 | 2026-05-27 | D034 | Vulkan 130k residency recheck and KV-host recovery probes | no accepted gain vs D012; best recovery still below baseline and target | Close D034 as residency diagnostic and revert code prototypes. Do not compare future candidates against the `0.37 TPS` slow-pocket controls. Backend-host KV proves a VRAM threshold but pays decode back; full-tile Q3 s... | docs/research/major-topology/D034_P002_VULKAN_130K_RESIDENCY_RECHECK.md, build_logs/agent-workload/d034-vulkan-130k-kvhost14-fulltile-lowtile2-ub512-r1.diagn... |
 | 2026-05-27 | D033 | Vulkan 130k q3-octa prebuild gate | prebuild gate rejects before shader build | Reject q3-octa/`LOAD_VEC_A=8` as D033 route. It is too close to the measured negative E087 family and does not clear the target-closing gate; do not spend shader build/server A/B time unless a new topology changes mor... | docs/research/major-topology/D033_P002_VULKAN_Q3_OCTA_PREBUILD_GATE.md, build_logs/agent-workload/d033-vulkan-q3-octa-prebuild-gate.md |
