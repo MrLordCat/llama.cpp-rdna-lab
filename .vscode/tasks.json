@@ -168,6 +168,18 @@
             "problemMatcher": []
         },
         {
+            "label": "bench: vulkan q3 130k big prompt baseline",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-lc",
+                "unset HSA_OVERRIDE_GFX_VERSION GGML_TRACE_FATTN_SELECTED GGML_TRACE_FATTN_TIMING GGML_TRACE_FATTN_TIMING_SYNC GGML_TRACE_FATTN_TIMING_PRE_SYNC GGML_TRACE_CUBLAS_SPLIT_TIMING GGML_TRACE_CUBLAS_Q3K_ROUTE GGML_TRACE_MMVQ_TIMING GGML_TRACE_MMVQ_RESOURCES GGML_VK_PIPELINE_STATS GGML_VK_FA_ROUTE_TRACE GGML_VK_FFN_ROUTE_TRACE GGML_CUDA_FORCE_MMQ_RUNTIME; PATH=\"/c/Strawberry/c/bin:$PATH\" GGML_VK_ALLOW_GRAPHICS_QUEUE=1 python scripts/agent_workload_bench.py --server-bin build-vulkan/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S.gguf --label vscode-vulkan130k-big-c152k-b512-ub256-r1 --ctx-size 131072 --batch-size 512 --ubatch-size 256 --gpu-layers 999 --cache-type-k q4_0 --cache-type-v q4_0 --flash-attn --parallel 1 --max-tokens 16 --tasks quick --task-ids triage_diff --real-context-mode repo-snapshot --real-context-chars 152000 --no-disable-thinking --reuse --no-v2-prime-pass --runs 1 --request-timeout 900 --startup-timeout 900 --task-hard-timeout 900 --background-server-policy fail --server-extra \"--spec-type none --no-mmap\" --write-diagnostics"
+            ],
+            "dependsOn": ["bench: check no llama-server"],
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
             "label": "bench: rocm q3 130k baseline",
             "type": "shell",
             "command": "bash",

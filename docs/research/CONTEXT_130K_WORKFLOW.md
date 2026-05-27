@@ -2,24 +2,33 @@
 
 This is the active dense Qwen performance lane as of 2026-05-27.
 
+Important correction: `ctx=131072` only sets capacity. It does not mean the
+benchmark actually filled the prompt close to 130k. The D012/D005 quick rows
+below used only about `8k` prompt tokens, so they are valid route/config smoke
+and regression checks, but they are not sufficient as the practical long-prompt
+baseline for live agent work.
+
 ## Lane Contract
 
 - Model: `models/Qwen3.6-27B-Q3_K_S.gguf`
 - Context: `ctx=131072` (~130k)
 - Backend baselines: Vulkan and ROCm, measured separately and sequentially
-- Workload: `quick`, `triage_diff`, `max_tokens=16`
-- Real context: `--real-context-mode repo-snapshot --real-context-chars 24576` (current snapshot: `23531` chars, `7904` prompt tokens)
+- Quick smoke workload: `quick`, `triage_diff`, `max_tokens=16`
+- Quick smoke real context: `--real-context-mode repo-snapshot --real-context-chars 24576` (current snapshot: `23531` chars, `7904` prompt tokens)
+- Headline practical workload: same `ctx=131072`, but with a real large prompt around `57k-62k` prompt tokens (`--real-context-chars≈152000` in the repo-snapshot harness, or equivalent live GUI/API requests)
 - Cache/reuse: cold-first only, `--no-reuse --no-v2-prime-pass`
 - Thinking: enabled, `--no-disable-thinking`
 - KV: `q4_0/q4_0`
 - Starting shape: `batch=512`; Vulkan achieved best `ubatch=256`, ROCm current baseline `ubatch=128`
 - Speculation: off, `--spec-type none`
 - Vulkan residency knob: `--no-mmap` is part of the active D005/D012 lane; `mmap=true` can fall into a severe 130k prefill slow path.
-- Active target: Vulkan `2.4 TPS` on the D012 lane. D012 solved the previous
-	`2 TPS` target; ROCm is paused at the D027 rejection fence until a stronger
-	compressed-GEMM/FFN dataflow idea appears.
+- Active target: move the headline from quick-smoke TPS to the real-big-prompt
+	lane. D012 solved the previous quick-smoke `2 TPS` target, but optimization
+	work now must report the large-prompt prompt-eval/decode split. ROCm is paused
+	at the D027 rejection fence until a stronger compressed-GEMM/FFN dataflow idea
+	appears.
 
-## Current Baseline
+## Quick Smoke Baseline
 
 Measured 2026-05-26 on dense `Qwen3.6-27B-Q3_K_S`, `ctx=131072`, q4_0/q4_0,
 cold/no-reuse/no-prime, thinking on:
@@ -33,9 +42,13 @@ cold/no-reuse/no-prime, thinking on:
 | ROCm | `p002-rocm-ub128-current-confirm3` | `512/128` | `~10.52s` | `1.5200` | `801.71` | `29.07` | `7970` |
 | ROCm old control | `scout-rocm130k-quick-c24k-b512-ub128-r1` | `512/128` | `11.44s` | `1.3984` | `725.21` | `31.44` | `7904` |
 
-Shape evidence: Vulkan `b512/ub256` is now validated on the actual 24k-char
-130k quick lane. D005 keeps split-K 3 for the guarded Q3_K FFN-down shape, and
-D012 reaches the 2 TPS target with the q3quad/GLU opt-in stack.
+These rows validate the command shape and route at 130k capacity, but the prompt
+payload is only about `8k` tokens. They should not be quoted as the real
+large-prompt user-experience baseline.
+
+Shape evidence: Vulkan `b512/ub256` is validated on the 24k-char 130k quick
+smoke lane. D005 keeps split-K 3 for the guarded Q3_K FFN-down shape, and D012
+reaches the 2 TPS quick target with the q3quad/GLU opt-in stack.
 The next Vulkan target is `2.4 TPS`, which D028 models as `1.1992x` required
 wall speedup over D012 and about `1277 tok/s` prompt eval if decode and overhead
 stay flat. A gate/up-only FFN route is below the new bar (`1.908x` local needed);
@@ -140,6 +153,26 @@ ROCm pause note: do not continue ROCm by default unless the user reopens it or a
 new design first clears the D002/D013-D027 fence. The active work now returns to
 Vulkan with D012 as baseline and D028 as the `2.4 TPS` target gate.
 
+## Real-Big-Prompt Lane
+
+The practical lane is now a large prompt at `ctx=131072`, not just a large
+context window. Use this lane for user-visible speed claims and optimization
+decisions:
+
+- prompt scale: about `57k-62k` prompt tokens;
+- harness target: `--real-context-mode repo-snapshot --real-context-chars 152000`;
+- live GUI/API target: requests whose server log reports `task.n_tokens` or
+	`prompt_tokens` around `60k`;
+- expected current symptom under reduced GPU power limit: prompt eval can be
+	around `~200 tok/s`, and decode can fall to roughly `~15 tok/s`; treat up to
+	about `10%` baseline loss from the power limit as normal when comparing runs;
+- record whether prompt cache/checkpoints are enabled. They are a practical
+	session feature, but first-request and cold/no-reuse claims must be labeled
+	separately.
+
+Do not compare a candidate measured on the `8k` quick smoke lane against a
+`60k` prompt run. They stress different residency and RAM/PCIe behavior.
+
 ## RAM-Spill Rule
 
 At `ctx=131072`, RX 9070 XT 16 GB should not be assumed VRAM-resident. A large
@@ -158,17 +191,20 @@ Every 130k run should preserve diagnostics that answer:
 
 Use VS Code tasks first:
 
-- `bench: vulkan q3 130k baseline`
+- `bench: vulkan q3 130k big prompt baseline` for the practical headline lane
+- `bench: vulkan q3 130k baseline` for quick route/config smoke only
 - `bench: rocm q3 130k baseline`
 
 Run them one at a time. Do not run Vulkan and ROCm 130k baselines in parallel.
-Both tasks check for an existing `llama-server`, disable reuse/prime, keep the
-run in the 10-20 second window, and write diagnostics.
+The quick tasks check for an existing `llama-server`, keep the run short, and
+write diagnostics. The big-prompt task is intentionally slower and should be
+used for headline prompt/decode claims.
 
 ## Claim Policy
 
-- New 130k speed claims compare against the same-backend quick baseline above unless explicitly labeled as a heavier full-fill/residency run.
+- New practical 130k speed claims compare against a same-backend real-big-prompt baseline. Quick-smoke results are route/regression evidence only unless explicitly labeled as such.
 - Compare candidates only against the matching backend baseline with the same ctx, batch, ubatch, KV, task, max-token budget, real-context settings, reuse state, and thinking mode.
+- Also match or disclose GPU power-limit state. During the current lowered power-limit period, about `10%` lower speed is acceptable baseline drift.
 - Old `ctx=12288`, `32768`, `65536`, and sentinel `131072` rows are historical references. Tiny-prompt sentinel128 runs are not valid 130k real-context baselines.
 - If a candidate changes residency knobs such as mmap, cache RAM, allocator chunking, or queue selection, report startup/residency diagnostics with the TPS result.
 - Output-layer placement changes must also report decode eval separately; prompt recovery alone is not a speed claim on this lane.
