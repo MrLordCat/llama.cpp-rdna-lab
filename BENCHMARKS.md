@@ -241,6 +241,55 @@ Rollback/controls are `GGML_VK_DISABLE_AMD_BN256_DEFAULT`,
 `LLAMA_DISABLE_VK_KV_HOST_AUTO`; manual host-KV override is
 `LLAMA_VK_KV_HOST_LAYERS=N`.
 
+D036 hardens that default with `Vulkan_Host_Direct`: the narrow Qwen35-like
+q4/q4 guard now moves the last `3/16` KV layers into direct pinned host memory.
+The r3 default confirmation `d036-vulkan130k-default-directkv-last3-b512-ub256-r3`
+reached `1.9410 TPS`, prompt `1049.28 tok/s`, decode `40.2033 tok/s`, with
+`Vulkan0 KV 1872.00 MiB`, `Vulkan_Host_Direct KV 432.00 MiB`, and `2` graph
+splits. This restores the requested `40+ tok/s` decode corridor for the guarded
+default, but it is still below D012 `2.0013 TPS`, so D012 remains the speed
+comparator.
+
+D037 checks q8 KV for long agent-work stability. Full q8/q8 on device does not
+fit at 130k (`16164 MiB` projected vs `15221 MiB`, need `1967 MiB` reduction).
+With direct host-KV last8 it fits and keeps graph splits at `2`, but speed falls
+to `0.3630 TPS`, prompt `187.94 tok/s`, decode `34.36 tok/s`. The kept behavior
+is explicit opt-in only: `LLAMA_VK_KV_HOST_AUTO_Q8=1` selects the last `8/16`
+direct host-KV layers for the same narrow Qwen35-like shape. Mixed `q4_0/q8_0`
+or `q8_0/q4_0` is rejected on this Vulkan/RDNA lane: it fits narrowly but falls
+back without coopmat2 mixed-KV Flash Attention support, creates `34` graph
+splits, allocates `Vulkan_Host TG 208.79 MiB`, and times out. The code now warns
+when mixed Vulkan K/V cache types can trigger that fallback.
+
+Because q8/q8 is not viable as the default speed profile, the next focus is q4
+tool-use robustness rather than another KV placement sweep. The benchmark for
+that track is `scripts/tool_call_workload_bench.py`, documented in
+`docs/research/TOOL_CALL_WORKLOAD_BENCH.md`. It keeps the 130k repo-snapshot
+lane, sends OpenAI-compatible tools, executes mocked tool results, and records
+`pass_rate`, `mean_score`, invalid JSON arguments, unexpected tool calls,
+multi-turn recovery, and independent-call batching. Use label
+`d038-toolcall-q4-baseline-r1`/`r2` as the current q4 baseline before testing
+any llama.cpp/server-side compensation. Both repeats used the same seed and
+same cold no-reuse launch, and both produced `2/4` pass rate, `0.8958` mean
+score, `0` invalid JSON args, and `0` unexpected tools. The failures are final
+grounding/decision failures after otherwise valid tool calls: missing the q8
+opt-in env or mixed-KV rejection in `tc_context_parallel`, and missing the final
+"not default" decision in `tc_bench_compare_args`.
+
+D038 adds default server-side compensation for this class of q4/q3 tool-call
+failures. It affects only OpenAI chat requests with `tools` and
+`tool_choice != none`, and it respects explicit per-request
+`chat_template_kwargs.enable_thinking`; normal non-tool requests keep the
+server's regular thinking behavior. Set `LLAMA_SERVER_TOOL_CALL_THINKING_GUARD=0`
+to disable the guard for compatibility A/B. On the same q4/q4 Vulkan 130k lane,
+`d038-toolcall-q4-thinkguard-r2` improved the full tool-call workload from
+`2/4` to `4/4` pass rate with `1.0000` mean score, `0` invalid JSON args, and
+`0` unexpected tools. Smoke also moved from `0/2` to `2/2` with
+`d038-toolcall-smoke-thinkguard-m384-r2`, and the no-env post-promotion smoke
+`d038-toolcall-smoke-default-m384-r1` also passed `2/2`, confirming default-on
+behavior. Do not treat this as a TPS gain or as a blanket replacement for
+thinking in complex agent work.
+
 GUI/autotune note: the incomplete run
 `gui-autotune-Qwen3.6-27B-Q3_K_S-20260526-161645` is not a valid `ub192` vs
 `ub256` comparison for D005 because it launched with `mmap = true`. Its

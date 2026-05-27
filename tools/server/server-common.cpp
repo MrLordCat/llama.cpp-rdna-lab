@@ -12,6 +12,17 @@
 #include <random>
 #include <sstream>
 #include <fstream>
+#include <cstdlib>
+
+static bool server_env_flag_enabled(const char * name, bool default_value = false) {
+    const char * value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return default_value;
+    }
+
+    const std::string flag(value);
+    return flag != "0" && flag != "false" && flag != "FALSE" && flag != "off" && flag != "OFF";
+}
 
 json format_error_response(const std::string & message, const enum error_type type) {
     std::string type_str;
@@ -1057,6 +1068,14 @@ json oaicompat_chat_params_parse(
     inputs.chat_template_kwargs = opt.chat_template_kwargs;
     for (const auto & item : chat_template_kwargs_object.items()) {
         inputs.chat_template_kwargs[item.key()] = item.value().dump();
+    }
+
+    if (!inputs.tools.empty() &&
+            inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE &&
+            !chat_template_kwargs_object.contains("enable_thinking") &&
+            server_env_flag_enabled("LLAMA_SERVER_TOOL_CALL_THINKING_GUARD", true)) {
+        inputs.chat_template_kwargs["enable_thinking"] = "false";
+        inputs.enable_thinking = false;
     }
 
     // parse the "enable_thinking" kwarg to override the default value

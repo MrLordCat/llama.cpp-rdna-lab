@@ -16524,6 +16524,10 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                 }
                 // mismatching K/V type is currently supported for coopmat2 only.
                 if (op->src[1]->type != op->src[2]->type && !coopmat2) {
+                    static std::once_flag mixed_kv_warn_once;
+                    std::call_once(mixed_kv_warn_once, []() {
+                        GGML_LOG_WARN("ggml_vulkan: mixed K/V Flash Attention requires coopmat2; this Vulkan device will fall back to a non-Vulkan backend. Use matching cache types on this device to avoid large graph splits.\n");
+                    });
                     return false;
                 }
                 auto fa_kv_ok = [coopmat2](ggml_type t) {

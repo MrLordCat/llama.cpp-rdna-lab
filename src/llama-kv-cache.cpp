@@ -133,18 +133,32 @@ llama_kv_cache::llama_kv_cache(
         }
     }
 
-    const bool auto_vk_host_kv =
+    const bool qwen35_like_vk_130k =
         offload &&
         vk_host_kv_layers < 0 &&
         kv_size >= 131072 &&
         hparams.n_layer == 64 &&
         hparams.n_embd == 5120 &&
-        n_layer_kv_filtered == 16 &&
+        n_layer_kv_filtered == 16;
+    const bool auto_vk_host_kv =
+        qwen35_like_vk_130k &&
         type_k == GGML_TYPE_Q4_0 &&
         type_v == GGML_TYPE_Q4_0 &&
         getenv("LLAMA_DISABLE_VK_KV_HOST_AUTO") == nullptr;
+    const bool opt_in_q8_vk_host_kv =
+        qwen35_like_vk_130k &&
+        type_k == GGML_TYPE_Q8_0 &&
+        type_v == GGML_TYPE_Q8_0 &&
+        getenv("LLAMA_VK_KV_HOST_AUTO_Q8") != nullptr &&
+        getenv("LLAMA_DISABLE_VK_KV_HOST_AUTO") == nullptr;
     if (auto_vk_host_kv) {
         vk_host_kv_layers = 3;
+        if (!vk_host_kv_direct_set) {
+            vk_host_kv_direct = true;
+        }
+    }
+    if (opt_in_q8_vk_host_kv) {
+        vk_host_kv_layers = 8;
         if (!vk_host_kv_direct_set) {
             vk_host_kv_direct = true;
         }
@@ -160,9 +174,10 @@ llama_kv_cache::llama_kv_cache(
     uint32_t kv_layer_idx = 0;
 
     if (vk_host_kv_layers > 0 && vk_host_kv_mask != 0) {
-        LLAMA_LOG_INFO("%s: Vulkan host-KV residency guard enabled for %s %d/%u KV layers, mode=%s%s%s\n", __func__,
+        LLAMA_LOG_INFO("%s: Vulkan host-KV residency guard enabled for %s %d/%u KV layers, mode=%s%s%s%s\n", __func__,
                 vk_host_kv_from_first ? "first" : "last", vk_host_kv_layers, n_layer_kv_filtered,
-            vk_host_kv_mask == 1 ? "k" : vk_host_kv_mask == 2 ? "v" : "kv", vk_host_kv_direct ? ", direct" : "", auto_vk_host_kv ? " (auto)" : "");
+            vk_host_kv_mask == 1 ? "k" : vk_host_kv_mask == 2 ? "v" : "kv", vk_host_kv_direct ? ", direct" : "",
+            auto_vk_host_kv ? " (auto)" : "", opt_in_q8_vk_host_kv ? " (q8 opt-in)" : "");
     }
 
     // define a comparator for the buft -> ctx map to ensure that the order is well-defined:
@@ -207,6 +222,8 @@ llama_kv_cache::llama_kv_cache(
     for (uint32_t s = 0; s < n_stream; ++s) {
         v_cells[s].resize(kv_size);
     }
+
+    bool vk_mixed_kv_warned = false;
 
     // by default, all sequence ids are mapped to the 0th stream
     seq_to_stream.resize(LLAMA_MAX_SEQ, 0);
@@ -269,6 +286,12 @@ llama_kv_cache::llama_kv_cache(
 
             dev_name_k = ggml_backend_dev_name(dev);
             dev_name_v = dev_name_k;
+
+            if (!vk_mixed_kv_warned && type_k != type_v && strncmp(dev_name_k, "Vulkan", 6) == 0) {
+                LLAMA_LOG_WARN("%s: mixed Vulkan K/V cache types (%s/%s) can force Flash Attention fallback on devices without coopmat2 mixed-KV support; matching cache types avoid large graph splits\n",
+                        __func__, ggml_type_name(type_k), ggml_type_name(type_v));
+                vk_mixed_kv_warned = true;
+            }
 
             const bool use_vk_host_buft =
                 vk_host_kv_layers > 0 &&
