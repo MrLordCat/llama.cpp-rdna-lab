@@ -1,0 +1,7 @@
+# BFCL Lite Recent Runs
+
+| Timestamp | Label | Pass | Categories | Mode |
+| --- | --- | ---: | --- | --- |
+| 2026-05-27T13:39:22+00:00 | d039-bfcl-lite-thinktrue25-r1 | 16/25 (64.00%) | irrelevance;multiple;parallel;parallel_multiple;simple_python | tool_choice=auto,chat_template_enable_thinking=true |
+| 2026-05-27T13:35:39+00:00 | d039-bfcl-lite-default25-r1 | 24/25 (96.00%) | irrelevance;multiple;parallel;parallel_multiple;simple_python | tool_choice=auto,chat_template_enable_thinking=unset |
+| 2026-05-27T13:34:05+00:00 | d039-bfcl-lite-default-r1 | 8/8 (100.00%) | irrelevance;multiple;parallel;simple_python | tool_choice=auto,chat_template_enable_thinking=unset |
