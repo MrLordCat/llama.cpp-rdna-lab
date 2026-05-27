@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -96,6 +97,44 @@ llama_kv_cache::llama_kv_cache(
     GGML_ASSERT(kv_size % n_pad == 0);
 
     const uint32_t n_layer_kv = hparams.n_layer_kv();
+    uint32_t n_layer_kv_filtered = 0;
+    for (uint32_t il = 0; il < hparams.n_layer; il++) {
+        if (hparams.has_kv(il) && (!filter || filter(il))) {
+            n_layer_kv_filtered++;
+        }
+    }
+
+    int vk_host_kv_layers = -1;
+    if (const char * env = getenv("LLAMA_VK_KV_HOST_LAYERS")) {
+        vk_host_kv_layers = atoi(env);
+    }
+
+    const bool auto_vk_host_kv =
+        offload &&
+        vk_host_kv_layers < 0 &&
+        kv_size >= 131072 &&
+        hparams.n_layer == 64 &&
+        hparams.n_embd == 5120 &&
+        n_layer_kv_filtered == 16 &&
+        type_k == GGML_TYPE_Q4_0 &&
+        type_v == GGML_TYPE_Q4_0 &&
+        getenv("LLAMA_DISABLE_VK_KV_HOST_AUTO") == nullptr;
+    if (auto_vk_host_kv) {
+        vk_host_kv_layers = 4;
+    }
+    if (vk_host_kv_layers < 0) {
+        vk_host_kv_layers = 0;
+    }
+    if (vk_host_kv_layers > 0 && (uint32_t) vk_host_kv_layers > n_layer_kv_filtered) {
+        vk_host_kv_layers = (int) n_layer_kv_filtered;
+    }
+    const uint32_t vk_host_kv_first = n_layer_kv_filtered > (uint32_t) vk_host_kv_layers ? n_layer_kv_filtered - (uint32_t) vk_host_kv_layers : 0;
+    uint32_t kv_layer_idx = 0;
+
+    if (vk_host_kv_layers > 0) {
+        LLAMA_LOG_INFO("%s: Vulkan host-KV residency guard enabled for last %d/%u KV layers%s\n", __func__,
+                vk_host_kv_layers, n_layer_kv_filtered, auto_vk_host_kv ? " (auto)" : "");
+    }
 
     // define a comparator for the buft -> ctx map to ensure that the order is well-defined:
     struct ggml_backend_buft_comparator {
@@ -194,7 +233,21 @@ llama_kv_cache::llama_kv_cache(
             buft = ggml_backend_dev_buffer_type(dev);
 
             dev_name = ggml_backend_dev_name(dev);
+
+            const bool use_vk_host_buft =
+                vk_host_kv_layers > 0 &&
+                kv_layer_idx >= vk_host_kv_first &&
+                strncmp(dev_name, "Vulkan", 6) == 0;
+            if (use_vk_host_buft) {
+                auto * host_buft = ggml_backend_dev_host_buffer_type(dev);
+                if (host_buft) {
+                    buft = host_buft;
+                    dev_name = ggml_backend_buft_name(host_buft);
+                }
+            }
         }
+
+        kv_layer_idx++;
 
         LLAMA_LOG_DEBUG("%s: layer %3d: dev = %s\n", __func__, il, dev_name);
 

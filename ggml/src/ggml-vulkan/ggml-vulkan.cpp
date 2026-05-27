@@ -3499,6 +3499,10 @@ static void ggml_vk_load_shaders(vk_device& device) {
                            !device->uma;
         const bool force_amd_large_matmul = force_amd_large_matmul_env || (auto_amd_large_matmul && !disable_amd_large_matmul);
         const char * amd_large_matmul_variant = getenv("GGML_VK_AMD_LARGE_MATMUL_VARIANT");
+        if (amd_large_matmul_variant == nullptr && auto_amd_large_matmul && !disable_amd_large_matmul &&
+            getenv("GGML_VK_DISABLE_AMD_BN256_DEFAULT") == nullptr) {
+            amd_large_matmul_variant = "bn256";
+        }
         bool amd_large_matmul_variant_active = false;
 
         // chip specific tuning
@@ -7522,7 +7526,7 @@ static uint32_t ggml_vk_guess_split_k(ggml_backend_vk_context * ctx, uint32_t m,
     static const int low_tile_split_k_override = []() -> int {
         const char * env = getenv("GGML_VK_QK_LOW_TILE_SPLIT_K");
         if (env == nullptr) {
-            return 0;
+            return -1;
         }
         return atoi(env);
     }();
@@ -7534,8 +7538,15 @@ static uint32_t ggml_vk_guess_split_k(ggml_backend_vk_context * ctx, uint32_t m,
     const bool q4_low_tile_candidate =
         src0_type == GGML_TYPE_Q4_K && n >= 128 &&
         m == 5120 && k == 6144;
-    if (low_tile_split_k_override >= 2 && (q3_low_tile_candidate || q4_low_tile_candidate)) {
-        split_k = std::max(split_k, std::min<uint32_t>((uint32_t) low_tile_split_k_override, 8u));
+    int low_tile_split_k = low_tile_split_k_override;
+    if (low_tile_split_k < 0 && q3_low_tile_candidate &&
+        ctx->device->vendor_id == VK_VENDOR_ID_AMD &&
+        ctx->device->driver_id == vk::DriverId::eAmdProprietary &&
+        getenv("GGML_VK_DISABLE_QK_LOW_TILE_DEFAULT") == nullptr) {
+        low_tile_split_k = n >= 512 ? 2 : 3;
+    }
+    if (low_tile_split_k >= 2 && (q3_low_tile_candidate || q4_low_tile_candidate)) {
+        split_k = std::max(split_k, std::min<uint32_t>((uint32_t) low_tile_split_k, 8u));
 
         while (split_k > 1) {
             uint32_t k_split = CEIL_DIV(k, split_k);
@@ -7979,7 +7990,15 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
 
     vk_pipeline pipeline = ggml_vk_guess_matmul_pipeline(ctx, mmp, ne01, ne11, aligned, qx_needs_dequant ? f16_type : src0->type, quantize_y ? GGML_TYPE_Q8_1 : (y_f32_kernel ? GGML_TYPE_F32 : src1->type));
 
-    static const bool q3_k_quad_dequant = std::getenv("GGML_VK_Q3K_QUAD_DEQUANT") != nullptr;
+    static const bool q3_k_quad_dequant = []() -> bool {
+        if (std::getenv("GGML_VK_DISABLE_Q3K_QUAD_DEQUANT") != nullptr) {
+            return false;
+        }
+        if (const char * env = std::getenv("GGML_VK_Q3K_QUAD_DEQUANT")) {
+            return atoi(env) != 0;
+        }
+        return true;
+    }();
     const bool q3_k_quad_shape =
         ne11 >= 128 &&
         ((ne01 == 17408 && ne10 ==  5120) ||

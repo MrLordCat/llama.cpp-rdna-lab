@@ -46,7 +46,7 @@ compressed-GEMM/FFN dataflow proof appears. The measured same-lane baselines are
 - cold-first: `--no-reuse --no-v2-prime-pass`, thinking enabled, `--spec-type none`.
 - Vulkan starting route uses `GGML_VK_ALLOW_GRAPHICS_QUEUE=1` and `--no-mmap`; ROCm uses the native HIP 7.1 `gfx1201` path.
 
-Measured short-baseline results:
+Measured short-baseline and recovery results:
 
 | Backend | Label | Wall | TPS | Prompt tok/s | Decode tok/s | Prompt tokens |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
@@ -54,6 +54,7 @@ Measured short-baseline results:
 | Vulkan current check | `p002-vulkan-ub256-current-r1` | `9.61s` | `1.6654` | `866.47` | `43.42` | `7970` |
 | Vulkan current default | `d005-vulkan-default-splitk-confirm3` | `~8.94s` | `1.7898` | `934.81` | `43.59` | `7970` |
 | Vulkan current opt-in stack | `d012-vulkan-130k-glu-fast-q3quad-bn256-lowtile3-confirm3` | `~7.94s` | `2.0013` | `1053.11` | `42.72` | `7970` |
+| Vulkan default guard recovery | `vscode-vulkan130k-defaultguard-b512-ub256-r2` | `~8.54s` | `1.8736` | `1014.61` | `37.59` | `8189` |
 | Vulkan old control | `p002-vulkan-ub128-confirm3` | `~10.23s` | `1.5635` | `811.02` | `42.41` | `7947` |
 | ROCm | `p002-rocm-ub128-current-confirm3` | `~10.52s` | `1.5200` | `801.71` | `29.07` | `7970` |
 | ROCm old control | `scout-rocm130k-quick-c24k-b512-ub128-r1` | `11.44s` | `1.3984` | `725.21` | `31.44` | `7904` |
@@ -219,6 +220,21 @@ store prototype improved direct `pp4096` only `1066.39 -> 1085.72 tok/s` and was
 below the prebuild gate. D034 code prototypes were reverted; keep the artifacts
 as residency evidence only and do not use the `0.37 TPS` slow-pocket controls as
 a baseline for speed claims.
+
+D035 converts the D012 opt-in route pieces into guarded source defaults and adds
+a narrow Vulkan host-KV residency guard for the Qwen35-like `ctx=131072`,
+`q4_0/q4_0`, 16-KV-layer case. The fresh control
+`p002-resume-d012-control-r1` reproduced the slow pocket at `0.3582 TPS`, prompt
+`185.11 tok/s`, decode `41.37 tok/s`, with all `2304.00 MiB` KV on `Vulkan0`.
+After the guard, `vscode-vulkan130k-defaultguard-b512-ub256-r2` reached
+`1.8736 TPS`, prompt `1014.61 tok/s`, decode `37.59 tok/s`, with `1728.00 MiB`
+Vulkan KV plus `576.00 MiB` `Vulkan_Host` KV and `10` graph splits. Keep this as
+default-stability hardening, not a new speed baseline: it recovers the slow
+pocket but remains below D012 `2.0013 TPS` and below the D012 decode corridor.
+Rollback/controls are `GGML_VK_DISABLE_AMD_BN256_DEFAULT`,
+`GGML_VK_DISABLE_Q3K_QUAD_DEQUANT`, `GGML_VK_DISABLE_QK_LOW_TILE_DEFAULT`, and
+`LLAMA_DISABLE_VK_KV_HOST_AUTO`; manual host-KV override is
+`LLAMA_VK_KV_HOST_LAYERS=N`.
 
 GUI/autotune note: the incomplete run
 `gui-autotune-Qwen3.6-27B-Q3_K_S-20260526-161645` is not a valid `ub192` vs
