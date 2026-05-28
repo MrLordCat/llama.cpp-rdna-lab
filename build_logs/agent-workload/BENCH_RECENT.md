@@ -7,6 +7,15 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-05-28 13:04:07 | cold-first | vulkan | q4fitauto-vulkan130k-big-c152k-b512-ub256-r1 | Qwen3.6-27B-Q4_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.1178 | 427.8600 | 4.1500 | 0 |
+| 2026-05-28 11:00:45 | cold-first | vulkan | d047-vulkan130k-big-c152k-lowtile3-noq3quad-noreuse-mt16-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.1748 | 622.4000 | 21.3600 | 0 |
+| 2026-05-27 21:31:47 | cold-first | vulkan | d046-vulkan130k-big-c152k-lowtile3-noreuse-mt16-b640-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 640/256 | q4_0/q4_0 | none | 0.1640 | 583.4700 | 21.9200 | 0 |
+| 2026-05-27 21:28:09 | cold-first | vulkan | d045-vulkan130k-big-c152k-lowtile3-nobn256-noreuse-mt16-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.1669 | 593.8500 | 21.6600 | 0 |
+| 2026-05-27 21:15:05 | cold-first | vulkan | d043-vulkan130k-big-c152k-lowtile3-noreuse-mt16-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.1787 | 636.0900 | 21.5300 | 0 |
+| 2026-05-27 20:55:54 | cold-first | vulkan | d042-vulkan130k-big-c152k-first4-noreuse-mt16-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.1768 | 629.6100 | 20.9300 | 0 |
+| 2026-05-27 20:49:18 | cold-first | vulkan | d041-vulkan130k-big-c152k-noreuse-mt64-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.6911 | 631.7300 | 20.0900 | 0 |
+| 2026-05-27 18:38:31 | repeated/steady | rocm | p002-rocm130k-big-c152k-b512-ub128-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 0.1023 | 363.8100 | 13.8200 | 0 |
+| 2026-05-27 18:33:57 | repeated/steady | vulkan | p002-vulkan130k-big-c152k-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.1758 | 626.0600 | 21.6000 | 0 |
 | 2026-05-27 15:13:37 | cold-first | vulkan | d037-vulkan130k-kq4-vq8-mixedwarn-postpatch2-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q8_0 | none | 0.0000 | - | - | 1 |
 | 2026-05-27 15:11:45 | cold-first | vulkan | d037-vulkan130k-kq4-vq8-mixedwarn-postpatch-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q8_0 | none | 0.0000 | - | - | 1 |
 | 2026-05-27 15:10:36 | cold-first | vulkan | d037-vulkan130k-q8kv-autoq8-last8-smoke-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q8_0/q8_0 | none | 0.0225 | 184.4200 | 1000000.0000 | 0 |
@@ -78,12 +87,3 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-05-27 09:28:10 | cold-first | vulkan | d034-vulkan-130k-d012-fresh-control-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.3660 | 189.9200 | 28.5600 | 0 |
 | 2026-05-27 01:25:25 | cold-first | rocm | d022-rocm130k-upstream-stock-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 0.5720 | 294.4000 | 21.9600 | 0 |
 | 2026-05-27 00:54:01 | cold-first | rocm | d020-rocm130k-vbuffer-singlechunk-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 1.5067 | 798.4800 | 28.7800 | 0 |
-| 2026-05-27 00:29:04 | cold-first | rocm | d018-rocm130k-q3k-dualy-max1-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 0.0919 | 735.6800 | 1000000.0000 | 0 |
-| 2026-05-27 00:24:14 | cold-first | rocm | d016-rocm130k-q3k-padded-b4loads-max1-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 0.0949 | 760.2300 | 1000000.0000 | 0 |
-| 2026-05-27 00:20:20 | cold-first | rocm | d015-rocm130k-dense-q3k-staging-max1-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 0.0855 | 684.4500 | 1000000.0000 | 0 |
-| 2026-05-26 23:57:18 | cold-first | rocm | d014-rocm130k-glu-contig-full-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 1.5059 | 795.6200 | 28.6400 | 0 |
-| 2026-05-26 23:56:31 | cold-first | rocm | d014-rocm130k-glu-contig-max1-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 0.0994 | 795.9200 | 1000000.0000 | 0 |
-| 2026-05-26 23:53:17 | cold-first | rocm | d013-rocm130k-y32w2-postrevert-max1-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 0.0990 | 792.8800 | 1000000.0000 | 0 |
-| 2026-05-26 23:52:04 | cold-first | rocm | d013-rocm130k-y32w2-max1-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 0.0828 | 662.4800 | 1000000.0000 | 0 |
-| 2026-05-26 23:45:18 | cold-first | rocm | d013-rocm130k-q3k-src1quant-presync-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 0.0809 | 648.8200 | 1000000.0000 | 0 |
-| 2026-05-26 23:43:37 | cold-first | rocm | d013-rocm130k-q3k-src1quant-trace-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 0.0862 | 690.2800 | 1000000.0000 | 0 |

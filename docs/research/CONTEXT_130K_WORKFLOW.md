@@ -20,6 +20,8 @@ baseline for live agent work.
 - Thinking: enabled, `--no-disable-thinking`
 - KV: `q4_0/q4_0`
 - Starting shape: `batch=512`; Vulkan achieved best `ubatch=256`, ROCm current baseline `ubatch=128`
+- Practical constraint for this session: do not run `ubatch > 256` on the
+	active Vulkan 130k big-prompt lane because VRAM headroom is already limited.
 - Speculation: off, `--spec-type none`
 - Vulkan residency knob: `--no-mmap` is part of the active D005/D012 lane; `mmap=true` can fall into a severe 130k prefill slow path.
 - Active target: move the headline from quick-smoke TPS to the real-big-prompt
@@ -172,6 +174,85 @@ decisions:
 
 Do not compare a candidate measured on the `8k` quick smoke lane against a
 `60k` prompt run. They stress different residency and RAM/PCIe behavior.
+
+Practical big-prompt backend checkpoint (`real-context-chars=152000`,
+`task_prompt_tokens=56425`, repeated/steady with reuse on):
+
+| Backend | Label | Batch/UBatch | Aggregate TPS | Prompt tok/s | Decode tok/s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Vulkan | `p002-vulkan130k-big-c152k-b512-ub256-r1` | `512/256` | `0.1758` | `626.06` | `21.60` |
+| ROCm | `p002-rocm130k-big-c152k-b512-ub128-r1` | `512/128` | `0.1023` | `363.81` | `13.82` |
+
+For this practical checkpoint, Vulkan leads ROCm by about `+71.85%` wall TPS
+on the same prompt scale and lane contract.
+
+D041 no-reuse control on the same practical Vulkan lane (`b512/ub256`,
+`q4_0/q4_0`, `--spec-type none --no-mmap`) shows checkpoint removal is not the
+primary limiter:
+
+| Mode | Label | max_tokens | Aggregate TPS | Prompt tok/s | Decode tok/s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Reuse on (D040) | `p002-vulkan130k-big-c152k-b512-ub256-r1` | `16` | `0.1758` | `626.06` | `21.60` |
+| No-reuse (D041) | `d041-vulkan130k-big-c152k-noreuse-mt16-b512-ub256-r1` | `16` | `0.1766` | `628.88` | `21.46` |
+| No-reuse decode sanity | `d041-vulkan130k-big-c152k-noreuse-mt64-b512-ub256-r1` | `64` | `0.6911` | `631.73` | `20.09` |
+
+No-reuse vs reuse at `max_tokens=16` is effectively flat (`+0.46%` wall), and
+decode stays around `~20-21 tok/s`. Next Vulkan-only work should target true
+long-prompt Q3_K/FFN/body scaling, not session cache/checkpoint semantics.
+
+Additional D042 gate (`first4` direct host-KV under the same no-reuse lane)
+also stayed flat on wall and regressed decode:
+
+- `d042-vulkan130k-big-c152k-first4-noreuse-mt16-b512-ub256-r1`: `0.1768 TPS`, prompt `629.61`, decode `20.93`
+- vs D041 no-reuse last3 baseline: wall `+0.11%`, decode `-2.47%`
+
+Treat host-KV placement sweeps as closed for this practical lane unless a new
+lifetime/migration mechanism changes the expected decode tax.
+
+D043 lowtile3 gate on the same no-reuse lane shows a small positive shift and
+is currently the best practical no-reuse mt16 point in this cycle:
+
+- `d043-vulkan130k-big-c152k-lowtile3-noreuse-mt16-b512-ub256-r1`: `0.1787 TPS`, prompt `636.09`, decode `21.53`
+- vs D041 no-reuse baseline: wall `+1.19%`, prompt `+1.15%`, decode `+0.33%`
+
+This is still far from practical targets (`prompt 900`, `decode 30`), so keep
+lowtile3 as a minor knob and continue toward larger Q3_K/FFN/body route gains.
+
+D044 attempted `ubatch=512` (`d044-vulkan130k-big-c152k-lowtile3-noreuse-mt16-b512-ub512-r1`)
+but was aborted after clear severe prefill slowdown and no diagnostics output;
+it is closed as out-of-lane for this practical profile.
+
+D045 tested disabling the AMD bn256 default on top of D043 lowtile3, same lane:
+
+- `d045-vulkan130k-big-c152k-lowtile3-nobn256-noreuse-mt16-b512-ub256-r1`:
+	`0.1669 TPS`, prompt `593.85`, decode `21.66`
+- vs D043: wall `-6.60%`, prompt `-6.64%`, decode `+0.60%`
+
+Reject `GGML_VK_DISABLE_AMD_BN256_DEFAULT=1` for this lane. Keep bn256
+auto-default behavior enabled.
+
+D046 tested `batch=640` (keeping `ubatch=256` and lowtile3):
+
+- `d046-vulkan130k-big-c152k-lowtile3-noreuse-mt16-b640-ub256-r1`:
+	`0.1640 TPS`, prompt `583.47`, decode `21.92`
+- vs D043: wall `-8.23%`, prompt `-8.27%`, decode `+1.81%`
+
+Reject `batch=640` for this practical lane and keep `batch=512` as active shape
+while route-level work continues.
+
+D047 tested disabling Q3 quad dequant on the same practical lane:
+
+- `d047-vulkan130k-big-c152k-lowtile3-noq3quad-noreuse-mt16-b512-ub256-r1`:
+	`0.1748 TPS`, prompt `622.40`, decode `21.36`
+- vs D043: wall `-2.18%`, prompt `-2.15%`, decode `-0.79%`
+
+Reject `GGML_VK_Q3K_QUAD_DEQUANT=0` for this lane; keep q3quad dequant enabled.
+
+`ubatch > 256` is now explicitly out-of-lane for this practical runbook due to
+VRAM pressure. Keep follow-up candidates at `ubatch=256` or below.
+
+`ubatch > 256` is now explicitly out-of-lane for this practical runbook due to
+VRAM pressure. Keep follow-up candidates at `ubatch=256` or below.
 
 ## RAM-Spill Rule
 
