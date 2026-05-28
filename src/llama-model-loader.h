@@ -14,6 +14,7 @@
 #include <map>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 using llama_buf_map = std::unordered_map<uint32_t, ggml_backend_buffer_t>;
 
@@ -118,6 +119,11 @@ struct llama_model_loader {
     std::string first_tensor_moved_type_name;
     ggml_backend_buffer_type_t first_moved_from_buft = nullptr;
     ggml_backend_buffer_type_t first_moved_to_buft = nullptr;
+
+    // q4 metacomp guarded runtime state (opt-in only)
+    bool q4_metacomp_force_cpu_selected = false;
+    size_t q4_metacomp_cpu_forced_count = 0;
+    std::unordered_set<std::string> q4_metacomp_selected_q4_names;
 
     llama_model_loader(
         struct gguf_context * metadata,

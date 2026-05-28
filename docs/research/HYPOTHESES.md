@@ -84,6 +84,16 @@ Where:
 | H42 | ROCm hot-shape Q3_K x F16 route | E192 shows the large-Q3_K cublas split is not just conversion-bound (`src0_convert_ms=1637.070`, `gemm_ms=3203.883`). E204 proves the hot-shape activation surface is real but rejects the current MMQ body as a speed vehicle, and E206 rejects cublas row-chunking because `6144x5120@2048` and `17408x5120@2048` both regress point timing. E244 shows a weight-major/multi-chunk GEMM schedule has a real but moderate standalone signal (`~5-7%` GEMM-local, optimistic `~1.076x` wall ceiling before overhead), so it is a stack component rather than the standalone +20% route. E245 rejects direct scalar/WMMA Q3FlashMatmul bodies. E246 finds a point-positive pivot (`Q3_K` chunked dequant feeding rocBLAS improves hot points by `1.17x-1.30x`) but the real-server runtime prototype regresses or times out once stream/pool safety is enforced. E248 finds the first runtime-positive side-route in this branch: adjacent-only `src1` fp16 reuse improves the active lane `7.8981 -> 7.9608` aggregate TPS in final3 (`+0.79%`). | +0.5% to +1.5% wall for safe adjacent activation reuse now; larger H42 still needs a new graph-safe Q3_K scheduling/body route | streaming Q3_K pipeline point wins can vanish under per-matmul sync, async auxiliary streams can create backlog/lifetime hazards, and activation reuse has a small ceiling | keep E248 opt-in, not default; do not promote E246 runtime pipeline; next large route must avoid per-matmul host sync and broad fp16 residency, and must prove graph-safe async lifetime before wall A/B |
 | H43 | ROCm backend-private padded Q3_K storage contract | E199/E200 show Vulkan-like packed32/padded behavior cannot be transferred by a load-side helper patch while ROCm storage still uses raw `110`-byte Q3_K blocks. E201-P1a validated `raw Q3_K -> padded block -> fp16 dequant`; E201-P1b/P1c validated default-off non-split padded storage plus dense Q3_K MMVQ; E201-P2a adds padded-aware Q3_K MMQ loading and confirms a real short-lane win (`30.2390 -> 30.9884 TPS` r3, decode `31.1767 -> 31.9167`, Q3_K MMQ point `252.526 -> 231.453 ms`). E213/E216/E219/E220 hardened layout safety and fail-closed view handling. E221 initially rejected default-on, E222 closed MMVQ env-vs-layout divergence, and E223 successfully rolled out HIP default-on with explicit opt-out across backend/MMQ. | small but stable lane benefit as default now: 12k A/B `7.20 -> 7.25` (`+0.69%`) and 32k A/B `11.03 -> 11.07` (`+0.36%`) in r1, with full Q3_K broad smoke pass | residual risk remains in future unrelated refactors around storage semantics, split/view paths, or MoE routing; large `ncols=2048` prefill bottleneck remains H42 territory | completed and promoted: HIP default is now padded-on for Q3_K storage/MMQ, with explicit fallback via `GGML_CUDA_Q3K_PADDED_STORAGE=0 GGML_CUDA_Q3K_PADDED_STORAGE_MMQ=0`; continue H42 for large-prefill route gains |
 | H44 | q4 tool-calling compensation | D037 showed q8/q8 KV is not viable as a default speed route on the active 130k Vulkan/RDNA lane, but q4 may expose weaker long-context tool use. D038 made this measurable: q4/q4 baseline repeats were `2/4` full pass rate and `0/2` smoke pass rate, with no invalid JSON and no unexpected tools; failures were missing tool emission under thinking and lost final grounding after valid tool results. D039 extends this to public BFCL-style data: explicit thinking on a 25-case BFCL-lite subset was `16/25`, while the default guard reached `24/25`. | measured quality/agent reliability improvement: default `LLAMA_SERVER_TOOL_CALL_THINKING_GUARD` behavior improved full D038 to `4/4`, smoke to `2/2`, and D039 BFCL-lite to `24/25` while staying on the same q4/q4 speed lane; set `LLAMA_SERVER_TOOL_CALL_THINKING_GUARD=0` or explicit request `enable_thinking=true` to disable/bypass for A/B | tool-call tests can overfit prompts; disabling thinking for all tool requests can reduce planning quality in complex workflows; BFCL-lite is not the official leaderboard runner; quality gains must not be reported as speed gains | keep the D038 guard default-on with env rollback. Next code step should be a smarter fallback/retry: preserve thinking when explicitly requested, retry after no-tool-call/length failures, and repair repeated parallel-call undercoverage like D039 `parallel_1`; compare against `d039-bfcl-lite-default25-r1` and `d038-toolcall-q4-thinkguard-r2` |
+| H45 | Q4 C2 entropy-bounded nibble stream | D050-D052 show metadata-only cannot reach target13 for Qwen3.6-27B-Q4_K_S. A lossless entropy route over 4-bit symbols could lower effective payload bpw while preserving symbol semantics | potential path to the residual `0.631 GiB` gap when stacked with C1 | decode regularity and random-access overhead can erase net gain | theory-only: entropy atlas + page/header model + decode-cost budget before any prototype |
+| H46 | Q4 C2 superblock palette remap with escapes | Many superblocks may use sparse local subsets of 16 nibble symbols; local remap+escape can reduce average payload bits while preserving exact values | medium-high compression on low-entropy/sparse-symbol tensors | flat distributions and escape-heavy tails can collapse gains | theory-only: active-symbol distribution + escape forecast + net bpw with side overhead |
+| H47 | Q4 C2 tuple dictionary coding | Short nibble tuples may repeat enough for macro-symbol dictionary coding with literal fallback | moderate compression in tensors with strong tuple reuse | dictionary side-cost and miss locality can negate benefits | theory-only: tuple Zipf coverage + dictionary overhead gate |
+| H48 | Q4 C2 layer-adaptive mixed policy | A single C2 method is unlikely to be globally optimal; per-tensor mixed selection can maximize compression under risk constraints | better risk-adjusted global bpw vs one-method policy | policy complexity and route fragmentation | theory-only: per-tensor ranking and mixed-policy global projection with strict fallback |
+| H49 | Q4 C2 context-conditioned entropy pages | Replace flat-symbol coding by short-context conditional entropy pages with deterministic random-access anchors | potentially crosses corridor by reducing conditional entropy below H45 floor | context-model overhead can erase gain; branch cost may rise | theory-only: conditional entropy atlas + anchor/page overhead proof |
+| H50 | Q4 C2 bounded-rANS deterministic micropages | Use bounded-state rANS on fixed micropages to raise coding efficiency while keeping decode state deterministic | near-corridor projection with tighter complexity than generic entropy coder | state/table traffic and page headers may offset bpw gains | theory-only: rANS table budget + state-transition complexity model |
+| H51 | Q4 C2 superblock graph remap + selective literal lanes | Extend palette remap with graph-structured transitions and selective literal lanes to reduce escape inflation | could improve SPRE tails if transitions are predictable | compression projection currently above corridor under realistic headers | parked until stronger compression proof |
+| H52 | Q4 C2 hierarchical tuple-context dictionary | Hybrid tuple+context dictionary to improve hit-rate beyond fixed tuple model | could reduce tuple literal fallback on structured tensors | complexity projection currently above hard decode budget | parked until complexity-reduction proof |
+| H53 | Q4 C2 nibble reordering within superblocks | Sorting nibbles within blocks creates runs that lower conditional entropy | theoretical bpw reduction via permutation + order-1 coding | permutation overhead exceeds benefit; block boundaries dominate bigram count | rejected D063 (empirical delta=0, analytical 0 feasible) |
+| H54 | Q4 quantization redesign for lower-entropy payloads | Change quantization to produce more structured/compressible nibble distributions (e.g., value-aware quantization, adaptive binning, TurboQuant-style rotations) | potential path to reduce H1 below 3.8 bpw floor | scope, correctness, migration complexity | active: H54-B passed final analytical gate D070 and is authorized for guarded prototype |
 
 ## Recent H42 Negative Gates
 
@@ -117,6 +127,106 @@ Where:
 - Next H42 work should not promote E246 runtime pipeline or E248 src1 reuse; library selector, batching/grouping, naive row split, launch-count/block-geometry, A-layout, f16-output-with-convert, broad f16-intermediate FFN routes, f32-first secondary routing, dense reuse of the MoE/RDNA4 staging body, current hipBLAS/cublas tall-FFN pairing, staging-only padded-dequant store rewrites, GDN geometry, nearby ubatch recapture, direct Q3FlashMatmul scalar/WMMA bodies, naive full-prompt multi-chunk GEMM, unsafe per-matmul auxiliary-stream pipelines, the local Q3_MTP GGUF, Q4 MTP fit-auto, `32F_FAST_16F` hipBLAS compute, current src1-reuse stack, and intermediate ubatch retuning are now exhausted as standalone routes for this cold lane.
 
 ## Priority (Start Here)
+
+P003 addendum (2026-05-28): H45-H48 are strictly theory-only at this stage.
+Do not build converter/runtime prototypes for these hypotheses until the D053
+analytical gates are completed.
+
+P003 addendum (2026-05-28, D060): H49-H52 are also theory-only. Admission
+screen currently allows analytical continuation for H49/H50 only; H51/H52 are
+parked pre-gate.
+
+P003 addendum (2026-05-28, D061/D062): first fast formulations are negative for
+both admitted routes (H49 adjacent first-order conditional signal near zero;
+H50 order-0 micropage model has zero feasible configs).
+
+P003 addendum (2026-05-28, D063): H53 rejected both empirical and analytical
+gates. Empirical test on 24 tensors showed `Hcond delta=0.000000 bpw` (block
+boundaries dominate). Analytical gate tested 44 configs (11 block sizes × 4
+encoding methods), 0 feasible under corridor `3.57-3.77 bpw`.
+
+P003 addendum (2026-05-28, D065): H54-A (TBQ-style Householder QR rotation)
+rejected. Shannon entropy is permutation invariant — rotation is a linear
+transform (orthogonal matrix multiplication) which cannot reduce per-symbol
+entropy. Measured Q4 nibble entropy `3.867364 bpw` on 24 tensors; sorted entropy
+identical `3.867364 bpw`, delta `+0.000000 bpw`. The fundamental constraint:
+`H(X) = -Σp(x)log₂p(x)` depends only on probability distribution `p(x)`, not on
+symbol order/correlation. Only way to reduce entropy is to change quantization
+itself (bin placement, codebook design). Next: **H54-B** (value-aware quantization),
+**H54-C** (TBQ+Q4 hybrid), **H54-D** (random projection), or mixed precision.
+Do not pursue further rotation/permutation variants on current Q4 layout.
+
+P003 addendum (2026-05-28, D067): H54-B (value-aware quantization) fast gate is
+positive. Sampled run on 24 tensors (`6,291,456` elements) reports entropy
+`3.870042 -> 3.267969 bpw` (`delta=-0.602073`) and feasible tensors `24/24`
+under corridor upper bound `3.77`. This is a sampling gate only; full analytical
+closure still requires broad/unsampled entropy pass, normalized quality delta,
+and decode-complexity proxy before prototype authorization.
+
+P003 addendum (2026-05-28, D068): representative spread sample confirms H54-B.
+On 48 tensors (`12,582,912` sampled elements), entropy is
+`3.865866 -> 3.277582 bpw` (`delta=-0.588283`), feasible tensors `48/48`, and
+weighted `NRMSE=0.101195`. H54-B remains the active continuation route.
+
+P003 addendum (2026-05-28, D069): wide all-Q4 screen confirms H54-B signal.
+On 348 tensors (`45,613,056` sampled elements with per-tensor cap), entropy is
+`3.864270 -> 3.277495 bpw` (`delta=-0.586775`), feasible tensors `348/348`, and
+weighted `NRMSE=0.101327`.
+
+P003 addendum (2026-05-28, D070): final analytical H54-B gate is PASS under
+explicit triple-contract check:
+
+- entropy `3.277495 <= 3.7701`,
+- weighted `NRMSE=0.101327 <= 0.115`,
+- complexity index `1.127917 <= 1.35`.
+
+Status: H54-B is now authorized for guarded prototype (not default rollout).
+
+P003 addendum (2026-05-28, D071): first guarded prototype planning artifact is
+implemented. New script `q4_metacomp_guarded_prototype.py` combines C1
+phase1-budget and H54-B value-aware wide artifact into a fail-closed per-tensor
+manifest. For `Qwen3.6-27B-Q4_K_S`, projected size is `12.130 GiB` versus
+target `13.000 GiB` (headroom `0.870 GiB`) under `nrmse<=0.115`, entropy-gain
+threshold `>=0.45 bpw`, and C2 safety margin `0.90`.
+
+P003 addendum (2026-05-28, D072): guarded runtime-sidecar MVP is implemented.
+New script `q4_metacomp_guarded_runtime_sidecar.py` builds fail-closed sidecar
+artifacts from D071 manifest (selected/fallback rows + runtime gate metadata).
+Bounded MVP run (`64` selected rows) reports sampled selected entropy
+`3.867974 -> 3.279216 bpw` (`delta=-0.588758`) and keeps runtime defaults
+unchanged (opt-in env gate + explicit rollback only).
+
+P003 addendum (2026-05-28, D073): guarded runtime reader is now integrated in
+core C++ model load path (`llama-model-loader.cpp`) under strict opt-in gate.
+When `LLAMA_Q4_METACOMP_ENABLE=1`, runtime reads sidecar path from
+`LLAMA_Q4_METACOMP_SIDECAR`, parses selected tensor names, validates tensor
+existence and Q4 type, and logs validation counters. Any env/path/parse/row
+validation issue is fail-closed and falls back to the legacy path.
+
+P003 addendum (2026-05-28, D074): first runtime-applied stage is now verified
+under explicit env gate `LLAMA_Q4_METACOMP_FORCE_CPU_SELECTED=1`. With
+validated sidecar rows (`128`), runtime reports `forced_cpu=128` and model
+buffers shift from control `Vulkan0 11665.45 MiB / Vulkan_Host 3708.06 MiB`
+to candidate `Vulkan0 8619.29 MiB / Vulkan_Host 6754.22 MiB`.
+This proves applied runtime behavior (real residency change), but it is still
+GPU->host redistribution, not true payload compression.
+
+P003 addendum (2026-05-28, D075): first quality-safe storage prototype is now
+implemented via `q4_metacomp_lossless_pack.py`. It builds a lossless packed
+artifact for selected Q4 tensors (per-entry zlib payload + crc32/sha256
+contracts + roundtrip verify). Smoke on 8 selected tensors shows raw
+`1,066,106,880` -> packed `1,045,885,219` bytes (ratio `0.981032`, saved
+`19.28 MiB`) with exact byte restoration. This is the correct quality-preserving
+direction, but runtime decode/compute integration remains mandatory before any
+VRAM/runtime win claim.
+
+**Fundamental conclusion:** Current Q4 layout has `H1=3.864885 bpw`, leaving
+only `~0.135 bpw` headroom before any overhead. All symbol-level C2 formulations
+(H45-H53) fail to reach corridor. Shannon entropy permutation invariance blocks
+rotation (H54-A). Next direction: **H54** — change quantization itself to produce
+lower-entropy payloads. Do not pursue further symbol-level C2 variants on current
+Q4 layout, or further rotation/permutation variants. Continue only with
+redesigned quantization (H54-B/C/D) or mixed precision.
 
 Current user focus (2026-05-24): H39 ROCm decode parity remains open, but E197 rejects the simple wave64/row-warp topology transfer, E198 rejects standalone q8 activation caching, E190 follow-up rejects helper-level pairdot on/off as a real limiter, and E199 rejects quick padded-layout transfers that do not change ROCm's underlying Q3_K storage contract. E201-P2a is the first padded-storage continuation with a real wall win: it keeps storage/MMQ default-off, passes Q3_K `MUL_MAT` correctness, improves Q3_K MMQ point timing, and confirms short-lane `+2.48%` r3. The next useful ROCm decode branch must still reduce real Q3_K dot/dequant work or change layout/route structure, not only reduction shape, static branches, graph-local q8 staging, storage-blind packed loads, or launch/cache plumbing. E191/E192 still show the practical real-context wall lane is H35/H42 large-Q3_K prefill dominated. Keep pure decode-parity experiments separate from repo-snapshot wall experiments. H38 remains documented and paused; do not mix its 64k prefill targets with the short-decode ROCm-vs-Vulkan target unless a separate long-context decode trace is being collected.
 

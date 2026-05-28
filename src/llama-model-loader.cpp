@@ -10,12 +10,165 @@
 #include <cinttypes>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <future>
 #include <regex>
+#include <unordered_set>
 
 static const size_t kiB = 1024;
 static const size_t MiB = 1024*kiB;
 static const size_t GiB = 1024*MiB;
+
+static bool llama_env_flag_enabled(const char * name) {
+    const char * value = getenv(name);
+    if (value == nullptr) {
+        return false;
+    }
+    return value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static bool llama_q4_metacomp_is_q4_type(enum ggml_type type) {
+    return type == GGML_TYPE_Q4_0 || type == GGML_TYPE_Q4_1 || type == GGML_TYPE_Q4_K;
+}
+
+struct llama_q4_metacomp_runtime_plan {
+    std::unordered_set<std::string> selected_q4_names;
+    bool force_cpu_selected = false;
+};
+
+static std::vector<std::string> llama_q4_metacomp_parse_selected_names(const std::string & sidecar_path) {
+    std::ifstream in(sidecar_path, std::ios::binary);
+    if (!in.is_open()) {
+        throw std::runtime_error(format("cannot open sidecar: %s", sidecar_path.c_str()));
+    }
+
+    std::string payload(
+        (std::istreambuf_iterator<char>(in)),
+        std::istreambuf_iterator<char>()
+    );
+
+    const std::string selected_key = "\"selected\"";
+    const size_t selected_pos = payload.find(selected_key);
+    if (selected_pos == std::string::npos) {
+        throw std::runtime_error("sidecar does not contain 'selected' section");
+    }
+
+    const size_t array_start = payload.find('[', selected_pos);
+    if (array_start == std::string::npos) {
+        throw std::runtime_error("sidecar 'selected' section is malformed (missing '[')");
+    }
+
+    size_t i = array_start;
+    int depth = 0;
+    size_t array_end = std::string::npos;
+    for (; i < payload.size(); ++i) {
+        if (payload[i] == '[') {
+            depth++;
+        } else if (payload[i] == ']') {
+            depth--;
+            if (depth == 0) {
+                array_end = i;
+                break;
+            }
+        }
+    }
+
+    if (array_end == std::string::npos) {
+        throw std::runtime_error("sidecar 'selected' section is malformed (missing ']')");
+    }
+
+    const std::string selected_blob = payload.substr(array_start, array_end - array_start + 1);
+    static const std::regex name_re("\"name\"\\s*:\\s*\"([^\"]+)\"");
+
+    std::vector<std::string> names;
+    for (std::sregex_iterator it(selected_blob.begin(), selected_blob.end(), name_re), end; it != end; ++it) {
+        names.push_back((*it)[1].str());
+    }
+    return names;
+}
+
+template <typename TWeightMap>
+static llama_q4_metacomp_runtime_plan llama_q4_metacomp_probe_sidecar(const TWeightMap & weights_map) {
+    llama_q4_metacomp_runtime_plan plan;
+
+    if (!llama_env_flag_enabled("LLAMA_Q4_METACOMP_ENABLE")) {
+        return plan;
+    }
+
+    const char * sidecar_env = getenv("LLAMA_Q4_METACOMP_SIDECAR");
+    if (sidecar_env == nullptr || sidecar_env[0] == '\0') {
+        LLAMA_LOG_WARN("%s: LLAMA_Q4_METACOMP_ENABLE is set but LLAMA_Q4_METACOMP_SIDECAR is missing - fail-closed fallback to legacy Q4 path\n", __func__);
+        return plan;
+    }
+
+    std::vector<std::string> selected_names;
+    try {
+        selected_names = llama_q4_metacomp_parse_selected_names(sidecar_env);
+    } catch (const std::exception & e) {
+        LLAMA_LOG_WARN("%s: failed to parse sidecar %s: %s - fail-closed fallback to legacy Q4 path\n", __func__, sidecar_env, e.what());
+        return plan;
+    }
+
+    if (selected_names.empty()) {
+        LLAMA_LOG_WARN("%s: sidecar %s has zero selected tensors - fail-closed fallback to legacy Q4 path\n", __func__, sidecar_env);
+        return plan;
+    }
+
+    std::unordered_set<std::string> uniq;
+    size_t duplicates = 0;
+    for (const auto & name : selected_names) {
+        if (!uniq.insert(name).second) {
+            duplicates++;
+        }
+    }
+
+    size_t validated_q4 = 0;
+    size_t missing = 0;
+    size_t non_q4 = 0;
+    for (const auto & name : uniq) {
+        auto it = weights_map.find(name);
+        if (it == weights_map.end()) {
+            missing++;
+            continue;
+        }
+
+        const ggml_tensor * tensor = it->second.tensor;
+        if (tensor == nullptr || !llama_q4_metacomp_is_q4_type(tensor->type)) {
+            non_q4++;
+            continue;
+        }
+
+        plan.selected_q4_names.insert(name);
+        validated_q4++;
+    }
+
+    LLAMA_LOG_INFO(
+        "%s: q4 metacomp sidecar loaded: selected=%zu unique=%zu validated_q4=%zu missing=%zu non_q4=%zu duplicates=%zu\n",
+        __func__, selected_names.size(), uniq.size(), validated_q4, missing, non_q4, duplicates);
+
+    if (missing > 0 || non_q4 > 0) {
+        LLAMA_LOG_WARN(
+            "%s: sidecar validation found unsupported rows (missing/non_q4) - fail-closed fallback is required for those tensors\n",
+            __func__);
+    }
+
+    plan.force_cpu_selected = llama_env_flag_enabled("LLAMA_Q4_METACOMP_FORCE_CPU_SELECTED");
+
+    if (plan.force_cpu_selected) {
+        if (plan.selected_q4_names.empty()) {
+            LLAMA_LOG_WARN(
+                "%s: LLAMA_Q4_METACOMP_FORCE_CPU_SELECTED=1 but no validated Q4 sidecar rows - forcing is disabled\n",
+                __func__);
+            plan.force_cpu_selected = false;
+        } else {
+            LLAMA_LOG_INFO(
+                "%s: q4 metacomp applied mode enabled - forcing %zu validated sidecar tensors to CPU-compatible buffer types\n",
+                __func__, plan.selected_q4_names.size());
+        }
+    }
+
+    return plan;
+}
 
 const char * llama_file_version_name(llama_fver version) {
     switch (version) {
@@ -699,6 +852,12 @@ llama_model_loader::llama_model_loader(
     n_kv      = gguf_get_n_kv(metadata);
     n_tensors = weights_map.size();
 
+    {
+        const auto q4_metacomp_plan = llama_q4_metacomp_probe_sidecar(weights_map);
+        q4_metacomp_selected_q4_names = q4_metacomp_plan.selected_q4_names;
+        q4_metacomp_force_cpu_selected = q4_metacomp_plan.force_cpu_selected;
+    }
+
     fver = (enum llama_fver) gguf_get_version(metadata);
 
     LLAMA_LOG_INFO("%s: loaded meta data with %d key-value pairs and %d tensors from %s (version %s)\n",
@@ -1180,6 +1339,25 @@ struct ggml_tensor * llama_model_loader::create_tensor(
             }
         }
 
+        if (!buft && q4_metacomp_force_cpu_selected && llama_q4_metacomp_is_q4_type(t_meta->type)) {
+            const std::string tensor_name = tn.str();
+            if (q4_metacomp_selected_q4_names.find(tensor_name) != q4_metacomp_selected_q4_names.end()) {
+                buft = select_weight_buft(hparams, t_meta, op, buft_list_cpu);
+                if (buft) {
+                    q4_metacomp_cpu_forced_count++;
+                    LLAMA_LOG_DEBUG(
+                        "%s: q4 metacomp forced tensor %s (%zu MiB %s) to CPU-compatible buffer type %s\n",
+                        __func__, tensor_name.c_str(),
+                        ggml_nbytes(t_meta) / 1024 / 1024, ggml_type_name(t_meta->type),
+                        ggml_backend_buft_name(buft));
+                } else {
+                    LLAMA_LOG_WARN(
+                        "%s: q4 metacomp could not find CPU-compatible buft for tensor %s - using legacy selection\n",
+                        __func__, tensor_name.c_str());
+                }
+            }
+        }
+
         if (!buft) {
             buft = select_weight_buft(hparams, t_meta, op, buft_list);
             if (!buft) {
@@ -1327,6 +1505,11 @@ void llama_model_loader::done_getting_tensors(bool partial) const {
         LLAMA_LOG_DEBUG("%s: tensor '%s' (%s) (and %zu others) cannot be used with preferred buffer type %s, using %s instead\n",
             __func__, first_tensor_moved_name.c_str(), first_tensor_moved_type_name.c_str(), n_tensors_moved - 1,
             ggml_backend_buft_name(first_moved_from_buft), ggml_backend_buft_name(first_moved_to_buft));
+    }
+    if (q4_metacomp_force_cpu_selected) {
+        LLAMA_LOG_INFO(
+            "%s: q4 metacomp applied summary: forced_cpu=%zu validated_selected=%zu\n",
+            __func__, q4_metacomp_cpu_forced_count, q4_metacomp_selected_q4_names.size());
     }
 }
 
@@ -1525,6 +1708,8 @@ bool llama_model_loader::load_all_data(
             continue;
         }
 
+        const size_t src_n_size = ggml_nbytes(weight->tensor);
+
         if (progress_callback) {
             if (!progress_callback((float) size_done / size_data, progress_callback_user_data)) {
                 return false;
@@ -1638,7 +1823,7 @@ bool llama_model_loader::load_all_data(
             }
         }
 
-        size_done += n_size;
+        size_done += src_n_size;
     }
 
     // free temporary resources used for async uploads

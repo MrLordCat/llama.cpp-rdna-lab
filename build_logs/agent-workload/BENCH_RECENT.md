@@ -7,6 +7,7 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-05-28 17:43:20 | cold-first | vulkan | q4fitauto-vulkan130k-big-c152k-b512-ub256-r2 | Qwen3.6-27B-Q4_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.1166 | 423.2600 | 4.2700 | 0 |
 | 2026-05-28 13:04:07 | cold-first | vulkan | q4fitauto-vulkan130k-big-c152k-b512-ub256-r1 | Qwen3.6-27B-Q4_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.1178 | 427.8600 | 4.1500 | 0 |
 | 2026-05-28 11:00:45 | cold-first | vulkan | d047-vulkan130k-big-c152k-lowtile3-noq3quad-noreuse-mt16-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.1748 | 622.4000 | 21.3600 | 0 |
 | 2026-05-27 21:31:47 | cold-first | vulkan | d046-vulkan130k-big-c152k-lowtile3-noreuse-mt16-b640-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 640/256 | q4_0/q4_0 | none | 0.1640 | 583.4700 | 21.9200 | 0 |
@@ -86,4 +87,3 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-05-27 09:29:53 | cold-first | vulkan | d034-vulkan-130k-d012-force-control-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.3681 | 191.0700 | 28.4700 | 0 |
 | 2026-05-27 09:28:10 | cold-first | vulkan | d034-vulkan-130k-d012-fresh-control-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.3660 | 189.9200 | 28.5600 | 0 |
 | 2026-05-27 01:25:25 | cold-first | rocm | d022-rocm130k-upstream-stock-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 0.5720 | 294.4000 | 21.9600 | 0 |
-| 2026-05-27 00:54:01 | cold-first | rocm | d020-rocm130k-vbuffer-singlechunk-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 1.5067 | 798.4800 | 28.7800 | 0 |
