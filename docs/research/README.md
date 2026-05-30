@@ -13,6 +13,8 @@ helper, and simple layout probes. New work must begin as a design/topology note
 under `major-topology/`, with route evidence and a ceiling model before code.
 
 This folder is a local R&D workspace for ideas beyond current ngram speculative decoding and Flash Attention baselines.
+Current policy: major-topology is the primary research path. New active work should be authored in
+`docs/research/major-topology/` first, then measured on the active lane.
 
 For VS Code agent setup, fixed tasks, tool budgets, and benchmark workflow, start with `PERF_WORKSPACE.md`.
 
@@ -37,24 +39,24 @@ Primary lane (project policy):
 
 ## What Goes Here
 
-- hypothesis docs with math and expected effect size
+- major-topology program/design/scout docs with expected effect size
 - experiment plans and acceptance criteria
 - run logs and postmortems
 - links to implementation PRs or patches
 
 ## Structure
 
+- MAJOR_TOPOLOGY_WORKFLOW.md: primary workflow for current large architecture work
+- major-topology/: primary program board and design notes before source prototypes
 - HYPOTHESES.md: prioritized candidate ideas and why they might work
 - CONTEXT_130K_WORKFLOW.md: active 130k lane contract and baseline commands
 - PERF_WORKSPACE.md: VS Code agent/tool/task workflow for reproducible TPS work
 - EXPERIMENTS_DIGEST.md: compact historical base grouped by route family
 - BENCH_HISTORY_POLICY.md: canonical benchmark history file contract
-- MAJOR_TOPOLOGY_WORKFLOW.md: post-E264 workflow for large architecture changes
-- major-topology/: program board and design notes before source prototypes
 - EXPERIMENT_TEMPLATE.md: standard template for each experiment
 - RESULTS_LOG.md: compact ledger of executed experiments
 - DFLASH_IMPLEMENTATION_PREP.md: staged DFlash integration plan for this fork
-- experiments/: per-experiment notes (E001, E002, ...)
+- experiments/: legacy/per-note archive (E001, E002, ...) and narrow historical references
 - dflash/: source vendor manifest and DFlash-specific planning artifacts
 - archive/: historical plans and audits no longer used as active entry points
 
@@ -172,9 +174,9 @@ Latest root-cause lesson:
 
 ## If You Are New To Research
 
-1. Pick one hypothesis from HYPOTHESES.md.
-2. Read EXPERIMENTS_DIGEST.md to avoid repeating closed route families.
-3. Fill EXPERIMENT_TEMPLATE.md, or a major-topology design note when the change is broad.
+1. Open or update a major-topology note in `docs/research/major-topology/` (P/D/S).
+2. Pick one hypothesis from HYPOTHESES.md and map it to that note.
+3. Read EXPERIMENTS_DIGEST.md to avoid repeating closed route families.
 4. Run formula_sanity_checks.py and required_acceptance.py first when applicable.
 5. Only after that run microbench and lane benchmark.
-6. Record the result in RESULTS_LOG.md, refresh EXPERIMENTS_DIGEST.md, and add one experiment note.
+6. Record the result in RESULTS_LOG.md, refresh EXPERIMENTS_DIGEST.md, and add the measured outcome to the owning major-topology note.

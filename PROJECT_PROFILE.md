@@ -13,6 +13,13 @@
 - Ключевое ограничение: RX 9070 XT имеет 16 GB VRAM, поэтому при `ctx=131072` значимая часть KV/context/working set может уходить в system RAM. RAM-spill/residency/PCIe поведение теперь является частью целевой задачи.
 - Старые `ctx=12288`, `32768`, `65536` и sentinel `128k` результаты остаются историческими reference; особенно старые sentinel128 с tiny prompt не считать 130k baseline.
 
+## Текущий research workflow (главный)
+
+- Основной research-контур ведется через `docs/research/major-topology/`.
+- Перед новыми кодовыми прототипами обязательно сначала оформить или обновить major-topology заметку (`P`/`D`/`S`) и пройти gate-пакет.
+- `docs/research/experiments/` использовать как вторичный/исторический слой и для узких измерительных записей, а не как главный вход в новую фазу.
+- Любые speed claims по active lane принимаются только после измерений и записи результата в major-topology note + `docs/research/RESULTS_LOG.md`.
+
 ## Машина
 
 | Компонент | Значение |

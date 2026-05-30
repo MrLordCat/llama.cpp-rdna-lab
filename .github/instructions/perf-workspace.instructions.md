@@ -8,11 +8,13 @@ For TPS/performance work in this fork, start with:
 1. `AGENTS.md`
 2. `docs/research/CONTEXT_130K_WORKFLOW.md`
 3. `docs/research/PERF_WORKSPACE.md`
-4. `docs/research/EXPERIMENTS_DIGEST.md`
-5. `docs/research/HYPOTHESES.md`
-6. `docs/research/RESULTS_LOG.md`
-7. `docs/research/MAJOR_TOPOLOGY_WORKFLOW.md` for post-E264 backend topology work
-8. Relevant notes in `docs/research/experiments/`
+4. `docs/research/MAJOR_TOPOLOGY_WORKFLOW.md`
+5. `docs/research/major-topology/README.md`
+6. `docs/research/EXPERIMENTS_DIGEST.md`
+7. `docs/research/HYPOTHESES.md`
+8. `docs/research/RESULTS_LOG.md`
+9. Relevant notes in `docs/research/major-topology/` for the active program
+10. `docs/research/experiments/` only for archived or narrow legacy comparisons
 
 Use the narrowest useful tool set: read/search, focused edits, terminal builds or
 benchmarks, and todo tracking. Avoid browser/UI/notebook/Java/debug/extension
@@ -39,6 +41,10 @@ Q3 has about `1.18-1.20x` local point/static evidence. ROCm baseline
 the user explicitly asks for a short-context lane. At 130k, RX 9070 XT 16 GB is
 expected to spill KV/context/working set into system RAM; diagnostics about
 residency, mmap/no-mmap, startup time, and RAM pressure are part of the result.
+
+Primary workflow policy: open or update a major-topology P/D/S note first, then
+run gates and measured A/B. Do not start new performance work from a standalone
+E### note unless it is an explicit narrow ledger update.
 
 Negative shader/runtime probes should be reverted unless they are intentionally
 kept behind a documented opt-in gate. Update the experiment note and

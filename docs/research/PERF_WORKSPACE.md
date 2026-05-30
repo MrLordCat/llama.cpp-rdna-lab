@@ -23,14 +23,15 @@ For performance work, read these in order:
 1. `AGENTS.md`
 2. `docs/research/CONTEXT_130K_WORKFLOW.md`
 3. `docs/research/PERF_WORKSPACE.md`
-4. `docs/research/EXPERIMENTS_DIGEST.md`
-5. `docs/research/HYPOTHESES.md`
-6. `docs/research/RESULTS_LOG.md`
-7. `docs/research/BENCH_HISTORY_POLICY.md`
-8. For major topology work after E264: `docs/research/MAJOR_TOPOLOGY_WORKFLOW.md`
-   and `docs/research/major-topology/README.md`
-9. The latest relevant experiment note under `docs/research/experiments/`
-10. `build_logs/agent-workload/BENCH_RECENT.md` and `build_logs/agent-workload/BENCH_LANES.md`
+4. `docs/research/MAJOR_TOPOLOGY_WORKFLOW.md`
+5. `docs/research/major-topology/README.md`
+6. `docs/research/EXPERIMENTS_DIGEST.md`
+7. `docs/research/HYPOTHESES.md`
+8. `docs/research/RESULTS_LOG.md`
+9. `docs/research/BENCH_HISTORY_POLICY.md`
+10. The latest relevant note under `docs/research/major-topology/`
+11. `build_logs/agent-workload/BENCH_RECENT.md` and `build_logs/agent-workload/BENCH_LANES.md`
+12. `docs/research/experiments/` only for legacy cross-reference
 
 For paused decode/perf work, also read:
 
@@ -73,29 +74,33 @@ not make unmeasured speed claims, and the upstream scout should not edit files.
    - `git status --short --branch`
    - confirm no background `llama-server`
    - identify the active hypothesis ID or create one in `HYPOTHESES.md`
-2. Prepare an experiment note from `docs/research/EXPERIMENT_TEMPLATE.md`.
-3. Run cheap gates before expensive lane benchmarks:
+2. Prepare or update a major-topology note first (`P`/`D`/`S`) in
+   `docs/research/major-topology/`.
+3. Prepare an experiment note from `docs/research/EXPERIMENT_TEMPLATE.md` only
+   when needed for a narrow measured ledger entry.
+4. Run cheap gates before expensive lane benchmarks:
    - `python scripts/research/formula_sanity_checks.py`
    - `python scripts/research/vulkan_q3k_prebuild_gate.py --candidate "<idea>"` for H31/Vulkan Q3_K shader or tile ideas
    - hypothesis-specific model/check script when applicable
-4. Run one-run A/B gates first.
-5. Use three runs only for final confirmation of borderline or promising deltas.
-6. Compare against the current best/history for the same lane shape.
-7. For route or bucket-local kernel changes, run a point-level timing review before promotion:
+5. Run one-run A/B gates first.
+6. Use three runs only for final confirmation of borderline or promising deltas.
+7. Compare against the current best/history for the same lane shape.
+8. For route or bucket-local kernel changes, run a point-level timing review before promotion:
    - enable sync timing for the touched route (for MMVQ: `GGML_TRACE_MMVQ_TIMING=1` + `GGML_TRACE_MMVQ_TIMING_SYNC=1` + `GGML_TRACE_MMVQ_RESOURCES=1`)
    - compare the same points (`ncols_x` buckets) before/after with mean `total_ms`
    - report a robust view that excludes startup outliers (for example, `total_ms < 10`)
    - always pair point-level deltas with wall metrics (`aggregate_completion_tps`, prompt/decode ms)
-8. If local point timing improves but wall does not improve (or regresses), classify as bottleneck shift and move to the next route hotspot instead of iterating the same micro-point.
-9. Revert negative runtime/shader/code probes unless they are intentionally kept
+9. If local point timing improves but wall does not improve (or regresses), classify as bottleneck shift and move to the next route hotspot instead of iterating the same micro-point.
+10. Revert negative runtime/shader/code probes unless they are intentionally kept
    behind a documented opt-in gate.
-10. Update docs in the same work unit:
+11. Update docs in the same work unit:
+   - owning major-topology note (required)
    - experiment note
    - `docs/research/RESULTS_LOG.md`
    - `docs/research/EXPERIMENTS_DIGEST.md` via `python scripts/research/refresh_experiment_digest.py`
    - `BENCHMARKS.md` for meaningful user-facing benchmark decisions
    - `docs/research/HYPOTHESES.md` if priority/status changes
-11. Refresh canonical benchmark history when logs/schema changed:
+12. Refresh canonical benchmark history when logs/schema changed:
    - `python scripts/agent_workload_bench.py --refresh-canonical-history`
 
 ## Active Lanes
