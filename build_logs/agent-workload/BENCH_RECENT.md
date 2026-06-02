@@ -7,6 +7,10 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-06-02 19:43:56 | cold-first | vulkan | vscode-cherrypick-vulkan-r22887-r3 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/256 | q4_0/q4_0 | none | 30.6690 | 740.9700 | 35.2600 | 0 |
+| 2026-06-02 19:25:01 | cold-first | vulkan | vscode-cherrypick-vulkan-baseline-r3 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/256 | q4_0/q4_0 | none | 33.8449 | 739.3200 | 40.6733 | 0 |
+| 2026-06-02 19:21:01 | cold-first | vulkan | gitbash-vulkan-fixed-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/256 | q4_0/q4_0 | none | 33.3983 | 769.7900 | 39.9000 | 0 |
+| 2026-06-02 19:06:14 | cold-first | rocm | vscode-cherrypick-rocm-r23646-r3 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | none | 26.0870 | 663.1900 | 30.3667 | 0 |
 | 2026-05-30 13:13:32 | cold-first | vulkan | d076-fa-br32-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.1033 | 434.5600 | 19.3700 | 0 |
 | 2026-05-30 13:03:11 | cold-first | vulkan | d076-fa-nomaskopt-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.1321 | 556.3700 | 19.7100 | 0 |
 | 2026-05-30 12:14:02 | cold-first | vulkan | d076-fa-shmemstage-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.1032 | 433.9000 | 19.2900 | 0 |
@@ -83,7 +87,3 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-05-27 10:52:34 | cold-first | vulkan | d034-vulkan-130k-v-host-fulltile-ub512-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/512 | q4_0/q4_0 | none | 1.9312 | 1056.0500 | 32.7100 | 0 |
 | 2026-05-27 10:50:52 | cold-first | vulkan | d034-vulkan-64k-fulltile-store-r1 | Qwen3.6-27B-Q3_K_S.gguf | 65536 | 512/256 | q4_0/q4_0 | none | 1.9640 | 1060.9600 | 41.4900 | 0 |
 | 2026-05-27 10:49:51 | cold-first | vulkan | d034-vulkan-130k-v-host-fulltile-store-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 1.8199 | 991.5100 | 32.6700 | 0 |
-| 2026-05-27 10:48:56 | cold-first | vulkan | d034-vulkan-130k-q3-fulltile-store-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.3897 | 201.5800 | 40.8500 | 0 |
-| 2026-05-27 10:12:44 | cold-first | vulkan | d034-vulkan-130k-k-dev-v-host-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 1.8052 | 983.2000 | 32.4700 | 0 |
-| 2026-05-27 10:12:05 | cold-first | vulkan | d034-vulkan-130k-k-host-v-dev-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 1.7692 | 961.7000 | 32.8500 | 0 |
-| 2026-05-27 10:10:10 | cold-first | vulkan | d034-vulkan-130k-kv-host-gpu-dev-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 1.7369 | 952.2900 | 28.2100 | 0 |

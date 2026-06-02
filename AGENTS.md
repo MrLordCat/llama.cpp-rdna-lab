@@ -15,6 +15,7 @@
 - Preferred GPU backend: ROCm/HIP SDK 7.1.
 - Fallback backend: Vulkan.
 - ROCm builds on Windows must use Ninja and ROCm clang/clang++, not Visual Studio generator.
+- Vulkan MinGW builds: after build, run `scripts/stage-vulkan-dlls.sh` to copy Strawberry GCC runtime DLLs next to `build-vulkan/bin/*.exe`. Git Bash puts incompatible `/mingw64/bin` DLLs first in `PATH`, causing `0xC0000139 STATUS_ENTRYPOINT_NOT_FOUND`. Fallback for old build tree: `export PATH=\"/c/Strawberry/c/bin:$PATH\"`. DLL staging is mandatory — never hand-edit PATH as a workaround.
 
 ## Главные цели форка
 

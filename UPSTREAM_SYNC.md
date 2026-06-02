@@ -174,3 +174,61 @@ git show --name-only <commit>
 ```
 
 Не cherry-pick commit, который в основном меняет `.github`, docs или release automation, если цель была core/runtime.
+
+---
+
+## Cherry-Pick Protocol Log: 2026-06-02
+
+**Ветка**: `research/cherry-pick-upstream` (от `c40f8a5af`).
+**Baseline**: `vscode-cherrypick-rocm-baseline-r3` — **25.83 TPS** (ROCm, ctx=4096, b=512, ub=128, q4_0 KV, FA on, spec=none, max_tokens=48, runs=3).
+
+### Правила протокола
+
+1. Без `git merge` — только ручное внесение (manual apply).
+2. Если cherry-pick конфликтует с локальными изменениями форка — abort, читаем upstream diff, вносим только новые строки.
+3. Никогда не перезаписывать локальные изменения через `git checkout --theirs`.
+4. После каждого PR: сборка + бенч (Python `agent_workload_bench.py`, без trace env).
+
+### Успешно внедрено
+
+| # | PR | Коммит | Файлы | Строк | TPS | Δ |
+|---|-----|--------|-------|-------|-----|-----|
+| 1 | **#23227** | `d61a7d14f` | `mmvq.cuh` +2, `mmvq.cu` +47, `ggml-cuda.cu` +2 | +51 | **26.13** | +1.2% |
+| 2 | **#23646** | `88533968b` | `server-context.cpp` +2 | +2 | **26.09** | +1.0% |
+
+**Суммарно**: +2.3% (в пределах шума, без регрессий).
+
+**#23227** (ROCm per-quant MMVQ/MMQ): `ggml_cuda_should_use_mmvq()` — per-type пороги CDNA1/CDNA2. На RDNA4 не активируется, но не вредит.
+
+**#23646** (MTP KV-cache draft type): MTP draft-контекст использует `cache_type_k`/`cache_type_v` из spec-параметров.
+
+### Пропущены — уже есть в форке
+
+| PR | Причина |
+|----|--------|
+| #23433 (mtp inp_out_ids) | `inp_out_ids` и `ggml_get_rows` уже в qwen35.cpp:131-153 |
+| #23988 (speculative fix) | `common_speculative_n_max` уже есть; draft-simple auto-enable убран |
+
+### Пропущены — структурно несовместимы
+
+| PR | Причина |
+|----|--------|
+| #23056 (Vulkan Q3_K block-load +57%) | Требует symbols отсутствующие в нашем Vulkan билде |
+| #22887 (Vulkan MUL_MAT_VEC 4K) | Связан с #23056 |
+| #23643 (llm_graph_input_mtp) | Требует класс `graph_mtp` — другая структура MTP |
+| #23461 (MTP VRAM leak fix) | `ctx_dft` отсутствует в нашем `server-context.cpp` |
+
+### Пропущен по сути — #23764 (FA f16 mask)
+
+**Идея**: KQ-маска F32→F16 при `flash_attn=on`, экономия 50% памяти под маску.
+**Для нас**: decode 1 токен — 262 KB, speculative 4 токена — ~1 MB экономии.
+**Цена**: темплейтить 7 вариантов `set_input_kq_mask_impl` + `fill_mask` + `print_mask`.
+**Вердикт**: не окупается для decode-доминантного сценария.
+
+### Bench progression
+
+| Step | Wall (s) | TPS | Δ |
+|------|----------|-----|---|
+| baseline | 1.86 | **25.83** | — |
+| + #23227 | 1.84 | **26.13** | +1.2% |
+| + #23646 | 1.84 | **26.09** | +1.0% |
