@@ -232,3 +232,78 @@ git show --name-only <commit>
 | baseline | 1.86 | **25.83** | — |
 | + #23227 | 1.84 | **26.13** | +1.2% |
 | + #23646 | 1.84 | **26.09** | +1.0% |
+
+---
+
+## Rejected/Closed Vulkan PR Analysis: 2026-06-02
+
+Изучены отклонённые и закрытые Vulkan PR в upstream. 159 total unmerged Vulkan PRs.
+Ниже — наиболее интересные для нашего форка с анализом идей.
+
+### #23696 — Vulkan backend performance with helper classes (MaxwellGengYF)
+- **Закрыт**: 0cc4m, «VMA is not gonna get accepted here, there is no reason to use it»
+- **Идея**: VMA (AMD Vulkan Memory Allocator) для сабаллокации, bindless descriptors (VK_EXT_descriptor_indexing), persistent VkPipelineCache, barrier tracker, ring-buffer staging
+- **Почему отклонён**: слишком большой (21K строк), AI-сгенерированные описания, multiple unrelated changes
+- **Полезные идеи для нас**:
+  - **Persistent pipeline cache**: сохраняет скомпилированные пайплайны на диск между запусками → ускорение старта сервера. Это можно реализовать отдельно, ~50 строк
+  - **Ring-buffer staging**: циклический буфер для CPU↔GPU трансферов вместо выделения нового буфера под каждый тензор → меньше аллокаций, быстрее prompt ingestion
+  - **Barrier tracker**: автоматическое отслеживание барьеров между диспатчами → меньше ручных vkCmdPipelineBarrier
+- **Вердикт**: идеи хорошие, но реализовывать по отдельности, не гигантским PR
+
+### #23573 — Pipeline cache shared mutex (winstonma)
+- **Закрыт**: автором после замечания jeffbolznv
+- **Идея**: `std::shared_mutex` для concurrent reads пайплайн-кэша, double-checked locking
+- **Почему отклонён**: пайплайн-карты также guarded через device mutex в `ggml_vk_load_shaders`; fine-grained locks → риск дедлоков
+- **Полезная идея**: shared_mutex для read-heavy workloads. Но требует осторожности из-за пересечений с device mutex
+- **Вердикт**: для single-user сценария (наш случай) lock contention не проблема. Не нужно
+
+### #22750 — Skip cooperative matrix on integrated AMD GPUs (elana-voss)
+- **Закрыт**: 0cc4m, «Coopmat works perfectly fine on AMD RDNA3+, we will not disable the feature»
+- **Идея**: отключать coopmat на AMD iGPU (Radeon 860M) из-за бага драйвера (amdvlk64.dll access violation)
+- **Почему отклонён**: проблема в конкретной конфигурации драйвера, не в llama.cpp
+- **Нам**: RX 9070 XT — дискретная RDNA4. Coopmat работает. **Не актуально**
+
+### #22459 — Pipeline cache for compute pipelines (winstonma)
+- **Закрыт**
+- **Идея**: переиспользование скомпилированных SPIR-V пайплайнов через VkPipelineCache
+- **Почему отклонён**: не указано явно, вероятно перекрыт другими изменениями
+- **Полезная идея**: совпадает с #23696. Реализация pipeline cache отдельно — low-hanging fruit
+
+### #21357 — Zero-copy host_ptr for CPU tensors (Perinban)
+- **Закрыт**
+- **Идея**: zero-copy host_ptr для CPU тензоров — избежать двойной загрузки модели на memory-constrained устройствах
+- **Нам**: 64 GB RAM — не критично. Но идея интересная для сценария с нехваткой RAM
+
+### #21359 — UMA host buffer support (Perinban)
+- **Закрыт**
+- **Идея**: поддержка UMA (unified memory architecture) host буферов в Vulkan
+- **Нам**: RX 9070 XT — дискретная с dedicated VRAM. Не актуально
+
+### #23570 — Refactor vk_queue to per-instance mutexes (winstonma) — 🟡 OPEN
+- **33 комментария**, активное обсуждение
+- **Идея**: рефакторинг vk_queue — separate mutex per queue instance instead of global device lock
+- **Зачем**: уменьшить lock contention при многопоточном доступе к разным queue families
+- **Статус**: ещё не вмержен, идут правки после ревью
+
+### #23762 — Fix UMA performance with cached host memory (winstonma) — 🟡 OPEN
+- **Идея**: предпочитать cached host memory на UMA-устройствах, обрабатывать non-coherent память
+- **Нам**: RX 9070 XT — dedicated GPU. UMA не используется. **Не актуально**
+
+### Сводка идей для потенциальной реализации
+
+| Идея | Откуда | Приоритет | Сложность | Потенциальный эффект |
+|---|---|---|---|---|
+| **Persistent VkPipelineCache** | #23696, #22459 | 🟡 Средний | ~50 строк | Ускорение холодного старта сервера (shader compilation) |
+| **Ring-buffer staging** | #23696 | 🟡 Средний | ~150 строк | Меньше аллокаций при prompt ingestion |
+| **Barrier tracker** | #23696 | 🟢 Низкий | ~200 строк | less error-prone barriers, но уже работает |
+| Shared mutex для pipeline map | #23573 | 🔴 Не нужно | ~30 строк | Для single-user нет контеншна |
+| Coopmat skip на iGPU | #22750 | 🔴 Не нужно | — | RX 9070 XT — дискретная |
+| VMA (Vulkan Memory Allocator) | #23696 | 🔴 Не нужно | ~20K строк | Уже есть своя memory management |
+
+### 🎯 Рекомендация
+
+**Persistent pipeline cache** — самый полезный takeaway. Сохраняет скомпилированные SPIR-V пайплайны в файл и загружает при следующем запуске, проверяя vendorID/deviceID/pipelineCacheUUID. Это:
+- Ускоряет холодный старт сервера (особенно заметно на Vulkan где shader compilation — bottleneck)
+- Безопасно: не меняет рантайм-поведение, только кэширует
+- Маленький: ~50 строк
+- Независим: не затрагивает другие компоненты
