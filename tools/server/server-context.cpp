@@ -837,6 +837,8 @@ private:
                         params_base.model.path.c_str());
 
                 cparams_mtp.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+                cparams_mtp.type_k   = params_base.speculative.draft.cache_type_k;
+                cparams_mtp.type_v   = params_base.speculative.draft.cache_type_v;
                 params_base.speculative.mtp.model = model;
             } else {
                 SRV_WRN("%s\n", "LLAMA_MTP_FORCE_LEGACY_HEAD_LOAD is set; using legacy MTP head reload path");
