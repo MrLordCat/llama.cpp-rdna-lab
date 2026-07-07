@@ -2202,6 +2202,34 @@ int32_t llama_model_n_swa(const llama_model * model) {
     return model->hparams.n_swa;
 }
 
+// DFlash drafter metadata accessors (ported from beellama)
+int32_t llama_model_dflash_block_size(const llama_model * model) {
+    return (int32_t) model->hparams.dflash_block_size;
+}
+
+int32_t llama_model_dflash_mask_token_id(const llama_model * model) {
+    return (int32_t) model->hparams.dflash_mask_token_id;
+}
+
+int32_t llama_model_dflash_n_target_layers(const llama_model * model) {
+    return (int32_t) model->hparams.dflash_n_target_layers;
+}
+
+int32_t llama_model_dflash_n_target_features(const llama_model * model) {
+    return (int32_t) model->hparams.dflash_n_target_features;
+}
+
+int32_t llama_model_dflash_target_layer_ids(const llama_model * model, int32_t * layer_ids, int32_t capacity) {
+    int32_t n = (int32_t) model->hparams.dflash_n_target_layers;
+    if (n > capacity) {
+        n = capacity;
+    }
+    for (int32_t i = 0; i < n; ++i) {
+        layer_ids[i] = (int32_t) model->hparams.dflash_target_layer_ids[i];
+    }
+    return n;
+}
+
 uint32_t llama_model_n_cls_out(const struct llama_model * model) {
     return model->hparams.n_cls_out;
 }
