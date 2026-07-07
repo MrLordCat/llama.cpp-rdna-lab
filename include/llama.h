@@ -992,6 +992,11 @@ extern "C" {
     LLAMA_API void llama_set_dflash_consume_reduced(struct llama_context * ctx, bool enabled);
     LLAMA_API void llama_set_dflash_n_slots(struct llama_context * ctx, int n);
 
+    // DFlash capture buffer management (target ctx): reset at generation start,
+    // truncate to drop the rejected draft suffix after each accept.
+    LLAMA_API void llama_dflash_reset_hiddens   (struct llama_context * ctx);
+    LLAMA_API void llama_dflash_truncate_hiddens(struct llama_context * ctx, int64_t n_keep);
+
     // Read captured target hidden states (for the DFlash drafter's cross window).
     LLAMA_API int32_t llama_get_n_layer_hiddens        (struct llama_context * ctx);
     LLAMA_API float * llama_get_layer_hidden           (struct llama_context * ctx, int layer_idx);

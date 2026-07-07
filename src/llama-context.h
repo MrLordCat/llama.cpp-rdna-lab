@@ -122,6 +122,7 @@ struct llama_context {
     void set_dflash_capture(const int32_t * layer_ids, int32_t n_layers);
     void set_dflash_capture_active(bool active);
     void dflash_reset_hidden_capture();
+    void dflash_truncate_hiddens(int64_t n_keep); // drop captured tokens past n_keep (rejected suffix)
     int32_t get_n_layer_hiddens() const;
     float * get_layer_hidden(int layer_idx);                 // [n_embd * n_tokens], row-major per token
     int64_t get_layer_hidden_n_tokens(int layer_idx) const;

@@ -1733,9 +1733,10 @@ int llama_context::decode(const llama_batch & batch_inp) {
         return -1;
     }
 
-    // DFlash: clear the per-slot hidden-capture buffers so this decode() call's
-    // ubatches accumulate only their own tokens (no-op when capture is off).
-    dflash_reset_hidden_capture();
+    // DFlash: the hidden-capture buffers ACCUMULATE the committed context across
+    // decode() calls (the drafter cross-attends to a sliding window of recent
+    // target hiddens). The DFlash speculative state resets them at generation
+    // start and truncates after each accept, so we must NOT clear per-decode.
 
     const auto & vocab   = model.vocab;
     const auto & hparams = model.hparams;
@@ -4202,6 +4203,20 @@ void llama_context::dflash_reset_hidden_capture() {
     }
 }
 
+void llama_context::dflash_truncate_hiddens(int64_t n_keep) {
+    if (!dflash_capture || n_keep < 0) {
+        return;
+    }
+    for (auto & slot_bufs : layer_hiddens) {
+        for (auto & buf : slot_bufs) {
+            if (buf.n_tokens > n_keep) {
+                buf.n_tokens = n_keep;
+                buf.data.resize((size_t) n_keep * (size_t) buf.n_embd);
+            }
+        }
+    }
+}
+
 int32_t llama_context::get_n_layer_hiddens() const {
     auto * sh = dflash_capture ? dflash_capture->active_slot_hiddens() : nullptr;
     return sh ? (int32_t) sh->size() : 0;
@@ -4236,6 +4251,12 @@ int64_t llama_context::get_layer_hidden_n_embd(int layer_idx) const {
 }
 
 // ---- public C API wrappers ----
+void llama_dflash_reset_hiddens(llama_context * ctx) {
+    ctx->dflash_reset_hidden_capture();
+}
+void llama_dflash_truncate_hiddens(llama_context * ctx, int64_t n_keep) {
+    ctx->dflash_truncate_hiddens(n_keep);
+}
 void llama_set_dflash_capture(llama_context * ctx, const int32_t * layer_ids, int32_t n_layers) {
     ctx->set_dflash_capture(layer_ids, n_layers);
 }

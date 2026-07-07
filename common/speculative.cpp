@@ -875,6 +875,7 @@ struct common_speculative_state_dflash : public common_speculative_state {
     int         n_target_layers   = 0;
     int         n_target_features = 0;
     int         cross_window      = 512; // most-recent target tokens the drafter cross-attends to
+    int         committed_len     = 0;   // committed context length (captured target hiddens)
     bool        contract_ok       = false;
 
     std::vector<int32_t> capture_layers;
@@ -924,10 +925,12 @@ struct common_speculative_state_dflash : public common_speculative_state {
         }
     }
 
-    void begin(const llama_tokens & /*prompt*/) override {
-        // Capture is active on the target; the prompt's hidden states are grabbed
-        // during the target's prefill decode(s). Nothing to do here for the
-        // single-decode-prefill minimal path.
+    void begin(const llama_tokens & prompt) override {
+        // Capture is active on the target; the prompt's hidden states were grabbed
+        // during the target's prefill decode(s) and now accumulate in the target's
+        // layer_hiddens buffers. Anchor committed_len to the prompt length so the
+        // cross window and drafter positions track the committed context.
+        committed_len = (int) prompt.size();
     }
 
     // pack the target's captured per-layer hiddens into the drafter cross window.
@@ -980,6 +983,12 @@ struct common_speculative_state_dflash : public common_speculative_state {
             return;
         }
 
+        // prompt_tgt is the server's authoritative committed context. Drop any
+        // captured hiddens past it (the previous round's rejected draft suffix)
+        // so the cross window reflects only committed tokens.
+        committed_len = (int) prompt_tgt.size();
+        llama_dflash_truncate_hiddens(ctx_tgt, committed_len);
+
         const int cross_len = build_cross();
         if (cross_len <= 0) {
             return;
@@ -1017,7 +1026,9 @@ struct common_speculative_state_dflash : public common_speculative_state {
     }
 
     void accept(uint16_t /*n_accepted*/) override {
-        // Stateless minimal path: no accepted-prefix KV reuse to maintain.
+        // Committed-context bookkeeping happens at the start of the next draft()
+        // from the server's authoritative prompt_tgt (handles 0-accept rounds too,
+        // where common_speculative_accept() is not called).
     }
 
     int32_t n_max(const common_params_speculative & params) const override {
