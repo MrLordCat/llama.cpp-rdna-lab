@@ -374,12 +374,22 @@ Analyze:
 
 
 def default_server_bin() -> Path | None:
-    candidates = [
-        ROOT / "build-rocm" / "bin" / "llama-server.exe",
-        ROOT / "build-rocm" / "bin" / "Release" / "llama-server.exe",
-        ROOT / "build" / "bin" / "llama-server.exe",
-        ROOT / "build" / "bin" / "Release" / "llama-server.exe",
+    # Ordered by preference: the current dual-GPU ROCm build first, then the
+    # generic ROCm/Vulkan/CPU build dirs that actually exist in this repo.
+    # NOTE: the historical default `build-rocm/bin` does not exist on this rig;
+    # the live ROCm build lives in `build-rocm-vec/bin`.
+    build_dirs = [
+        "build-rocm-vec",
+        "build-rocm",
+        "build-vulkan",
+        "build-rocm-upstream-stock",
+        "build",
+        "build-cpu",
     ]
+    candidates: list[Path] = []
+    for d in build_dirs:
+        candidates.append(ROOT / d / "bin" / "llama-server.exe")
+        candidates.append(ROOT / d / "bin" / "Release" / "llama-server.exe")
     for path in candidates:
         if path.exists():
             return path
@@ -909,11 +919,38 @@ def parse_server_log_diagnostics(server_log: Path) -> dict[str, Any]:
     task_prompt_tokens = [int(x) for x in re.findall(r"task\.n_tokens =\s*(\d+)", text)]
     batch_chunks = [int(x) for x in re.findall(r"batch\.n_tokens =\s*(\d+)", text)]
 
+    # Speculative (MTP/draft) acceptance: sum the cumulative per-task stats from
+    # "statistics mtp: ... #gen tokens = G, #acc tokens = A". Acceptance =
+    # accepted / generated draft tokens. A healthy MTP head is ~0.6-0.8; values
+    # near 0 mean the draft head is fed the wrong hidden state or is otherwise
+    # broken, so MTP is pure overhead.
+    mtp_gen_tokens = sum(int(x) for x in re.findall(r"#gen tokens =\s*(\d+)", text))
+    mtp_acc_tokens = sum(int(x) for x in re.findall(r"#acc tokens =\s*(\d+)", text))
+    mtp_present = mtp_gen_tokens > 0 or "statistics mtp" in text
+    mtp_acceptance = (mtp_acc_tokens / mtp_gen_tokens) if mtp_gen_tokens > 0 else 0.0
+
     prompt_tps = [float(m[2]) for m in prompt_matches]
-    decode_tps = [float(m[2]) for m in eval_matches]
     prompt_ms = [float(m[0]) for m in prompt_matches]
-    decode_ms = [float(m[0]) for m in eval_matches]
     total_ms = [float(m[0]) for m in total_matches]
+
+    # llama.cpp prints "1000000.00 tokens per second" when the decode loop ran
+    # for ~0 ms (1 token, eval time = 0.00). That sentinel is meaningless and,
+    # if averaged in, makes decode_eval_tps useless for baseline-vs-spec
+    # comparison. Keep only samples that actually decoded >1 token, and count
+    # the degenerate ones separately so a broken spec run (e.g. MTP emitting a
+    # single token) is visible instead of silently inflating the metric.
+    decode_tps = []
+    decode_ms = []
+    decode_degenerate = 0
+    for m in eval_matches:
+        eval_ms = float(m[0])
+        eval_tokens = int(m[1])
+        eval_tps = float(m[2])
+        if eval_tokens <= 1 or eval_ms <= 0.0 or eval_tps >= 100000.0:
+            decode_degenerate += 1
+            continue
+        decode_tps.append(eval_tps)
+        decode_ms.append(eval_ms)
 
     def _series_stats(values: list[float]) -> dict[str, float]:
         if not values:
@@ -933,6 +970,12 @@ def parse_server_log_diagnostics(server_log: Path) -> dict[str, Any]:
         "path": str(server_log),
         "prompt_eval_tps": _series_stats(prompt_tps),
         "decode_eval_tps": _series_stats(decode_tps),
+        "decode_degenerate_count": decode_degenerate,
+        "decode_sample_count": len(decode_tps),
+        "mtp_present": mtp_present,
+        "mtp_gen_tokens": mtp_gen_tokens,
+        "mtp_acc_tokens": mtp_acc_tokens,
+        "mtp_acceptance": round(mtp_acceptance, 4),
         "prompt_eval_ms": _series_stats(prompt_ms),
         "decode_eval_ms": _series_stats(decode_ms),
         "total_ms": _series_stats(total_ms),
@@ -962,6 +1005,29 @@ def build_bottleneck_hints(rows: list[dict[str, Any]], server_diag: dict[str, An
     prompt_ms_mean = float(server_diag.get("prompt_eval_ms", {}).get("mean", 0.0) or 0.0)
     decode_ms_mean = float(server_diag.get("decode_eval_ms", {}).get("mean", 0.0) or 0.0)
     total_ms_mean = float(server_diag.get("total_ms", {}).get("mean", 0.0) or 0.0)
+
+    degenerate = int(server_diag.get("decode_degenerate_count", 0) or 0)
+    valid_decode = int(server_diag.get("decode_sample_count", 0) or 0)
+    if degenerate > 0:
+        hints.append(
+            f"{degenerate} task(s) decoded <=1 token (sentinel ~1e6 tok/s) and were "
+            "excluded from decode_eval_tps; likely an immediate stop or a broken "
+            "spec/MTP loop (#gen drafts=0) -- raise --max-tokens and check the spec head"
+        )
+    if valid_decode == 0:
+        hints.append("no valid decode samples; decode_eval_tps is unreliable for this run")
+
+    if server_diag.get("mtp_present"):
+        gen = int(server_diag.get("mtp_gen_tokens", 0) or 0)
+        acc = float(server_diag.get("mtp_acceptance", 0.0) or 0.0)
+        if gen == 0:
+            hints.append("MTP active but 0 draft tokens generated; draft head never ran (check spec gating / max-tokens)")
+        elif acc < 0.30:
+            hints.append(
+                f"MTP draft acceptance is low ({acc:.2%}); drafts are mostly rejected so "
+                "MTP is net overhead -- check the hidden-state fed to the draft head "
+                "(pre- vs post-norm) and the conditioning token/position"
+            )
 
     if prompt_tps_mean > 0 and decode_tps_mean > 0:
         ratio = prompt_tps_mean / decode_tps_mean
@@ -1084,6 +1150,11 @@ def write_diagnostics_report(
             f"- task_prompt_tokens mean: {server_diag.get('task_prompt_tokens', {}).get('mean', 0.0)}",
             f"- batch_chunks mean/max: {server_diag.get('batch_chunks', {}).get('mean', 0.0)}/{server_diag.get('batch_chunks', {}).get('max', 0)}",
         ]
+        if server_diag.get("mtp_present"):
+            lines.append(
+                f"- mtp acceptance: {server_diag.get('mtp_acceptance', 0.0):.2%} "
+                f"({server_diag.get('mtp_acc_tokens', 0)} acc / {server_diag.get('mtp_gen_tokens', 0)} gen draft tokens)"
+            )
     else:
         lines.append(f"- unavailable: {server_diag.get('error', 'unknown error')}")
 
@@ -2264,6 +2335,16 @@ def main() -> int:
 
     if args.server_seed is not None and args.server_seed < 0:
         args.server_seed = None
+
+    spec_mode = infer_spec_mode(args.server_extra)
+    if spec_mode not in ("", "none") and args.max_tokens < 64:
+        print(
+            f"WARNING: spec_mode='{spec_mode}' with --max-tokens {args.max_tokens}. "
+            "Short generations are prefill-dominated and won't exercise the draft/accept "
+            "loop, so baseline-vs-spec decode comparison is unreliable. "
+            "Use --max-tokens 128+ for honest spec benchmarking."
+        )
+
     out_dir = Path(args.out_dir)
     history_csv_name, history_md_name = resolve_history_names(args.history_version)
     build_meta = resolve_build_metadata(args.build_id, args.server_bin)
