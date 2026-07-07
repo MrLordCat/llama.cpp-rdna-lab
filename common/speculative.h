@@ -19,7 +19,9 @@ std::string common_speculative_type_to_str(enum common_speculative_type type);
 
 common_speculative * common_speculative_init(
         common_params_speculative & params,
-        llama_context             * ctx_tgt);
+        llama_context             * ctx_tgt,
+        llama_context             * ctx_mtp_shared = nullptr,
+        llama_seq_id                seq_id = 0);
 
 void common_speculative_free(common_speculative * spec);
 

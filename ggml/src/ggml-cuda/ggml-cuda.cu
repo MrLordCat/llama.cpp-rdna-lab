@@ -133,6 +133,24 @@ int ggml_cuda_get_device() {
     return id;
 }
 
+static bool ggml_cuda_peer_copy_enabled() {
+#ifdef GGML_CUDA_NO_PEER_COPY
+    return false;
+#endif
+
+    if (getenv("GGML_CUDA_NO_PEER_COPY_RUNTIME") != nullptr) {
+        return false;
+    }
+
+#if defined(GGML_USE_HIP) && defined(_WIN32)
+    // HIP peer copies on Windows/RDNA4 can silently corrupt cross-device tensors.
+    // Use the existing host-staged fallback unless explicitly opted in for testing.
+    return getenv("GGML_ROCM_ENABLE_PEER_COPY") != nullptr;
+#else
+    return true;
+#endif
+}
+
 #if defined(_WIN32)
 static std::string ggml_cuda_wstr_to_utf8(const wchar_t * wstr) {
     if (wstr == nullptr || wstr[0] == L'\0') {
@@ -548,6 +566,12 @@ static ggml_cuda_device_info ggml_cuda_init() {
 
     // configure logging to stdout
     // CUBLAS_CHECK(cublasLoggerConfigure(1, 1, 0, nullptr));
+
+#if defined(GGML_USE_HIP) && defined(_WIN32)
+    if (info.device_count > 1 && !ggml_cuda_peer_copy_enabled()) {
+        GGML_LOG_INFO("ggml_cuda_init: ROCm peer copies disabled on Windows; using host-staged cross-device transfers (set GGML_ROCM_ENABLE_PEER_COPY=1 to opt in)\n");
+    }
+#endif
 
     if (getenv("GGML_CUDA_P2P") != nullptr) {
         for (int id = 0; id < info.device_count; ++id) {
@@ -1223,6 +1247,9 @@ static bool ggml_backend_cuda_buffer_cpy_tensor(ggml_backend_buffer_t buffer, co
 #ifdef GGML_CUDA_NO_PEER_COPY
             return false;
 #else
+            if (!ggml_cuda_peer_copy_enabled()) {
+                return false;
+            }
             CUDA_CHECK(cudaMemcpyPeerAsync(dst->data, dst_ctx->device, src->data, src_ctx->device, ggml_nbytes(src), cudaStreamPerThread));
 #endif
         }
@@ -2850,6 +2877,33 @@ static void ggml_cuda_op_mul_mat_cublas(
 static cudaError_t ggml_cuda_Memcpy2DPeerAsync(
     void * dst, int dstDevice, size_t dpitch, void * src, int srcDevice, size_t spitch, size_t width, size_t height, cudaStream_t stream) {
 
+    if (dstDevice != srcDevice && !ggml_cuda_peer_copy_enabled()) {
+        const size_t host_size = width * height;
+        void * host = malloc(host_size);
+        if (host == nullptr) {
+            return cudaErrorMemoryAllocation;
+        }
+
+        ggml_cuda_set_device(srcDevice);
+        cudaError_t err = cudaDeviceSynchronize();
+        if (err == cudaSuccess) {
+            err = cudaMemcpy2DAsync(host, width, src, spitch, width, height, cudaMemcpyDeviceToHost, cudaStreamPerThread);
+        }
+        if (err == cudaSuccess) {
+            err = cudaStreamSynchronize(cudaStreamPerThread);
+        }
+        if (err == cudaSuccess) {
+            ggml_cuda_set_device(dstDevice);
+            err = cudaMemcpy2DAsync(dst, dpitch, host, width, width, height, cudaMemcpyHostToDevice, cudaStreamPerThread);
+        }
+        if (err == cudaSuccess) {
+            err = cudaStreamSynchronize(cudaStreamPerThread);
+        }
+
+        free(host);
+        return err;
+    }
+
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
     // cudaMemcpy2DAsync may fail with copies between vmm pools of different devices
     cudaMemcpy3DPeerParms p = {};
@@ -2865,6 +2919,35 @@ static cudaError_t ggml_cuda_Memcpy2DPeerAsync(
     GGML_UNUSED(srcDevice);
     return cudaMemcpy2DAsync(dst, dpitch, src, spitch, width, height, cudaMemcpyDeviceToDevice, stream);
 #endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+}
+
+static cudaError_t ggml_cuda_MemcpyPeerAsync(
+    void * dst, int dstDevice, const void * src, int srcDevice, size_t count, cudaStream_t stream) {
+
+    if (dstDevice == srcDevice || ggml_cuda_peer_copy_enabled()) {
+        return cudaMemcpyPeerAsync(dst, dstDevice, src, srcDevice, count, stream);
+    }
+
+    void * host = malloc(count);
+    if (host == nullptr) {
+        return cudaErrorMemoryAllocation;
+    }
+
+    ggml_cuda_set_device(srcDevice);
+    cudaError_t err = cudaDeviceSynchronize();
+    if (err == cudaSuccess) {
+        err = cudaMemcpy(host, src, count, cudaMemcpyDeviceToHost);
+    }
+    if (err == cudaSuccess) {
+        ggml_cuda_set_device(dstDevice);
+        err = cudaMemcpyAsync(dst, host, count, cudaMemcpyHostToDevice, cudaStreamPerThread);
+    }
+    if (err == cudaSuccess) {
+        err = cudaStreamSynchronize(cudaStreamPerThread);
+    }
+
+    free(host);
+    return err;
 }
 
 static void ggml_cuda_op_mul_mat(
@@ -3106,13 +3189,13 @@ static void ggml_cuda_op_mul_mat(
                                 const size_t height = src1_padded_col_size/(4*QK8_1);
                                 CUDA_CHECK(ggml_cuda_Memcpy2DPeerAsync(src1_ddq_i, id, pitch, src1_ddq_i_source, ctx.device, pitch, width, height, stream));
                             } else {
-                                CUDA_CHECK(cudaMemcpyPeerAsync(
+                                CUDA_CHECK(ggml_cuda_MemcpyPeerAsync(
                                     src1_ddq_i, id, src1_ddq_i_source, ctx.device, src1_ncols*src1_padded_col_size*q8_1_ts/q8_1_bs, stream));
                             }
                         } else {
                             float * src1_ddf_i_source = (float *) src1->data;
                             src1_ddf_i_source += (i0*ne11 + src1_col_0) * ne10;
-                            CUDA_CHECK(cudaMemcpyPeerAsync(src1_ddf_i, id, src1_ddf_i_source, ctx.device,
+                            CUDA_CHECK(ggml_cuda_MemcpyPeerAsync(src1_ddf_i, id, src1_ddf_i_source, ctx.device,
                                                             src1_ncols*ne10*sizeof(float), stream));
                         }
                     }
@@ -4473,6 +4556,9 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
 #ifdef GGML_CUDA_NO_PEER_COPY
             return false;
 #else
+            if (!ggml_cuda_peer_copy_enabled()) {
+                return false;
+            }
             CUDA_CHECK(cudaMemcpyPeerAsync(dst->data, cuda_ctx_dst->device, src->data, cuda_ctx_src->device, ggml_nbytes(dst), cuda_ctx_src->stream()));
 #endif // GGML_CUDA_NO_PEER_COPY
         }

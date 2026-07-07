@@ -678,6 +678,7 @@ private:
     common_init_result_ptr llama_init;
 
     llama_context * ctx = nullptr;
+    llama_context_ptr ctx_mtp;
 
     llama_batch batch {};
 
@@ -716,13 +717,17 @@ private:
     bool sleeping = false;
 
     void destroy() {
-        llama_init.reset();
-
         for (server_slot & slot : slots) {
             if (slot.can_speculate()) {
                 slot.spec.reset();
             }
         }
+
+        if (ctx != nullptr && ctx_mtp) {
+            llama_set_mtp(ctx, nullptr);
+        }
+        ctx_mtp.reset();
+        llama_init.reset();
 
         ctx = nullptr;
         model = nullptr;
@@ -822,14 +827,9 @@ private:
 
         if (params_base.speculative.type == COMMON_SPECULATIVE_TYPE_MTP ||
             params_base.speculative.type == COMMON_SPECULATIVE_TYPE_NGRAM_MTP) {
-            if (params_base.n_parallel > 1) {
-                SRV_ERR("MTP currently supports only n_parallel=1; got %d\n", params_base.n_parallel);
-                return false;
-            }
-
             auto cparams_mtp = common_context_params_to_llama(params_base);
-            cparams_mtp.n_ctx     = llama_n_ctx_seq(ctx);
-            cparams_mtp.n_seq_max = 1;
+            cparams_mtp.n_ctx     = llama_n_ctx(ctx);
+            cparams_mtp.n_seq_max = params_base.n_parallel;
             cparams_mtp.n_rs_seq  = 0;
 
             if (!server_env_enabled("LLAMA_MTP_FORCE_LEGACY_HEAD_LOAD")) {
@@ -872,6 +872,16 @@ private:
             }
 
             params_base.speculative.mtp.cparams = cparams_mtp;
+
+            ctx_mtp.reset(llama_init_from_model(params_base.speculative.mtp.model, params_base.speculative.mtp.cparams));
+            if (ctx_mtp == nullptr) {
+                SRV_ERR("%s\n", "failed to create shared MTP context");
+                return false;
+            }
+
+            llama_set_mtp(ctx, ctx_mtp.get());
+            SRV_INF("shared MTP context initialized, n_parallel = %d, n_ctx = %d, n_ctx_seq = %d\n",
+                    params_base.n_parallel, (int) llama_n_ctx(ctx_mtp.get()), (int) llama_n_ctx_seq(ctx_mtp.get()));
 
             if (params_base.n_cache_reuse) {
                 params_base.n_cache_reuse = 0;
@@ -985,7 +995,11 @@ private:
             if (ctx_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_NO) {
                 slot.is_mtp_enabled = params_base.speculative.type == COMMON_SPECULATIVE_TYPE_MTP ||
                                       params_base.speculative.type == COMMON_SPECULATIVE_TYPE_NGRAM_MTP;
-                slot.spec.reset(common_speculative_init(params_base.speculative, slot.ctx));
+                slot.spec.reset(common_speculative_init(
+                    params_base.speculative,
+                    slot.ctx,
+                    slot.is_mtp_enabled ? ctx_mtp.get() : nullptr,
+                    slot.id));
 
                 if (slot.spec) {
                     SLT_INF(slot, "%s", "speculative decoding context initialized\n");

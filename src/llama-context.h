@@ -111,6 +111,7 @@ struct llama_context {
 
     ggml_tensor * get_t_h_pre_norm() const;
     ggml_tensor * get_t_mtp_out()    const;
+    const float * get_mtp_pending_h(llama_seq_id seq_id, llama_pos * pos) const;
 
     // DFlash (ported from beellama) — Phase 1 CPU-safe hidden capture + config.
     void set_dflash_sample_temp(float temp);
@@ -304,6 +305,8 @@ private:
             int32_t                n_tokens,
             const llama_token    * tokens,
             const llama_pos      * positions,
+            int32_t              * n_seq_id,
+            llama_seq_id        ** seq_id,
             struct ggml_tensor   * t_h_pre_norm);
 
     // TODO: read/write lora adapters and cvec
