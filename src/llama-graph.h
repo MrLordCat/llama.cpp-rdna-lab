@@ -58,6 +58,23 @@ enum llm_norm_type {
     LLM_NORM_GROUP,
 };
 
+// DFlash (ported from beellama): drafter-side cache of projected cross-attention
+// K/V. When present and filled for the current window, the drafter graph consumes
+// the staged K/V tensors directly instead of recomputing wk/wv over the whole
+// cross window every speculative cycle.
+struct llama_dflash_kv_cache_view {
+    int     n_layers    = 0;
+    int64_t n_embd_head = 0;
+    int64_t n_head_kv   = 0;
+    int64_t ctx_len     = 0;
+    int64_t n_filled    = 0;
+    int64_t ring_size   = 0;
+    int64_t write_pos   = 0;
+
+    std::vector<ggml_tensor *> k_ring;
+    std::vector<ggml_tensor *> v_ring;
+};
+
 // TODO: tmp - need something better to pass the data from the encoder to the decoder
 struct llama_cross {
     // the output embeddings from the encoder as a ggml tensor
@@ -65,11 +82,39 @@ struct llama_cross {
     //       ref: https://github.com/ggml-org/llama.cpp/pull/11213#discussion_r1969892524
     //ggml_tensor * t_embd = nullptr;
 
-    int64_t n_embd = 0;
-    int64_t n_enc  = 0;
+    int64_t n_embd     = 0;
+    int64_t n_enc      = 0;  // may be padded to bucket for graph stability
+    int64_t n_enc_real = 0;  // actual data length (unpadded) — DFlash
 
     // embeddings data copied to host memory (tmp)
+    // Single-slot / encoder-decoder path: graph builders read from here directly.
     std::vector<float> v_embd;
+
+    // ---- DFlash (ported from beellama) ----
+    // GPU D2D path: device pointer to interleaved cross data (set by GPU ring interleave, Phase 2)
+    const void * v_embd_gpu = nullptr;
+    int64_t v_embd_gpu_n_enc_real = 0;
+    void (*fn_set_tensor_d2d)(void * d_dst, const void * d_src, size_t offset, size_t size) = nullptr;
+
+    // Temporary DFlash K/V-update input: lets the drafter projection cache read newly
+    // committed hidden states without mutating the main cross window shape.
+    const void * dflash_kv_update_gpu = nullptr;
+    int64_t dflash_kv_update_n_embd = 0;
+    int64_t dflash_kv_update_n_enc_real = 0;
+    void (*dflash_kv_update_fn_set_tensor_d2d)(void * d_dst, const void * d_src, size_t offset, size_t size) = nullptr;
+
+    // Per-seq cross buffers for DFlash multi-slot. When non-empty, graph builders
+    // pack these into target_hidden per slot instead of reading v_embd.
+    struct seq_cross {
+        int64_t n_enc      = 0;  // padded length (graph stability)
+        int64_t n_enc_real = 0;  // actual data length
+        std::vector<float> v_embd;
+        const void * v_embd_gpu = nullptr;
+        int64_t v_embd_gpu_n_enc_real = 0;
+    };
+    std::map<llama_seq_id, seq_cross> v_embd_per_seq;
+
+    llama_dflash_kv_cache_view * dflash_kv_cache = nullptr;
 
     // needed to construct the cross-attention mask in the decoder
     std::vector<std::set<llama_seq_id>> seq_ids_enc;
