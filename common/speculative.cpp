@@ -673,6 +673,15 @@ struct common_speculative_state_mtp : public common_speculative_state {
     }
 
     llama_token sample_argmax() const {
+        // Fast path: read the GPU-computed argmax token id (a few bytes) instead
+        // of copying the whole vocab logits row (~1MB) GPU->host per draft token.
+        // The qwen35_mtp head graph emits res->t_logits_argmax = ggml_argmax(logits).
+        int32_t * argmax = llama_get_logits_argmax(ctx_mtp);
+        if (argmax != nullptr && llama_get_logits_argmax_n(ctx_mtp) > 0) {
+            return argmax[0];
+        }
+
+        // Fallback: CPU argmax over the full logits row.
         float * logits = llama_get_logits_ith(ctx_mtp, 0);
         if (logits == nullptr || n_vocab <= 0) {
             return LLAMA_TOKEN_NULL;

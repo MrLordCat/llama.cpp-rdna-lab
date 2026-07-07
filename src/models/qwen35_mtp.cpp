@@ -202,4 +202,13 @@ llama_model_qwen35_mtp::graph::graph(const llama_model & model, const llm_graph_
 
     res->t_logits = cur;
     ggml_build_forward_expand(gf, cur);
+
+    // GPU argmax of the MTP draft logits: lets the speculative loop read a single
+    // token id (tiny transfer) instead of copying the whole vocab logits row
+    // (~1MB) GPU->host per draft token, which dominates MTP draft time on ROCm.
+    // Only meaningful when this ubatch produces outputs (n_tokens rows here).
+    if (n_tokens > 0) {
+        res->t_logits_argmax = ggml_argmax(ctx0, cur);
+        ggml_build_forward_expand(gf, res->t_logits_argmax);
+    }
 }
