@@ -182,6 +182,11 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
     cur = inpL;
 
     if (hparams.nextn_predict_layers > 0) {
+        // MTP/NextN head applies its OWN hnorm to this hidden state
+        // (see qwen35_mtp.cpp: build_norm(h_input, nextn.hnorm)), so it must
+        // receive the PRE-(final)norm hidden state — the raw last-layer output.
+        // Capturing the post-output_norm state double-normalizes the input and
+        // produces near-random drafts (acceptance collapses to ~1%).
         cb(cur, "h_pre_norm", -1);
         res->t_h_pre_norm = cur;
     }

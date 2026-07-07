@@ -195,6 +195,9 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
     cur = inpL;
 
     if (hparams.nextn_predict_layers > 0) {
+        // MTP/NextN head applies its OWN hnorm to this hidden state, so it must
+        // receive the PRE-(final)norm hidden state — the raw last-layer output.
+        // Post-norm capture double-normalizes and collapses draft acceptance.
         cb(cur, "h_pre_norm", -1);
         res->t_h_pre_norm = cur;
     }
