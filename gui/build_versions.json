@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-19 21:58:00",
+  "updated_at": "2026-07-07 15:23:50",
   "builds": [
     {
       "id": "bld-20260508073132-4d3cb594",
@@ -24,13 +24,13 @@
       "name": "build-cpu",
       "backend": "cpu",
       "source_type": "fork",
-      "source_ref": "ee29636ca",
+      "source_ref": "c65dd3d06",
       "build_dir": "C:\\Users\\Chris\\Documents\\GitHub\\llama.cpp-with-GUI\\build-cpu",
-      "server_bin": "",
+      "server_bin": "C:\\Users\\Chris\\Documents\\GitHub\\llama.cpp-with-GUI\\build-cpu\\bin\\llama-server.exe",
       "toolchain": {},
       "created_at": "2026-05-08 07:31:32",
-      "updated_at": "2026-05-12 06:41:28",
-      "status": "archived",
+      "updated_at": "2026-07-07 15:23:50",
+      "status": "ready",
       "notes": "Imported from existing build directory",
       "bench_best_non_mtp_tps": null,
       "bench_best_mtp_tps": null,

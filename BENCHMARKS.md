@@ -33,6 +33,22 @@ build_logs\agent-workload\<label>.server.log
 
 Для активной 130k performance lane runner по умолчанию держит thinking включённым. Для явного отключения thinking укажи `--disable-thinking`.
 
+## MTP single-request sanity (2026-07-07)
+
+После ROCm dual-GPU peer-copy fix и MTP pending-row/argmax правок проверен именно
+single-request режим, не параллельные слоты: `Qwen3.6-27B-Q3_K_S_mtp.gguf`,
+ROCm, `-np 1`, `ctx=8192`, `b512/ub128`, `q4_0/q4_0`, FlashAttention on,
+thinking on, no reuse, quick tasks, `max_tokens=64`.
+
+| Label | Spec | Wall TPS | Notes |
+| --- | --- | ---: | --- |
+| `mtp-single-none-pending-v2` | `none` | `19.15` | baseline on the same MTP GGUF |
+| `mtp-single-mtp-n8-argmax-v3` | `mtp --spec-draft-n-max 8` | `23.12` | `+20.7%`; acceptance `51/89` then cumulative `98/202`; direct argmax replaced the MTP-only greedy sampler chain |
+
+`--spec-draft-n-max 4` was slower (`15.41 TPS`), and `12` was below `8`
+(`21.16 TPS`) on the same short lane, so `8` is the current practical MTP sanity
+knob for this model/shape. This is not a 130k headline claim.
+
 ## Active 130k baseline plan (2026-05-27)
 
 Current global performance target is dense `Qwen3.6-27B-Q3_K_S` at
