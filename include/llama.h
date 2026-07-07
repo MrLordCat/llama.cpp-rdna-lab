@@ -992,6 +992,12 @@ extern "C" {
     LLAMA_API void llama_set_dflash_consume_reduced(struct llama_context * ctx, bool enabled);
     LLAMA_API void llama_set_dflash_n_slots(struct llama_context * ctx, int n);
 
+    // Read captured target hidden states (for the DFlash drafter's cross window).
+    LLAMA_API int32_t llama_get_n_layer_hiddens        (struct llama_context * ctx);
+    LLAMA_API float * llama_get_layer_hidden           (struct llama_context * ctx, int layer_idx);
+    LLAMA_API int64_t llama_get_layer_hidden_n_tokens  (struct llama_context * ctx, int layer_idx);
+    LLAMA_API int64_t llama_get_layer_hidden_n_embd    (struct llama_context * ctx, int layer_idx);
+
     // [EXPERIMENTAL] MTP APIs, accessors for hidden states
     LLAMA_API struct ggml_tensor * llama_context_get_t_h_pre_norm(struct llama_context * ctx);
     LLAMA_API struct ggml_tensor * llama_context_get_t_mtp_out   (struct llama_context * ctx);

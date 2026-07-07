@@ -4159,6 +4159,34 @@ int32_t llama_context::get_n_layer_hiddens() const {
     return sh ? (int32_t) sh->size() : 0;
 }
 
+float * llama_context::get_layer_hidden(int layer_idx) {
+    auto * sh = dflash_capture ? dflash_capture->active_slot_hiddens() : nullptr;
+    if (!sh || layer_idx < 0 || layer_idx >= (int) sh->size()) {
+        return nullptr;
+    }
+    auto & buf = (*sh)[layer_idx];
+    if (buf.n_tokens <= 0 || buf.data.empty()) {
+        return nullptr;
+    }
+    return buf.data.data();
+}
+
+int64_t llama_context::get_layer_hidden_n_tokens(int layer_idx) const {
+    auto * sh = dflash_capture ? dflash_capture->active_slot_hiddens() : nullptr;
+    if (!sh || layer_idx < 0 || layer_idx >= (int) sh->size()) {
+        return 0;
+    }
+    return (*sh)[layer_idx].n_tokens;
+}
+
+int64_t llama_context::get_layer_hidden_n_embd(int layer_idx) const {
+    auto * sh = dflash_capture ? dflash_capture->active_slot_hiddens() : nullptr;
+    if (!sh || layer_idx < 0 || layer_idx >= (int) sh->size()) {
+        return 0;
+    }
+    return (*sh)[layer_idx].n_embd;
+}
+
 // ---- public C API wrappers ----
 void llama_set_dflash_capture(llama_context * ctx, const int32_t * layer_ids, int32_t n_layers) {
     ctx->set_dflash_capture(layer_ids, n_layers);
@@ -4180,4 +4208,16 @@ void llama_set_dflash_consume_reduced(llama_context * ctx, bool enabled) {
 }
 void llama_set_dflash_n_slots(llama_context * ctx, int n) {
     ctx->set_dflash_n_slots(n);
+}
+int32_t llama_get_n_layer_hiddens(llama_context * ctx) {
+    return ctx->get_n_layer_hiddens();
+}
+float * llama_get_layer_hidden(llama_context * ctx, int layer_idx) {
+    return ctx->get_layer_hidden(layer_idx);
+}
+int64_t llama_get_layer_hidden_n_tokens(llama_context * ctx, int layer_idx) {
+    return ctx->get_layer_hidden_n_tokens(layer_idx);
+}
+int64_t llama_get_layer_hidden_n_embd(llama_context * ctx, int layer_idx) {
+    return ctx->get_layer_hidden_n_embd(layer_idx);
 }
