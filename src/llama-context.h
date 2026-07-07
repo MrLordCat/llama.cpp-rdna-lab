@@ -126,6 +126,13 @@ struct llama_context {
     int64_t get_layer_hidden_n_tokens(int layer_idx) const;
     int64_t get_layer_hidden_n_embd(int layer_idx) const;
 
+    int32_t * get_logits_argmax();     // [count], drafter argmax token id per position (after decode)
+    int32_t   get_logits_argmax_n();
+
+    // DFlash: set this (drafter) context's cross window from packed target hiddens.
+    // data layout: [n_feat * n_tokens] row-major per token (n_feat = n_target_layers * n_embd).
+    void set_dflash_cross(const float * data, int64_t n_feat, int64_t n_tokens);
+
     void            set_mtp(llama_context * ctx_mtp_in);
     llama_context * get_mtp() const { return mtp.ctx_mtp; }
 
@@ -324,6 +331,11 @@ private:
     // DFlash (ported from beellama): target hidden-state capture for the drafter.
     std::unique_ptr<dflash_capture_data> dflash_capture;
     std::vector<std::vector<dflash_layer_hidden_buf>> layer_hiddens; // [slot][captured-layer]
+
+    // DFlash: drafter argmax output (token id per position), extracted after decode.
+    std::vector<int32_t> logits_argmax_buf;
+    int32_t logits_argmax_count = 0;
+    int32_t logits_argmax_k     = 1;
 
     std::unique_ptr<llama_memory_i> memory;
 

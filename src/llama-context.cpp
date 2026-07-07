@@ -1950,6 +1950,24 @@ int llama_context::decode(const llama_batch & batch_inp) {
             }
         }
 
+        // DFlash: extract the drafter's argmax token ids (tiny GPU->host transfer).
+        // Phase-1 drafter uses plain ggml_argmax -> [n_ids] int32 (K=1), so the
+        // extraction is simpler than bee's ids+probs top-K layout.
+        {
+            auto * t_argmax = res->t_logits_argmax;
+            if (t_argmax && n_outputs > 0) {
+                ggml_backend_t backend_argmax = ggml_backend_sched_get_tensor_backend(sched.get(), t_argmax);
+                if (backend_argmax != nullptr) {
+                    const int64_t n_ids = ggml_nelements(t_argmax);
+                    logits_argmax_buf.resize(n_ids);
+                    ggml_backend_tensor_get_async(backend_argmax, t_argmax, logits_argmax_buf.data(),
+                                                  0, (size_t) n_ids * sizeof(int32_t));
+                    logits_argmax_count = (int32_t) n_ids;
+                    logits_argmax_k = 1;
+                }
+            }
+        }
+
         // extract embeddings
         if (embd.data && t_embd && n_outputs > 0) {
             ggml_backend_t backend_embd = ggml_backend_sched_get_tensor_backend(sched.get(), t_embd);
@@ -4220,4 +4238,37 @@ int64_t llama_get_layer_hidden_n_tokens(llama_context * ctx, int layer_idx) {
 }
 int64_t llama_get_layer_hidden_n_embd(llama_context * ctx, int layer_idx) {
     return ctx->get_layer_hidden_n_embd(layer_idx);
+}
+
+int32_t * llama_context::get_logits_argmax() {
+    synchronize();
+    return logits_argmax_buf.empty() ? nullptr : logits_argmax_buf.data();
+}
+
+int32_t llama_context::get_logits_argmax_n() {
+    return logits_argmax_count;
+}
+
+void llama_context::set_dflash_cross(const float * data, int64_t n_feat, int64_t n_tokens) {
+    cross.n_embd     = n_feat;
+    cross.n_enc      = n_tokens;
+    cross.n_enc_real = n_tokens;
+    cross.v_embd.resize((size_t) std::max<int64_t>(0, n_feat) * (size_t) std::max<int64_t>(0, n_tokens));
+    if (data && n_feat > 0 && n_tokens > 0) {
+        memcpy(cross.v_embd.data(), data, (size_t) n_feat * (size_t) n_tokens * sizeof(float));
+    }
+    // Force the CPU cross path: the drafter reads cross.v_embd directly.
+    cross.v_embd_gpu = nullptr;
+    cross.v_embd_per_seq.clear();
+    cross.dflash_kv_cache = nullptr;
+}
+
+int32_t * llama_get_logits_argmax(llama_context * ctx) {
+    return ctx->get_logits_argmax();
+}
+int32_t llama_get_logits_argmax_n(llama_context * ctx) {
+    return ctx->get_logits_argmax_n();
+}
+void llama_dflash_set_cross(llama_context * ctx, const float * data, int64_t n_feat, int64_t n_tokens) {
+    ctx->set_dflash_cross(data, n_feat, n_tokens);
 }

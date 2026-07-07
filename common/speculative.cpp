@@ -821,6 +821,171 @@ struct common_speculative_state_mtp : public common_speculative_state {
     }
 };
 
+// DFlash speculative state (Phase 1, CPU-safe minimal). Ported/simplified from
+// beellama. The drafter is cross-conditioned on the target's captured hidden
+// states; this minimal version rebuilds the cross window from the whole captured
+// context each cycle and runs the drafter statelessly (no ring / accepted-prefix
+// KV reuse — those are Phase 2). Drafts are the drafter's greedy argmax over a
+// block of mask tokens.
+struct common_speculative_state_dflash : public common_speculative_state {
+    llama_context      * ctx_tgt = nullptr;
+    llama_context      * ctx_dft = nullptr;
+    const llama_model  * model_dft = nullptr;
+
+    int         block_size        = 0;
+    llama_token mask_token_id     = 0;
+    int         n_target_layers   = 0;
+    int         n_target_features = 0;
+    bool        contract_ok       = false;
+
+    std::vector<int32_t> capture_layers;
+    std::vector<float>   cross_buf;
+    llama_batch          batch_dft;
+
+    common_speculative_state_dflash(enum common_speculative_type type,
+                                    llama_context * ctx_tgt,
+                                    llama_context * ctx_dft)
+        : common_speculative_state(type), ctx_tgt(ctx_tgt), ctx_dft(ctx_dft) {
+        GGML_ASSERT(ctx_tgt && ctx_dft);
+        model_dft = llama_get_model(ctx_dft);
+
+        block_size        = llama_model_dflash_block_size(model_dft);
+        mask_token_id     = (llama_token) llama_model_dflash_mask_token_id(model_dft);
+        n_target_layers   = llama_model_dflash_n_target_layers(model_dft);
+        n_target_features = llama_model_dflash_n_target_features(model_dft);
+
+        capture_layers.resize(std::max(0, n_target_layers));
+        if (n_target_layers > 0) {
+            llama_model_dflash_target_layer_ids(model_dft, capture_layers.data(), n_target_layers);
+            // install hidden capture on the TARGET for the drafter's conditioning layers
+            llama_set_dflash_capture(ctx_tgt, capture_layers.data(), n_target_layers);
+        }
+        llama_set_dflash_sample_temp(ctx_dft, 0.0f);
+        llama_set_dflash_topk(ctx_dft, 1);
+
+        batch_dft = llama_batch_init(std::max(1, block_size), 0, 1);
+
+        contract_ok = block_size > 1 && mask_token_id >= 0 && n_target_layers > 0;
+        if (!contract_ok) {
+            LOG_ERR("dflash: invalid drafter contract (block_size=%d mask_token=%d n_target_layers=%d)\n",
+                    block_size, (int) mask_token_id, n_target_layers);
+        } else {
+            LOG_INF("dflash: state ready (block_size=%d mask_token=%d n_target_layers=%d n_target_features=%d)\n",
+                    block_size, (int) mask_token_id, n_target_layers, n_target_features);
+        }
+    }
+
+    ~common_speculative_state_dflash() override {
+        if (ctx_tgt) {
+            llama_set_dflash_capture(ctx_tgt, nullptr, 0);
+        }
+        llama_batch_free(batch_dft);
+        if (ctx_dft) {
+            llama_free(ctx_dft);
+        }
+    }
+
+    void begin(const llama_tokens & /*prompt*/) override {
+        // Capture is active on the target; the prompt's hidden states are grabbed
+        // during the target's prefill decode(s). Nothing to do here for the
+        // single-decode-prefill minimal path.
+    }
+
+    // pack the target's captured per-layer hiddens into the drafter cross window.
+    // returns the number of context tokens packed (0 on failure).
+    int build_cross() {
+        const int n_src = llama_get_n_layer_hiddens(ctx_tgt);
+        if (n_src < n_target_layers) {
+            return 0;
+        }
+        const int64_t ntok   = llama_get_layer_hidden_n_tokens(ctx_tgt, 0);
+        const int64_t n_embd = llama_get_layer_hidden_n_embd(ctx_tgt, 0);
+        if (ntok <= 0 || n_embd <= 0) {
+            return 0;
+        }
+        const int64_t n_feat = (int64_t) n_target_layers * n_embd;
+        cross_buf.assign((size_t) n_feat * (size_t) ntok, 0.0f);
+
+        for (int layer = 0; layer < n_target_layers; ++layer) {
+            float * data = llama_get_layer_hidden(ctx_tgt, layer);
+            if (!data) {
+                return 0;
+            }
+            if (llama_get_layer_hidden_n_tokens(ctx_tgt, layer) != ntok ||
+                llama_get_layer_hidden_n_embd(ctx_tgt, layer)   != n_embd) {
+                return 0;
+            }
+            for (int64_t t = 0; t < ntok; ++t) {
+                memcpy(cross_buf.data() + (size_t) (t * n_feat + (int64_t) layer * n_embd),
+                       data + (size_t) (t * n_embd),
+                       (size_t) n_embd * sizeof(float));
+            }
+        }
+
+        llama_dflash_set_cross(ctx_dft, cross_buf.data(), n_feat, ntok);
+        return (int) ntok;
+    }
+
+    void draft(
+            const common_params_speculative & params,
+            const llama_tokens & prompt_tgt,
+            llama_token id_last,
+            llama_tokens & draft_tokens) override {
+        GGML_UNUSED(prompt_tgt);
+        draft_tokens.clear();
+        if (!contract_ok) {
+            return;
+        }
+
+        const int cross_len = build_cross();
+        if (cross_len <= 0) {
+            return;
+        }
+
+        const int n_draft   = std::max(1, std::min((int) params.draft.n_max, block_size - 1));
+        const int batch_len = n_draft + 1;
+
+        // Minimal path: stateless drafter. Clear its KV and decode the block
+        // [id_last, mask, ..., mask] at positions [0, batch_len).
+        llama_memory_seq_rm(llama_get_memory(ctx_dft), 0, 0, -1);
+
+        common_batch_clear(batch_dft);
+        common_batch_add(batch_dft, id_last, 0, { 0 }, true);
+        for (int i = 1; i < batch_len; ++i) {
+            common_batch_add(batch_dft, mask_token_id, i, { 0 }, true);
+        }
+
+        if (llama_decode(ctx_dft, batch_dft) != 0) {
+            LOG_DBG("dflash: drafter decode failed\n");
+            return;
+        }
+
+        int32_t * argmax   = llama_get_logits_argmax(ctx_dft);
+        const int argmax_n = llama_get_logits_argmax_n(ctx_dft);
+        if (!argmax || argmax_n < batch_len) {
+            return;
+        }
+        // positions 1..batch_len-1 are the predicted next tokens (skip position 0 = id_last)
+        for (int i = 1; i < batch_len; ++i) {
+            draft_tokens.push_back((llama_token) argmax[i]);
+        }
+    }
+
+    void accept(uint16_t /*n_accepted*/) override {
+        // Stateless minimal path: no accepted-prefix KV reuse to maintain.
+    }
+
+    int32_t n_max(const common_params_speculative & params) const override {
+        const int cap = block_size > 1 ? block_size - 1 : 1;
+        return std::max(1, std::min((int) params.draft.n_max, cap));
+    }
+
+    int32_t n_min(const common_params_speculative & params) const override {
+        return std::max(1, params.draft.n_min);
+    }
+};
+
+
 // state of self-speculation (simple implementation, not ngram-map)
 struct common_speculative_state_ngram_simple : public common_speculative_state {
     common_ngram_simple_config config;
@@ -1220,26 +1385,19 @@ common_speculative * common_speculative_init(
         }
     }
 
-    // DFlash (Phase 0): contract validation only. The DFlash runtime — cross-ring
-    // hidden capture, block-diffusion drafter, and backend hooks — is not yet ported,
-    // so fail closed with a clear message instead of silently doing nothing.
-    if (params.type == COMMON_SPECULATIVE_TYPE_DFLASH) {
-        if (ctx_dft == nullptr) {
-            LOG_ERR("%s: --spec-type dflash requires a DFlash drafter model "
-                    "(pass --spec-draft-model / -md); none was provided\n", __func__);
-        } else {
-            LOG_ERR("%s: --spec-type dflash is recognized but its runtime is not yet "
-                    "implemented in this build (Phase 0 skeleton). "
-                    "Use --spec-type mtp/draft/ngram-* for now.\n", __func__);
-            llama_free(ctx_dft);
-        }
+    // DFlash contract: requires a drafter model (ctx_dft) with the dflash-draft arch.
+    if (params.type == COMMON_SPECULATIVE_TYPE_DFLASH && ctx_dft == nullptr) {
+        LOG_ERR("%s: --spec-type dflash requires a DFlash drafter model "
+                "(pass --spec-draft-model / -md); none was provided\n", __func__);
         return nullptr;
     }
 
     // Compute the implementations to use based on the config and their order of preference
     std::vector<common_speculative_config> configs = {}; // list of speculative configs to try
     {
-        bool has_draft = ctx_dft != nullptr;
+        // DFlash owns ctx_dft; don't also register the plain draft-model impl for it.
+        bool has_dflash = (params.type == COMMON_SPECULATIVE_TYPE_DFLASH) && (ctx_dft != nullptr);
+        bool has_draft = (ctx_dft != nullptr) && !has_dflash;
         bool has_draft_eagle3 = false; // TODO PR-18039: if params.speculative.eagle3
         bool has_mtp = (params.type == COMMON_SPECULATIVE_TYPE_MTP || params.type == COMMON_SPECULATIVE_TYPE_NGRAM_MTP) &&
                    (ctx_mtp != nullptr);
@@ -1293,6 +1451,9 @@ common_speculative * common_speculative_init(
         if (has_mtp) {
             configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_MTP, params));
         }
+        if (has_dflash) {
+            configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_DFLASH, params));
+        }
     }
 
     std::vector<std::unique_ptr<common_speculative_state>> impls = {};
@@ -1320,6 +1481,11 @@ common_speculative * common_speculative_init(
             case COMMON_SPECULATIVE_TYPE_MTP: {
                 impls.push_back(std::make_unique<common_speculative_state_mtp>(
                     config.type, ctx_tgt, ctx_mtp));
+                break;
+            }
+            case COMMON_SPECULATIVE_TYPE_DFLASH: {
+                impls.push_back(std::make_unique<common_speculative_state_dflash>(
+                    config.type, ctx_tgt, ctx_dft));
                 break;
             }
             case COMMON_SPECULATIVE_TYPE_NGRAM_MTP:

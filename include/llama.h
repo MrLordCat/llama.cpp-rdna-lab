@@ -998,6 +998,11 @@ extern "C" {
     LLAMA_API int64_t llama_get_layer_hidden_n_tokens  (struct llama_context * ctx, int layer_idx);
     LLAMA_API int64_t llama_get_layer_hidden_n_embd    (struct llama_context * ctx, int layer_idx);
 
+    // DFlash drafter argmax output + cross-window setter.
+    LLAMA_API int32_t * llama_get_logits_argmax  (struct llama_context * ctx);
+    LLAMA_API int32_t   llama_get_logits_argmax_n(struct llama_context * ctx);
+    LLAMA_API void      llama_dflash_set_cross   (struct llama_context * ctx, const float * data, int64_t n_feat, int64_t n_tokens);
+
     // [EXPERIMENTAL] MTP APIs, accessors for hidden states
     LLAMA_API struct ggml_tensor * llama_context_get_t_h_pre_norm(struct llama_context * ctx);
     LLAMA_API struct ggml_tensor * llama_context_get_t_mtp_out   (struct llama_context * ctx);
