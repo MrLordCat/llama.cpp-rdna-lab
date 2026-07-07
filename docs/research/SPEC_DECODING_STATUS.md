@@ -143,20 +143,54 @@ accepted, no crash. 22 commits (`b04f5465c..21bf6247e`), tree clean.
 
 ---
 
-## 4. Reaching ~2× — how speculative decoding actually wins (for the MTP push)
+## 4. Reaching ~2× — measured MTP gap analysis (2026-07-07, dual-GPU, peer-copy fixed)
 
-(To be expanded in the MTP-speedup investigation. Placeholder outline:)
+### Measurement (Qwen3.6-27B-Q3_K_S_mtp, ctx 4096, --disable-thinking, max-tokens 256)
+| Config | decode tok/s | acceptance |
+|--------|-------------:|-----------:|
+| baseline (none) | **25.6** | — |
+| MTP (n_max=3)   | **20.3** (SLOWER) | **55%** |
 
-Speculative decoding speedup ≈ `(1 + accepted_per_step) / (1 + draft_overhead_ratio)`.
-To approach 2× you need BOTH:
-- **High acceptance** (mean accepted draft length per verify ≥ ~1.5–2 for a 2× target),
-- **Cheap drafting + cheap verify overhead** (draft model much smaller/faster than target;
-  verify batch amortized; no per-step host stalls; graphs/fusion intact).
+So the earlier "MTP broken" was the multi-GPU peer-copy corruption — **acceptance is
+now a healthy 55%**. Yet MTP is *slower* than baseline. The loss is pure **draft
+overhead**, not acceptance.
 
-Common techniques others use (EAGLE/EAGLE-2/-3, Medusa, MTP/NextN, lookahead):
-- tree/branched drafting to raise accepted-length,
-- self-speculation via a cheap head (MTP/EAGLE) to keep draft cost tiny,
-- keeping the verify on the GPU with graphs (avoid callback/host sync per token),
-- tuning `n_draft` to the acceptance curve (too large wastes verify compute).
+### Where the time goes (per `statistics mtp detail`, task 1: 222 tokens)
+`dur(sync, get, decode, sample) = 0.3, 27.8, 348, 642 ms` (draft total ≈ 1019 ms).
+- **`sample` = 642 ms dominates.** `common_sampler_sample(smpl, ctx_mtp)` for each
+  draft token reads the **full-vocab logits row (248320 floats ≈ 1 MB) GPU→host**,
+  then argmaxes on CPU. 252 draft tokens ⇒ ~250 MB of transfers + a sync per token.
+- `decode` = 348 ms — the MTP head (1 nextn layer) forward per draft token.
+- Target verify: MTP eval ≈ 50 ms/tok vs baseline 39 ms/tok (+11 ms/tok).
 
-Our MTP gap analysis + concrete tuning follow in the investigation below.
+### Theory: why 55% acceptance still loses
+Expected accepted run length with per-token accept p≈0.55, n_max=3:
+`0.55 + 0.55² + 0.55³ ≈ 1.02` drafts + 1 resample ≈ **~2.0 tokens per verify**.
+That *should* give ~1.5–1.7× **if** each verify+draft ≈ 1–1.3 baseline decodes. But the
+per-round draft overhead (esp. the 1 MB logits transfer × n_max) makes each round cost
+> 2 baseline decodes ⇒ net slower.
+
+### How others avoid this (EAGLE/EAGLE-2/-3, Medusa, MTP/NextN, lookahead)
+1. **Never transfer full-vocab logits to draft.** Draft sampling (usually greedy /
+   top-k=1 for the draft) is done **on the GPU** — compute argmax/top-k in the graph and
+   copy back only the token id(s) (4 bytes), not 1 MB. This is exactly what our DFlash
+   drafter already does via `ggml_argmax` → `llama_get_logits_argmax`.
+2. **Keep draft + verify on the GPU with graphs/fusion intact** — no per-token host sync.
+3. **Tree / branched drafting** (EAGLE-2/-3, Medusa heads) to raise accepted length per
+   verify beyond a single linear chain.
+4. **Tune `n_draft`** to the acceptance curve — with p≈0.55 the marginal accept prob at
+   depth k is 0.55ᵏ, so depth 3–5 is the useful range; deeper just wastes verify compute.
+
+### Concrete plan for our MTP (ordered by expected payoff)
+1. **GPU argmax for the MTP draft (biggest lever).** Add `ggml_argmax` to the qwen35_mtp
+   head graph and read the token id via a tiny transfer, replacing the full-logits
+   `common_sampler_sample` in `common_speculative_state_mtp::draft()` for the top-k=1
+   path. Kills the ~642 ms `sample` term. (Reuse the DFlash `t_logits_argmax` /
+   `llama_get_logits_argmax` plumbing already in the tree.)
+2. **Confirm the target verify keeps CUDA/HIP graphs** (the MTP hidden-capture hook runs
+   post-decode, not via cb_eval, so graphs *should* survive — verify with a graph trace).
+3. **Sweep `n_max` (2..5)** at the measured 55% acceptance to find the throughput peak.
+4. Later: tree drafting on the MTP head top-k for higher accepted length.
+
+Expected: (1) alone should move MTP from ~20 tok/s (below baseline) to clearly above
+baseline; (1)+(3) is the realistic route toward ~1.5–2× on this rig.
