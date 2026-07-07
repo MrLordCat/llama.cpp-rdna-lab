@@ -983,6 +983,15 @@ extern "C" {
     // If true, all model tensors are activated during llama_decode() to load and cache their weights.
     LLAMA_API void llama_set_warmup(struct llama_context * ctx, bool warmup);
 
+    // [EXPERIMENTAL] DFlash APIs (ported from beellama). Phase-1 CPU-safe subset.
+    LLAMA_API void llama_set_dflash_capture(struct llama_context * ctx, const int32_t * layer_ids, int32_t n_layers);
+    LLAMA_API void llama_set_dflash_capture_active(struct llama_context * ctx, bool active);
+    LLAMA_API void llama_set_dflash_sample_temp(struct llama_context * ctx, float temp);
+    LLAMA_API void llama_set_dflash_topk(struct llama_context * ctx, int k);
+    LLAMA_API void llama_set_dflash_verify_logits(struct llama_context * ctx, bool enabled, int top_k);
+    LLAMA_API void llama_set_dflash_consume_reduced(struct llama_context * ctx, bool enabled);
+    LLAMA_API void llama_set_dflash_n_slots(struct llama_context * ctx, int n);
+
     // [EXPERIMENTAL] MTP APIs, accessors for hidden states
     LLAMA_API struct ggml_tensor * llama_context_get_t_h_pre_norm(struct llama_context * ctx);
     LLAMA_API struct ggml_tensor * llama_context_get_t_mtp_out   (struct llama_context * ctx);

@@ -12,6 +12,9 @@
 #include "ggml-opt.h"
 
 #include <map>
+#include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 struct llama_model;
@@ -23,6 +26,42 @@ class llama_io_write_i;
 // "memory" as in abstract memory for the context
 struct llama_memory_i;
 struct llama_memory_context_i;
+
+// DFlash (ported from beellama). Phase-1 CPU-safe hidden capture: the target's
+// eval callback appends captured layer activations (l_out-<id>) into per-slot
+// buffers; the drafter reads them as its cross-attention window. The GPU tape /
+// multi-seq / profiling machinery from bee is deferred (Phase 2).
+struct dflash_layer_hidden_buf {
+    std::vector<float> data;
+    int64_t n_embd   = 0;
+    int64_t n_tokens = 0;
+};
+
+struct dflash_capture_data {
+    bool capture_active = true;
+
+    std::vector<int32_t>                     layer_ids;       // model layer indices to capture
+    std::vector<std::string>                 tensor_names;    // pre-formatted "l_out-{id}" names
+    std::unordered_map<std::string, size_t>  hidden_name_idx; // name -> capture index
+
+    // points at llama_context::layer_hiddens (outer: per-slot, inner: per-captured-layer)
+    std::vector<std::vector<dflash_layer_hidden_buf>> * hiddens = nullptr;
+
+    // active ubatch for the in-flight compute (callback reads seq routing from it)
+    const llama_ubatch * ubatch = nullptr;
+
+    int active_slot_idx = 0; // single-slot default
+
+    std::vector<dflash_layer_hidden_buf> * slot_hiddens(int slot) const {
+        if (!hiddens || slot < 0 || slot >= (int) hiddens->size()) {
+            return nullptr;
+        }
+        return &(*hiddens)[slot];
+    }
+    std::vector<dflash_layer_hidden_buf> * active_slot_hiddens() const {
+        return slot_hiddens(active_slot_idx);
+    }
+};
 
 struct llama_context {
     // init scheduler and compute buffers, reserve worst-case graphs
@@ -72,6 +111,17 @@ struct llama_context {
 
     ggml_tensor * get_t_h_pre_norm() const;
     ggml_tensor * get_t_mtp_out()    const;
+
+    // DFlash (ported from beellama) — Phase 1 CPU-safe hidden capture + config.
+    void set_dflash_sample_temp(float temp);
+    void set_dflash_topk(int k);
+    void set_dflash_verify_logits(bool enabled, int top_k);
+    void set_dflash_consume_reduced(bool enabled);
+    void set_dflash_n_slots(int n);
+    void set_dflash_capture(const int32_t * layer_ids, int32_t n_layers);
+    void set_dflash_capture_active(bool active);
+    void dflash_reset_hidden_capture();
+    int32_t get_n_layer_hiddens() const;
 
     void            set_mtp(llama_context * ctx_mtp_in);
     llama_context * get_mtp() const { return mtp.ctx_mtp; }
@@ -267,6 +317,10 @@ private:
     llama_cross cross; // TODO: tmp for handling cross-attention - need something better probably
 
     llama_mtp mtp;
+
+    // DFlash (ported from beellama): target hidden-state capture for the drafter.
+    std::unique_ptr<dflash_capture_data> dflash_capture;
+    std::vector<std::vector<dflash_layer_hidden_buf>> layer_hiddens; // [slot][captured-layer]
 
     std::unique_ptr<llama_memory_i> memory;
 
