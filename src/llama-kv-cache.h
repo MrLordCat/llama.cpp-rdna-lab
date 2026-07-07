@@ -350,6 +350,9 @@ public:
 
     uint32_t get_n_kv() const;
 
+    // DFlash: the slot_info selected for the current ubatch (sinfos[i_cur]).
+    const llama_kv_cache::slot_info & current_sinfo() const;
+
     ggml_type type_k() const;
     ggml_type type_v() const;
 
