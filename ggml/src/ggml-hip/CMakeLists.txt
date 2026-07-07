@@ -103,6 +103,21 @@ ggml_add_backend_library(ggml-hip
                          ${GGML_SOURCES_ROCM}
                         )
 
+# Workaround for MSVC 14.51+ (VS 2026) incompatibility with HIP SDK 7.1.
+# MSVC 14.51 cmath declares isless/isgreater etc. as constexpr, which Clang
+# treats as __host__ __device__ in HIP mode. Later HIP headers redeclare them
+# as __device__, causing overload errors + __host__ calls from device.
+#
+# Fix: add older MSVC 14.44 (VS 2022 Build Tools) include dirs BEFORE the
+# auto-detected MSVC 14.51 dirs, so clang uses the compatible cmath.
+# Also skip the conflicting HIP-side declare headers.
+set(GGML_HIP_MSVC_LEGACY_DIR "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207")
+if (EXISTS "${GGML_HIP_MSVC_LEGACY_DIR}/include/cmath")
+    target_include_directories(ggml-hip BEFORE PRIVATE "${GGML_HIP_MSVC_LEGACY_DIR}/include")
+    target_include_directories(ggml-hip BEFORE PRIVATE "${GGML_HIP_MSVC_LEGACY_DIR}/atlmfc/include")
+    message(STATUS "HIP: using MSVC 14.44 headers for device compatibility")
+endif()
+
 if (GGML_HOST_SOURCES_ROCM)
     set_source_files_properties(${GGML_HOST_SOURCES_ROCM} PROPERTIES LANGUAGE CXX COMPILE_FLAGS "-x c++")
     target_sources(ggml-hip PRIVATE ${GGML_HOST_SOURCES_ROCM})
