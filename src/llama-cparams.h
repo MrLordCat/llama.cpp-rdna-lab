@@ -13,7 +13,8 @@ struct dflash_tape_gpu;
 struct dflash_hidden_gpu;
 
 #define LLAMA_DFLASH_MAX_SLOTS          8
-#define LLAMA_DFLASH_MAX_VERIFY_TOKENS 25 // must be >= draft_max + 1
+#define LLAMA_DFLASH_MAX_VERIFY_TOKENS 25  // must be >= draft_max + 1
+#define LLAMA_DFLASH_PER_SLOT_CTX      512 // default per-slot cross-attention window
 
 struct llama_cparams {
     uint32_t n_ctx;           // context size used during inference

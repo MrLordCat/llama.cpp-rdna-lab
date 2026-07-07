@@ -1821,6 +1821,25 @@ struct llama_model_qwen35moe_mtp : public llama_model_base {
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
 
+// DFlash block-diffusion drafter (ported from beellama). build_arch_graph
+// selects the drafter graph, or the K/V projection-cache update graph when
+// params.gtype == LLM_GRAPH_TYPE_DFLASH_KV_UPDATE.
+struct llama_model_dflash_draft : public llama_model_base {
+    llama_model_dflash_draft(const struct llama_model_params & params) : llama_model_base(params) {}
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+
+    struct graph : public llm_graph_context {
+        graph(const llama_model & model, const llm_graph_params & params);
+    };
+
+    struct kv_update_graph : public llm_graph_context {
+        kv_update_graph(const llama_model & model, const llm_graph_params & params);
+    };
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};
+
 
 struct llama_model_mistral3 : public llama_model_base {
     llama_model_mistral3(const struct llama_model_params & params) : llama_model_base(params) {}

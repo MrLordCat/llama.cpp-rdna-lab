@@ -34,6 +34,7 @@ enum llm_graph_type {
     LLM_GRAPH_TYPE_ENCODER,
     LLM_GRAPH_TYPE_DECODER,
     LLM_GRAPH_TYPE_DECODER_MTP,
+    LLM_GRAPH_TYPE_DFLASH_KV_UPDATE, // DFlash drafter K/V projection-cache update graph
 };
 
 enum llm_ffn_op_type {
@@ -725,6 +726,11 @@ public:
     // MTP related inputs/outputs
     ggml_tensor * t_h_pre_norm  = nullptr; // [n_embd, n_outputs] hidden state required for MTP
     ggml_tensor * t_mtp_out     = nullptr; // [n_embd, n_tokens]
+
+    // DFlash drafter outputs (ported from beellama)
+    ggml_tensor * t_logits_argmax = nullptr; // [n_tokens] argmax (or top-K) token ids from the drafter
+    std::vector<ggml_tensor *> dflash_k_update; // per-layer drafter K projection-cache update (kv_update graph)
+    std::vector<ggml_tensor *> dflash_v_update; // per-layer drafter V projection-cache update (kv_update graph)
 
     std::map<llama_seq_id, ggml_tensor*> t_sampled_logits;
     std::map<llama_seq_id, ggml_tensor*> t_candidates;

@@ -200,6 +200,11 @@ public:
     void set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const;
     void set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const;
 
+    // DFlash: backend-buffer variants (use ggml_backend_tensor_set instead of a
+    // direct host write) for drafter input tensors that may live on a GPU buffer.
+    void set_input_k_idxs_backend(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const;
+    void set_input_v_idxs_backend(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const;
+
     void set_input_k_shift(ggml_tensor * dst) const;
 
     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
@@ -207,6 +212,9 @@ public:
 
     void set_input_k_rot(ggml_tensor * dst) const;
     void set_input_v_rot(ggml_tensor * dst) const;
+
+    void set_input_k_rot_backend(ggml_tensor * dst) const;
+    void set_input_v_rot_backend(ggml_tensor * dst) const;
 
 private:
     const llama_model & model;
@@ -352,6 +360,8 @@ public:
 
     // DFlash: the slot_info selected for the current ubatch (sinfos[i_cur]).
     const llama_kv_cache::slot_info & current_sinfo() const;
+    // DFlash: the underlying KV cache (for the drafter's commit-attention input).
+    llama_kv_cache * get_kv() const { return kv; }
 
     ggml_type type_k() const;
     ggml_type type_v() const;
@@ -381,12 +391,20 @@ public:
     void set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const;
     void set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const;
 
+    // DFlash: backend-buffer variants for the drafter (delegate to the KV cache
+    // using the current sinfo).
+    void set_input_k_idxs_backend(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+    void set_input_v_idxs_backend(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+
     void set_input_k_shift   (ggml_tensor * dst) const;
     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
 
     void set_input_k_rot(ggml_tensor * dst) const;
     void set_input_v_rot(ggml_tensor * dst) const;
+
+    void set_input_k_rot_backend(ggml_tensor * dst) const;
+    void set_input_v_rot_backend(ggml_tensor * dst) const;
 
 private:
     llama_memory_status status;
