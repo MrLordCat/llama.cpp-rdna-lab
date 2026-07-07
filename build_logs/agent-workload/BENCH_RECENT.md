@@ -7,6 +7,13 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-07-07 22:13:24 | cold-first | - | mtp2x-n1-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 18.9340 | 616.1100 | 24.1900 | 0 |
+| 2026-07-07 22:10:32 | cold-first | - | mtp2x-gpuargmax-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 17.3229 | 615.8800 | 22.9650 | 0 |
+| 2026-07-07 22:07:15 | cold-first | - | mtp2x-n2-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 17.5344 | 615.9600 | 22.7900 | 0 |
+| 2026-07-07 21:38:06 | cold-first | - | mtp2x-mtp-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | mtp | 16.0567 | 612.1550 | 20.3100 | 0 |
+| 2026-07-07 21:36:58 | cold-first | - | mtp2x-base-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | none | 21.3467 | 942.3450 | 25.6100 | 0 |
+| 2026-07-07 20:46:40 | cold-first | - | dflash-ctxaccum-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 4.0868 | 717.6700 | 4.8500 | 0 |
+| 2026-07-07 20:32:39 | cold-first | - | dflash-n4-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 0.0000 | - | - | 2 |
 | 2026-07-07 20:16:57 | cold-first | - | dflash-smoke-dual-r3 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 4.1810 | 722.4950 | 4.9800 | 0 |
 | 2026-07-07 20:12:12 | cold-first | - | dflash-smoke-dual-r2 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 3.9503 | 727.0350 | 4.9500 | 0 |
 | 2026-07-07 16:55:13 | cold-first | rocm | mtp-single-mtp-n8-argmax-v3 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | mtp | 23.1218 | 339.9700 | 28.7400 | 0 |
@@ -80,10 +87,3 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-05-27 18:33:57 | repeated/steady | vulkan | p002-vulkan130k-big-c152k-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 0.1758 | 626.0600 | 21.6000 | 0 |
 | 2026-05-27 15:13:37 | cold-first | vulkan | d037-vulkan130k-kq4-vq8-mixedwarn-postpatch2-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q8_0 | none | 0.0000 | - | - | 1 |
 | 2026-05-27 15:11:45 | cold-first | vulkan | d037-vulkan130k-kq4-vq8-mixedwarn-postpatch-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q8_0 | none | 0.0000 | - | - | 1 |
-| 2026-05-27 15:10:36 | cold-first | vulkan | d037-vulkan130k-q8kv-autoq8-last8-smoke-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q8_0/q8_0 | none | 0.0225 | 184.4200 | 1000000.0000 | 0 |
-| 2026-05-27 15:09:17 | cold-first | vulkan | d037-vulkan130k-q4default-postpatch-smoke-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q4_0 | none | 1.9480 | 1054.2800 | 40.1500 | 0 |
-| 2026-05-27 15:05:35 | cold-first | vulkan | d037-vulkan130k-q8kv-directkv-last8-route-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q8_0/q8_0 | none | 0.0229 | 187.5600 | 1000000.0000 | 0 |
-| 2026-05-27 15:03:20 | cold-first | vulkan | d037-vulkan130k-kq4-vq8-directkv-last3-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q8_0 | none | 0.0000 | - | - | 1 |
-| 2026-05-27 15:00:15 | cold-first | vulkan | d037-vulkan130k-kq8-vq4-control-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q8_0/q4_0 | none | 0.0000 | - | - | 1 |
-| 2026-05-27 14:57:25 | cold-first | vulkan | d037-vulkan130k-kq4-vq8-control-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q4_0/q8_0 | none | 0.0000 | - | - | 1 |
-| 2026-05-27 14:55:04 | cold-first | vulkan | d037-vulkan130k-q8kv-directkv-vonly16-b512-ub256-r1 | Qwen3.6-27B-Q3_K_S.gguf | 131072 | 512/256 | q8_0/q8_0 | none | 0.3557 | 184.8200 | 25.4200 | 0 |

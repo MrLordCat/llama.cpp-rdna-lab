@@ -192,5 +192,43 @@ per-round draft overhead (esp. the 1 MB logits transfer × n_max) makes each rou
 3. **Sweep `n_max` (2..5)** at the measured 55% acceptance to find the throughput peak.
 4. Later: tree drafting on the MTP head top-k for higher accepted length.
 
-Expected: (1) alone should move MTP from ~20 tok/s (below baseline) to clearly above
-baseline; (1)+(3) is the realistic route toward ~1.5–2× on this rig.
+### Update: implemented GPU argmax + n_max sweep (2026-07-07) — the REAL ROCm bottleneck
+
+Cross-checked against Unsloth's Qwen3.6 MTP guide (unsloth.ai/docs/models/qwen3.6#mtp-guide):
+they quote **1.4–2.2×** with `--spec-type draft-mtp --spec-draft-n-max 2`, acceptance
+**83% @ 2 draft tokens, 50% @ 4** (on RTX 6000: 27B ≈ 160 tok/s). Our acceptance curve
+matches theirs — so acceptance is NOT our problem.
+
+Implemented **GPU argmax for the MTP draft** (`e8d0ee0b2`): `sample` term dropped
+850 ms → 0.4 ms, acceptance unchanged. But net decode barely moved — the GPU **sync
+just relocated** from the logits read into the per-draft `llama_decode(ctx_mtp)`.
+
+n_max sweep (GPU-argmax build, ctx 4096, --disable-thinking, temp 0.2):
+| n_max | decode tok/s | acceptance |
+|------:|-------------:|-----------:|
+| baseline (none) | 25.6 | — |
+| 1 | 24.2 | 81% |
+| 2 | 23.0 | 66% |
+| 3 | 20.3 | 55% |
+
+**Even at the optimal n_max=1 (81% acceptance), MTP is ~5% BELOW baseline.** Root cause
+is NOT the logits transfer and NOT acceptance — it is **per-MTP-context-decode dispatch
+overhead on ROCm**: `statistics mtp detail` shows ~247 `ctx_mtp` decodes for 50 draft
+rounds, because the target-side hidden-capture hook (`handle_mtp_for_ubatch`) runs a
+`llama_decode(ctx_mtp)` prefill on **every target decode**, plus the n_max draft decodes.
+Each small MTP decode costs ~4–5 ms of launch/sync overhead on ROCm (compute is ~0.6 ms).
+On NVIDIA those decodes are ~0.6 ms thanks to CUDA graph replay — which is exactly why
+the guide's 1.4–2.2× appears there but not here.
+
+### Revised path to the guide's speedup ON ROCm (ordered)
+1. **HIP/CUDA graph capture for the MTP-context decodes** (the single-token draft decodes
+   + the hook prefill). This is the big lever: it turns ~5 ms/decode dispatch into ~0.6 ms,
+   which is what makes NVIDIA hit 1.4–2.2×. Requires stable graph topology across MTP
+   decodes (ggml-hip graph path; check GGML_HIP_GRAPHS covers the MTP ctx).
+2. **Reduce hook cost**: the per-target-decode `handle_mtp_for_ubatch` prefill is a large
+   fraction of the ~247 MTP decodes — batch it / skip redundant prefills.
+3. Keep GPU argmax (done) + n_max=1–2 for this rig.
+
+Net: acceptance is already guide-level; the remaining gap is pure ROCm kernel-dispatch
+overhead on the small MTP decodes → needs HIP graphs for ctx_mtp. That is the concrete,
+measured answer to "how do others get ~2× and why don't we yet."
