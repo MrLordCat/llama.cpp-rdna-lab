@@ -3586,7 +3586,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
-        {"--spec-type"}, "[none|mtp|draft-mtp|ngram-mtp|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod]",
+        {"--spec-type"}, "[none|mtp|draft-mtp|ngram-mtp|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod|dflash]",
         string_format("type of speculative decoding to use when no draft model is provided (default: %s)\n",
             common_speculative_type_to_str(params.speculative.type).c_str()),
         [](common_params & params, const std::string & value) {
@@ -3606,11 +3606,33 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V;
             } else if (value == "ngram-mod") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_MOD;
+            } else if (value == "dflash") {
+                params.speculative.type = COMMON_SPECULATIVE_TYPE_DFLASH;
             } else {
                 throw std::invalid_argument("unknown speculative decoding type without draft model");
             }
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_TYPE"));
+    add_opt(common_arg(
+        {"--spec-dflash-max-slots"}, "N",
+        string_format("DFlash: max concurrent server slots that keep DFlash state; extra slots fall back to non-speculative decode (default: %d)", params.speculative.dflash_max_slots),
+        [](common_params & params, int value) {
+            if (value < 1) {
+                throw std::invalid_argument("dflash max-slots must be >= 1");
+            }
+            params.speculative.dflash_max_slots = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_SPECULATIVE}).set_env("LLAMA_ARG_SPEC_DFLASH_MAX_SLOTS"));
+    add_opt(common_arg(
+        {"--spec-dflash-cross-ctx"}, "N",
+        string_format("DFlash: cross-attention window in tokens (how many target hidden states the drafter sees) (default: %d)", params.speculative.dflash_cross_ctx),
+        [](common_params & params, int value) {
+            if (value < 1) {
+                throw std::invalid_argument("dflash cross-ctx must be >= 1");
+            }
+            params.speculative.dflash_cross_ctx = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_SPECULATIVE}).set_env("LLAMA_ARG_SPEC_DFLASH_CROSS_CTX"));
     add_opt(common_arg(
         {"--spec-ngram-mod-n-min"}, "N",
         string_format("minimum number of ngram tokens to use for ngram-based speculative decoding (default: %d)", params.speculative.ngram_mod.n_min),

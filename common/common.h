@@ -166,6 +166,7 @@ enum common_speculative_type {
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V, // self-speculative decoding with n-gram keys and 4 m-gram values
     COMMON_SPECULATIVE_TYPE_NGRAM_MOD,
     COMMON_SPECULATIVE_TYPE_NGRAM_CACHE,   // self-speculative decoding with 3-level n-gram cache
+    COMMON_SPECULATIVE_TYPE_DFLASH,        // DFlash block-diffusion speculative decoding (ported from beellama)
     COMMON_SPECULATIVE_TYPE_COUNT          // number of types, unknown type
 };
 
@@ -367,6 +368,13 @@ struct common_params_speculative {
     common_params_speculative_ngram_map ngram_map_k4v;
 
     common_params_speculative_ngram_cache ngram_cache;
+
+    // DFlash-specific params (ported from beellama; reuse `draft` for the drafter model).
+    int32_t dflash_max_slots = 1;   // max concurrent server slots that keep DFlash state
+    int32_t dflash_cross_ctx = 512; // cross-attention window: target hidden states the drafter sees
+    int32_t branch_budget    = 0;   // DDTree branch nodes beyond the main draft path (0 = flat DFlash)
+    float   dflash_sample_temp = 0.0f; // drafter sampling temperature (0 = greedy)
+    int32_t dflash_draft_topk  = 1;    // top-K candidates per drafter position (1 = argmax)
 
     bool has_dft() const {
         return !draft.mparams.path.empty() || !draft.mparams.hf_repo.empty();

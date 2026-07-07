@@ -10,6 +10,8 @@
 #include "sampling.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <iomanip>
 #include <map>
@@ -28,7 +30,8 @@ const std::vector<enum common_speculative_type> common_speculative_types = {
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K,
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V,
     COMMON_SPECULATIVE_TYPE_NGRAM_MOD,
-    COMMON_SPECULATIVE_TYPE_NGRAM_CACHE
+    COMMON_SPECULATIVE_TYPE_NGRAM_CACHE,
+    COMMON_SPECULATIVE_TYPE_DFLASH
 };
 
 const std::map<std::string, enum common_speculative_type> common_speculative_type_from_name_map = {
@@ -48,7 +51,8 @@ const std::map<std::string, enum common_speculative_type> common_speculative_typ
     {"ngram_mod",     COMMON_SPECULATIVE_TYPE_NGRAM_MOD},
     {"ngram-mod",     COMMON_SPECULATIVE_TYPE_NGRAM_MOD},
     {"ngram_cache",   COMMON_SPECULATIVE_TYPE_NGRAM_CACHE},
-    {"ngram-cache",   COMMON_SPECULATIVE_TYPE_NGRAM_CACHE}
+    {"ngram-cache",   COMMON_SPECULATIVE_TYPE_NGRAM_CACHE},
+    {"dflash",        COMMON_SPECULATIVE_TYPE_DFLASH}
 };
 
 struct common_speculative_config {
@@ -770,6 +774,19 @@ struct common_speculative_state_mtp : public common_speculative_state {
                 best = common_sampler_sample(smpl, ctx_mtp, 0);
                 common_sampler_accept(smpl, best, /*accept_grammar=*/ false);
             }
+
+            static const bool mtp_debug = std::getenv("LLAMA_MTP_DEBUG") != nullptr;
+            if (mtp_debug) {
+                double sumsq = 0.0;
+                const float * h = batch.embd;
+                for (int32_t e = 0; e < n_embd; ++e) {
+                    sumsq += (double) h[e] * (double) h[e];
+                }
+                LOG_INF("mtp_debug: k=%d cond_tok=%d pos=%d src_row=%d src_ne1=%d h_l2=%.4f -> draft=%d\n",
+                        k, cond_tok, (int) pos, src_row,
+                        src ? (int) src->ne[1] : -1, std::sqrt(sumsq), best);
+            }
+
             draft_tokens.push_back(best);
             cond_tok = best;
             ++pos;
@@ -1164,6 +1181,7 @@ std::string common_speculative_type_to_str(enum common_speculative_type type) {
         case COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V: return "ngram_map_k4v";
         case COMMON_SPECULATIVE_TYPE_NGRAM_MOD:     return "ngram_mod";
         case COMMON_SPECULATIVE_TYPE_NGRAM_CACHE:   return "ngram_cache";
+        case COMMON_SPECULATIVE_TYPE_DFLASH:        return "dflash";
         default:                                    return "unknown";
     }
 }
@@ -1200,6 +1218,22 @@ common_speculative * common_speculative_init(
             }
             return nullptr;
         }
+    }
+
+    // DFlash (Phase 0): contract validation only. The DFlash runtime — cross-ring
+    // hidden capture, block-diffusion drafter, and backend hooks — is not yet ported,
+    // so fail closed with a clear message instead of silently doing nothing.
+    if (params.type == COMMON_SPECULATIVE_TYPE_DFLASH) {
+        if (ctx_dft == nullptr) {
+            LOG_ERR("%s: --spec-type dflash requires a DFlash drafter model "
+                    "(pass --spec-draft-model / -md); none was provided\n", __func__);
+        } else {
+            LOG_ERR("%s: --spec-type dflash is recognized but its runtime is not yet "
+                    "implemented in this build (Phase 0 skeleton). "
+                    "Use --spec-type mtp/draft/ngram-* for now.\n", __func__);
+            llama_free(ctx_dft);
+        }
+        return nullptr;
     }
 
     // Compute the implementations to use based on the config and their order of preference
