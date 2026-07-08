@@ -188,6 +188,19 @@ llama_model_qwen35_mtp::graph::graph(const llama_model & model, const llm_graph_
     // snapshot the MTP block's post-FFN hidden for AR loop for when MTP tokens > 1
     res->t_mtp_out = cur;
 
+    if (n_outputs == 0) {
+        // Hook-prefill batches only advance the MTP KV/state. They do not sample,
+        // so avoid the full vocab LM head and argmax on this ROCm hot path.
+        ggml_build_forward_expand(gf, cur);
+        return;
+    }
+
+    if (n_outputs != n_tokens) {
+        ggml_tensor * inp_out_ids = build_inp_out_ids();
+        cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+        cb(cur, "mtp_output_rows", -1);
+    }
+
     ggml_tensor * head_norm_w = layer.nextn.shared_head_norm
             ? layer.nextn.shared_head_norm
             : model.output_norm;
@@ -206,9 +219,6 @@ llama_model_qwen35_mtp::graph::graph(const llama_model & model, const llm_graph_
     // GPU argmax of the MTP draft logits: lets the speculative loop read a single
     // token id (tiny transfer) instead of copying the whole vocab logits row
     // (~1MB) GPU->host per draft token, which dominates MTP draft time on ROCm.
-    // Only meaningful when this ubatch produces outputs (n_tokens rows here).
-    if (n_tokens > 0) {
-        res->t_logits_argmax = ggml_argmax(ctx0, cur);
-        ggml_build_forward_expand(gf, res->t_logits_argmax);
-    }
+    res->t_logits_argmax = ggml_argmax(ctx0, cur);
+    ggml_build_forward_expand(gf, res->t_logits_argmax);
 }

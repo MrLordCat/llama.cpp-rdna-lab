@@ -233,6 +233,19 @@ llama_model_qwen35moe_mtp::graph::graph(const llama_model & model, const llm_gra
 
     res->t_mtp_out = cur;
 
+    if (n_outputs == 0) {
+        // Hook-prefill batches only advance the MTP KV/state. They do not sample,
+        // so avoid the full vocab LM head on this ROCm hot path.
+        ggml_build_forward_expand(gf, cur);
+        return;
+    }
+
+    if (n_outputs != n_tokens) {
+        ggml_tensor * inp_out_ids = build_inp_out_ids();
+        cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+        cb(cur, "mtp_output_rows", -1);
+    }
+
     ggml_tensor * head_norm_w = layer.nextn.shared_head_norm
             ? layer.nextn.shared_head_norm
             : model.output_norm;
@@ -247,4 +260,7 @@ llama_model_qwen35moe_mtp::graph::graph(const llama_model & model, const llm_gra
 
     res->t_logits = cur;
     ggml_build_forward_expand(gf, cur);
+
+    res->t_logits_argmax = ggml_argmax(ctx0, cur);
+    ggml_build_forward_expand(gf, res->t_logits_argmax);
 }
