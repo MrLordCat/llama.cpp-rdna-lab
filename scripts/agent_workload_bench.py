@@ -621,10 +621,17 @@ def terminate_process(proc: subprocess.Popen[str]) -> None:
     else:
         proc.terminate()
     try:
-        proc.wait(timeout=10)
+        # llama-server teardown at large ctx legitimately takes tens of seconds
+        # (freeing >10GB of VRAM + HIP contexts). Hard-killing mid-teardown leaves
+        # the ROCm driver with orphaned allocations and correlates with the GPU
+        # dropping off the bus (Windows code 43) — give it time to exit cleanly.
+        proc.wait(timeout=60)
     except subprocess.TimeoutExpired:
         proc.kill()
-        proc.wait(timeout=10)
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            pass  # unkillable: leave it; do NOT block the harness forever
 
 
 def split_server_extra(server_extra: str) -> list[str]:

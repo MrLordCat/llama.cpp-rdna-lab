@@ -808,6 +808,11 @@ private:
             params_dft.n_ctx        = params_spec.n_ctx == 0 ? llama_n_ctx_seq(ctx) : params_spec.n_ctx;
             params_dft.n_batch      = llama_n_ctx_seq(ctx);
             params_dft.devices      = params_spec.devices;
+            if (params_base.speculative.type == COMMON_SPECULATIVE_TYPE_DFLASH &&
+                params_dft.devices.empty() && !params_base.devices.empty()) {
+                params_dft.devices = params_base.devices;
+                SRV_INF("%s\n", "DFlash draft device not set; using target device list");
+            }
             params_dft.model        = params_spec.mparams;
             params_dft.n_gpu_layers = params_spec.n_gpu_layers;
             params_dft.cache_type_k = params_spec.cache_type_k;
