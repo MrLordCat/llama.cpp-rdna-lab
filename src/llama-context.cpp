@@ -3434,6 +3434,19 @@ void llama_set_mtp(struct llama_context * ctx_target, struct llama_context * ctx
     ctx_target->set_mtp(ctx_mtp);
 }
 
+void llama_set_mtp_hook_active(struct llama_context * ctx_target, bool active) {
+    if (!ctx_target) return;
+    ctx_target->set_mtp_hook_active(active);
+}
+
+void llama_context::set_mtp_hook_active(bool active) {
+    if (mtp.hook_active != active && mtp.ctx_mtp != nullptr) {
+        LLAMA_LOG_INFO("%s: MTP streaming hook %s (windowed prefill)\n",
+                       __func__, active ? "enabled" : "disabled");
+    }
+    mtp.hook_active = active;
+}
+
 void llama_context::set_mtp(llama_context * ctx_mtp_in) {
     if (mtp.ctx_mtp == ctx_mtp_in) return;
 
@@ -3475,6 +3488,16 @@ void llama_context::handle_mtp_for_ubatch(
     if (n_tokens == 0 || t == nullptr) {
         return;
     }
+    // Windowed prefill: when the hook is gated off (bulk of a long prompt), skip
+    // BEFORE the synchronize() below — the sync alone drains the pipeline and
+    // wrecks prompt-eval throughput. Invalidate pending so re-enabling at the
+    // tail window starts a fresh (gap-tolerant) pairing.
+    if (!mtp.hook_active) {
+        for (auto & pending : mtp.pending) {
+            pending.pos = -1;
+        }
+        return;
+    }
     if (t->ne[1] != (int64_t) n_tokens) {
         return;
     }
@@ -3484,6 +3507,14 @@ void llama_context::handle_mtp_for_ubatch(
     synchronize();
 
     const size_t row_bytes = (size_t) n_embd * sizeof(float);
+    const size_t total_bytes = (size_t) n_tokens * row_bytes;
+    if (total_bytes > ggml_nbytes(t)) {
+        return;
+    }
+
+    mtp.hidden_rows.resize((size_t) n_tokens * (size_t) n_embd);
+    ggml_backend_tensor_get(t, mtp.hidden_rows.data(), 0, total_bytes);
+
     int32_t      n_out     = 0;
 
     for (int32_t row = 0; row < n_tokens; ++row) {
@@ -3520,8 +3551,9 @@ void llama_context::handle_mtp_for_ubatch(
         }
 
         // Stash this h-row as the new pending state for this sequence.
-        ggml_backend_tensor_get(t, pending.h.data(),
-            (size_t) row * row_bytes, row_bytes);
+        std::memcpy(pending.h.data(),
+                    mtp.hidden_rows.data() + (size_t) row * (size_t) n_embd,
+                    row_bytes);
         pending.pos = cur_pos;
     }
 

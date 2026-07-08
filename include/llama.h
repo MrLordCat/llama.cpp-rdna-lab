@@ -1020,6 +1020,13 @@ extern "C" {
             struct llama_context * ctx_target,
             struct llama_context * ctx_mtp);
 
+    // Windowed MTP prefill: gate the target-side MTP streaming hook on/off.
+    // While off, target decodes skip the MTP sync/readback/prefill entirely
+    // (used to skip the bulk of a long prompt and only prefill the tail window).
+    LLAMA_API void llama_set_mtp_hook_active(
+            struct llama_context * ctx_target,
+            bool                   active);
+
     LLAMA_API bool llama_context_seq_rm(
             struct llama_context * ctx,
                     llama_seq_id   seq_id,

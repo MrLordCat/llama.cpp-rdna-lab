@@ -136,6 +136,7 @@ struct llama_context {
     void set_dflash_cross(const float * data, int64_t n_feat, int64_t n_tokens);
 
     void            set_mtp(llama_context * ctx_mtp_in);
+    void            set_mtp_hook_active(bool active); // windowed-prefill gate (see llama_mtp::hook_active)
     llama_context * get_mtp() const { return mtp.ctx_mtp; }
 
     llama_token * get_sampled_tokens() const;

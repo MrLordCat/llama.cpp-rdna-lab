@@ -2869,6 +2869,45 @@ private:
 
         SRV_DBG("decoding batch, n_tokens = %d\n", batch.n_tokens);
 
+        // Windowed speculative prefill (MTP / DFlash): the target-side streaming
+        // hooks (MTP prefill, DFlash hidden capture) add a pipeline sync + host
+        // readback + extra decode per ubatch. Running them over the WHOLE of a
+        // long prompt costs ~+40s at 56k tokens (E267) while the draft context
+        // only needs the recent window. Gate the hooks off for the bulk of the
+        // prompt and re-enable once the batch reaches the tail window (or any
+        // slot is generating). Window via LLAMA_SPEC_PREFILL_WINDOW (tokens,
+        // default 8192, 0 = never gate off).
+        {
+            static const int32_t spec_prefill_window = [] {
+                const char * env = getenv("LLAMA_SPEC_PREFILL_WINDOW");
+                return env ? atoi(env) : 8192;
+            }();
+
+            if (spec_prefill_window > 0 && batch.n_tokens > 0) {
+                bool hook_needed = false;
+                for (auto & slot : slots) {
+                    if (!slot.is_processing()) {
+                        continue;
+                    }
+                    if (slot.state == SLOT_STATE_PROCESSING_PROMPT) {
+                        // slot.prompt.n_tokens() already includes this batch's chunk;
+                        // remaining = prompt tokens still outside any batch.
+                        const int32_t remaining = slot.task->n_tokens() - slot.prompt.n_tokens();
+                        if (remaining < spec_prefill_window) {
+                            hook_needed = true;
+                            break;
+                        }
+                    } else {
+                        // generating (or done-prompt) slots need the hooks live
+                        hook_needed = true;
+                        break;
+                    }
+                }
+                llama_set_mtp_hook_active(ctx, hook_needed);
+                llama_set_dflash_capture_active(ctx, hook_needed);
+            }
+        }
+
         if (slot_batched) {
             // apply lora, only need to do it once per batch
             common_set_adapter_lora(ctx, slot_batched->lora);
