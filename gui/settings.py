@@ -68,7 +68,7 @@ class SettingsManager:
         if hasattr(self.gui, 'server_spec_type_combo'):
             self.gui.server_spec_type_combo.setCurrentIndex(self.settings.value("server_spec_type", 0, type=int))
         if hasattr(self.gui, 'server_spec_draft_n_max_spin'):
-            self.gui.server_spec_draft_n_max_spin.setValue(self.settings.value("server_spec_draft_n_max", 3, type=int))
+            self.gui.server_spec_draft_n_max_spin.setValue(self.settings.value("server_spec_draft_n_max", 8, type=int))
         if hasattr(self.gui, 'server_spec_ngram_match_spin'):
             self.gui.server_spec_ngram_match_spin.setValue(self.settings.value("server_spec_ngram_match", 16, type=int))
         if hasattr(self.gui, 'server_spec_ngram_n_min_spin'):

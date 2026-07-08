@@ -154,6 +154,7 @@ class BenchmarkTabWidget(QWidget):
     NGRAM_MOD_N_MIN = 12
     NGRAM_MOD_N_MATCH = 16
     NGRAM_MOD_N_MAX = 32
+    MTP_DRAFT_N_MAX = 8
 
     def __init__(self, parent):
         super().__init__()
@@ -1013,7 +1014,7 @@ class BenchmarkTabWidget(QWidget):
             spec_extra.append(f"--spec-ngram-mod-n-match {self.NGRAM_MOD_N_MATCH}")
             spec_extra.append(f"--spec-ngram-mod-n-max {self.NGRAM_MOD_N_MAX}")
         if spec_mode in {"mtp", "ngram-mtp"}:
-            spec_extra.append("--spec-draft-n-max 3")
+            spec_extra.append(f"--spec-draft-n-max {self.MTP_DRAFT_N_MAX}")
         server_extra.extend(spec_extra)
 
         command = [

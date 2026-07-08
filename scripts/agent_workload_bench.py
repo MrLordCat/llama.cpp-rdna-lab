@@ -926,8 +926,16 @@ def parse_server_log_diagnostics(server_log: Path) -> dict[str, Any]:
     # broken, so MTP is pure overhead.
     mtp_gen_tokens = sum(int(x) for x in re.findall(r"#gen tokens =\s*(\d+)", text))
     mtp_acc_tokens = sum(int(x) for x in re.findall(r"#acc tokens =\s*(\d+)", text))
-    mtp_present = mtp_gen_tokens > 0 or "statistics mtp" in text
+    mtp_present = mtp_gen_tokens > 0 or "statistics mtp" in text or "statistics dflash" in text
     mtp_acceptance = (mtp_acc_tokens / mtp_gen_tokens) if mtp_gen_tokens > 0 else 0.0
+
+    # Newer stats also print "#verify tokens = N, eff acceptance = X%" — the honest
+    # acceptance over actually-verified tokens (gen-based acceptance can read 100%
+    # when rejected rounds re-draft the same token). Prefer the LAST occurrence
+    # (stats lines are cumulative per request).
+    eff_matches = re.findall(r"eff acceptance =\s*([0-9.]+)%", text)
+    if eff_matches:
+        mtp_acceptance = float(eff_matches[-1]) / 100.0
 
     prompt_tps = [float(m[2]) for m in prompt_matches]
     prompt_ms = [float(m[0]) for m in prompt_matches]
@@ -2221,7 +2229,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--autotune-ngram-min", type=int, default=12)
     parser.add_argument("--autotune-ngram-match", type=int, default=16)
     parser.add_argument("--autotune-ngram-max", type=int, default=32)
-    parser.add_argument("--autotune-mtp-draft-n-max", type=int, default=3)
+    parser.add_argument("--autotune-mtp-draft-n-max", type=int, default=8)
     parser.add_argument("--autotune-max-configs", type=int, default=48, help="safety cap for sweep size")
     parser.add_argument(
         "--autotune-smart-prune",

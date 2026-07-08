@@ -21,6 +21,7 @@ class ServerTabWidget(QWidget):
     NGRAM_MOD_N_MIN = 12
     NGRAM_MOD_N_MATCH = 16
     NGRAM_MOD_N_MAX = 32
+    MTP_DRAFT_N_MAX = 8
     
     def __init__(self, parent):
         super().__init__()
@@ -280,7 +281,7 @@ class ServerTabWidget(QWidget):
         self.server_spec_draft_n_max = QSpinBox()
         self.server_spec_draft_n_max.setMinimum(1)
         self.server_spec_draft_n_max.setMaximum(20)
-        self.server_spec_draft_n_max.setValue(3)
+        self.server_spec_draft_n_max.setValue(self.MTP_DRAFT_N_MAX)
         draft_layout.addWidget(self.server_spec_draft_n_max)
         draft_layout.addStretch()
         spec_layout.addLayout(draft_layout)
@@ -476,12 +477,18 @@ class ServerTabWidget(QWidget):
         is_ngram = spec_type == "ngram-mod"
         if is_ngram:
             self._apply_ngram_mod_profile()
+        if spec_type == "mtp":
+            self._apply_mtp_profile()
         if hasattr(self, "ngram_layout_group"):
             # Enable/disable ngram widgets
             for i in range(self.ngram_layout_group.count()):
                 widget = self.ngram_layout_group.itemAt(i).widget()
                 if widget:
                     widget.setEnabled(is_ngram)
+
+    def _apply_mtp_profile(self):
+        """Apply the measured E266 ROCm MTP profile."""
+        self.server_spec_draft_n_max.setValue(self.MTP_DRAFT_N_MAX)
 
     def _apply_ngram_mod_profile(self):
         """Apply the measured E226 ROCm repeated/session ngram profile."""
@@ -1216,7 +1223,7 @@ class ServerTabWidget(QWidget):
 
         self.server_spec_type_combo.setCurrentText(settings.value("server/spec_type", "None"))
         self.server_spec_draft_n.setValue(int(settings.value("server/spec_draft_n", 5)))
-        self.server_spec_draft_n_max.setValue(int(settings.value("server/spec_draft_n_max", 3)))
+        self.server_spec_draft_n_max.setValue(int(settings.value("server/spec_draft_n_max", self.MTP_DRAFT_N_MAX)))
         self.server_ngram_min.setValue(int(settings.value("server/spec_ngram_min", self.NGRAM_MOD_N_MIN)))
         self.server_ngram_match.setValue(int(settings.value("server/spec_ngram_match", self.NGRAM_MOD_N_MATCH)))
         self.server_ngram_max.setValue(int(settings.value("server/spec_ngram_max", self.NGRAM_MOD_N_MAX)))
