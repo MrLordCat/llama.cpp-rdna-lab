@@ -7,6 +7,11 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-07-08 16:35:52 | cold-first | rocm | plain-gstate-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | none | 2.4552 | 418.6200 | 7.4800 | 0 |
+| 2026-07-08 16:34:42 | cold-first | rocm | plain-base-1gpu-r2 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | none | 6.1493 | 432.3900 | 7.5900 | 0 |
+| 2026-07-08 16:33:43 | cold-first | rocm | mtpmodel-base-1gpu-r2 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | none | 6.5163 | 442.4000 | 8.1200 | 0 |
+| 2026-07-08 16:27:05 | cold-first | rocm | mtpmodel-base-1gpu-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | none | 6.6276 | 458.5900 | 8.2300 | 0 |
+| 2026-07-08 16:25:57 | cold-first | rocm | mtp-stablekey-n2-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 4.2911 | 130.1700 | 7.6400 | 0 |
 | 2026-07-08 16:19:09 | cold-first | rocm | dflash-stablekey-rs4-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 5.8739 | 520.7400 | 6.9200 | 0 |
 | 2026-07-08 16:17:31 | cold-first | rocm | dflash-stablekey-noskpt-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |
 | 2026-07-08 16:16:08 | cold-first | rocm | dflash-ubtime2-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 4.1238 | 723.3200 | 11.8500 | 0 |
@@ -82,8 +87,3 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-07-07 22:28:42 | cold-first | rocm | mtp-nologits-n2-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | mtp | 22.6150 | 396.2000 | 23.9400 | 0 |
 | 2026-07-07 22:27:44 | cold-first | rocm | mtp-nologits-n1-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | mtp | 23.8784 | 404.7900 | 25.5600 | 0 |
 | 2026-07-07 22:26:56 | cold-first | rocm | mtp-nologits-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | none | 25.3661 | 642.0600 | 26.7000 | 0 |
-| 2026-07-07 22:26:07 | cold-first | rocm | mtp-nologits-hooktrace-n1-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | mtp | 18.1242 | 385.5200 | 27.0700 | 0 |
-| 2026-07-07 22:22:33 | cold-first | rocm | mtp-nodetime-n1-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | mtp | 3.1969 | 203.5700 | 9.3800 | 0 |
-| 2026-07-07 22:21:17 | cold-first | rocm | mtp-ubtiming-n1-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | mtp | 17.9991 | 383.5600 | 26.8400 | 0 |
-| 2026-07-07 22:19:16 | cold-first | rocm | mtp-graphtrace-n1-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | mtp | 21.9363 | 399.0200 | 24.3800 | 0 |
-| 2026-07-07 22:13:24 | cold-first | - | mtp2x-n1-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 18.9340 | 616.1100 | 24.1900 | 0 |
