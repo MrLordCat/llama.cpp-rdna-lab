@@ -4675,12 +4675,18 @@ static const void * ggml_cuda_graph_get_key(ggml_cgraph * cgraph) {
         mix(&op_f, sizeof(op_f));
         mix(first->name, strnlen(first->name, GGML_MAX_NAME));
         mix(first->ne, sizeof(first->ne));
+        // tensor DATA address (not the node struct address): stable while the
+        // graph result is reused, and distinguishes structurally identical
+        // graphs that live in different compute buffers (e.g. the PP and TG
+        // result objects) so they don't churn a shared slot.
+        mix(&first->data, sizeof(first->data));
 
         const ggml_tensor * last = cgraph->nodes[n_nodes - 1];
         const int32_t op_l = (int32_t) last->op;
         mix(&op_l, sizeof(op_l));
         mix(last->name, strnlen(last->name, GGML_MAX_NAME));
         mix(last->ne, sizeof(last->ne));
+        mix(&last->data, sizeof(last->data));
     }
 
     return (const void *) (uintptr_t) h;
