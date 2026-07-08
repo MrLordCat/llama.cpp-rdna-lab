@@ -4651,7 +4651,39 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
 }
 
 static const void * ggml_cuda_graph_get_key(ggml_cgraph * cgraph) {
-    return cgraph->nodes[0];
+    // Keying by the nodes[0] pointer is unstable: the scheduler's split-graph
+    // node storage can move between runs, minting a fresh (never-warmed)
+    // cuda-graph slot every decode — observed on speculative verify batches,
+    // where every round then pays full per-node launch overhead (~150ms for a
+    // 3.8k-node graph on Windows/ROCm) instead of a graph replay. Key by a
+    // stable shape fingerprint instead; collisions are safe (the property diff
+    // check forces a re-capture when the actual graph differs).
+    uint64_t h = 1469598103934665603ULL; // FNV-1a offset basis
+    auto mix = [&h](const void * data, size_t n) {
+        const unsigned char * p = (const unsigned char *) data;
+        for (size_t i = 0; i < n; ++i) {
+            h ^= p[i];
+            h *= 1099511628211ULL;
+        }
+    };
+
+    const int32_t n_nodes = cgraph->n_nodes;
+    mix(&n_nodes, sizeof(n_nodes));
+    if (n_nodes > 0) {
+        const ggml_tensor * first = cgraph->nodes[0];
+        const int32_t op_f = (int32_t) first->op;
+        mix(&op_f, sizeof(op_f));
+        mix(first->name, strnlen(first->name, GGML_MAX_NAME));
+        mix(first->ne, sizeof(first->ne));
+
+        const ggml_tensor * last = cgraph->nodes[n_nodes - 1];
+        const int32_t op_l = (int32_t) last->op;
+        mix(&op_l, sizeof(op_l));
+        mix(last->name, strnlen(last->name, GGML_MAX_NAME));
+        mix(last->ne, sizeof(last->ne));
+    }
+
+    return (const void *) (uintptr_t) h;
 }
 
 static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph) {
