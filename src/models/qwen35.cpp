@@ -149,7 +149,12 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
             cur = build_layer_attn(inp->get_attn(), cur, inp_pos, sections, il);
         }
 
-        if (il == n_transformer_layers - 1 && inp_out_ids) {
+        // Upstream-port (nextn unmasked): when the drafter needs NextN embeddings
+        // for ALL rows (prompt prefill feeding), skip the in-loop out_ids
+        // reduction so every row reaches the final norm; t_embd/logits are
+        // reduced after t_h_nextn is captured instead.
+        const bool nextn_all_rows = cparams.embeddings_nextn && !cparams.embeddings_nextn_masked;
+        if (il == n_transformer_layers - 1 && inp_out_ids && !nextn_all_rows) {
             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
@@ -209,6 +214,20 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
 
     // Final norm
     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+
+    // Upstream-port: NextN hidden = POST final norm (#24025 contract), captured
+    // before the (possibly deferred) out_ids reduction so unmasked mode exposes
+    // every row to the drafter.
+    if (cparams.embeddings_nextn) {
+        cb(cur, "h_nextn", -1);
+        ggml_set_output(cur); // read back after graph compute — keep the buffer alive
+        res->t_h_nextn = cur;
+        ggml_build_forward_expand(gf, cur);
+
+        if (!cparams.embeddings_nextn_masked && inp_out_ids) {
+            cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+        }
+    }
 
     cb(cur, "result_norm", -1);
     res->t_embd = cur;

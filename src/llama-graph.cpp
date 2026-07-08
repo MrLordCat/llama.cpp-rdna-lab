@@ -851,6 +851,7 @@ void llm_graph_result::reset() {
     t_logits_argmax = nullptr;
     t_h_pre_norm    = nullptr;
     t_mtp_out       = nullptr;
+    t_h_nextn       = nullptr;
 
     params = {};
 

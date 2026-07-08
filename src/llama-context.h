@@ -109,6 +109,11 @@ struct llama_context {
     float * get_embeddings_ith(int32_t i);
     float * get_embeddings_seq(llama_seq_id seq_id);
 
+    // Upstream-port: NextN embeddings (spec decoding hidden handoff)
+    void    set_embeddings_nextn(bool value, bool masked);
+    float * get_embeddings_nextn();
+    float * get_embeddings_nextn_ith(int32_t i);
+
     ggml_tensor * get_t_h_pre_norm() const;
     ggml_tensor * get_t_mtp_out()    const;
     const float * get_mtp_pending_h(llama_seq_id seq_id, llama_pos * pos) const;
@@ -351,6 +356,10 @@ private:
     // embeddings output (2-dimensional array: [n_outputs][n_embd])
     // populated only when pooling_type == LLAMA_POOLING_TYPE_NONE
     buffer_view<float> embd = {nullptr, 0};
+
+    // Upstream-port: NextN embeddings output ([n_outputs][n_embd] when masked,
+    // [n_batch_tokens][n_embd] dense when unmasked)
+    buffer_view<float> embd_nextn = {nullptr, 0};
 
     struct sampling_info {
         // !samplers.empty() to check if any samplers are active

@@ -53,6 +53,14 @@ struct llama_cparams {
     bool kv_unified;
     bool pipeline_parallel;
 
+    // Upstream-port: output NextN embeddings alongside logits (spec decoding).
+    // masked=true  -> only rows with batch.logits != 0 (verify decodes);
+    // masked=false -> all rows (prompt prefill feeding of the draft head); the
+    //                 last-layer out_ids reduction is skipped so all rows reach
+    //                 the final norm, and t_embd/logits are reduced afterwards.
+    bool embeddings_nextn        = false;
+    bool embeddings_nextn_masked = false;
+
     enum llama_pooling_type pooling_type;
 
     // ---- DFlash (ported from beellama) ----

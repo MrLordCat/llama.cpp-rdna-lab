@@ -963,6 +963,59 @@ float * llama_context::get_embeddings_ith(int32_t i) {
     }
 }
 
+// Upstream-port: NextN embeddings accessors (mirror get_embeddings*)
+float * llama_context::get_embeddings_nextn() {
+    output_reorder();
+
+    return embd_nextn.data;
+}
+
+float * llama_context::get_embeddings_nextn_ith(int32_t i) {
+    output_reorder();
+
+    try {
+        if (embd_nextn.data == nullptr) {
+            throw std::runtime_error("no nextn embeddings");
+        }
+
+        const uint32_t n_embd_out = model.hparams.n_embd_out();
+
+        if (!cparams.embeddings_nextn_masked) {
+            // unmasked: rows are stored densely, indexed by raw batch token position
+            if (i < 0 || (size_t)(i + 1) * n_embd_out > embd_nextn.size) {
+                throw std::runtime_error(format("out of range [0, %zu)", embd_nextn.size / n_embd_out));
+            }
+            return embd_nextn.data + (size_t) i * n_embd_out;
+        }
+
+        const int64_t j = output_resolve_row(i);
+        return embd_nextn.data + j*n_embd_out;
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: invalid nextn embeddings id %d, reason: %s\n", __func__, i, err.what());
+#ifndef NDEBUG
+        GGML_ABORT("fatal error");
+#else
+        return nullptr;
+#endif
+    }
+}
+
+void llama_context::set_embeddings_nextn(bool value, bool masked) {
+    LLAMA_LOG_DEBUG("%s: value = %d, masked = %d\n", __func__, value, masked);
+
+    if (cparams.embeddings_nextn == value && cparams.embeddings_nextn_masked == masked) {
+        return;
+    }
+
+    cparams.embeddings_nextn        = value;
+    cparams.embeddings_nextn_masked = masked;
+
+    // the flags change graph topology (h_nextn emission / out_ids placement)
+    sched_need_reserve = true;
+    if (gf_res_prev)    { gf_res_prev->reset(); }
+    if (gf_res_prev_tg) { gf_res_prev_tg->reset(); }
+}
+
 float * llama_context::get_embeddings_seq(llama_seq_id seq_id) {
     auto it = embd_seq.find(seq_id);
     if (it == embd_seq.end()) {
@@ -1876,6 +1929,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
     };
 
     int64_t n_outputs_prev = 0;
+    int64_t n_tokens_prev  = 0; // upstream-port: dense row offset for unmasked nextn extraction
 
     do {
         const auto & ubatch = mctx->get_ubatch();
@@ -1935,11 +1989,31 @@ int llama_context::decode(const llama_batch & batch_inp) {
         //    ggml_graph_dump_dot(gf, NULL, "llama.dot");
         //}
 
-        auto * t_logits = res->get_logits();
-        auto * t_embd   = cparams.embeddings ? res->get_embd() : nullptr;
+        auto * t_logits  = res->get_logits();
+        auto * t_embd    = cparams.embeddings       ? res->get_embd()    : nullptr;
+        auto * t_h_nextn = cparams.embeddings_nextn ? res->get_h_nextn() : nullptr;
 
         if (t_embd && res->get_embd_pooled()) {
             t_embd = res->get_embd_pooled();
+        }
+
+        // Upstream-port: extract NextN embeddings (rides the same async stream as
+        // the logits copy — no extra sync; the getter synchronizes lazily).
+        {
+            const bool    masked = cparams.embeddings_nextn_masked;
+            const int64_t n_rows = masked ? n_outputs      : (int64_t) ubatch.n_tokens;
+            const int64_t offset = masked ? n_outputs_prev : n_tokens_prev;
+
+            if (embd_nextn.data && t_h_nextn && n_rows > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
+                ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
+                GGML_ASSERT(backend_h != nullptr);
+
+                const uint32_t n_embd_out = hparams.n_embd_out();
+                float * embd_nextn_out = embd_nextn.data + offset*n_embd_out;
+
+                GGML_ASSERT((offset + n_rows)*n_embd_out <= (int64_t) embd_nextn.size);
+                ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn_out, 0, n_rows*n_embd_out*sizeof(float));
+            }
         }
 
         // extract logits
@@ -2049,6 +2123,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
         }
 
         n_outputs_prev += n_outputs;
+        n_tokens_prev  += ubatch.n_tokens;
     } while (mctx->next());
 
     // set to total number of outputs in the batch, for use in llama_get_logits_ith
@@ -2137,6 +2212,14 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     logits.size = has_logits ? n_vocab*n_outputs_max : 0;
     embd.size   = has_embd ? n_embd_out*n_outputs_max : 0;
 
+    // Upstream-port: NextN embeddings ride the same output buffer. Unmasked mode
+    // stores one row per BATCH token (prompt prefill feeding of the draft head).
+    const bool has_embd_nextn = cparams.embeddings_nextn;
+    embd_nextn.size = has_embd_nextn ? (size_t) n_embd_out*n_outputs_max : 0;
+    if (has_embd_nextn && !cparams.embeddings_nextn_masked) {
+        embd_nextn.size = (size_t) n_embd_out * n_batch;
+    }
+
     // Allocate backend sampling output buffers if there are backend samplers configured.
     const bool has_sampling = !sampling.samplers.empty();
     if (has_sampling) {
@@ -2151,8 +2234,8 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     const size_t prev_size = buf_output ? ggml_backend_buffer_get_size(buf_output.get()) : 0;
     const size_t new_size  =
-        (logits.size + embd.size + backend_float_count) * sizeof(float) +
-        (                          backend_token_count) * sizeof(llama_token);
+        (logits.size + embd.size + embd_nextn.size + backend_float_count) * sizeof(float) +
+        (                                            backend_token_count) * sizeof(llama_token);
 
     // alloc only when more than the current capacity is required
     // TODO: also consider shrinking the buffer
@@ -2168,6 +2251,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
             buf_output = nullptr;
             logits.data = nullptr;
             embd.data = nullptr;
+            embd_nextn.data = nullptr;
         }
 
         auto * buft = ggml_backend_cpu_buffer_type();
@@ -2195,6 +2279,9 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     embd = has_embd ? buffer_view<float>{(float *) (base + offset), embd.size} : buffer_view<float>{nullptr, 0};
     offset += embd.size * sizeof(float);
+
+    embd_nextn = has_embd_nextn ? buffer_view<float>{(float *) (base + offset), embd_nextn.size} : buffer_view<float>{nullptr, 0};
+    offset += embd_nextn.size * sizeof(float);
 
     if (has_sampling) {
         sampling.logits = {(float *) (base + offset), (size_t)(n_vocab*n_outputs_max)};
@@ -3606,6 +3693,23 @@ float * llama_get_embeddings_ith(llama_context * ctx, int32_t i) {
     ctx->synchronize();
 
     return ctx->get_embeddings_ith(i);
+}
+
+// Upstream-port: NextN embeddings API
+void llama_set_embeddings_nextn(llama_context * ctx, bool value, bool masked) {
+    ctx->set_embeddings_nextn(value, masked);
+}
+
+float * llama_get_embeddings_nextn(llama_context * ctx) {
+    ctx->synchronize();
+
+    return ctx->get_embeddings_nextn();
+}
+
+float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
+    ctx->synchronize();
+
+    return ctx->get_embeddings_nextn_ith(i);
 }
 
 float * llama_get_embeddings_seq(llama_context * ctx, llama_seq_id seq_id) {

@@ -1031,6 +1031,14 @@ extern "C" {
             struct llama_context * ctx_target,
             bool                   active);
 
+    // Upstream-port: NextN embeddings (spec-decoding hidden handoff, batched
+    // through the normal output pipeline — replaces the per-decode MTP hook).
+    // masked=true:  rows with batch.logits != 0 only (verify decodes)
+    // masked=false: all batch rows, dense by token position (prompt prefill)
+    LLAMA_API void    llama_set_embeddings_nextn(struct llama_context * ctx, bool value, bool masked);
+    LLAMA_API float * llama_get_embeddings_nextn(struct llama_context * ctx);
+    LLAMA_API float * llama_get_embeddings_nextn_ith(struct llama_context * ctx, int32_t i);
+
     LLAMA_API bool llama_context_seq_rm(
             struct llama_context * ctx,
                     llama_seq_id   seq_id,

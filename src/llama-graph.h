@@ -727,6 +727,11 @@ public:
     ggml_tensor * t_h_pre_norm  = nullptr; // [n_embd, n_outputs] hidden state required for MTP
     ggml_tensor * t_mtp_out     = nullptr; // [n_embd, n_tokens]
 
+    // Upstream-port: NextN hidden state (post final output_norm, #24025 contract).
+    // [n_embd, n_outputs] when cparams.embeddings_nextn_masked, else [n_embd, n_tokens].
+    ggml_tensor * t_h_nextn     = nullptr;
+    ggml_tensor * get_h_nextn() const { return t_h_nextn; }
+
     // DFlash graph-embedded target hidden capture: per captured layer, a dup of
     // that layer's l_out marked as a graph output (Phase 2 — replaces the eval
     // callback which forced per-node syncs and disabled HIP graphs).
