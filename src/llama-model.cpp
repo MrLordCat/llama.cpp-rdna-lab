@@ -2202,6 +2202,14 @@ int32_t llama_model_n_swa(const llama_model * model) {
     return model->hparams.n_swa;
 }
 
+// DFlash: share tok_embd and output tensors from the target model to the
+// drafter model (the drafter GGUF ships without them). Must be called BEFORE
+// the drafter context is created so graph reserve sees the shared tensors.
+void llama_model_share_tensors(llama_model * dst, const llama_model * src) {
+    dst->tok_embd = src->tok_embd;
+    dst->output   = src->output;
+}
+
 // DFlash drafter metadata accessors (ported from beellama)
 int32_t llama_model_dflash_block_size(const llama_model * model) {
     return (int32_t) model->hparams.dflash_block_size;

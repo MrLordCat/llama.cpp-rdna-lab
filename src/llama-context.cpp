@@ -1420,6 +1420,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                 res->t_h_pre_norm);
     }
 
+    // DFlash graph-embedded hidden capture: read the dup'd l_out tensors back
+    // with a single sync (no eval callback -> HIP graphs stay enabled).
+    dflash_capture_from_res(res);
+
     ret = GGML_STATUS_SUCCESS;
 
     return res;
@@ -4093,38 +4097,39 @@ static void dflash_read_tensor_to(struct ggml_tensor * t, float * dst, size_t n_
     }
 }
 
-// eval callback: capture l_out-<id> layer activations into the active slot buffer
-static bool dflash_eval_callback(struct ggml_tensor * t, bool ask, void * user_data) {
-    auto * cap = (dflash_capture_data *) user_data;
-    if (!cap || !cap->capture_active) {
-        return ask ? false : true;
+// Graph-embedded capture readback (Phase 2): the target graph dups each captured
+// layer's l_out into a graph-output tensor (res->t_dflash_capture); after compute
+// we read them back with a single sync. No eval callback -> HIP graphs stay on.
+void llama_context::dflash_capture_from_res(llm_graph_result * res) {
+    if (!dflash_capture || !dflash_capture->capture_active || res == nullptr) {
+        return;
+    }
+    const auto & caps = res->t_dflash_capture;
+    if (caps.empty()) {
+        return;
+    }
+    auto * sh = dflash_capture->active_slot_hiddens();
+    if (!sh || caps.size() > sh->size()) {
+        return;
     }
 
-    auto h_it = cap->hidden_name_idx.find(t->name);
-    if (ask) {
-        return h_it != cap->hidden_name_idx.end();
-    }
-    if (h_it == cap->hidden_name_idx.end()) {
-        return true;
-    }
+    synchronize();
 
-    const int64_t new_embd = t->ne[0];
-    const int64_t new_n    = t->ne[1];
-    const size_t  h_idx    = h_it->second;
-
-    // Phase-1: single-slot capture routes everything to the active slot.
-    auto * sh = cap->active_slot_hiddens();
-    if (!sh || h_idx >= sh->size()) {
-        return true;
+    for (size_t i = 0; i < caps.size(); ++i) {
+        ggml_tensor * t = caps[i];
+        if (t == nullptr || t->buffer == nullptr) {
+            continue;
+        }
+        const int64_t new_embd = t->ne[0];
+        const int64_t new_n    = t->ne[1];
+        auto & buf = (*sh)[i];
+        buf.n_embd = new_embd;
+        const size_t old_elems = (size_t) buf.n_tokens * (size_t) new_embd;
+        const size_t add_elems = (size_t) new_n * (size_t) new_embd;
+        buf.data.resize(old_elems + add_elems);
+        dflash_read_tensor_to(t, buf.data.data() + old_elems, add_elems);
+        buf.n_tokens += new_n;
     }
-    auto & buf = (*sh)[h_idx];
-    buf.n_embd = new_embd;
-    const size_t old_elems = (size_t) buf.n_tokens * (size_t) new_embd;
-    const size_t add_elems = (size_t) new_n * (size_t) new_embd;
-    buf.data.resize(old_elems + add_elems);
-    dflash_read_tensor_to(t, buf.data.data() + old_elems, add_elems);
-    buf.n_tokens += new_n;
-    return true;
 }
 
 void llama_context::set_dflash_sample_temp(float temp) {
@@ -4172,8 +4177,10 @@ void llama_context::set_dflash_capture(const int32_t * layer_ids, int32_t n_laye
             dflash_capture->tensor_names.clear();
             dflash_capture->capture_active = false;
         }
-        cparams.cb_eval = nullptr;
-        cparams.cb_eval_user_data = nullptr;
+        // capture nodes leave the graph -> force rebuild/reserve
+        sched_need_reserve = true;
+        if (gf_res_prev)    { gf_res_prev->reset(); }
+        if (gf_res_prev_tg) { gf_res_prev_tg->reset(); }
         return;
     }
 
@@ -4203,24 +4210,21 @@ void llama_context::set_dflash_capture(const int32_t * layer_ids, int32_t n_laye
         dflash_capture->tensor_names.push_back(std::move(name));
     }
 
-    cparams.cb_eval = dflash_eval_callback;
-    cparams.cb_eval_user_data = dflash_capture.get();
+    // Graph-embedded capture (Phase 2): the target graph emits dup nodes for the
+    // capture layers (see qwen35.cpp); readback happens once per decode in
+    // dflash_capture_from_res(). New nodes -> force graph rebuild/reserve.
+    sched_need_reserve = true;
+    if (gf_res_prev)    { gf_res_prev->reset(); }
+    if (gf_res_prev_tg) { gf_res_prev_tg->reset(); }
 }
 
 void llama_context::set_dflash_capture_active(bool active) {
     if (!dflash_capture || dflash_capture->capture_active == active) {
         return;
     }
+    // Graph-embedded capture: the dup nodes stay in the graph (negligible cost);
+    // this flag only gates the post-decode readback in dflash_capture_from_res().
     dflash_capture->capture_active = active;
-    if (active) {
-        if (!dflash_capture->layer_ids.empty()) {
-            cparams.cb_eval = dflash_eval_callback;
-            cparams.cb_eval_user_data = dflash_capture.get();
-        }
-    } else {
-        cparams.cb_eval = nullptr;
-        cparams.cb_eval_user_data = nullptr;
-    }
 }
 
 void llama_context::dflash_reset_hidden_capture() {

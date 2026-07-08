@@ -727,6 +727,11 @@ public:
     ggml_tensor * t_h_pre_norm  = nullptr; // [n_embd, n_outputs] hidden state required for MTP
     ggml_tensor * t_mtp_out     = nullptr; // [n_embd, n_tokens]
 
+    // DFlash graph-embedded target hidden capture: per captured layer, a dup of
+    // that layer's l_out marked as a graph output (Phase 2 — replaces the eval
+    // callback which forced per-node syncs and disabled HIP graphs).
+    std::vector<ggml_tensor *> t_dflash_capture; // each [n_embd, n_tokens]
+
     // DFlash drafter outputs (ported from beellama)
     ggml_tensor * t_logits_argmax = nullptr; // [n_tokens] argmax (or top-K) token ids from the drafter
     std::vector<ggml_tensor *> dflash_k_update; // per-layer drafter K projection-cache update (kv_update graph)

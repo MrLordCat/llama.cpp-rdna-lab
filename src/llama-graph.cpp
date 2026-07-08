@@ -843,6 +843,15 @@ void llm_graph_result::reset() {
     t_sampled_logits.clear();
     t_candidates.clear();
 
+    // DFlash/MTP per-build outputs (the vectors are push_back'ed during build,
+    // so stale entries would leak across rebuilds)
+    t_dflash_capture.clear();
+    dflash_k_update.clear();
+    dflash_v_update.clear();
+    t_logits_argmax = nullptr;
+    t_h_pre_norm    = nullptr;
+    t_mtp_out       = nullptr;
+
     params = {};
 
     inputs.clear();

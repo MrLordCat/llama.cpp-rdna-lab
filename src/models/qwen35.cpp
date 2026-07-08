@@ -176,6 +176,22 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
         cur = build_cvec(cur, il);
         cb(cur, "l_out", il);
 
+        // DFlash graph-embedded hidden capture (Phase 2): dup this layer's output
+        // into a graph-output tensor so llama_context can read it back with ONE
+        // sync after compute — no eval callback, HIP graphs stay enabled.
+        if (!cparams.dflash_capture_layers.empty()) {
+            for (int cap_il : cparams.dflash_capture_layers) {
+                if (cap_il == il) {
+                    ggml_tensor * t_cap = ggml_dup(ctx0, cur);
+                    ggml_set_output(t_cap);
+                    cb(t_cap, "dflash_cap", il);
+                    res->t_dflash_capture.push_back(t_cap);
+                    ggml_build_forward_expand(gf, t_cap);
+                    break;
+                }
+            }
+        }
+
         // Input for next layer
         inpL = cur;
     }

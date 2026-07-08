@@ -567,6 +567,10 @@ extern "C" {
     LLAMA_API int32_t llama_model_n_head_kv  (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_swa      (const struct llama_model * model);
 
+    // DFlash: share tok_embd and output tensors from src (target) to dst (drafter).
+    // The drafter GGUF ships without them; call BEFORE creating the drafter context.
+    LLAMA_API void llama_model_share_tensors(struct llama_model * dst, const struct llama_model * src);
+
     // DFlash drafter metadata (ported from beellama)
     LLAMA_API int32_t llama_model_dflash_block_size       (const struct llama_model * model);
     LLAMA_API int32_t llama_model_dflash_mask_token_id    (const struct llama_model * model);

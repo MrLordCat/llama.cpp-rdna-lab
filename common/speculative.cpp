@@ -798,8 +798,12 @@ struct common_speculative_state_mtp : public common_speculative_state {
                 ++n_get_calls;
             }
 
-            batch.token[0] = cond_tok;
-            batch.pos[0]   = pos;
+            batch.n_tokens     = 1;
+            batch.token[0]     = cond_tok;
+            batch.pos[0]       = pos;
+            batch.n_seq_id[0]  = 1;
+            batch.seq_id[0][0] = seq_id;
+            batch.logits[0]    = 1;
 
             int32_t dec_rc;
             {
@@ -1031,6 +1035,43 @@ struct common_speculative_state_dflash : public common_speculative_state {
         // positions 1..batch_len-1 are the predicted next tokens (skip position 0 = id_last)
         for (int i = 1; i < batch_len; ++i) {
             draft_tokens.push_back((llama_token) argmax[i]);
+        }
+
+        static const bool dflash_debug = std::getenv("LLAMA_DFLASH_DEBUG") != nullptr;
+        if (dflash_debug) {
+            std::string pieces;
+            for (size_t i = 0; i < draft_tokens.size(); ++i) {
+                pieces += "[" + common_token_to_piece(ctx_dft, draft_tokens[i]) + "]";
+            }
+            // discriminator: CPU argmax of the same logits row 1. If it differs from
+            // the GPU argmax, the extraction is broken; if it also returns 0, the
+            // drafter graph output itself is degenerate.
+            int cpu_best = -1;
+            float cpu_best_logit = 0.0f;
+            float l0 = 0.0f, lmid = 0.0f;
+            {
+                const llama_vocab * vocab = llama_model_get_vocab(model_dft);
+                const int nv = llama_vocab_n_tokens(vocab);
+                float * logits = llama_get_logits_ith(ctx_dft, 1);
+                if (logits && nv > 0) {
+                    cpu_best = 0;
+                    cpu_best_logit = logits[0];
+                    for (int tok = 1; tok < nv; ++tok) {
+                        if (logits[tok] > cpu_best_logit) {
+                            cpu_best = tok;
+                            cpu_best_logit = logits[tok];
+                        }
+                    }
+                    l0 = logits[0];
+                    lmid = logits[nv/2];
+                }
+            }
+            LOG_INF("dflash_debug: committed=%d cross_len=%d pos_base=%d id_last=%d[%s] row0_pred=%d drafts=%s | cpu_row1: best=%d[%s] logit=%.3f l0=%.3f lmid=%.3f\n",
+                    committed_len, cross_len, (int) pos_base, (int) id_last,
+                    common_token_to_piece(ctx_dft, id_last).c_str(),
+                    (int) argmax[0], pieces.c_str(),
+                    cpu_best, cpu_best >= 0 ? common_token_to_piece(ctx_dft, cpu_best).c_str() : "?",
+                    cpu_best_logit, l0, lmid);
         }
     }
 
@@ -1433,6 +1474,14 @@ common_speculative * common_speculative_init(
         llama_seq_id                seq_id) {
     llama_context * ctx_dft = nullptr;
     if (params.draft.model) {
+        // DFlash drafters ship without tok_embd/output — share them from the
+        // target model BEFORE creating the drafter context (graph reserve needs
+        // them non-null; without this the drafter's embeddings and logits are
+        // silently all-zero and every draft degenerates to token 0).
+        if (params.type == COMMON_SPECULATIVE_TYPE_DFLASH && ctx_tgt != nullptr) {
+            llama_model_share_tensors(params.draft.model, llama_get_model(ctx_tgt));
+        }
+
         ctx_dft = llama_init_from_model(params.draft.model, params.draft.cparams);
         if (ctx_dft == nullptr) {
             LOG_ERR("%s", "failed to create draft context\n");
