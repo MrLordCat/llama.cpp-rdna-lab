@@ -7,6 +7,15 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-07-08 16:19:09 | cold-first | rocm | dflash-stablekey-rs4-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 5.8739 | 520.7400 | 6.9200 | 0 |
+| 2026-07-08 16:17:31 | cold-first | rocm | dflash-stablekey-noskpt-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |
+| 2026-07-08 16:16:08 | cold-first | rocm | dflash-ubtime2-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 4.1238 | 723.3200 | 11.8500 | 0 |
+| 2026-07-08 16:14:59 | cold-first | rocm | dflash-stablekey-diag | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 4.0779 | 714.6100 | 11.8200 | 0 |
+| 2026-07-08 16:14:01 | cold-first | rocm | dflash-stablekey-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 9.3334 | 722.3800 | 11.2800 | 0 |
+| 2026-07-08 16:06:27 | cold-first | rocm | dflash-gdiff2-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 2.1767 | 425.9100 | 5.2300 | 0 |
+| 2026-07-08 16:04:31 | cold-first | rocm | dflash-gstate-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 2.1881 | 422.4100 | 5.3500 | 0 |
+| 2026-07-08 16:01:32 | cold-first | rocm | dflash-ubtime-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 3.4860 | 501.1300 | 5.7400 | 0 |
+| 2026-07-08 16:00:06 | cold-first | rocm | dflash-graphdiff-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 3.1584 | 453.3000 | 5.2100 | 0 |
 | 2026-07-08 15:51:39 | cold-first | rocm | pl95-base-2gpu-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | none | 18.8922 | 947.0900 | 25.9200 | 0 |
 | 2026-07-08 15:50:40 | cold-first | rocm | pl95-base-1gpu-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | none | 19.5399 | 768.2400 | 29.6300 | 0 |
 | 2026-07-08 12:32:20 | cold-first | rocm | dflash-p3-target0-draft1-cloneout-stats2-cross64-n1-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 9.7084 | 743.1300 | 11.7800 | 0 |
@@ -78,12 +87,3 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-07-07 22:21:17 | cold-first | rocm | mtp-ubtiming-n1-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | mtp | 17.9991 | 383.5600 | 26.8400 | 0 |
 | 2026-07-07 22:19:16 | cold-first | rocm | mtp-graphtrace-n1-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | mtp | 21.9363 | 399.0200 | 24.3800 | 0 |
 | 2026-07-07 22:13:24 | cold-first | - | mtp2x-n1-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 18.9340 | 616.1100 | 24.1900 | 0 |
-| 2026-07-07 22:10:32 | cold-first | - | mtp2x-gpuargmax-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 17.3229 | 615.8800 | 22.9650 | 0 |
-| 2026-07-07 22:07:15 | cold-first | - | mtp2x-n2-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 17.5344 | 615.9600 | 22.7900 | 0 |
-| 2026-07-07 21:38:06 | cold-first | - | mtp2x-mtp-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | mtp | 16.0567 | 612.1550 | 20.3100 | 0 |
-| 2026-07-07 21:36:58 | cold-first | - | mtp2x-base-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | none | 21.3467 | 942.3450 | 25.6100 | 0 |
-| 2026-07-07 20:46:40 | cold-first | - | dflash-ctxaccum-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 4.0868 | 717.6700 | 4.8500 | 0 |
-| 2026-07-07 20:32:39 | cold-first | - | dflash-n4-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 0.0000 | - | - | 2 |
-| 2026-07-07 20:16:57 | cold-first | - | dflash-smoke-dual-r3 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 4.1810 | 722.4950 | 4.9800 | 0 |
-| 2026-07-07 20:12:12 | cold-first | - | dflash-smoke-dual-r2 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | other | 3.9503 | 727.0350 | 4.9500 | 0 |
-| 2026-07-07 16:55:13 | cold-first | rocm | mtp-single-mtp-n8-argmax-v3 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | mtp | 23.1218 | 339.9700 | 28.7400 | 0 |
