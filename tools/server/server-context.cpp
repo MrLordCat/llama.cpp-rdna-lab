@@ -370,7 +370,13 @@ struct server_slot {
                     spec_draft.resize(n_draft_max);
                 }
 
-                if (!spec_draft.empty() && ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL) {
+                const bool dflash_skip_spec_ckpt =
+                    ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL &&
+                    params_spec.type == COMMON_SPECULATIVE_TYPE_DFLASH &&
+                    params_spec.draft.n_max <= 1 &&
+                    server_env_enabled("LLAMA_DFLASH_SKIP_SPEC_CKPT");
+
+                if (!spec_draft.empty() && ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL && !dflash_skip_spec_ckpt) {
                     const auto n_tokens = prompt.tokens.size();
 
                     //const int64_t t_start = ggml_time_us();
@@ -382,6 +388,8 @@ struct server_slot {
 
                     SLT_DBG(*this, "created speculative checkpoint (pos_min = %d, pos_max = %d, n_tokens = %zu, size = %.3f MiB)\n",
                             spec_ckpt.pos_min, spec_ckpt.pos_max, n_tokens, (float) spec_ckpt.data.size() / 1024 / 1024);
+                } else if (!spec_draft.empty() && dflash_skip_spec_ckpt) {
+                    SLT_WRN(*this, "%s", "DFlash diagnostic: skipping speculative checkpoint; aborting on first rejected draft\n");
                 }
             }
 
@@ -3128,7 +3136,12 @@ private:
 
                 // verify and try to accept the draft
                 {
-                    const bool use_ckpt = slot.ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
+                    const bool dflash_skip_spec_ckpt =
+                        slot.ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL &&
+                        slot.task->params.speculative.type == COMMON_SPECULATIVE_TYPE_DFLASH &&
+                        slot.task->params.speculative.draft.n_max <= 1 &&
+                        server_env_enabled("LLAMA_DFLASH_SKIP_SPEC_CKPT");
+                    const bool use_ckpt = slot.ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL && !dflash_skip_spec_ckpt;
 
                     // only save the sampler sampler state if we use checkpoints
                     common_sampler_ptr smpl_save;
@@ -3144,10 +3157,17 @@ private:
 
                     // check for partial draft acceptance
                     if (accepted.size() < slot.spec_draft.size() + 1) {
+                        if (dflash_skip_spec_ckpt) {
+                            GGML_ABORT("%s: DFlash diagnostic no-checkpoint mode rejected %zu/%zu draft tokens; "
+                                       "cannot recover Qwen hybrid recurrent state without a checkpoint\n",
+                                       __func__, accepted.size() - 1, slot.spec_draft.size());
+                        }
                         if (use_ckpt) {
                             if (trace > 0) {
                                 SLT_INF(slot, "accepted %2zu/%2zu draft tokens (restore checkpoint)\n", accepted.size() - 1, slot.spec_draft.size());
                             }
+
+                            common_speculative_reject(slot.spec.get(), slot.spec_draft.size(), accepted.size() - 1);
 
                             // partial acceptance is not supported by the context -> truncate the draft and restore the state
                             slot.spec_draft = std::move(accepted);

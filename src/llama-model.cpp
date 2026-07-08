@@ -23,6 +23,7 @@
 #include <cassert>
 #include <cfloat>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <functional>
@@ -2202,12 +2203,74 @@ int32_t llama_model_n_swa(const llama_model * model) {
     return model->hparams.n_swa;
 }
 
+static bool llama_model_env_flag_enabled(const char * name) {
+    const char * value = getenv(name);
+    return value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+struct llama_model_cloned_tensor {
+    ggml_tensor * tensor = nullptr;
+    ggml_context_ptr ctx;
+    std::vector<ggml_backend_buffer_ptr> bufs;
+};
+
+static llama_model_cloned_tensor llama_model_clone_tensor_to_buft(
+        const ggml_tensor          * src,
+        ggml_backend_buffer_type_t   buft) {
+    if (src == nullptr || buft == nullptr) {
+        return {};
+    }
+
+    ggml_init_params params = {
+        /*.mem_size   =*/ ggml_tensor_overhead()*2,
+        /*.mem_buffer =*/ NULL,
+        /*.no_alloc   =*/ true,
+    };
+
+    ggml_context_ptr ctx { ggml_init(params) };
+    if (!ctx) {
+        throw std::runtime_error("failed to create ggml context for cloned DFlash tensor");
+    }
+
+    ggml_tensor * cloned = ggml_dup_tensor(ctx.get(), src);
+    ggml_set_name(cloned, ggml_get_name(src));
+
+    std::vector<ggml_backend_buffer_ptr> bufs;
+    bufs.emplace_back(ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft));
+    if (!bufs.back()) {
+        throw std::runtime_error(format("failed to allocate cloned DFlash tensor %s on %s",
+                ggml_get_name(src), ggml_backend_buft_name(buft)));
+    }
+
+    ggml_backend_tensor_copy(src, cloned);
+
+    LLAMA_LOG_INFO("%s: cloned shared tensor %s (%zu MiB, %s) to %s\n",
+            __func__, ggml_get_name(src), ggml_nbytes(src) / 1024 / 1024,
+            ggml_type_name(src->type), ggml_backend_buft_name(buft));
+
+    return { cloned, std::move(ctx), std::move(bufs) };
+}
+
 // DFlash: share tok_embd and output tensors from the target model to the
 // drafter model (the drafter GGUF ships without them). Must be called BEFORE
 // the drafter context is created so graph reserve sees the shared tensors.
 void llama_model_share_tensors(llama_model * dst, const llama_model * src) {
     dst->tok_embd = src->tok_embd;
-    dst->output   = src->output;
+
+    if (llama_model_env_flag_enabled("LLAMA_DFLASH_CLONE_SHARED_TENSORS")) {
+        ggml_backend_dev_t out_dev = dst->dev_output();
+        ggml_backend_buffer_type_t out_buft = out_dev ? ggml_backend_dev_buffer_type(out_dev) : nullptr;
+        llama_model_cloned_tensor cloned_output = llama_model_clone_tensor_to_buft(src->output, out_buft);
+        if (cloned_output.tensor) {
+            dst->output = cloned_output.tensor;
+            dst->tensors_by_name.emplace_back(ggml_get_name(cloned_output.tensor), cloned_output.tensor);
+            dst->pimpl->ctxs_bufs.emplace_back(std::move(cloned_output.ctx), std::move(cloned_output.bufs));
+        } else {
+            dst->output = src->output;
+        }
+    } else {
+        dst->output = src->output;
+    }
 }
 
 // DFlash drafter metadata accessors (ported from beellama)

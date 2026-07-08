@@ -14,6 +14,7 @@
 #include <climits>
 #include <cmath>
 #include <chrono>
+#include <cstdlib>
 #include <cstdarg>
 #include <cstring>
 #include <ctime>
@@ -1505,11 +1506,23 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.n_ctx             = params.n_ctx;
     cparams.n_seq_max         = params.n_parallel;
     {
-        // enable partial rollback only for MTP, each recurrent slot requires memory
-        // and MTP uses max 3-4 slots vs other techniques
+        // enable partial rollback only for MTP by default; each recurrent slot
+        // requires memory and changes Qwen hybrid graph shape. DFlash can opt in
+        // experimentally to measure checkpoint overhead without making it default.
         const bool has_mtp_spec = params.speculative.type == COMMON_SPECULATIVE_TYPE_MTP ||
                       params.speculative.type == COMMON_SPECULATIVE_TYPE_NGRAM_MTP;
         cparams.n_rs_seq = has_mtp_spec ? (uint32_t) params.speculative.draft.n_max : 0u;
+
+        if (params.speculative.type == COMMON_SPECULATIVE_TYPE_DFLASH) {
+            if (const char * env = std::getenv("LLAMA_DFLASH_N_RS_SEQ")) {
+                const int n_rs_seq = std::atoi(env);
+                if (n_rs_seq > 0) {
+                    cparams.n_rs_seq = (uint32_t) n_rs_seq;
+                    LOG_INF("%s: experimental DFlash recurrent rollback enabled, n_rs_seq=%u\n",
+                            __func__, cparams.n_rs_seq);
+                }
+            }
+        }
     }
     cparams.n_batch           = params.n_batch;
     cparams.n_ubatch          = params.n_ubatch;
