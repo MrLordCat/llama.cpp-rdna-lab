@@ -4589,6 +4589,16 @@ static void ggml_backend_cuda_synchronize(ggml_backend_t backend) {
 }
 
 #ifdef USE_CUDA_GRAPH
+static bool ggml_cuda_graph_trace_state_enabled() {
+    static const bool enabled = getenv("GGML_TRACE_CUDA_GRAPH_STATE") != nullptr;
+    return enabled;
+}
+
+static bool ggml_cuda_graph_trace_diff_enabled() {
+    static const bool enabled = getenv("GGML_TRACE_CUDA_GRAPH_DIFF") != nullptr;
+    return enabled;
+}
+
 static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
 
     bool use_cuda_graph = true;
@@ -4603,6 +4613,10 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
 
         if (node->src[0] && node->src[0]->buffer && ggml_backend_buft_is_cuda_split(node->src[0]->buffer->buft)) {
             use_cuda_graph = false; // Split buffers are not supported by CUDA graph capture
+            if (ggml_cuda_graph_trace_state_enabled()) {
+                GGML_LOG_INFO("%s: incompatible reason=split-buffer node=%d op=%s name=%s\n",
+                        __func__, i, ggml_op_name(node->op), node->name);
+            }
 #ifndef NDEBUG
             GGML_LOG_DEBUG("%s: disabling CUDA graphs due to split buffer\n", __func__);
 #endif
@@ -4617,6 +4631,11 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
                 // TODO: figure out a way to enable for larger batch sizes, without hurting performance
                 // ref: https://github.com/ggml-org/llama.cpp/pull/18958
                 use_cuda_graph = false;
+                if (ggml_cuda_graph_trace_state_enabled()) {
+                    GGML_LOG_INFO("%s: incompatible reason=mul-mat-id node=%d op=%s name=%s type=%s ne2=%lld mmvq_mmid_max=%d\n",
+                            __func__, i, ggml_op_name(node->op), node->name,
+                            ggml_type_name(node->src[0]->type), (long long) node->ne[2], mmvq_mmid_max);
+                }
 #ifndef NDEBUG
                 GGML_LOG_DEBUG("%s: disabling CUDA graphs due to unsupported node type\n", __func__);
 #endif
@@ -4637,9 +4656,12 @@ static const void * ggml_cuda_graph_get_key(ggml_cgraph * cgraph) {
 
 static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph) {
     bool res = false;
+    bool diff_logged = false;
+    const bool trace_diff = ggml_cuda_graph_trace_diff_enabled();
 
     const void * graph_key = ggml_cuda_graph_get_key(cgraph);
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
+    const int old_n_nodes = (int) graph->node_props.size();
 
     if (cgraph->uid != 0 &&
         cgraph->uid == graph->uid) {
@@ -4651,7 +4673,12 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
     graph->uid = cgraph->uid;
 
     // Check if the graph size has changed
-    if ((int)graph->node_props.size() != cgraph->n_nodes) {
+    if (old_n_nodes != cgraph->n_nodes) {
+        if (trace_diff) {
+            GGML_LOG_INFO("%s: graph-diff key=%p uid=%zu reason=node-count old=%d new=%d\n",
+                    __func__, graph_key, cgraph->uid, old_n_nodes, cgraph->n_nodes);
+            diff_logged = true;
+        }
         res = true;
         graph->node_props.resize(cgraph->n_nodes);
     }
@@ -4668,7 +4695,47 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
             }
         }
 
-        if (res || memcmp(&graph->node_props[i], &prop, sizeof(prop)) != 0) {
+        const bool prop_changed = i >= old_n_nodes || memcmp(&graph->node_props[i], &prop, sizeof(prop)) != 0;
+        if (prop_changed) {
+            if (trace_diff && !diff_logged) {
+                const auto & old_prop = graph->node_props[i];
+                GGML_LOG_INFO(
+                        "%s: graph-diff key=%p uid=%zu reason=node-prop node=%d op=%s name=%s "
+                        "old_data=%p new_data=%p old_ne=(%lld,%lld,%lld,%lld) new_ne=(%lld,%lld,%lld,%lld) "
+                        "old_nb=(%zu,%zu,%zu,%zu) new_nb=(%zu,%zu,%zu,%zu)\n",
+                        __func__, graph_key, cgraph->uid, i, ggml_op_name(cgraph->nodes[i]->op), cgraph->nodes[i]->name,
+                        old_prop.node.data, prop.node.data,
+                        (long long) old_prop.node.ne[0], (long long) old_prop.node.ne[1],
+                        (long long) old_prop.node.ne[2], (long long) old_prop.node.ne[3],
+                        (long long) prop.node.ne[0], (long long) prop.node.ne[1],
+                        (long long) prop.node.ne[2], (long long) prop.node.ne[3],
+                        (size_t) old_prop.node.nb[0], (size_t) old_prop.node.nb[1],
+                        (size_t) old_prop.node.nb[2], (size_t) old_prop.node.nb[3],
+                        (size_t) prop.node.nb[0], (size_t) prop.node.nb[1],
+                        (size_t) prop.node.nb[2], (size_t) prop.node.nb[3]);
+                for (int j = 0; j < GGML_MAX_SRC; ++j) {
+                    if (old_prop.node_src_data_ptrs[j] != prop.node_src_data_ptrs[j] ||
+                            memcmp(old_prop.node_src_ne[j], prop.node_src_ne[j], sizeof(prop.node_src_ne[j])) != 0 ||
+                            memcmp(old_prop.node_src_nb[j], prop.node_src_nb[j], sizeof(prop.node_src_nb[j])) != 0) {
+                        GGML_LOG_INFO(
+                                "%s: graph-diff-src key=%p uid=%zu node=%d src=%d "
+                                "old_data=%p new_data=%p old_ne=(%lld,%lld,%lld,%lld) new_ne=(%lld,%lld,%lld,%lld) "
+                                "old_nb=(%zu,%zu,%zu,%zu) new_nb=(%zu,%zu,%zu,%zu)\n",
+                                __func__, graph_key, cgraph->uid, i, j,
+                                old_prop.node_src_data_ptrs[j], prop.node_src_data_ptrs[j],
+                                (long long) old_prop.node_src_ne[j][0], (long long) old_prop.node_src_ne[j][1],
+                                (long long) old_prop.node_src_ne[j][2], (long long) old_prop.node_src_ne[j][3],
+                                (long long) prop.node_src_ne[j][0], (long long) prop.node_src_ne[j][1],
+                                (long long) prop.node_src_ne[j][2], (long long) prop.node_src_ne[j][3],
+                                (size_t) old_prop.node_src_nb[j][0], (size_t) old_prop.node_src_nb[j][1],
+                                (size_t) old_prop.node_src_nb[j][2], (size_t) old_prop.node_src_nb[j][3],
+                                (size_t) prop.node_src_nb[j][0], (size_t) prop.node_src_nb[j][1],
+                                (size_t) prop.node_src_nb[j][2], (size_t) prop.node_src_nb[j][3]);
+                        break;
+                    }
+                }
+                diff_logged = true;
+            }
             graph->node_props[i] = prop;
             res = true;
         }
@@ -5871,6 +5938,12 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     bool use_cuda_graph             = false;
     bool cuda_graph_update_required = false;
     const void * graph_key = nullptr;
+    bool graph_enabled = false;
+    bool graph_compatible = false;
+    bool properties_changed = false;
+    bool warmup_before = false;
+    bool warmup_after = false;
+    bool instance_before = false;
 
 #ifdef USE_CUDA_GRAPH
     graph_key = ggml_cuda_graph_get_key(cgraph);
@@ -5878,10 +5951,13 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     ggml_cuda_graph_set_enabled(cuda_ctx, graph_key);
 
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
-    if (graph->is_enabled()) {
-        const bool graph_compatible = ggml_cuda_graph_check_compability(cgraph);
+    graph_enabled = graph->is_enabled();
+    warmup_before = graph->warmup_complete;
+    instance_before = graph->instance != nullptr;
+    if (graph_enabled) {
+        graph_compatible = ggml_cuda_graph_check_compability(cgraph);
         if (graph_compatible) {
-            const bool properties_changed = ggml_cuda_graph_update_required(cuda_ctx, cgraph);
+            properties_changed = ggml_cuda_graph_update_required(cuda_ctx, cgraph);
 
             if (!graph->warmup_complete) {
                 // Warmup: need at least 2 calls with no property change on the 2nd call
@@ -5905,7 +5981,26 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
             }
         }
     }
+    warmup_after = graph->warmup_complete;
 #endif // USE_CUDA_GRAPH
+
+    if (ggml_cuda_graph_trace_state_enabled()) {
+        const ggml_tensor * first = cgraph->n_nodes > 0 ? cgraph->nodes[0] : nullptr;
+        GGML_LOG_INFO(
+                "%s: dev=%d key=%p first=%p first_op=%s first_name=%s uid=%zu nodes=%d enabled=%d compatible=%d props_changed=%d warmup_before=%d warmup_after=%d instance_before=%d use=%d update=%d\n",
+                __func__, cuda_ctx->device, graph_key, (const void *) first,
+                first ? ggml_op_name(first->op) : "none",
+                first ? first->name : "",
+                (size_t) cgraph->uid, cgraph->n_nodes,
+                graph_enabled ? 1 : 0,
+                graph_compatible ? 1 : 0,
+                properties_changed ? 1 : 0,
+                warmup_before ? 1 : 0,
+                warmup_after ? 1 : 0,
+                instance_before ? 1 : 0,
+                use_cuda_graph ? 1 : 0,
+                cuda_graph_update_required ? 1 : 0);
+    }
 
     if (use_cuda_graph && cuda_graph_update_required) {
         // Start CUDA graph capture
