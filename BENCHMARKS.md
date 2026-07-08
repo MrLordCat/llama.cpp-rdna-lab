@@ -3555,3 +3555,66 @@ was reverted. The useful conclusion is causal: mask-opt prepass/sync is not the
 main FA limiter; future FA work should target the main q4 K/V dequant,
 softmax/PV loop, or a more structural long-KV traversal that changes the shader
 body cost rather than only removing the prepass.
+
+## ROCm Qwen3.6 MTP Depth-8 Decode Profile (E266, 2026-07-07)
+
+After checking the Unsloth Qwen3.6 MTP guide, the local ROCm issue was
+reframed: acceptance was healthy, but the earlier `n_max=1..2` settings did not
+give enough target-verify batching to outrun ROCm overhead. With the MTP
+hook-prefill no-logits path, bulk hidden copy, and GPU argmax path in place,
+`--spec-draft-n-max 8` is the first confirmed positive two-GPU ROCm profile.
+
+Lane: `Qwen3.6-27B-Q3_K_S_mtp.gguf`, ROCm default two-GPU layer split,
+`ctx=4096`, `b512/ub128`, `q4_0/q4_0`, FlashAttention on,
+`quick:triage_diff`, `max_tokens=256`, `temperature=0.0`, no reuse/no prime,
+thinking enabled.
+
+| Mode | Label | Aggregate TPS | Decode tok/s | Prompt tok/s | Acceptance |
+| --- | --- | ---: | ---: | ---: | ---: |
+| baseline | `mtp-temp0-postbuild-none-confirm3` | `25.6412` | `26.29` | `744.72` | - |
+| MTP `n_max=8` | `mtp-temp0-postbuild-n8-confirm3` | `42.1258` | `44.68` | `515.81` | `54.33%` |
+
+The confirmed r3 delta is `1.64x` aggregate completion TPS and `1.70x` decode
+tok/s, which matches the lower part of the Unsloth `1.4-2.2x` expectation for a
+generation-heavy run. A small repo-context probe, safe-capped at `1577` prompt
+tokens under `ctx=4096`, also stayed positive: baseline `22.3927` TPS /
+`26.36` decode tok/s versus MTP `n8` `29.3322` TPS / `41.54` decode tok/s.
+
+Depth scan around the winner:
+
+| MTP depth | Aggregate TPS | Decode tok/s | Acceptance | Decision |
+| ---: | ---: | ---: | ---: | --- |
+| `4` | `24.9690` | `26.00` | `76.19%` | below baseline |
+| `6` | `21.5639` | `22.34` | `62.42%` | reject |
+| `8` | `41.5827` | `44.55` | `54.33%` | best local point |
+| `10` | `37.8592` | `40.41` | `44.61%` | positive but slower than n8 |
+| `12` | `37.2331` | `39.73` | `38.59%` | positive but slower than n8 |
+
+Decision: keep the code fixes and use `--spec-type mtp --spec-draft-n-max 8`
+as the current measured ROCm two-GPU generation-heavy profile for this local
+MTP GGUF. Do not promote it as a 130k/60k-prompt headline yet: MTP still slows
+prompt eval because hook-prefill advances the MTP context, so long-prompt
+claims need a separate same-lane A/B.
+
+## ROCm Qwen3.6 MTP Big-Prompt Gate (E267, 2026-07-08)
+
+Follow-up to E266 on the practical large-prompt lane:
+`Qwen3.6-27B-Q3_K_S_mtp.gguf`, ROCm default two-GPU layer split,
+`ctx=131072`, `b512/ub128`, `q4_0/q4_0`, FlashAttention on,
+`quick:triage_diff`, `real-context-chars=152000`, `56371` prompt tokens,
+`max_tokens=256`, `temperature=0.0`, no reuse/no prime, thinking enabled.
+
+| Mode | Label | Aggregate TPS | Wall s | Prompt tok/s | Prompt ms | Decode tok/s | Decode ms | Acceptance |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline | `mtp-bigprompt-none-r1` | `2.1774` | `117.5701` | `537.93` | `104793.21` | `20.19` | `12682.62` | - |
+| MTP `n_max=8` | `mtp-bigprompt-n8-r1` | `1.5997` | `160.0303` | `386.54` | `145835.45` | `18.15` | `14102.51` | `54.62%` |
+
+Delta: aggregate completion TPS `-26.5%`, prompt eval throughput `-28.1%`,
+decode throughput `-10.1%`. The MTP run adds `41.04 s` of prompt eval time on
+the same `56371`-token prompt. Acceptance is healthy (`207/379`, `54.62%`), so
+the gate fails on runtime overhead, not draft quality.
+
+Decision: reject MTP `n_max=8` as a cold large-prompt default for the current
+code. Keep E266 as the generation-heavy profile, but the 130k/60k-prompt route
+needs an MTP prefill/hook optimization or a proven safe lazy MTP initialization
+before any speedup claim.

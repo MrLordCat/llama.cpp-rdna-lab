@@ -1,6 +1,6 @@
 # Experiment Digest
 
-Updated: 2026-05-28.
+Updated: 2026-07-08.
 
 This is the compact historical base for performance work. `RESULTS_LOG.md` remains the detailed ledger; this file groups the evidence so agents can pick the next route without rereading every E/D note.
 
@@ -31,7 +31,7 @@ This is the compact historical base for performance work. `RESULTS_LOG.md` remai
 
 ## Compact Experiment Ledger
 
-Rows parsed from `docs/research/RESULTS_LOG.md`: 327.
+Rows parsed from `docs/research/RESULTS_LOG.md`: 329.
 
 | Date | ID | Short name | Delta | Decision | Artifacts |
 | --- | --- | --- | --- | --- | --- |
@@ -362,3 +362,5 @@ Rows parsed from `docs/research/RESULTS_LOG.md`: 327.
 | 2026-05-22 | E146 | Vulkan Q3_K BM256 route gate | `-5.78%` | Reject and revert BM256. B/workgroup reduction is real but near-limit LDS likely hurts occupancy/residency; prebuild gate now blocks `bm256`/large-tile repeats unless they name a new topology/layout | build_logs/agent-workload/e146-vulkan-q3k-bm256-*.log, docs/research/experiments/E146_vulkan64k_q3k_bm256_route_gate.md, scripts/research/vulkan_q3k_prebuild... |
 | 2026-05-22 | E147 | Vulkan Q3_K layout route gate | design gate, no TPS claim | Reject persistent fp16/int8 and single-accumulator sequential-N analytically. Defer signed-nibble Q3_K layout until stronger instruction/resource proof; next complex route should move to FA long-KV shader-body work or... | build_logs/agent-workload/e147-*.md, docs/research/experiments/E147_vulkan64k_q3k_layout_route_gate.md, scripts/research/vulkan_q3k_layout_route_gate.py |
 | 2026-05-22 | E148 | Vulkan FA analytic causal mask route | `+0.08%`, noise/tie | Reject and revert runtime prototype. Mask-opt prepass/sync looked plausible but is not the limiter; future FA work must target the main q4 K/V dequant + softmax/PV loop or a more structural long-KV traversal | build_logs/agent-workload/e148-vulkan-fa-causal-mask-*.log, build_logs/agent-workload/e148-vulkan-fa-causal-mask-gate.md, docs/research/experiments/E148_vulk... |
+| 2026-07-07 | E266 | ROCm MTP depth-8 decode profile | `+64.28%` aggregate, `+69.95%` decode; acceptance `54.33%` | Keep code fixes; use `--spec-type mtp --spec-draft-n-max 8` as current ROCm two-GPU generation-heavy MTP profile; do not claim 130k/60k-prompt headline yet | `build_logs/agent-workload/mtp-temp0-postbuild-none-confirm3.*`, `build_logs/agent-workload/mtp-temp0-postbuild-n8-confirm3.*`, `docs/research/experiments/E2... |
+| 2026-07-08 | E267 | ROCm MTP big-prompt gate | `-26.5%` aggregate, `-28.1%` prompt, `-10.1%` decode; acceptance `54.62%` | Reject MTP n8 as cold large-prompt default until MTP prefill/hook overhead is fixed; keep E266 only as generation-heavy profile | `build_logs/agent-workload/mtp-bigprompt-none-r1.*`, `build_logs/agent-workload/mtp-bigprompt-n8-r1.*`, `docs/research/experiments/E267_rocm_mtp_bigprompt_ga... |
