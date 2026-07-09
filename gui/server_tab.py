@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
 import os
 import shlex
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 
 from backend_names import backend_key_from_display, display_backend_from_key
 from threads import ServerThread
@@ -39,10 +39,16 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self._memory_fit_warning_shown = False
         self._registered_build_map: dict[str, dict[str, object]] = {}
         self._model_presets = self._load_model_presets()
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(300)
+        self._preview_timer.timeout.connect(self._update_command_preview)
         self.create_ui()
         self.refresh_server_build_choices()
         self.refresh_server_models_list()
         self.load_settings()
+        self.on_spec_type_changed()  # sync spec-field enablement with loaded type
+        self._wire_command_preview()
 
     def create_ui(self):
         """Create server tab UI with QSplitter layout"""
@@ -84,30 +90,36 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
 
         model_layout.addLayout(model_row)
 
-        # Model list
-        model_list_label = QLabel("Available Models:")
-        model_layout.addWidget(model_list_label)
-
+        # Model list: label + combo + refresh on one row
+        model_list_row = QHBoxLayout()
+        model_list_row.addWidget(QLabel("Available Models:"))
         self.server_models_combo = QComboBox()
         self.server_models_combo.currentTextChanged.connect(self.on_server_model_selected)
-        model_layout.addWidget(self.server_models_combo)
+        model_list_row.addWidget(self.server_models_combo, 1)
 
-        model_actions_row = QHBoxLayout()
         self.server_models_refresh_btn = QPushButton("🔄 Refresh")
         self.server_models_refresh_btn.clicked.connect(self.refresh_server_models_list)
-        model_actions_row.addWidget(self.server_models_refresh_btn)
-        model_actions_row.addStretch()
-        model_layout.addLayout(model_actions_row)
+        model_list_row.addWidget(self.server_models_refresh_btn)
+        model_layout.addLayout(model_list_row)
 
-        # Presets
+        # Presets: quick presets apply on selection; the model preset comes
+        # from gui/model_presets.json and is re-applied automatically when a
+        # model is picked — the button is a manual re-apply.
         preset_layout = QHBoxLayout()
-        preset_layout.addWidget(QLabel("Preset:"))
+        preset_layout.addWidget(QLabel("Quick preset:"))
         self.server_preset_combo = QComboBox()
         self.server_preset_combo.addItems(["Default", "Fast", "Quality", "Balanced", "VRAM Limited", "CPU Fallback"])
+        self.server_preset_combo.setToolTip("Generic starting points; applied immediately on selection")
         self.server_preset_combo.currentIndexChanged.connect(self.apply_server_preset)
         preset_layout.addWidget(self.server_preset_combo)
+        preset_layout.addStretch()
 
-        self.server_apply_model_preset_btn = QPushButton("✨ Apply Model Preset")
+        self.server_apply_model_preset_btn = QPushButton("✨ Re-apply Model Preset")
+        self.server_apply_model_preset_btn.setToolTip(
+            "Apply the matching preset for this model from gui/model_presets.json.\n"
+            "Runs automatically when a model is selected — use this to re-apply\n"
+            "after manual changes."
+        )
         self.server_apply_model_preset_btn.clicked.connect(self.apply_model_file_preset)
         preset_layout.addWidget(self.server_apply_model_preset_btn)
         model_layout.addLayout(preset_layout)
@@ -121,7 +133,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
 
         # Host and port
         host_layout = QHBoxLayout()
-        host_layout.addWidget(QLabel("Host:Port:"))
+        host_layout.addWidget(QLabel("Host:"))
         self.server_host_input = QLineEdit()
         self.server_host_input.setText("0.0.0.0")
         self.server_host_input.setMaximumWidth(120)
@@ -134,22 +146,14 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_port_spinbox.setValue(8000)
         self.server_port_spinbox.setMaximumWidth(80)
         host_layout.addWidget(self.server_port_spinbox)
-        host_layout.addStretch()
-        server_layout.addLayout(host_layout)
 
-        # Backend/Mode
-        backend_layout = QHBoxLayout()
-        backend_layout.addWidget(QLabel("Backend:"))
-        self.server_backend_combo = QComboBox()
-        self.server_backend_combo.addItems(["GPU", "CPU"])
-        backend_layout.addWidget(self.server_backend_combo)
-
-        backend_layout.addWidget(QLabel("Mode:"))
+        host_layout.addWidget(QLabel("Mode:"))
         self.server_mode_combo = QComboBox()
         self.server_mode_combo.addItems(["Inference", "Embedding"])
-        backend_layout.addWidget(self.server_mode_combo)
-        backend_layout.addStretch()
-        server_layout.addLayout(backend_layout)
+        self.server_mode_combo.setToolTip("Embedding starts the server with --embeddings (embedding endpoint only)")
+        host_layout.addWidget(self.server_mode_combo)
+        host_layout.addStretch()
+        server_layout.addLayout(host_layout)
 
         build_layout = QHBoxLayout()
         build_layout.addWidget(QLabel("Build Backend:"))
@@ -266,10 +270,6 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             "TurboQuant KV types force flash_attn=on."
         )
         kv_layout.addWidget(self.server_kv_type_combo)
-
-        kv_layout.addWidget(QLabel("KV Quantize:"))
-        self.server_kv_quant_check = QCheckBox()
-        kv_layout.addWidget(self.server_kv_quant_check)
         kv_layout.addStretch()
         resources_layout.addLayout(kv_layout)
 
@@ -289,23 +289,18 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         spec_type_layout.addStretch()
         spec_layout.addLayout(spec_type_layout)
 
-        # Speculative params
+        # Speculative params (enabled only for mtp/draft types)
         draft_layout = QHBoxLayout()
-        draft_layout.addWidget(QLabel("Draft N:"))
-        self.server_spec_draft_n = QSpinBox()
-        self.server_spec_draft_n.setMinimum(1)
-        self.server_spec_draft_n.setMaximum(20)
-        self.server_spec_draft_n.setValue(5)
-        draft_layout.addWidget(self.server_spec_draft_n)
-
-        draft_layout.addWidget(QLabel("Max N:"))
+        draft_layout.addWidget(QLabel("Draft Max N:"))
         self.server_spec_draft_n_max = QSpinBox()
         self.server_spec_draft_n_max.setMinimum(1)
         self.server_spec_draft_n_max.setMaximum(20)
         self.server_spec_draft_n_max.setValue(self.MTP_DRAFT_N_MAX)
+        self.server_spec_draft_n_max.setToolTip("--spec-draft-n-max: max draft tokens per verify step")
         draft_layout.addWidget(self.server_spec_draft_n_max)
         draft_layout.addStretch()
         spec_layout.addLayout(draft_layout)
+        self.draft_layout_group = draft_layout
 
         # NGram parameters
         ngram_layout = QHBoxLayout()
@@ -445,13 +440,19 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
 
         self.server_start_btn = QPushButton("▶️ Start Server")
         self.server_start_btn.clicked.connect(self.start_server)
-        self.server_start_btn.setStyleSheet("QPushButton { font-size: 12px; padding: 8px; background-color: #4CAF50; color: white; }")
+        self.server_start_btn.setStyleSheet(
+            "QPushButton { font-size: 12px; padding: 8px; background-color: #4CAF50; color: white; }"
+            "QPushButton:disabled { background-color: #3a3a3a; color: #808080; }"
+        )
         buttons_layout.addWidget(self.server_start_btn)
 
         self.server_stop_btn = QPushButton("⏹️ Stop Server")
         self.server_stop_btn.clicked.connect(self.stop_server)
         self.server_stop_btn.setEnabled(False)
-        self.server_stop_btn.setStyleSheet("QPushButton { font-size: 12px; padding: 8px; background-color: #f44336; color: white; }")
+        self.server_stop_btn.setStyleSheet(
+            "QPushButton { font-size: 12px; padding: 8px; background-color: #f44336; color: white; }"
+            "QPushButton:disabled { background-color: #3a3a3a; color: #808080; }"
+        )
         buttons_layout.addWidget(self.server_stop_btn)
 
         self.server_web_btn = QPushButton("🌐 Open Web")
@@ -470,6 +471,18 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_status_label = QLabel("Status: Stopped")
         self.server_status_label.setStyleSheet("font-weight: bold; color: red;")
         right_layout.addWidget(self.server_status_label)
+
+        # Live command preview: exactly what Start Server will run
+        preview_group = QGroupBox("Command Preview")
+        preview_layout = QVBoxLayout()
+        self.server_cmd_preview = QTextEdit()
+        self.server_cmd_preview.setReadOnly(True)
+        self.server_cmd_preview.setMaximumHeight(190)
+        self.server_cmd_preview.setStyleSheet("font-family: Consolas, 'Courier New', monospace; font-size: 11px;")
+        self.server_cmd_preview.setToolTip("Full llama-server command with env overrides, updated as you change settings")
+        preview_layout.addWidget(self.server_cmd_preview)
+        preview_group.setLayout(preview_layout)
+        right_layout.addWidget(preview_group)
 
         # Log output
         log_label = QLabel("Server Output Log:")
@@ -540,31 +553,29 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             "GGML_VK_FORCE_AMD_LARGE_MATMUL": "1",
         }
 
-    def start_server(self):
-        """Start llama-server"""
-        if self.server_thread and self.server_thread.isRunning():
-            QMessageBox.information(self, "Server", "Server is already running")
-            return
+    def _compose_server_command(self) -> tuple[list[str], dict[str, str] | None, Path, list[str], list[str]]:
+        """Build the launch command and env from current UI state, side-effect free.
+
+        Returns (command, env, build_dir, problems, notes). Non-empty problems
+        means the command is not launchable as composed; notes are informational.
+        """
+        problems: list[str] = []
+        notes: list[str] = []
 
         model_path = self.server_model_path.text().strip()
         if not model_path or not Path(model_path).exists():
-            QMessageBox.warning(self, "Error", "Select valid model file")
-            return
+            problems.append("Select a valid model file")
 
         build_dir = self._resolve_selected_build_dir()
         llama_server = self._find_llama_server_binary(build_dir)
         if not llama_server:
-            QMessageBox.warning(
-                self,
-                "Server binary not found",
-                f"llama-server executable not found in build directory:\n{build_dir}\n\n"
-                "Build the selected backend first in Build tab."
+            problems.append(
+                f"llama-server not found in {build_dir} — build the selected backend in the Build tab"
             )
-            return
 
         port = self.server_port_spinbox.value()
         command = [
-            str(llama_server),
+            str(llama_server) if llama_server else "llama-server",
             "-m", model_path,
             "--host", self.server_host_input.text().strip() or "0.0.0.0",
             "--port", str(port),
@@ -580,10 +591,10 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         turboq_cpu_only = kv_type.startswith("tbq")
         turboq_kv = turboq_cpu_only or kv_type.startswith("tq")
 
-        if self.server_backend_combo.currentText() == "GPU" and not turboq_cpu_only:
-            command.extend(["-ngl", str(self.server_gpu_layers_spinbox.value())])
-        else:
+        if turboq_cpu_only:
             command.extend(["-ngl", "0"])
+        else:
+            command.extend(["-ngl", str(self.server_gpu_layers_spinbox.value())])
 
         if kv_type and kv_type != "f16":
             command.extend(["--cache-type-k", kv_type, "--cache-type-v", kv_type])
@@ -609,11 +620,13 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
                 command.extend(["--spec-type", "mtp", "--spec-draft-n-max", str(self.server_spec_draft_n_max.value())])
                 # MTP currently requires single parallel sequence in llama-server.
                 if self.server_parallel_spinbox.value() != 1:
-                    self.server_log.append("[INFO] MTP requires --parallel 1, overriding selected value")
+                    notes.append("MTP requires --parallel 1, overriding selected value")
                     command.extend(["--parallel", "1"])
             elif spec_type == "ngram-mod":
-                self._apply_ngram_mod_profile()
                 command.extend(self._ngram_mod_args())
+
+        if self.server_mode_combo.currentText() == "Embedding":
+            command.append("--embeddings")
 
         if self.server_flash_attn_check.isChecked() or turboq_kv:
             command.extend(["--flash-attn", "on"])
@@ -656,15 +669,6 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         if api_key:
             command.extend(["--api-key", api_key])
 
-        self.server_start_btn.setEnabled(False)
-        self.server_stop_btn.setEnabled(True)
-        self.server_web_btn.setEnabled(False)
-        self.server_status_label.setText("Status: Starting...")
-        self.server_status_label.setStyleSheet("font-weight: bold; color: orange;")
-
-        if self.parent.statusBar():
-            self.parent.statusBar().showMessage("Starting server...")
-
         server_env = None
         if "rocm" in build_dir.name.lower() and hasattr(self.parent, "build_manager"):
             server_env = self.parent.build_manager.get_rocm_env()
@@ -676,14 +680,114 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         if panel_env:
             server_env = {**(server_env or {}), **panel_env}
 
+        return command, server_env, build_dir, problems, notes
+
+    @staticmethod
+    def _effective_ngl(command: list[str]) -> int | None:
+        """Last -ngl value in the command (later flags win in llama-server)."""
+        value = None
+        for i, tok in enumerate(command[:-1]):
+            if tok in ("-ngl", "--gpu-layers", "--n-gpu-layers"):
+                try:
+                    value = int(command[i + 1])
+                except ValueError:
+                    pass
+        return value
+
+    # -- live command preview --------------------------------------------------
+    def _wire_command_preview(self):
+        """Debounce-connect every setting widget to the command preview."""
+        for combo in self.findChildren(QComboBox):
+            combo.currentIndexChanged.connect(self._schedule_command_preview)
+        for spin in self.findChildren(QSpinBox):
+            spin.valueChanged.connect(self._schedule_command_preview)
+        for spin in self.findChildren(QDoubleSpinBox):
+            spin.valueChanged.connect(self._schedule_command_preview)
+        for check in self.findChildren(QCheckBox):
+            check.toggled.connect(self._schedule_command_preview)
+        for line in self.findChildren(QLineEdit):
+            line.textChanged.connect(self._schedule_command_preview)
+        self.server_extra_args.textChanged.connect(self._schedule_command_preview)
+        self._update_command_preview()
+
+    def _schedule_command_preview(self, *_args):
+        self._preview_timer.start()
+
+    def _update_command_preview(self):
+        command, server_env, build_dir, problems, notes = self._compose_server_command()
+
+        lines: list[str] = []
+        if problems:
+            lines.extend(f"⚠ {problem}" for problem in problems)
+            lines.append("")
+        lines.append(f"# build: {build_dir.name}")
+        # env dicts may be full os.environ copies (rocm env); show only overrides
+        for key, value in sorted((server_env or {}).items()):
+            if os.environ.get(key) != value:
+                if len(value) > 120:
+                    value = value[:117] + "…"
+                lines.append(f"ENV {key}={value}")
+
+        # one flag (with its values) per line, binary first; mask the API key
+        current = Path(command[0]).name
+        for tok in command[1:]:
+            if tok.startswith("-"):
+                lines.append(current)
+                current = "  " + tok
+            else:
+                value = "••••" if current.strip() == "--api-key" else tok
+                current += f" {value}"
+        lines.append(current)
+
+        for note in notes:
+            lines.append(f"# note: {note}")
+
+        self.server_cmd_preview.setPlainText("\n".join(lines))
+
+    def start_server(self):
+        """Start llama-server"""
+        if self.server_thread and self.server_thread.isRunning():
+            QMessageBox.information(self, "Server", "Server is already running")
+            return
+
+        command, server_env, build_dir, problems, notes = self._compose_server_command()
+        if problems:
+            QMessageBox.warning(self, "Server", "\n".join(problems))
+            return
+
+        # ngl=0 on a GPU build silently runs the whole model on CPU
+        if "cpu" not in build_dir.name.lower() and self._effective_ngl(command) == 0:
+            answer = QMessageBox.question(
+                self,
+                "GPU layers = 0",
+                "GPU Layers is 0 on a GPU build — the model will run entirely on CPU.\n\n"
+                "Start anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
+        self.server_start_btn.setEnabled(False)
+        self.server_stop_btn.setEnabled(True)
+        self.server_web_btn.setEnabled(False)
+        self.server_status_label.setText("Status: Starting...")
+        self.server_status_label.setStyleSheet("font-weight: bold; color: orange;")
+
+        if self.parent.statusBar():
+            self.parent.statusBar().showMessage("Starting server...")
+
         self.server_log.clear()
         self._memory_fit_warning_shown = False
         self.server_log.append(f"[INFO] Build: {build_dir}")
         self.server_log.append(f"[INFO] Command: {' '.join(command)}")
+        for note in notes:
+            self.server_log.append(f"[INFO] {note}")
         if server_env and "GGML_VK_FORCE_AMD_LARGE_MATMUL" in server_env:
             env_summary = ", ".join(f"{key}={value}" for key, value in sorted(server_env.items()))
             self.server_log.append(f"[INFO] Env overrides: {env_summary}")
 
+        port = self.server_port_spinbox.value()
         self.server_thread = ServerThread(command, str(self.parent.project_root), port=port, env=server_env)
         self.server_thread.output_ready.connect(self.on_server_status)
         self.server_thread.server_ready.connect(self.on_server_ready)
@@ -947,7 +1051,6 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
                 self.backend_panels.from_settings(json.loads(panels_raw))
         except (ValueError, TypeError):
             pass  # ignore malformed saved state
-        self.server_backend_combo.setCurrentText(settings.value("server/backend", "GPU"))
         self.server_mode_combo.setCurrentText(settings.value("server/mode", "Inference"))
         saved_backend = settings.value("server/build_backend", settings.value("server/build", "Auto"))
         saved_version_id = settings.value("server/build_version_id", "")
@@ -976,7 +1079,6 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_top_k_spinbox.setValue(int(settings.value("server/top_k", 40)))
 
         self.server_spec_type_combo.setCurrentText(settings.value("server/spec_type", "None"))
-        self.server_spec_draft_n.setValue(int(settings.value("server/spec_draft_n", 5)))
         self.server_spec_draft_n_max.setValue(int(settings.value("server/spec_draft_n_max", self.MTP_DRAFT_N_MAX)))
         self.server_ngram_min.setValue(int(settings.value("server/spec_ngram_min", self.NGRAM_MOD_N_MIN)))
         self.server_ngram_match.setValue(int(settings.value("server/spec_ngram_match", self.NGRAM_MOD_N_MATCH)))
@@ -1013,7 +1115,6 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         settings.setValue("server/host", self.server_host_input.text().strip())
         settings.setValue("server/port", self.server_port_spinbox.value())
         settings.setValue("server/backend_panels", json.dumps(self.backend_panels.to_settings()))
-        settings.setValue("server/backend", self.server_backend_combo.currentText())
         settings.setValue("server/mode", self.server_mode_combo.currentText())
         settings.setValue("server/build_backend", self.server_build_backend_combo.currentText())
         settings.setValue("server/build", self.server_build_backend_combo.currentText())
@@ -1035,7 +1136,6 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         settings.setValue("server/top_k", self.server_top_k_spinbox.value())
 
         settings.setValue("server/spec_type", self.server_spec_type_combo.currentText())
-        settings.setValue("server/spec_draft_n", self.server_spec_draft_n.value())
         settings.setValue("server/spec_draft_n_max", self.server_spec_draft_n_max.value())
         settings.setValue("server/spec_ngram_min", self.server_ngram_min.value())
         settings.setValue("server/spec_ngram_match", self.server_ngram_match.value())

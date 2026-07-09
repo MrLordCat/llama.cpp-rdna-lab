@@ -20,6 +20,7 @@ class ServerPresetsMixin:
         """Handle speculative type change"""
         spec_type = self.server_spec_type_combo.currentText()
         is_ngram = spec_type == "ngram-mod"
+        uses_draft_n = spec_type in ("mtp", "draft")
         if is_ngram:
             self._apply_ngram_mod_profile()
         if spec_type == "mtp":
@@ -30,6 +31,11 @@ class ServerPresetsMixin:
                 widget = self.ngram_layout_group.itemAt(i).widget()
                 if widget:
                     widget.setEnabled(is_ngram)
+        if hasattr(self, "draft_layout_group"):
+            for i in range(self.draft_layout_group.count()):
+                widget = self.draft_layout_group.itemAt(i).widget()
+                if widget:
+                    widget.setEnabled(uses_draft_n)
 
     def _apply_mtp_profile(self):
         """Apply the measured E266 ROCm MTP profile."""
@@ -122,7 +128,10 @@ class ServerPresetsMixin:
         if "ubatch_size" in match:
             self.server_ubatch_spinbox.setValue(int(match["ubatch_size"]))
         if "gpu_layers" in match:
-            self.server_gpu_layers_spinbox.setValue(int(match["gpu_layers"]))
+            # presets use -1 (and 999) for "all layers"; the spinbox would clamp
+            # -1 to 0 and silently turn a GPU preset into a CPU run
+            gpu_layers = int(match["gpu_layers"])
+            self.server_gpu_layers_spinbox.setValue(999 if gpu_layers < 0 else gpu_layers)
         if "parallel" in match:
             self.server_parallel_spinbox.setValue(int(match["parallel"]))
         if "flash_attn" in match:
@@ -255,13 +264,12 @@ class ServerPresetsMixin:
         preset = self.server_preset_combo.currentText()
 
         presets = {
-            "Default": {"backend": "GPU", "gpu_layers": 99, "context": 32768, "batch": 2048, "ubatch": 512, "threads": 8, "no_mmap": False},
-            "Fast": {"backend": "GPU", "gpu_layers": 99, "context": 4096, "batch": 4096, "ubatch": 512, "threads": 4, "no_mmap": False},
-            "Quality": {"backend": "GPU", "gpu_layers": 99, "context": 16384, "batch": 1024, "ubatch": 512, "threads": 16, "no_mmap": False},
-            "Balanced": {"backend": "GPU", "gpu_layers": 50, "context": 8192, "batch": 2048, "ubatch": 512, "threads": 8, "no_mmap": False},
-            "VRAM Limited": {"backend": "GPU", "gpu_layers": 20, "context": 4096, "batch": 512, "ubatch": 128, "threads": 4, "no_mmap": False},
+            "Default": {"gpu_layers": 99, "context": 32768, "batch": 2048, "ubatch": 512, "threads": 8, "no_mmap": False},
+            "Fast": {"gpu_layers": 99, "context": 4096, "batch": 4096, "ubatch": 512, "threads": 4, "no_mmap": False},
+            "Quality": {"gpu_layers": 99, "context": 16384, "batch": 1024, "ubatch": 512, "threads": 16, "no_mmap": False},
+            "Balanced": {"gpu_layers": 50, "context": 8192, "batch": 2048, "ubatch": 512, "threads": 8, "no_mmap": False},
+            "VRAM Limited": {"gpu_layers": 20, "context": 4096, "batch": 512, "ubatch": 128, "threads": 4, "no_mmap": False},
             "CPU Fallback": {
-                "backend": "CPU",
                 "gpu_layers": 0,
                 "context": 4096,
                 "batch": 512,
@@ -276,8 +284,6 @@ class ServerPresetsMixin:
 
         if preset in presets:
             cfg = presets[preset]
-            if "backend" in cfg:
-                self.server_backend_combo.setCurrentText(cfg["backend"])
             self.server_gpu_layers_spinbox.setValue(cfg["gpu_layers"])
             self.server_context_spinbox.setValue(cfg["context"])
             self.server_batch_spinbox.setValue(cfg["batch"])
