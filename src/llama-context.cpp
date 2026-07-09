@@ -375,6 +375,28 @@ llama_context::llama_context(
             cparams.offload_kqv &&
             !model.has_tensor_overrides();
 
+        if (pipeline_parallel && model.hparams.nextn_predict_layers > 0) {
+            bool has_vulkan_backend = false;
+            for (auto & backend : backends) {
+                auto dev_type = ggml_backend_dev_type(ggml_backend_get_device(backend.get()));
+                if (dev_type == GGML_BACKEND_DEVICE_TYPE_CPU) {
+                    continue;
+                }
+
+                const char * dev_name = ggml_backend_dev_name(ggml_backend_get_device(backend.get()));
+                if (std::strncmp(dev_name, "Vulkan", 6) == 0) {
+                    has_vulkan_backend = true;
+                    break;
+                }
+            }
+
+            const char * force_vk_mtp_pp = std::getenv("LLAMA_VK_MTP_PIPELINE_PARALLEL");
+            if (has_vulkan_backend && (force_vk_mtp_pp == nullptr || std::strcmp(force_vk_mtp_pp, "1") != 0)) {
+                pipeline_parallel = false;
+                LLAMA_LOG_INFO("%s: pipeline parallelism disabled for Vulkan NextN/MTP model (set LLAMA_VK_MTP_PIPELINE_PARALLEL=1 to force-enable)\n", __func__);
+            }
+        }
+
         // pipeline parallelism requires support for async compute and events in all devices
         if (pipeline_parallel) {
             for (auto & backend : backends) {

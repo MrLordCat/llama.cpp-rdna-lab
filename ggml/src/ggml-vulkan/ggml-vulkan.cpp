@@ -37,6 +37,7 @@ DispatchLoaderDynamic & ggml_vk_default_dispatcher();
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <iomanip>
 #include <iostream>
 #include <tuple>
@@ -1744,6 +1745,26 @@ std::mutex vk_memory_logger::log_mutex;
 static bool vk_perf_logger_enabled = false;
 static bool vk_perf_logger_concurrent = false;
 static bool vk_enable_sync_logger = false;
+
+static bool ggml_vk_init_trace_enabled() {
+    static const bool enabled = getenv("GGML_VK_INIT_TRACE") != nullptr;
+    return enabled;
+}
+
+static bool ggml_vk_init_trace_verbose_enabled() {
+    static const bool enabled = getenv("GGML_VK_INIT_TRACE_VERBOSE") != nullptr;
+    return enabled;
+}
+
+static void ggml_vk_init_trace(size_t idx, const char * step) {
+    if (!ggml_vk_init_trace_enabled()) {
+        return;
+    }
+
+    fprintf(stderr, "ggml_vulkan_init_trace: device=%zu step=%s\n", idx, step);
+    fflush(stderr);
+}
+
 // number of calls between perf logger prints
 static uint32_t vk_perf_logger_frequency = 1;
 static std::string vk_pipeline_stats_filter;
@@ -5172,9 +5193,13 @@ static uint32_t ggml_vk_intel_shader_core_count(const vk::PhysicalDevice& vkdev)
 
 static vk_device ggml_vk_get_device(size_t idx) {
     VK_LOG_DEBUG("ggml_vk_get_device(" << idx << ")");
+    if (ggml_vk_init_trace_verbose_enabled()) {
+        ggml_vk_init_trace(idx, "get_device_enter");
+    }
 
     if (vk_instance.devices[idx] == nullptr) {
         VK_LOG_DEBUG("Initializing new vk_device");
+        ggml_vk_init_trace(idx, "new_device_begin");
         vk_device device = std::make_shared<vk_device_struct>();
         vk_instance.devices[idx] = device;
 
@@ -5190,6 +5215,7 @@ static vk_device ggml_vk_get_device(size_t idx) {
         }
 
         device->physical_device = physical_devices[dev_num];
+        ggml_vk_init_trace(idx, "physical_device_selected");
         const std::vector<vk::ExtensionProperties> ext_props = device->physical_device.enumerateDeviceExtensionProperties();
 
         device->architecture = get_device_architecture(device->physical_device);
@@ -5428,6 +5454,7 @@ static vk_device ggml_vk_get_device(size_t idx) {
         device->max_workgroup_size_log2 = uint32_t(log2f(float(device->properties.limits.maxComputeWorkGroupInvocations)));
 
         std::vector<vk::QueueFamilyProperties> queue_family_props = device->physical_device.getQueueFamilyProperties();
+        ggml_vk_init_trace(idx, "queue_families_queried");
 
         // Try to find a non-graphics compute queue and transfer-focused queues
         // Allow overriding avoiding the graphics queue because it can increase performance on RADV
@@ -5822,10 +5849,14 @@ static vk_device ggml_vk_get_device(size_t idx) {
             .setQueueCreateInfos(device_queue_create_infos)
             .setPEnabledExtensionNames(device_extensions);
         device_create_info.setPNext(&device_features2);
+        ggml_vk_init_trace(idx, "create_logical_device_begin");
         device->device = device->physical_device.createDevice(device_create_info);
+        ggml_vk_init_trace(idx, "create_logical_device_done");
 
         // Queues
+        ggml_vk_init_trace(idx, "create_compute_queue_begin");
         ggml_vk_create_queue(device, device->compute_queue, compute_queue_family_index, 0, { vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eTransfer }, false);
+        ggml_vk_init_trace(idx, "create_compute_queue_done");
 
         // Shaders
         // Disable matmul tile sizes early if performance low or not supported
@@ -5895,33 +5926,45 @@ static vk_device ggml_vk_get_device(size_t idx) {
             {},
             dsl_binding);
         descriptor_set_layout_create_info.setPNext(&dslbfci);
+        ggml_vk_init_trace(idx, "create_descriptor_layout_begin");
         device->dsl = device->device.createDescriptorSetLayout(descriptor_set_layout_create_info);
+        ggml_vk_init_trace(idx, "create_descriptor_layout_done");
 
+        ggml_vk_init_trace(idx, "load_shaders_begin");
         ggml_vk_load_shaders(device);
+        ggml_vk_init_trace(idx, "load_shaders_done");
 
         // Only use transfer queue on AMD non-GCN, when the graphics queue is not enabled
         const bool prefers_transfer_queue = device->vendor_id == VK_VENDOR_ID_AMD && device->architecture != AMD_GCN && !allow_graphics_queue;
 
         if (!device->single_queue) {
             const uint32_t transfer_queue_index = compute_queue_family_index == transfer_queue_family_index ? 1 : 0;
+            ggml_vk_init_trace(idx, "create_transfer_queue_begin");
             ggml_vk_create_queue(device, device->transfer_queue, transfer_queue_family_index, transfer_queue_index, { vk::PipelineStageFlagBits::eTransfer }, true);
+            ggml_vk_init_trace(idx, "create_transfer_queue_done");
 
             device->async_use_transfer_queue = prefers_transfer_queue || (getenv("GGML_VK_ASYNC_USE_TRANSFER_QUEUE") != nullptr);
         } else {
             // TODO: Use pointer or reference to avoid copy
+            ggml_vk_init_trace(idx, "copy_single_queue_begin");
             device->transfer_queue.copyFrom(device->compute_queue);
             device->transfer_queue.cmd_pool.init(device, &device->transfer_queue);
+            ggml_vk_init_trace(idx, "copy_single_queue_done");
 
             device->async_use_transfer_queue = false;
         }
 
+        ggml_vk_init_trace(idx, "create_buffer_type_begin");
         device->buffer_type = {
             /* .iface    = */ ggml_backend_vk_buffer_type_interface,
             /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_vk_reg(), idx),
             /* .context  = */ new ggml_backend_vk_buffer_type_context{ device->name, device },
         };
+        ggml_vk_init_trace(idx, "create_buffer_type_done");
 
+        ggml_vk_init_trace(idx, "create_device_fence_begin");
         device->fence = device->device.createFence({});
+        ggml_vk_init_trace(idx, "create_device_fence_done");
 
         device->idx = idx;
 
@@ -5940,9 +5983,13 @@ static vk_device ggml_vk_get_device(size_t idx) {
             device->mmvq_mode = 1;
         }
 
+        ggml_vk_init_trace(idx, "new_device_done");
         return device;
     }
 
+    if (ggml_vk_init_trace_verbose_enabled()) {
+        ggml_vk_init_trace(idx, "get_device_cached");
+    }
     return vk_instance.devices[idx];
 }
 
@@ -6366,12 +6413,15 @@ static void ggml_vk_instance_init() {
 
 static void ggml_vk_init(ggml_backend_vk_context * ctx, size_t idx) {
     VK_LOG_DEBUG("ggml_vk_init(" << ctx->name << ", " << idx << ")");
+    ggml_vk_init_trace(idx, "backend_init_enter");
     ggml_vk_instance_init();
     GGML_ASSERT(idx < vk_instance.device_indices.size());
 
     ctx->name = GGML_VK_NAME + std::to_string(idx);
 
+    ggml_vk_init_trace(idx, "backend_get_device_begin");
     ctx->device = ggml_vk_get_device(idx);
+    ggml_vk_init_trace(idx, "backend_get_device_done");
 
     ctx->semaphore_idx = 0;
     ctx->event_idx = 0;
@@ -6382,18 +6432,26 @@ static void ggml_vk_init(ggml_backend_vk_context * ctx, size_t idx) {
     // Fixed size of 1KB, for deterministic behavior
     ctx->prealloc_size_add_rms_partials = 1024;
 
+    ggml_vk_init_trace(idx, "context_fences_begin");
     ctx->fence = ctx->device->device.createFence({});
     ctx->almost_ready_fence = ctx->device->device.createFence({});
+    ggml_vk_init_trace(idx, "context_fences_done");
 
+    ggml_vk_init_trace(idx, "compute_cmd_pool_begin");
     ctx->compute_cmd_pool.init(ctx->device, &ctx->device->compute_queue);
+    ggml_vk_init_trace(idx, "compute_cmd_pool_done");
     if (ctx->device->async_use_transfer_queue) {
         vk::SemaphoreTypeCreateInfo tci{ vk::SemaphoreType::eTimeline, 0 };
         vk::SemaphoreCreateInfo ci{};
         ci.setPNext(&tci);
+        ggml_vk_init_trace(idx, "transfer_semaphore_begin");
         ctx->transfer_semaphore.s = ctx->device->device.createSemaphore(ci);
         ctx->transfer_semaphore.value = 0;
+        ggml_vk_init_trace(idx, "transfer_semaphore_done");
 
+        ggml_vk_init_trace(idx, "transfer_cmd_pool_begin");
         ctx->transfer_cmd_pool.init(ctx->device, &ctx->device->transfer_queue);
+        ggml_vk_init_trace(idx, "transfer_cmd_pool_done");
     }
 
     if (vk_perf_logger_enabled) {

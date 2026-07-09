@@ -797,6 +797,20 @@ const char * llm_type_name(llm_type type) {
     }
 }
 
+static bool llama_model_tensor_is_nextn(llm_tensor tensor) {
+    switch (tensor) {
+        case LLM_TENSOR_NEXTN_EH_PROJ:
+        case LLM_TENSOR_NEXTN_EMBED_TOKENS:
+        case LLM_TENSOR_NEXTN_ENORM:
+        case LLM_TENSOR_NEXTN_HNORM:
+        case LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD:
+        case LLM_TENSOR_NEXTN_SHARED_HEAD_NORM:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static const char * llama_expert_gating_func_name(llama_expert_gating_func_type type) {
     switch (type) {
         case LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX: return "softmax";
@@ -1574,6 +1588,22 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
 
 ggml_tensor * llama_model_base::create_tensor(llama_model_loader & ml, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
     const buft_list_t * buft_list_layer = tn.bid == -1 ? nullptr : pimpl->dev_layer.at(tn.bid).buft_list;
+    const char * mtp_nextn_main_env = std::getenv("LLAMA_VK_MTP_NEXTN_MAIN_DEVICE");
+    const bool mtp_nextn_main_enabled = mtp_nextn_main_env == nullptr || std::strcmp(mtp_nextn_main_env, "0") != 0;
+    if (mtp_nextn_main_enabled &&
+            tn.bid != -1 &&
+            llama_model_tensor_is_nextn(tn.tensor) &&
+            params.split_mode == LLAMA_SPLIT_MODE_LAYER &&
+            devices.size() > 1) {
+        ggml_backend_dev_t dev = devices.front().dev;
+        const char * dev_name = ggml_backend_dev_name(dev);
+        if (std::strncmp(dev_name, "Vulkan", 6) == 0) {
+            auto it = pimpl->gpu_buft_list.find(dev);
+            if (it != pimpl->gpu_buft_list.end()) {
+                buft_list_layer = &it->second;
+            }
+        }
+    }
     return ml.create_tensor(
         hparams, &pimpl->cpu_buft_list, pimpl->dev_input.buft_list, pimpl->dev_output.buft_list, buft_list_layer,
         tn, ne, flags);

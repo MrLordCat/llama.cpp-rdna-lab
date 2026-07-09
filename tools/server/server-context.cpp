@@ -2920,7 +2920,7 @@ private:
             if (spec && common_speculative_need_embd_nextn(spec.get())) {
                 static const int32_t spec_prefill_window = [] {
                     const char * env = std::getenv("LLAMA_SPEC_PREFILL_WINDOW");
-                    return env ? std::atoi(env) : 8192;
+                    return env ? std::max(0, std::atoi(env)) : 512;
                 }();
 
                 bool process_enabled = true;

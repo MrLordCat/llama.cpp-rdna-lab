@@ -7,7 +7,14 @@
 set -euo pipefail
 
 VULKAN_BIN="build-vulkan/bin"
-STRAWBERRY_BIN="/c/Strawberry/c/bin"
+if [ -d "/c/Strawberry/c/bin" ]; then
+    STRAWBERRY_BIN="/c/Strawberry/c/bin"
+elif [ -d "/mnt/c/Strawberry/c/bin" ]; then
+    STRAWBERRY_BIN="/mnt/c/Strawberry/c/bin"
+else
+    echo "ERROR: Strawberry GCC runtime DLL directory not found."
+    exit 1
+fi
 
 if [ ! -f "$VULKAN_BIN/llama-server.exe" ]; then
     echo "ERROR: $VULKAN_BIN/llama-server.exe not found. Build Vulkan first."
