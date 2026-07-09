@@ -11,6 +11,7 @@ import shlex
 
 from PyQt6.QtCore import Qt
 
+from backend_names import backend_key_from_display, display_backend_from_key
 from threads import ServerThread
 from server_backend_panels import BackendPanels
 from server_presets import ServerPresetsMixin
@@ -715,31 +716,8 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
                 return candidate
         return self.parent.project_root / "build"
 
-    @staticmethod
-    def _display_backend_from_key(key: str) -> str:
-        mapping = {
-            "rocm": "ROCm/HIP",
-            "cpu": "CPU",
-            "cuda": "CUDA",
-            "vulkan": "Vulkan",
-            "metal": "Metal",
-            "sycl": "SYCL",
-            "opencl": "OpenCL",
-        }
-        return mapping.get(key.lower(), key)
-
-    @staticmethod
-    def _backend_key_from_display(display: str) -> str:
-        mapping = {
-            "ROCm/HIP": "rocm",
-            "CPU": "cpu",
-            "CUDA": "cuda",
-            "Vulkan": "vulkan",
-            "Metal": "metal",
-            "SYCL": "sycl",
-            "OpenCL": "opencl",
-        }
-        return mapping.get(display, display.lower())
+    _display_backend_from_key = staticmethod(display_backend_from_key)
+    _backend_key_from_display = staticmethod(backend_key_from_display)
 
     def _on_build_backend_changed(self, *_args):
         self.refresh_server_build_versions_for_backend(select_latest=True)

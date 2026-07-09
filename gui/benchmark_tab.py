@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from backend_names import backend_key_from_display, display_backend_from_key
 from bench_history import BenchHistoryMixin
 from bench_runner import BenchCommandThread
 from bench_widgets import (
@@ -305,6 +306,13 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         single_layout.addWidget(self.max_tokens_spin, 7, 1)
         single_layout.setColumnStretch(1, 1)
         single_page_layout.addLayout(single_layout)
+
+        self.apply_best_btn = QPushButton("⭐ Apply Best Known")
+        self.apply_best_btn.setToolTip(
+            "Fill ctx/batch/ubatch/KV/spec from the best autotune result recorded for the selected model"
+        )
+        self.apply_best_btn.clicked.connect(self.apply_best_known_config)
+        single_page_layout.addWidget(self.apply_best_btn)
 
         self.run_bench_btn = QPushButton("▶ Run Benchmark")
         self.run_bench_btn.setToolTip("Run a single benchmark with the parameters above")
@@ -666,31 +674,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         history_group.setLayout(history_layout)
         right_layout.addWidget(history_group, 4)
 
-    @staticmethod
-    def _display_backend_from_key(key: str) -> str:
-        mapping = {
-            "rocm": "ROCm/HIP",
-            "cpu": "CPU",
-            "cuda": "CUDA",
-            "vulkan": "Vulkan",
-            "metal": "Metal",
-            "sycl": "SYCL",
-            "opencl": "OpenCL",
-        }
-        return mapping.get(key.lower(), key)
-
-    @staticmethod
-    def _backend_key_from_display(display: str) -> str:
-        mapping = {
-            "ROCm/HIP": "rocm",
-            "CPU": "cpu",
-            "CUDA": "cuda",
-            "Vulkan": "vulkan",
-            "Metal": "metal",
-            "SYCL": "sycl",
-            "OpenCL": "opencl",
-        }
-        return mapping.get(display, display.lower())
+    _display_backend_from_key = staticmethod(display_backend_from_key)
+    _backend_key_from_display = staticmethod(backend_key_from_display)
 
     def refresh_build_choices(self):
         previous_backend = self.build_backend_combo.currentText() if self.build_backend_combo.count() else "ROCm/HIP"
@@ -825,6 +810,83 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
                 return fallback
 
         return None
+
+    def _best_known_config_for_model(self, model_name: str) -> dict[str, str] | None:
+        """Best recorded config for a model: saved best-preset first, then history."""
+        presets = self._load_best_presets()
+        candidates = [
+            record for key, record in presets.items()
+            if key == model_name or key.startswith(f"{model_name}::")
+        ]
+        if candidates:
+            def tps_of(record: dict) -> float:
+                try:
+                    return float(record.get("best_tps", "0") or "0")
+                except ValueError:
+                    return 0.0
+            return max(candidates, key=tps_of)
+
+        best_row = None
+        best_tps = -1.0
+        for row in self._load_autotune_history_rows():
+            if Path(str(row.get("model", ""))).name.lower() != model_name.lower():
+                continue
+            try:
+                tps = float(str(row.get("aggregate_tps", "0") or "0"))
+            except ValueError:
+                continue
+            if tps > best_tps:
+                best_tps = tps
+                best_row = row
+        if best_row is None:
+            return None
+
+        parsed = self._parse_best_config_text(str(best_row.get("best_config", "")))
+        return {
+            "best_tps": f"{best_tps:.4f}",
+            "ctx": parsed["ctx"] if parsed["ctx"] != "-" else str(best_row.get("ctx", "")),
+            "batch": parsed["batch"] if parsed["batch"] != "-" else str(best_row.get("batch", "")),
+            "ubatch": parsed["ubatch"] if parsed["ubatch"] != "-" else str(best_row.get("ubatch", "")),
+            "kv_k": parsed["kv"] if parsed["kv"] != "-" else str(best_row.get("kv_k", "")),
+            "spec_mode": parsed["spec"] if parsed["spec"] != "-" else str(best_row.get("spec_mode", "")),
+        }
+
+    def apply_best_known_config(self) -> None:
+        """Fill the Single Bench parameters from the model's best autotune result."""
+        model = self._resolve_selected_model()
+        if model is None:
+            self.status_label.setText("Select a model first to apply its best known config")
+            return
+
+        record = self._best_known_config_for_model(model.name)
+        if record is None:
+            self.status_label.setText(f"No autotune history found for {model.name}")
+            return
+
+        applied: list[str] = []
+        for field, spin in (("ctx", self.ctx_spin), ("batch", self.batch_spin), ("ubatch", self.ubatch_spin)):
+            raw = str(record.get(field, "")).strip()
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            spin.setValue(value)
+            applied.append(f"{field}={spin.value()}")
+
+        kv = str(record.get("kv_k", "")).strip().lower()
+        if kv and self.kv_combo.findText(kv) >= 0:
+            self.kv_combo.setCurrentText(kv)
+            applied.append(f"kv={kv}")
+
+        spec = str(record.get("spec_mode", "")).strip().lower()
+        if spec and spec not in {"-", "mixed"} and self.spec_combo.findText(spec) >= 0:
+            self.spec_combo.setCurrentText(spec)
+            applied.append(f"spec={spec}")
+
+        tps = str(record.get("best_tps", "")).strip()
+        summary = ", ".join(applied) if applied else "nothing applicable"
+        self.status_label.setText(f"Applied best known ({tps} TPS): {summary}")
+        self.log_output.append(f"[INFO] Best known config for {model.name}: {summary} (recorded {tps} TPS)")
 
     def _resolve_selected_server(self) -> tuple[Path | None, str]:
         label = self.build_version_combo.currentText().strip()
