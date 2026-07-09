@@ -13,6 +13,7 @@ import shlex
 from PyQt6.QtCore import Qt
 
 from threads import ServerThread
+from server_backend_panels import BackendPanels
 
 
 class ServerTabWidget(QWidget):
@@ -202,6 +203,20 @@ class ServerTabWidget(QWidget):
 
         server_group.setLayout(server_layout)
         scroll_layout.addWidget(server_group)
+
+        # Backend-specific settings: sub-tabs per build backend (ROCm/Vulkan/CPU).
+        # The active tab follows the Build Backend selection; only the active
+        # tab's parameters are applied to the launch command.
+        backend_panels_group = QGroupBox("Backend Settings")
+        backend_panels_layout = QVBoxLayout()
+        self.backend_panels = BackendPanels()
+        self.backend_panels.setToolTip(
+            "Parameters specific to the selected build backend. The active tab\n"
+            "follows the Build Backend above and is applied on launch."
+        )
+        backend_panels_layout.addWidget(self.backend_panels)
+        backend_panels_group.setLayout(backend_panels_layout)
+        scroll_layout.addWidget(backend_panels_group)
 
         # Resources
         resources_group = QGroupBox("Resources")
@@ -890,6 +905,22 @@ class ServerTabWidget(QWidget):
         if turboq_cpu_only or not self.server_auto_fit_check.isChecked():
             command.extend(["-fit", "off"])
 
+        # Backend-specific args from the active Backend Settings sub-tab
+        # (device selection / split mode etc.). Skipped when the user already
+        # provided the same flag via Extra Arguments.
+        backend_args = self.backend_panels.args()
+        skip = False
+        filtered_backend_args: list[str] = []
+        for tok in backend_args:
+            if skip:
+                skip = False
+                continue
+            if tok in ("-dev", "-sm", "-ngl") and tok in extra_tokens:
+                skip = True  # drop the flag and its value; Extra Arguments wins
+                continue
+            filtered_backend_args.append(tok)
+        command.extend(filtered_backend_args)
+
         if extra_tokens:
             command.extend(extra_tokens)
 
@@ -911,6 +942,11 @@ class ServerTabWidget(QWidget):
             server_env = self.parent.build_manager.get_rocm_env()
         elif "vulkan" in build_dir.name.lower():
             server_env = self._vulkan_runtime_env()
+
+        # merge backend-panel env overrides (panel values win)
+        panel_env = self.backend_panels.env()
+        if panel_env:
+            server_env = {**(server_env or {}), **panel_env}
 
         self.server_log.clear()
         self._memory_fit_warning_shown = False
@@ -980,6 +1016,12 @@ class ServerTabWidget(QWidget):
 
     def _on_build_backend_changed(self, *_args):
         self.refresh_server_build_versions_for_backend(select_latest=True)
+
+        # keep the backend-specific settings sub-tab in sync with the selection
+        if hasattr(self, "backend_panels"):
+            display = self.server_build_backend_combo.currentText().strip()
+            if display and display != "Auto":
+                self.backend_panels.set_backend(self._backend_key_from_display(display))
 
     def refresh_server_build_versions_for_backend(self, select_latest: bool):
         selected_backend_display = self.server_build_backend_combo.currentText().strip() if self.server_build_backend_combo.count() else "Auto"
@@ -1193,6 +1235,13 @@ class ServerTabWidget(QWidget):
         settings = self.parent.settings
         self.server_host_input.setText(settings.value("server/host", "0.0.0.0"))
         self.server_port_spinbox.setValue(int(settings.value("server/port", 8000)))
+
+        try:
+            panels_raw = settings.value("server/backend_panels", "")
+            if panels_raw:
+                self.backend_panels.from_settings(json.loads(panels_raw))
+        except (ValueError, TypeError):
+            pass  # ignore malformed saved state
         self.server_backend_combo.setCurrentText(settings.value("server/backend", "GPU"))
         self.server_mode_combo.setCurrentText(settings.value("server/mode", "Inference"))
         saved_backend = settings.value("server/build_backend", settings.value("server/build", "Auto"))
@@ -1258,6 +1307,7 @@ class ServerTabWidget(QWidget):
         settings = self.parent.settings
         settings.setValue("server/host", self.server_host_input.text().strip())
         settings.setValue("server/port", self.server_port_spinbox.value())
+        settings.setValue("server/backend_panels", json.dumps(self.backend_panels.to_settings()))
         settings.setValue("server/backend", self.server_backend_combo.currentText())
         settings.setValue("server/mode", self.server_mode_combo.currentText())
         settings.setValue("server/build_backend", self.server_build_backend_combo.currentText())
