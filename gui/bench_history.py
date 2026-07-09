@@ -660,7 +660,8 @@ class BenchHistoryMixin:
 
         spec_mode = spec_mode.strip().lower()
         if spec_mode and spec_mode not in {"-", "none", "mixed"} and "--spec-type" not in extra_args:
-            extra_args = f"--spec-type {spec_mode}" if not extra_args else f"--spec-type {spec_mode}\n{extra_args}"
+            spec_cli_mode = "draft-mtp" if spec_mode == "mtp" else spec_mode
+            extra_args = f"--spec-type {spec_cli_mode}" if not extra_args else f"--spec-type {spec_cli_mode}\n{extra_args}"
 
         preset_path = self.project_root / "gui" / "model_presets.json"
         if not preset_path.exists():

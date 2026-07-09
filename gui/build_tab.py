@@ -1250,7 +1250,7 @@ class BuildTabWidget(QWidget):
             for raw in match.group(1).split("|"):
                 mode = raw.strip().lower()
                 if mode:
-                    spec_type_modes.append(mode)
+                    spec_type_modes.append("mtp" if mode == "draft-mtp" else mode)
 
         if not spec_type_modes:
             spec_type_modes = ["none", "ngram-mod"]

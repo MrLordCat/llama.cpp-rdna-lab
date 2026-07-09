@@ -277,13 +277,9 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_qwen35(params);
         case LLM_ARCH_QWEN35MOE:
             return new llama_model_qwen35moe(params);
-        case LLM_ARCH_QWEN35_MTP:
-            return new llama_model_qwen35_mtp(params);
-        case LLM_ARCH_QWEN35MOE_MTP:
-            return new llama_model_qwen35moe_mtp(params);
         case LLM_ARCH_DFLASH:
         case LLM_ARCH_DFLASH_DRAFT:
-            return new llama_model_dflash_draft(params);
+            return new llama_model_dflash(params);
         case LLM_ARCH_MISTRAL3:
             return new llama_model_mistral3(params);
         case LLM_ARCH_MIMO2:
@@ -1424,8 +1420,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
-    const bool partial_load = (arch == LLM_ARCH_QWEN35_MTP || arch == LLM_ARCH_QWEN35MOE_MTP);
-    ml.done_getting_tensors(partial_load);
+    ml.done_getting_tensors(false);
 
     // populate tensors_by_name
     for (auto & [_, ctx_ptr] : ml.ctx_map) {
@@ -2124,7 +2119,7 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
     // TODO: move reranking logic here and generalize
     llm->build_dense_out(dense_2_out_layers, dense_2_out_layers_b, dense_3_out_layers);
 
-    llm->res->set_outputs();
+    llm->res->set_outputs(params);
 
     return llm->res->get_gf();
 }
@@ -2203,102 +2198,17 @@ int32_t llama_model_n_swa(const llama_model * model) {
     return model->hparams.n_swa;
 }
 
-static bool llama_model_env_flag_enabled(const char * name) {
-    const char * value = getenv(name);
-    return value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0;
+int32_t llama_model_n_layer_nextn(const llama_model * model) {
+    return model->hparams.nextn_predict_layers;
 }
 
-struct llama_model_cloned_tensor {
-    ggml_tensor * tensor = nullptr;
-    ggml_context_ptr ctx;
-    std::vector<ggml_backend_buffer_ptr> bufs;
-};
-
-static llama_model_cloned_tensor llama_model_clone_tensor_to_buft(
-        const ggml_tensor          * src,
-        ggml_backend_buffer_type_t   buft) {
-    if (src == nullptr || buft == nullptr) {
-        return {};
-    }
-
-    ggml_init_params params = {
-        /*.mem_size   =*/ ggml_tensor_overhead()*2,
-        /*.mem_buffer =*/ NULL,
-        /*.no_alloc   =*/ true,
-    };
-
-    ggml_context_ptr ctx { ggml_init(params) };
-    if (!ctx) {
-        throw std::runtime_error("failed to create ggml context for cloned DFlash tensor");
-    }
-
-    ggml_tensor * cloned = ggml_dup_tensor(ctx.get(), src);
-    ggml_set_name(cloned, ggml_get_name(src));
-
-    std::vector<ggml_backend_buffer_ptr> bufs;
-    bufs.emplace_back(ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft));
-    if (!bufs.back()) {
-        throw std::runtime_error(format("failed to allocate cloned DFlash tensor %s on %s",
-                ggml_get_name(src), ggml_backend_buft_name(buft)));
-    }
-
-    ggml_backend_tensor_copy(src, cloned);
-
-    LLAMA_LOG_INFO("%s: cloned shared tensor %s (%zu MiB, %s) to %s\n",
-            __func__, ggml_get_name(src), ggml_nbytes(src) / 1024 / 1024,
-            ggml_type_name(src->type), ggml_backend_buft_name(buft));
-
-    return { cloned, std::move(ctx), std::move(bufs) };
+const int32_t * llama_model_target_layer_ids(const struct llama_model * model) {
+    const auto & v = model->target_layer_ids;
+    return v.empty() ? nullptr : v.data();
 }
 
-// DFlash: share tok_embd and output tensors from the target model to the
-// drafter model (the drafter GGUF ships without them). Must be called BEFORE
-// the drafter context is created so graph reserve sees the shared tensors.
-void llama_model_share_tensors(llama_model * dst, const llama_model * src) {
-    dst->tok_embd = src->tok_embd;
-
-    if (llama_model_env_flag_enabled("LLAMA_DFLASH_CLONE_SHARED_TENSORS")) {
-        ggml_backend_dev_t out_dev = dst->dev_output();
-        ggml_backend_buffer_type_t out_buft = out_dev ? ggml_backend_dev_buffer_type(out_dev) : nullptr;
-        llama_model_cloned_tensor cloned_output = llama_model_clone_tensor_to_buft(src->output, out_buft);
-        if (cloned_output.tensor) {
-            dst->output = cloned_output.tensor;
-            dst->tensors_by_name.emplace_back(ggml_get_name(cloned_output.tensor), cloned_output.tensor);
-            dst->pimpl->ctxs_bufs.emplace_back(std::move(cloned_output.ctx), std::move(cloned_output.bufs));
-        } else {
-            dst->output = src->output;
-        }
-    } else {
-        dst->output = src->output;
-    }
-}
-
-// DFlash drafter metadata accessors (ported from beellama)
-int32_t llama_model_dflash_block_size(const llama_model * model) {
-    return (int32_t) model->hparams.dflash_block_size;
-}
-
-int32_t llama_model_dflash_mask_token_id(const llama_model * model) {
-    return (int32_t) model->hparams.dflash_mask_token_id;
-}
-
-int32_t llama_model_dflash_n_target_layers(const llama_model * model) {
-    return (int32_t) model->hparams.dflash_n_target_layers;
-}
-
-int32_t llama_model_dflash_n_target_features(const llama_model * model) {
-    return (int32_t) model->hparams.dflash_n_target_features;
-}
-
-int32_t llama_model_dflash_target_layer_ids(const llama_model * model, int32_t * layer_ids, int32_t capacity) {
-    int32_t n = (int32_t) model->hparams.dflash_n_target_layers;
-    if (n > capacity) {
-        n = capacity;
-    }
-    for (int32_t i = 0; i < n; ++i) {
-        layer_ids[i] = (int32_t) model->hparams.dflash_target_layer_ids[i];
-    }
-    return n;
+uint32_t llama_model_target_layer_ids_n(const struct llama_model * model) {
+    return (uint32_t) model->target_layer_ids.size();
 }
 
 uint32_t llama_model_n_cls_out(const struct llama_model * model) {
@@ -2470,8 +2380,6 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_QWEN3VLMOE:
         case LLM_ARCH_QWEN35:
         case LLM_ARCH_QWEN35MOE:
-        case LLM_ARCH_QWEN35_MTP:
-        case LLM_ARCH_QWEN35MOE_MTP:
             return LLAMA_ROPE_TYPE_IMROPE;
 
         case LLM_ARCH_GLM4:

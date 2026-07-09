@@ -12,7 +12,9 @@ import argparse
 import csv
 import datetime as dt
 import json
+import os
 import re
+import signal
 import shlex
 import subprocess
 import time
@@ -390,6 +392,7 @@ def start_server(args: argparse.Namespace, ctx: int, port: int, server_log_path:
         stdout=handle,
         stderr=subprocess.STDOUT,
         text=True,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
     )
     setattr(proc, "_log_handle", handle)
     return proc
@@ -399,14 +402,24 @@ def stop_server(proc: subprocess.Popen[str]) -> None:
     log_handle = getattr(proc, "_log_handle", None)
     try:
         if proc.poll() is None:
-            proc.terminate()
+            if os.name == "nt":
+                proc.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                proc.terminate()
             try:
-                proc.wait(timeout=20)
+                proc.wait(timeout=float(os.environ.get("LLAMA_BENCH_SOFT_STOP_TIMEOUT", "180")))
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=10)
+                if os.environ.get("LLAMA_BENCH_ALLOW_HARD_KILL", "").strip() in ("1", "true", "TRUE", "yes", "on"):
+                    proc.kill()
+                    proc.wait(timeout=10)
+                else:
+                    print(
+                        f"WARNING: llama-server pid={proc.pid} did not exit after soft stop; "
+                        "leaving it alive to avoid hard ROCm teardown."
+                    )
+                    return
     finally:
-        if log_handle is not None:
+        if log_handle is not None and proc.poll() is not None:
             log_handle.close()
 
 

@@ -3618,3 +3618,28 @@ Decision: reject MTP `n_max=8` as a cold large-prompt default for the current
 code. Keep E266 as the generation-heavy profile, but the 130k/60k-prompt route
 needs an MTP prefill/hook optimization or a proven safe lazy MTP initialization
 before any speedup claim.
+
+## ROCm Qwen3.6 MTP Windowed NextN + Dual Layer Profile (E268, 2026-07-09)
+
+After the upstream-style NextN extraction port, MTP no longer needs the old
+per-verify target hook over the whole prompt. The practical launch profile is:
+`Qwen3.6-27B-Q3_K_S_mtp.gguf`, ROCm, `ctx=8192`, `b512/ub128`, q4 KV,
+FlashAttention on, `max_tokens=256`, `temperature=0.0`, no reuse/no prime,
+thinking enabled, `--spec-type draft-mtp --spec-draft-n-max 8`.
+
+Important device note: `-sm none` is single-GPU mode. For the real two-card
+launch use `-dev ROCm1,ROCm0 -sm layer -ts 1,1`; ROCm1-only is just a clean
+diagnostic lane when GPU0 is busy.
+
+| Mode | Device/split | Label | Aggregate TPS | Decode tok/s | Prompt tok/s | Acceptance |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| baseline | `ROCm1 -sm none` | `rocm1-mtp-polish-mt256-none-r1` | `28.9357` | `29.93` | `598.78` | - |
+| MTP n8 | `ROCm1 -sm none` | `rocm1-mtp-polish-mt256-n8-r1` | `42.6461` | `45.31` | `503.76` | `57.89%` |
+| baseline | `ROCm1,ROCm0 -sm layer -ts 1,1` | `rocm-dual-layer-mtp-polish-mt256-none-r1` | `24.3710` | `25.06` | `618.77` | - |
+| MTP n8 | `ROCm1,ROCm0 -sm layer -ts 1,1` | `rocm-dual-layer-mtp-polish-mt256-n8-r1` | `39.5312` | `41.71` | `516.74` | `57.89%` |
+
+Dual-layer delta: `+62.2%` aggregate completion TPS and `+66.4%` decode tok/s.
+Absolute dual baseline is lower than ROCm1-only because Windows ROCm peer copies
+are disabled and cross-device transfers are host-staged, but the dual profile
+keeps the model/KV resident across both cards and avoids the one-card VRAM/RAM
+spill path.

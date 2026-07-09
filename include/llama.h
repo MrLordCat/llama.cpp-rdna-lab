@@ -344,6 +344,7 @@ extern "C" {
         uint32_t n_ubatch;          // physical maximum batch size
         uint32_t n_seq_max;         // max number of sequences (i.e. distinct states for recurrent models)
         uint32_t n_rs_seq;          // number of recurrent-state snapshots per seq for rollback (0 = no rollback)
+        uint32_t n_outputs_max;     // max outputs in a ubatch (0 = n_batch)
         int32_t  n_threads;         // number of threads to use for generation
         int32_t  n_threads_batch;   // number of threads to use for batch processing
 
@@ -392,6 +393,10 @@ extern "C" {
         // note: the samplers must be sampler chains (i.e. use llama_sampler_chain_init)
         struct llama_sampler_seq_config * samplers;
         size_t                            n_samplers;
+
+        // a source/target/parent context
+        // can be utilized in various ways, for example by sharing results or llama_memory between 2 contexts
+        struct llama_context * ctx_other;
     };
 
     struct llama_model_tensor_override {
@@ -563,20 +568,10 @@ extern "C" {
     LLAMA_API int32_t llama_model_n_embd_inp (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_embd_out (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_layer    (const struct llama_model * model);
+    LLAMA_API int32_t llama_model_n_layer_nextn(const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_head     (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_head_kv  (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_swa      (const struct llama_model * model);
-
-    // DFlash: share tok_embd and output tensors from src (target) to dst (drafter).
-    // The drafter GGUF ships without them; call BEFORE creating the drafter context.
-    LLAMA_API void llama_model_share_tensors(struct llama_model * dst, const struct llama_model * src);
-
-    // DFlash drafter metadata (ported from beellama)
-    LLAMA_API int32_t llama_model_dflash_block_size       (const struct llama_model * model);
-    LLAMA_API int32_t llama_model_dflash_mask_token_id    (const struct llama_model * model);
-    LLAMA_API int32_t llama_model_dflash_n_target_layers  (const struct llama_model * model);
-    LLAMA_API int32_t llama_model_dflash_n_target_features(const struct llama_model * model);
-    LLAMA_API int32_t llama_model_dflash_target_layer_ids (const struct llama_model * model, int32_t * layer_ids, int32_t capacity);
 
     // Get the model's RoPE frequency scaling factor
     LLAMA_API float llama_model_rope_freq_scale_train(const struct llama_model * model);
@@ -986,58 +981,6 @@ extern "C" {
     // Set whether the model is in warmup mode or not
     // If true, all model tensors are activated during llama_decode() to load and cache their weights.
     LLAMA_API void llama_set_warmup(struct llama_context * ctx, bool warmup);
-
-    // [EXPERIMENTAL] DFlash APIs (ported from beellama). Phase-1 CPU-safe subset.
-    LLAMA_API void llama_set_dflash_capture(struct llama_context * ctx, const int32_t * layer_ids, int32_t n_layers);
-    LLAMA_API void llama_set_dflash_capture_active(struct llama_context * ctx, bool active);
-    LLAMA_API void llama_set_dflash_sample_temp(struct llama_context * ctx, float temp);
-    LLAMA_API void llama_set_dflash_topk(struct llama_context * ctx, int k);
-    LLAMA_API void llama_set_dflash_verify_logits(struct llama_context * ctx, bool enabled, int top_k);
-    LLAMA_API void llama_set_dflash_consume_reduced(struct llama_context * ctx, bool enabled);
-    LLAMA_API void llama_set_dflash_n_slots(struct llama_context * ctx, int n);
-
-    // DFlash capture buffer management (target ctx): reset at generation start,
-    // truncate to drop the rejected draft suffix after each accept.
-    LLAMA_API void llama_dflash_reset_hiddens   (struct llama_context * ctx);
-    LLAMA_API void llama_dflash_truncate_hiddens(struct llama_context * ctx, int64_t n_keep);
-
-    // Read captured target hidden states (for the DFlash drafter's cross window).
-    LLAMA_API int32_t llama_get_n_layer_hiddens        (struct llama_context * ctx);
-    LLAMA_API float * llama_get_layer_hidden           (struct llama_context * ctx, int layer_idx);
-    LLAMA_API int64_t llama_get_layer_hidden_n_tokens  (struct llama_context * ctx, int layer_idx);
-    LLAMA_API int64_t llama_get_layer_hidden_n_embd    (struct llama_context * ctx, int layer_idx);
-
-    // DFlash drafter argmax output + cross-window setter.
-    LLAMA_API int32_t * llama_get_logits_argmax  (struct llama_context * ctx);
-    LLAMA_API int32_t   llama_get_logits_argmax_n(struct llama_context * ctx);
-    LLAMA_API void      llama_dflash_set_cross   (struct llama_context * ctx, const float * data, int64_t n_feat, int64_t n_tokens);
-
-    // [EXPERIMENTAL] MTP APIs, accessors for hidden states
-    LLAMA_API struct ggml_tensor * llama_context_get_t_h_pre_norm(struct llama_context * ctx);
-    LLAMA_API struct ggml_tensor * llama_context_get_t_mtp_out   (struct llama_context * ctx);
-    LLAMA_API const float        * llama_context_get_mtp_pending_h(
-            struct llama_context * ctx,
-                    llama_seq_id   seq_id,
-                       llama_pos * pos);
-
-    LLAMA_API void llama_set_mtp(
-            struct llama_context * ctx_target,
-            struct llama_context * ctx_mtp);
-
-    // Windowed MTP prefill: gate the target-side MTP streaming hook on/off.
-    // While off, target decodes skip the MTP sync/readback/prefill entirely
-    // (used to skip the bulk of a long prompt and only prefill the tail window).
-    LLAMA_API void llama_set_mtp_hook_active(
-            struct llama_context * ctx_target,
-            bool                   active);
-
-    // Upstream-port: NextN embeddings (spec-decoding hidden handoff, batched
-    // through the normal output pipeline — replaces the per-decode MTP hook).
-    // masked=true:  rows with batch.logits != 0 only (verify decodes)
-    // masked=false: all batch rows, dense by token position (prompt prefill)
-    LLAMA_API void    llama_set_embeddings_nextn(struct llama_context * ctx, bool value, bool masked);
-    LLAMA_API float * llama_get_embeddings_nextn(struct llama_context * ctx);
-    LLAMA_API float * llama_get_embeddings_nextn_ith(struct llama_context * ctx, int32_t i);
 
     LLAMA_API bool llama_context_seq_rm(
             struct llama_context * ctx,

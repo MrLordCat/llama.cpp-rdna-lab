@@ -57,6 +57,9 @@ class ServerPresetsMixin:
 
     @staticmethod
     def _spec_type_from_tokens(tokens: list[str]) -> str | None:
+        for tok in tokens:
+            if tok.startswith("--spec-type="):
+                return tok.split("=", 1)[1].strip().lower()
         for i, tok in enumerate(tokens[:-1]):
             if tok == "--spec-type":
                 return tokens[i + 1].strip().lower()
@@ -143,6 +146,22 @@ class ServerPresetsMixin:
         if "extra_args" in match:
             self.server_extra_args.setPlainText(str(match["extra_args"]).strip())
             self._apply_spec_controls_from_extra_args(str(match["extra_args"]).strip())
+        if "spec_type" in match:
+            spec_type = str(match["spec_type"]).strip().lower()
+            if spec_type in {"mtp", "draft-mtp"}:
+                self.server_spec_type_combo.setCurrentText("mtp")
+            elif spec_type == "ngram-mod":
+                self.server_spec_type_combo.setCurrentText("ngram-mod")
+            elif spec_type == "draft":
+                self.server_spec_type_combo.setCurrentText("draft")
+            elif spec_type in {"none", ""}:
+                self.server_spec_type_combo.setCurrentText("None")
+            self.on_spec_type_changed()
+        if "spec_draft_n_max" in match:
+            try:
+                self.server_spec_draft_n_max.setValue(max(1, min(20, int(match["spec_draft_n_max"]))))
+            except (TypeError, ValueError):
+                pass
 
         kv_map = {
             0: "f16",
@@ -201,6 +220,10 @@ class ServerPresetsMixin:
         while i < len(tokens):
             tok = tokens[i]
             nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+            if tok.startswith("--spec-type="):
+                spec_type = tok.split("=", 1)[1].strip().lower()
+                i += 1
+                continue
             if tok == "--spec-type" and nxt is not None:
                 spec_type = nxt.strip().lower()
                 i += 2
@@ -226,7 +249,7 @@ class ServerPresetsMixin:
         if spec_type == "ngram-mod":
             self.server_spec_type_combo.setCurrentText("ngram-mod")
             self._apply_ngram_mod_profile()
-        elif spec_type == "mtp":
+        elif spec_type in {"mtp", "draft-mtp"}:
             self.server_spec_type_combo.setCurrentText("mtp")
         elif spec_type == "draft":
             self.server_spec_type_combo.setCurrentText("draft")

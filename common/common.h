@@ -7,6 +7,7 @@
 #include "ggml-opt.h"
 #include "ggml.h"
 
+#include <algorithm>
 #include <set>
 #include <sstream>
 #include <string>
@@ -157,16 +158,15 @@ enum common_params_sampling_config : uint64_t {
 
 enum common_speculative_type {
     COMMON_SPECULATIVE_TYPE_NONE,          // no speculative decoding
-    COMMON_SPECULATIVE_TYPE_DRAFT,         // draft model
-    COMMON_SPECULATIVE_TYPE_EAGLE3,        // eagle draft model
-    COMMON_SPECULATIVE_TYPE_MTP,           // multi-token prediction
-    COMMON_SPECULATIVE_TYPE_NGRAM_MTP,     // ngram self-speculative decoding with MTP fallback
-    COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE,  // simple self-speculative decoding
+    COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE,  // standalone draft model speculative decoding
+    COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3,  // Eagle3 speculative decoding
+    COMMON_SPECULATIVE_TYPE_DRAFT_MTP,     // Multi-token prediction
+    COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH,  // DFlash speculative decoding
+    COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE,  // simple self-speculative decoding based on n-grams
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K,   // self-speculative decoding with n-gram keys only
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V, // self-speculative decoding with n-gram keys and 4 m-gram values
     COMMON_SPECULATIVE_TYPE_NGRAM_MOD,
     COMMON_SPECULATIVE_TYPE_NGRAM_CACHE,   // self-speculative decoding with 3-level n-gram cache
-    COMMON_SPECULATIVE_TYPE_DFLASH,        // DFlash block-diffusion speculative decoding (ported from beellama)
     COMMON_SPECULATIVE_TYPE_COUNT          // number of types, unknown type
 };
 
@@ -296,23 +296,41 @@ struct common_params_model {
     std::string hf_file     = ""; // HF file                                                // NOLINT
     std::string docker_repo = ""; // Docker repo                                            // NOLINT
     std::string name        = ""; // in format <user>/<model>[:<tag>] (tag is optional)     // NOLINT
+
+    std::string get_name() const {
+        if (!name.empty()) {
+            return name;
+        }
+        if (!hf_repo.empty()) {
+            return hf_repo;
+        }
+        if (!docker_repo.empty()) {
+            return docker_repo;
+        }
+        return path;
+    }
+
+    bool empty() const {
+        return get_name().empty();
+    }
 };
 
 struct common_ngram_mod;
 
 // draft-model-based speculative decoding parameters
 struct common_params_speculative_draft {
-    int32_t n_max = 16; // maximum number of tokens to draft during speculative decoding
-    int32_t n_min = 0;  // minimum number of draft tokens to use for speculative decoding
+    int32_t n_max = 3; // maximum number of tokens to draft during speculative decoding
+    int32_t n_min = 0; // minimum number of draft tokens to use for speculative decoding
 
-    float p_split = 0.1f;  // speculative decoding split probability
-    float p_min   = 0.75f; // minimum speculative decoding probability (greedy)
+    float p_split = 0.1f; // speculative decoding split probability
+    float p_min   = 0.0f; // minimum speculative decoding probability (greedy)
+
+    bool backend_sampling = true; // offload draft sampling to the backend (default: on)
 
     common_params_model mparams;
 
-    llama_model * model = nullptr; // a llama_model that can be shared by multiple speculative contexts
-
-    llama_context_params cparams; // these are the parameters for the draft llama_context
+    llama_context * ctx_tgt = nullptr;
+    llama_context * ctx_dft = nullptr;
 
     int32_t n_ctx        = 0;  // draft context size
     int32_t n_gpu_layers = -1; // number of layers to store in VRAM for the draft model (-1 - use default)
@@ -350,17 +368,11 @@ struct common_params_speculative_ngram_cache {
     std::string lookup_cache_dynamic; // path of dynamic ngram cache file for lookup decoding
 };
 
-struct common_params_speculative_mtp {
-    llama_model        * model = nullptr;
-    llama_context_params cparams;
-};
-
 struct common_params_speculative {
-    // TODO: become a vector in order to support configurable chains of speculators
-    common_speculative_type type = COMMON_SPECULATIVE_TYPE_NONE;
+    std::vector<enum common_speculative_type> types = { COMMON_SPECULATIVE_TYPE_NONE };
 
+    // used by Simple, MTP, Eagle3, etc. - all methods that require some kind of draft model
     common_params_speculative_draft draft;
-    common_params_speculative_mtp   mtp;
 
     common_params_speculative_ngram_mod ngram_mod;
     common_params_speculative_ngram_map ngram_simple;
@@ -369,15 +381,18 @@ struct common_params_speculative {
 
     common_params_speculative_ngram_cache ngram_cache;
 
-    // DFlash-specific params (ported from beellama; reuse `draft` for the drafter model).
-    int32_t dflash_max_slots = 1;   // max concurrent server slots that keep DFlash state
-    int32_t dflash_cross_ctx = 512; // cross-attention window: target hidden states the drafter sees
-    int32_t branch_budget    = 0;   // DDTree branch nodes beyond the main draft path (0 = flat DFlash)
-    float   dflash_sample_temp = 0.0f; // drafter sampling temperature (0 = greedy)
-    int32_t dflash_draft_topk  = 1;    // top-K candidates per drafter position (1 = argmax)
-
     bool has_dft() const {
-        return !draft.mparams.path.empty() || !draft.mparams.hf_repo.empty();
+        return !draft.mparams.empty();
+    }
+
+    uint32_t need_n_rs_seq() const {
+        const bool needs_rs_seq = std::any_of(types.begin(), types.end(), [](auto t) {
+            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP
+                || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3
+                || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH;
+        });
+
+        return needs_rs_seq ? draft.n_max : 0u;
     }
 };
 
@@ -442,6 +457,7 @@ struct common_params {
     int32_t n_keep                =     0; // number of tokens to keep from initial prompt
     int32_t n_chunks              =    -1; // max number of chunks to process (-1 = unlimited)
     int32_t n_parallel            =     1; // number of parallel sequences to decode
+    int32_t n_outputs_max         =     0; // max outputs in a ubatch, 0 = n_batch
     int32_t n_sequences           =     1; // number of sequences to decode
     int32_t grp_attn_n            =     1; // group-attention factor
     int32_t grp_attn_w            =   512; // group-attention width

@@ -11,6 +11,7 @@
 #include <cctype>
 #include <climits>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -619,14 +620,27 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
 std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, bool grammar_first) {
     GGML_ASSERT(idxs.size() == draft.size() + 1 && "idxs.size() must be draft.size() + 1");
 
+    const bool trace_verify_timing = std::getenv("LLAMA_SPEC_VERIFY_TIMING") != nullptr;
+    const int64_t t_start_us = trace_verify_timing ? ggml_time_us() : 0;
+    int64_t t_sample_us = 0;
+    int64_t t_accept_us = 0;
+
     std::vector<llama_token> result;
     result.reserve(idxs.size());
 
     size_t i = 0;
     for (; i < draft.size(); i++) {
+        const int64_t t_sample_start_us = trace_verify_timing ? ggml_time_us() : 0;
         const llama_token id = common_sampler_sample(gsmpl, ctx, idxs[i], grammar_first);
+        if (trace_verify_timing) {
+            t_sample_us += ggml_time_us() - t_sample_start_us;
+        }
 
+        const int64_t t_accept_start_us = trace_verify_timing ? ggml_time_us() : 0;
         common_sampler_accept(gsmpl, id, true);
+        if (trace_verify_timing) {
+            t_accept_us += ggml_time_us() - t_accept_start_us;
+        }
 
         result.push_back(id);
 
@@ -636,11 +650,26 @@ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sample
     }
 
     if (i == draft.size()) {
+        const int64_t t_sample_start_us = trace_verify_timing ? ggml_time_us() : 0;
         const llama_token id = common_sampler_sample(gsmpl, ctx, idxs[i], grammar_first);
+        if (trace_verify_timing) {
+            t_sample_us += ggml_time_us() - t_sample_start_us;
+        }
 
+        const int64_t t_accept_start_us = trace_verify_timing ? ggml_time_us() : 0;
         common_sampler_accept(gsmpl, id, true);
+        if (trace_verify_timing) {
+            t_accept_us += ggml_time_us() - t_accept_start_us;
+        }
 
         result.push_back(id);
+    }
+
+    if (trace_verify_timing) {
+        const int64_t t_total_us = ggml_time_us() - t_start_us;
+        LOG_INF("%s: spec verify timing draft=%zu accepted_plus_sample=%zu rows=%zu sample=%.3f accept=%.3f total=%.3f ms\n",
+                __func__, draft.size(), result.size(), idxs.size(),
+                t_sample_us / 1000.0, t_accept_us / 1000.0, t_total_us / 1000.0);
     }
 
     return result;

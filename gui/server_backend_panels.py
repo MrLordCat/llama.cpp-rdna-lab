@@ -35,12 +35,12 @@ _TAB_TITLES = {
 class _RocmPanel(QWidget):
     """ROCm-specific launch parameters (2x RX 9070 XT rig defaults)."""
 
-    # (display, -dev value or None for all, -sm value or None)
+    # (display, -dev value or None for all, -sm value or None, -ts value or None)
     DEVICE_CHOICES = [
-        ("All GPUs — layer split (best prefill)", None,          None),
-        ("ROCm1 only — primary GPU (best decode)", "ROCm1",      "none"),
-        ("ROCm0 only — secondary GPU",             "ROCm0",      "none"),
-        ("ROCm1,ROCm0 — explicit order",           "ROCm1,ROCm0", None),
+        ("All GPUs — layer split (default order)", None,          "layer", None),
+        ("ROCm1 only — diagnostics",               "ROCm1",      "none",  None),
+        ("ROCm0 only — diagnostics",               "ROCm0",      "none",  None),
+        ("ROCm1,ROCm0 — layer split (MTP)",         "ROCm1,ROCm0", "layer", "1,1"),
     ]
 
     def __init__(self, parent: QWidget | None = None):
@@ -55,8 +55,9 @@ class _RocmPanel(QWidget):
             self.device_combo.addItem(display)
         self.device_combo.setToolTip(
             "Which GPUs the server uses.\n"
-            "Layer split across both improves prefill; a single GPU is usually\n"
-            "faster for token generation (no cross-GPU hop per token)."
+            "For large MTP runs, use ROCm1,ROCm0 layer split so weights/KV stay\n"
+            "on the two cards instead of spilling one card into RAM. Single-GPU\n"
+            "choices are mainly for clean diagnostics."
         )
         dev_row.addWidget(self.device_combo, 1)
         layout.addLayout(dev_row)
@@ -97,11 +98,13 @@ class _RocmPanel(QWidget):
 
     def args(self) -> list[str]:
         out: list[str] = []
-        _display, dev, sm = self.DEVICE_CHOICES[self.device_combo.currentIndex()]
+        _display, dev, sm, ts = self.DEVICE_CHOICES[self.device_combo.currentIndex()]
         if dev:
             out.extend(["-dev", dev])
         if sm:
             out.extend(["-sm", sm])
+        if ts:
+            out.extend(["-ts", ts])
         return out
 
     def env(self) -> dict[str, str]:

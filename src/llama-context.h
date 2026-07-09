@@ -6,15 +6,12 @@
 #include "llama-graph.h"
 #include "llama-adapter.h"
 #include "llama-impl.h"
-#include "llama-mtp.h"
 
 #include "ggml-cpp.h"
 #include "ggml-opt.h"
 
 #include <map>
 #include <memory>
-#include <string>
-#include <unordered_map>
 #include <vector>
 
 struct llama_model;
@@ -26,42 +23,6 @@ class llama_io_write_i;
 // "memory" as in abstract memory for the context
 struct llama_memory_i;
 struct llama_memory_context_i;
-
-// DFlash (ported from beellama). Phase-1 CPU-safe hidden capture: the target's
-// eval callback appends captured layer activations (l_out-<id>) into per-slot
-// buffers; the drafter reads them as its cross-attention window. The GPU tape /
-// multi-seq / profiling machinery from bee is deferred (Phase 2).
-struct dflash_layer_hidden_buf {
-    std::vector<float> data;
-    int64_t n_embd   = 0;
-    int64_t n_tokens = 0;
-};
-
-struct dflash_capture_data {
-    bool capture_active = true;
-
-    std::vector<int32_t>                     layer_ids;       // model layer indices to capture
-    std::vector<std::string>                 tensor_names;    // pre-formatted "l_out-{id}" names
-    std::unordered_map<std::string, size_t>  hidden_name_idx; // name -> capture index
-
-    // points at llama_context::layer_hiddens (outer: per-slot, inner: per-captured-layer)
-    std::vector<std::vector<dflash_layer_hidden_buf>> * hiddens = nullptr;
-
-    // active ubatch for the in-flight compute (callback reads seq routing from it)
-    const llama_ubatch * ubatch = nullptr;
-
-    int active_slot_idx = 0; // single-slot default
-
-    std::vector<dflash_layer_hidden_buf> * slot_hiddens(int slot) const {
-        if (!hiddens || slot < 0 || slot >= (int) hiddens->size()) {
-            return nullptr;
-        }
-        return &(*hiddens)[slot];
-    }
-    std::vector<dflash_layer_hidden_buf> * active_slot_hiddens() const {
-        return slot_hiddens(active_slot_idx);
-    }
-};
 
 struct llama_context {
     // init scheduler and compute buffers, reserve worst-case graphs
@@ -114,36 +75,9 @@ struct llama_context {
     float * get_embeddings_nextn();
     float * get_embeddings_nextn_ith(int32_t i);
 
-    ggml_tensor * get_t_h_pre_norm() const;
-    ggml_tensor * get_t_mtp_out()    const;
-    const float * get_mtp_pending_h(llama_seq_id seq_id, llama_pos * pos) const;
-
-    // DFlash (ported from beellama) — Phase 1 CPU-safe hidden capture + config.
-    void set_dflash_sample_temp(float temp);
-    void set_dflash_topk(int k);
-    void set_dflash_verify_logits(bool enabled, int top_k);
-    void set_dflash_consume_reduced(bool enabled);
-    void set_dflash_n_slots(int n);
-    void set_dflash_capture(const int32_t * layer_ids, int32_t n_layers);
-    void set_dflash_capture_active(bool active);
-    void dflash_reset_hidden_capture();
-    void dflash_truncate_hiddens(int64_t n_keep); // drop captured tokens past n_keep (rejected suffix)
-    void dflash_capture_from_res(llm_graph_result * res); // graph-embedded capture readback (one sync)
-    int32_t get_n_layer_hiddens() const;
-    float * get_layer_hidden(int layer_idx);                 // [n_embd * n_tokens], row-major per token
-    int64_t get_layer_hidden_n_tokens(int layer_idx) const;
-    int64_t get_layer_hidden_n_embd(int layer_idx) const;
-
-    int32_t * get_logits_argmax();     // [count], drafter argmax token id per position (after decode)
-    int32_t   get_logits_argmax_n();
-
-    // DFlash: set this (drafter) context's cross window from packed target hiddens.
-    // data layout: [n_feat * n_tokens] row-major per token (n_feat = n_target_layers * n_embd).
-    void set_dflash_cross(const float * data, int64_t n_feat, int64_t n_tokens);
-
-    void            set_mtp(llama_context * ctx_mtp_in);
-    void            set_mtp_hook_active(bool active); // windowed-prefill gate (see llama_mtp::hook_active)
-    llama_context * get_mtp() const { return mtp.ctx_mtp; }
+    void    set_embeddings_layer_inp(uint32_t lid, bool enable);
+    float * get_embeddings_layer_inp(uint32_t lid);
+    void    set_nextn_layer_offset(int32_t offset);
 
     llama_token * get_sampled_tokens() const;
     llama_token   get_sampled_token_ith(int32_t idx);
@@ -281,6 +215,9 @@ private:
     // map the output row index `i` to batch index
     int64_t output_resolve_row(int32_t i) const;
 
+    // async-copy enabled layer-input tensors from backend into host-side embd_layer_inp buffers
+    void extract_layer_inputs(const llm_graph_result * res, size_t token_offset, size_t n_tokens);
+
     //
     // graph
     //
@@ -309,14 +246,6 @@ private:
 
     llm_graph_cb graph_get_cb() const;
 
-    void handle_mtp_for_ubatch(
-            int32_t                n_tokens,
-            const llama_token    * tokens,
-            const llama_pos      * positions,
-            int32_t              * n_seq_id,
-            llama_seq_id        ** seq_id,
-            struct ggml_tensor   * t_h_pre_norm);
-
     // TODO: read/write lora adapters and cvec
     size_t state_write_data(llama_io_write_i & io);
     size_t state_read_data (llama_io_read_i  & io);
@@ -337,17 +266,6 @@ private:
 
     llama_cross cross; // TODO: tmp for handling cross-attention - need something better probably
 
-    llama_mtp mtp;
-
-    // DFlash (ported from beellama): target hidden-state capture for the drafter.
-    std::unique_ptr<dflash_capture_data> dflash_capture;
-    std::vector<std::vector<dflash_layer_hidden_buf>> layer_hiddens; // [slot][captured-layer]
-
-    // DFlash: drafter argmax output (token id per position), extracted after decode.
-    std::vector<int32_t> logits_argmax_buf;
-    int32_t logits_argmax_count = 0;
-    int32_t logits_argmax_k     = 1;
-
     std::unique_ptr<llama_memory_i> memory;
 
     // decode output (2-dimensional array: [n_outputs][n_vocab])
@@ -360,6 +278,10 @@ private:
     // Upstream-port: NextN embeddings output ([n_outputs][n_embd] when masked,
     // [n_batch_tokens][n_embd] dense when unmasked)
     buffer_view<float> embd_nextn = {nullptr, 0};
+
+    // host buffers for output layer input embeddings, per layer
+    // populated when cparams.embeddings_layer_inp[il] is true
+    std::vector<buffer_view<float>> embd_layer_inp;
 
     struct sampling_info {
         // !samplers.empty() to check if any samplers are active

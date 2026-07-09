@@ -533,9 +533,11 @@ struct llama_model {
     struct ggml_tensor * output_b        = nullptr;
     struct ggml_tensor * output_norm_enc = nullptr;
 
-    // DFlash drafter fusion layer (ported from beellama)
-    struct ggml_tensor * dflash_fc          = nullptr;
-    struct ggml_tensor * dflash_hidden_norm = nullptr;
+    // feature-fusion layer used by drafter models such as EAGLE3 and DFlash
+    struct ggml_tensor * fc = nullptr;
+
+    // target-model layer ids extracted by drafter models such as EAGLE3 and DFlash
+    std::vector<int32_t> target_layer_ids;
 
     // classifier
     struct ggml_tensor * cls       = nullptr;
@@ -631,8 +633,6 @@ struct llama_model {
     virtual void load_arch_hparams(llama_model_loader & ml) = 0;
     virtual void load_arch_tensors(llama_model_loader & ml) = 0;
     virtual std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const = 0;
-
-    friend void llama_model_share_tensors(struct llama_model * dst, const struct llama_model * src);
 
 protected:
     llama_model_params params;

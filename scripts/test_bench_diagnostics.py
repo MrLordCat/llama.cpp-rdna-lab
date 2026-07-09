@@ -47,7 +47,12 @@ def test_decode_sentinel_excluded(m) -> None:
 
 def test_mtp_acceptance_parsed(m) -> None:
     """MTP runs expose an acceptance ratio derived from #acc/#gen draft tokens."""
-    log = _find_log("diag-2gpu-mtp-postreboot-r1", "vscode-rocm-mtp-fix-d3")
+    log = _find_log(
+        "rocm-dual-layer-mtp-polish-mt256-n8-r1",
+        "rocm1-mtp-polish-short-n8-r1",
+        "diag-2gpu-mtp-postreboot-r1",
+        "vscode-rocm-mtp-fix-d3",
+    )
     if log is None:
         print("  SKIP test_mtp_acceptance_parsed (no log)")
         return
@@ -65,7 +70,12 @@ def test_mtp_acceptance_parsed(m) -> None:
 
 def test_low_acceptance_hint(m) -> None:
     """A low-acceptance MTP run should surface a bottleneck hint."""
-    log = _find_log("diag-2gpu-mtp-postreboot-r1", "vscode-rocm-mtp-fix-d3")
+    log = _find_log(
+        "rocm-dual-layer-mtp-polish-mt256-n8-r1",
+        "rocm1-mtp-polish-short-n8-r1",
+        "diag-2gpu-mtp-postreboot-r1",
+        "vscode-rocm-mtp-fix-d3",
+    )
     if log is None:
         print("  SKIP test_low_acceptance_hint (no log)")
         return

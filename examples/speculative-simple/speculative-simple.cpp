@@ -72,40 +72,15 @@ int main(int argc, char ** argv) {
 
     const llama_vocab * vocab = llama_model_get_vocab(model_tgt);
 
-    // load the draft model
-    llama_model_ptr model_dft;
-
-    // TODO: simplify this logic
-    {
-        const auto & params_spec = params.speculative.draft;
-
-        auto params_dft = params;
-
-        params_dft.n_parallel   = 1;
-        params_dft.n_ctx        = params_spec.n_ctx;
-        params_dft.n_batch      = llama_n_ctx_seq(ctx_tgt);
-        params_dft.devices      = params_spec.devices;
-        params_dft.model        = params_spec.mparams;
-        params_dft.n_gpu_layers = params_spec.n_gpu_layers;
-
-        if (params_spec.cpuparams.n_threads > 0) {
-            params_dft.cpuparams.n_threads       = params.speculative.draft.cpuparams.n_threads;
-            params_dft.cpuparams_batch.n_threads = params.speculative.draft.cpuparams_batch.n_threads;
-        }
-
-        params_dft.tensor_buft_overrides = params.speculative.draft.tensor_buft_overrides;
-
-        auto mparams_dft = common_model_params_to_llama(params_dft);
-
-        model_dft.reset(llama_model_load_from_file(params_dft.model.path.c_str(), mparams_dft));
-        if (model_dft == nullptr) {
-            LOG_ERR("failed to load draft model, '%s'\n", params_dft.model.path.c_str());
-            return 1;
-        }
-
-        params.speculative.draft.model = model_dft.get();
-        params.speculative.draft.cparams = common_context_params_to_llama(params_dft);
+    common_params params_dft = common_base_params_to_speculative(params);
+    common_speculative_init_result_ptr spec_init = common_speculative_init_from_params(params_dft, model_tgt, ctx_tgt);
+    if (!spec_init || spec_init->context() == nullptr) {
+        LOG_ERR("%s: failed to initialize speculative draft context\n", __func__);
+        return 1;
     }
+
+    params.speculative.draft.ctx_tgt = ctx_tgt;
+    params.speculative.draft.ctx_dft = spec_init->context();
 
     // Tokenize the prompt
     std::vector<llama_token> inp;
@@ -160,9 +135,9 @@ int main(int argc, char ** argv) {
     // init the speculator
     const auto & params_spec = params.speculative;
 
-    struct common_speculative * spec = common_speculative_init(params.speculative, ctx_tgt);
+    common_speculative_ptr spec(common_speculative_init(params.speculative, 1));
 
-    common_speculative_begin(spec, prompt_tgt);
+    common_speculative_begin(spec.get(), 0, prompt_tgt);
 
     llama_batch batch_tgt = llama_batch_init(llama_n_batch(ctx_tgt), 0, 1);
 
@@ -185,7 +160,16 @@ int main(int argc, char ** argv) {
         //
         if (draft.empty()) {
             // generate a new draft
-            draft = common_speculative_draft(spec, params_spec, prompt_tgt, id_last);
+            draft.clear();
+            common_speculative_get_draft_params(spec.get(), 0) = {
+                /* .drafting = */ true,
+                /* .n_max    = */ common_speculative_n_max(&params_spec),
+                /* .n_past   = */ (llama_pos) prompt_tgt.size(),
+                /* .id_last  = */ id_last,
+                /* .prompt   = */ &prompt_tgt,
+                /* .result   = */ &draft,
+            };
+            common_speculative_draft(spec.get());
 
             // save the original draft size
             n_draft = draft.size();
@@ -265,7 +249,7 @@ int main(int argc, char ** argv) {
             continue;
         }
 
-        common_speculative_accept(spec, ids.size() - 1);
+        common_speculative_accept(spec.get(), 0, ids.size() - 1);
 
         // full acceptance: consume the draft and commit accepted tokens
         n_past    += ids.size() - 1;
@@ -337,8 +321,6 @@ int main(int argc, char ** argv) {
     common_perf_print(ctx_tgt, smpl.get());
 
     llama_batch_free(batch_tgt);
-
-    common_speculative_free(spec);
 
     llama_backend_free();
 

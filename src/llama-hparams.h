@@ -92,13 +92,6 @@ struct llama_hparams {
     uint32_t moe_latent_size      = 0;
     uint32_t nextn_predict_layers = 0;
 
-    // DFlash drafter (ported from beellama)
-    uint32_t dflash_block_size        = 16;
-    uint32_t dflash_mask_token_id     = 0;
-    uint32_t dflash_n_target_features = 25600;
-    uint32_t dflash_n_target_layers   = 0;
-    uint32_t dflash_target_layer_ids[8] = {};
-
     bool kv_only_nextn = false;
 
     float f_norm_eps;
@@ -272,6 +265,12 @@ struct llama_hparams {
 
     // dimension of main + auxiliary input embeddings
     uint32_t n_embd_inp() const;
+
+    // dimension of encoder input embeddings
+    uint32_t n_embd_inp_enc() const;
+
+    // encoder input embedding dimension (0 = use n_embd_inp())
+    uint32_t n_embd_inp_enc_impl = 0;
 
     // dimension of output embeddings
     uint32_t n_embd_out() const;

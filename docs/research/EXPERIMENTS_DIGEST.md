@@ -1,6 +1,6 @@
 # Experiment Digest
 
-Updated: 2026-07-08.
+Updated: 2026-07-09.
 
 This is the compact historical base for performance work. `RESULTS_LOG.md` remains the detailed ledger; this file groups the evidence so agents can pick the next route without rereading every E/D note.
 
@@ -31,7 +31,7 @@ This is the compact historical base for performance work. `RESULTS_LOG.md` remai
 
 ## Compact Experiment Ledger
 
-Rows parsed from `docs/research/RESULTS_LOG.md`: 329.
+Rows parsed from `docs/research/RESULTS_LOG.md`: 330.
 
 | Date | ID | Short name | Delta | Decision | Artifacts |
 | --- | --- | --- | --- | --- | --- |
@@ -364,3 +364,4 @@ Rows parsed from `docs/research/RESULTS_LOG.md`: 329.
 | 2026-05-22 | E148 | Vulkan FA analytic causal mask route | `+0.08%`, noise/tie | Reject and revert runtime prototype. Mask-opt prepass/sync looked plausible but is not the limiter; future FA work must target the main q4 K/V dequant + softmax/PV loop or a more structural long-KV traversal | build_logs/agent-workload/e148-vulkan-fa-causal-mask-*.log, build_logs/agent-workload/e148-vulkan-fa-causal-mask-gate.md, docs/research/experiments/E148_vulk... |
 | 2026-07-07 | E266 | ROCm MTP depth-8 decode profile | `+64.28%` aggregate, `+69.95%` decode; acceptance `54.33%` | Keep code fixes; use `--spec-type mtp --spec-draft-n-max 8` as current ROCm two-GPU generation-heavy MTP profile; do not claim 130k/60k-prompt headline yet | `build_logs/agent-workload/mtp-temp0-postbuild-none-confirm3.*`, `build_logs/agent-workload/mtp-temp0-postbuild-n8-confirm3.*`, `docs/research/experiments/E2... |
 | 2026-07-08 | E267 | ROCm MTP big-prompt gate | `-26.5%` aggregate, `-28.1%` prompt, `-10.1%` decode; acceptance `54.62%` | Reject MTP n8 as cold large-prompt default until MTP prefill/hook overhead is fixed; keep E266 only as generation-heavy profile | `build_logs/agent-workload/mtp-bigprompt-none-r1.*`, `build_logs/agent-workload/mtp-bigprompt-n8-r1.*`, `docs/research/experiments/E267_rocm_mtp_bigprompt_ga... |
+| 2026-07-09 | E268 | ROCm MTP windowed NextN gate | short `+67.4%` wall, `+78.2%` decode; dual layer `+62.2%` wall, `+66.4%` decode, accept... | Keep windowed target NextN gate with default `LLAMA_SPEC_PREFILL_WINDOW=8192`; GUI/default MTP profile uses `--spec-type draft-mtp --spec-draft-n-max 8` with `-dev ROCm1,ROCm0 -sm layer -ts 1,1`; `-sm none` is single-... | `build_logs/agent-workload/mtp-windowed-*.{csv,diagnostics.md,server.log}`, `build_logs/agent-workload/rocm-dual-layer-mtp-polish-mt256-*.{csv,diagnostics.md... |

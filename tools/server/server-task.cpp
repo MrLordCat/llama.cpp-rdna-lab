@@ -76,7 +76,7 @@ json task_params::to_json(bool only_metrics) const {
             {"reasoning_in_content",      chat_parser_params.reasoning_in_content},
             {"generation_prompt",         chat_parser_params.generation_prompt},
             {"samplers",                  samplers},
-            {"speculative.type",          common_speculative_type_to_str(speculative.type)},
+            {"speculative.type",          common_speculative_type_name_str(speculative.types)},
             {"timings_per_token",         timings_per_token},
             {"post_sampling_probs",       post_sampling_probs},
             {"backend_sampling",          sampling.backend_sampling},
@@ -133,7 +133,7 @@ json task_params::to_json(bool only_metrics) const {
         {"reasoning_in_content",      chat_parser_params.reasoning_in_content},
         {"generation_prompt",         chat_parser_params.generation_prompt},
         {"samplers",                  samplers},
-        {"speculative.type",          common_speculative_type_to_str(speculative.type)},
+        {"speculative.type",          common_speculative_type_name_str(speculative.types)},
         {"timings_per_token",         timings_per_token},
         {"post_sampling_probs",       post_sampling_probs},
         {"backend_sampling",          sampling.backend_sampling},
@@ -307,7 +307,8 @@ task_params server_task::params_from_json_cmpl(
 
 #if 0
     // for debugging and research purposes
-    params.speculative.type = common_speculative_type_from_name(json_value(data, "speculative.type", common_speculative_type_to_str(defaults.speculative.type)));
+    params.speculative.types = common_speculative_types_from_names(
+            string_split<std::string>(json_value(data, "speculative.type", common_speculative_type_name_str(defaults.speculative.types)), ','));
 
     params.speculative.ngram_size_n     = json_value(data, "speculative.ngram_size_n", defaults.speculative.ngram_size_n);
     params.speculative.ngram_size_m     = json_value(data, "speculative.ngram_size_m", defaults.speculative.ngram_size_m);
@@ -1981,7 +1982,7 @@ size_t server_prompt_cache::n_tokens() const {
     return res;
 }
 
-server_prompt * server_prompt_cache::alloc(const server_prompt & prompt, size_t state_size) {
+server_prompt * server_prompt_cache::alloc(const server_prompt & prompt, size_t state_size_main, size_t state_size_drft) {
     // first check if the current state is contained fully in the cache
     for (auto it = states.begin(); it != states.end(); ++it) {
         const int cur_lcp_len = it->tokens.get_common_prefix(prompt.tokens);
@@ -2005,11 +2006,13 @@ server_prompt * server_prompt_cache::alloc(const server_prompt & prompt, size_t 
         }
     }
 
-    std::vector<uint8_t> state_data;
+    std::vector<uint8_t> state_data_main;
+    std::vector<uint8_t> state_data_drft;
 
     // check if we can allocate enough memory for the new state
     try {
-        state_data.resize(state_size);
+        state_data_main.resize(state_size_main);
+        state_data_drft.resize(state_size_drft);
     } catch (const std::bad_alloc & e) {
         SRV_ERR("failed to allocate memory for prompt cache state: %s\n", e.what());
 
@@ -2025,14 +2028,17 @@ server_prompt * server_prompt_cache::alloc(const server_prompt & prompt, size_t 
     auto & cur = states.emplace_back();
     cur = {
         /*.tokens      =*/ prompt.tokens.clone(),
-        /*.data        =*/ std::move(state_data),
+        /*.data        =*/ {
+            /*.main =*/ std::move(state_data_main),
+            /*.drft =*/ std::move(state_data_drft),
+        },
         /*.checkpoints =*/ prompt.checkpoints,
     };
 
     return &cur;
 }
 
-bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx, int32_t id_slot) {
+bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_main, llama_context * ctx_drft, int32_t id_slot) {
     const int lcp_best = prompt.tokens.get_common_prefix(tokens_new);
 
     float f_keep_best = prompt.tokens.size() > 0 ? float(lcp_best) / prompt.tokens.size() : -1.0f; // empty slot: any cache entry wins
@@ -2065,16 +2071,39 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
     if (it_best != states.end()) {
         SRV_WRN(" - found better prompt with f_keep = %.3f, sim = %.3f\n", f_keep_best, sim_best);
 
-        const size_t size = it_best->data.size();
-        const size_t n = llama_state_seq_set_data_ext(ctx, it_best->data.data(), size, id_slot, 0);
-        if (n != size) {
-            SRV_WRN("failed to restore state with size %zu\n", size);
+        {
+            auto & data = it_best->data.main;
 
-            return false;
+            const size_t size = data.size();
+            const size_t n = llama_state_seq_set_data_ext(ctx_main, data.data(), size, id_slot, 0);
+            if (n != size) {
+                SRV_WRN("failed to restore state with size %zu\n", size);
+
+                return false;
+            }
+
+            data.clear();
+            data.shrink_to_fit();
         }
 
-        it_best->data.clear();
-        it_best->data.shrink_to_fit();
+        {
+            auto & data = it_best->data.drft;
+
+            if (!data.empty()) {
+                GGML_ASSERT(ctx_drft);
+
+                const size_t size = data.size();
+                const size_t n = llama_state_seq_set_data_ext(ctx_drft, data.data(), size, id_slot, 0);
+                if (n != size) {
+                    SRV_WRN("failed to restore draft state with size %zu\n", size);
+
+                    return false;
+                }
+
+                data.clear();
+                data.shrink_to_fit();
+            }
+        }
 
         prompt = std::move(*it_best);
 

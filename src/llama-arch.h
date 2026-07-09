@@ -45,8 +45,6 @@ enum llm_arch {
     LLM_ARCH_QWEN3VLMOE,
     LLM_ARCH_QWEN35,
     LLM_ARCH_QWEN35MOE,
-    LLM_ARCH_QWEN35_MTP,
-    LLM_ARCH_QWEN35MOE_MTP,
     LLM_ARCH_PHI2,
     LLM_ARCH_PHI3,
     LLM_ARCH_PHIMOE,
@@ -139,7 +137,7 @@ enum llm_arch {
     LLM_ARCH_LLAMA_EMBED,
     LLM_ARCH_MAINCODER,
     LLM_ARCH_KIMI_LINEAR,
-    LLM_ARCH_DFLASH,        // DFlash block-diffusion drafter (ported from beellama)
+    LLM_ARCH_DFLASH,
     LLM_ARCH_DFLASH_DRAFT,
     LLM_ARCH_UNKNOWN,
 };
@@ -200,10 +198,7 @@ enum llm_kv {
     LLM_KV_MOE_EVERY_N_LAYERS,
     LLM_KV_MOE_LATENT_SIZE,
     LLM_KV_NEXTN_PREDICT_LAYERS,
-    LLM_KV_DFLASH_BLOCK_SIZE,
-    LLM_KV_DFLASH_MASK_TOKEN_ID,
-    LLM_KV_DFLASH_TARGET_LAYER_IDS,
-    LLM_KV_DFLASH_N_TARGET_FEATURES,
+    LLM_KV_TARGET_LAYERS,
     LLM_KV_NUM_DEEPSTACK_LAYERS,
     LLM_KV_POOLING_TYPE,
     LLM_KV_LOGIT_SCALE,
@@ -562,11 +557,9 @@ enum llm_tensor {
     LLM_TENSOR_NEXTN_HNORM,
     LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD,
     LLM_TENSOR_NEXTN_SHARED_HEAD_NORM,
-    // DFlash drafter (ported from beellama)
+    LLM_TENSOR_FC,
     LLM_TENSOR_DFLASH_FC,
     LLM_TENSOR_DFLASH_HIDDEN_NORM,
-    LLM_TENSOR_DFLASH_UPSTREAM_FC,
-    LLM_TENSOR_DFLASH_UPSTREAM_HIDDEN_NORM,
 };
 
 enum llm_tensor_layer {
@@ -648,6 +641,5 @@ const llm_tensor_info & llm_tensor_info_for(llm_tensor tensor);
 bool llm_arch_is_recurrent      (const llm_arch & arch);
 bool llm_arch_is_hybrid         (const llm_arch & arch);
 bool llm_arch_is_diffusion      (const llm_arch & arch);
-bool llm_arch_is_dflash_drafter (const llm_arch & arch);
 bool llm_arch_supports_sm_tensor(const llm_arch & arch);
 bool llm_arch_supports_recurrent_partial_rollback(const llm_arch & arch);

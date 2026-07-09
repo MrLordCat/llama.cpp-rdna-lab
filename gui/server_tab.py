@@ -610,14 +610,22 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         if self._spec_type_from_tokens(extra_tokens) == "ngram-mod":
             extra_tokens = self._normalize_ngram_extra_tokens(extra_tokens)
 
-        # Avoid duplicate speculative flags when preset already supplies them via Extra Arguments.
-        has_spec_in_extra = any(tok.startswith("--spec-") or tok == "--spec-type" for tok in extra_tokens)
+        # Extra Arguments override the visible speculative mode only when they
+        # explicitly provide --spec-type. Other --spec-* knobs may be combined
+        # with the UI mode.
+        has_spec_type_in_extra = self._spec_type_from_tokens(extra_tokens) is not None
+        has_spec_draft_n_max_in_extra = any(
+            tok == "--spec-draft-n-max" or tok.startswith("--spec-draft-n-max=")
+            for tok in extra_tokens
+        )
         has_no_mmap_in_extra = "--no-mmap" in extra_tokens
 
         spec_type = self.server_spec_type_combo.currentText().strip().lower()
-        if not has_spec_in_extra:
+        if not has_spec_type_in_extra:
             if spec_type == "mtp":
-                command.extend(["--spec-type", "mtp", "--spec-draft-n-max", str(self.server_spec_draft_n_max.value())])
+                command.extend(["--spec-type", "draft-mtp"])
+                if not has_spec_draft_n_max_in_extra:
+                    command.extend(["--spec-draft-n-max", str(self.server_spec_draft_n_max.value())])
                 # MTP currently requires single parallel sequence in llama-server.
                 if self.server_parallel_spinbox.value() != 1:
                     notes.append("MTP requires --parallel 1, overriding selected value")
@@ -656,7 +664,12 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             if skip:
                 skip = False
                 continue
-            if tok in ("-dev", "-sm", "-ngl") and tok in extra_tokens:
+            if tok in (
+                "-dev", "--device",
+                "-sm", "--split-mode",
+                "-ts", "--tensor-split",
+                "-ngl", "--gpu-layers", "--n-gpu-layers",
+            ) and tok in extra_tokens:
                 skip = True  # drop the flag and its value; Extra Arguments wins
                 continue
             filtered_backend_args.append(tok)
@@ -1078,7 +1091,10 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_top_p_spinbox.setValue(float(settings.value("server/top_p", 0.95)))
         self.server_top_k_spinbox.setValue(int(settings.value("server/top_k", 40)))
 
-        self.server_spec_type_combo.setCurrentText(settings.value("server/spec_type", "None"))
+        saved_spec_type = str(settings.value("server/spec_type", "None")).strip()
+        if saved_spec_type.lower() == "draft-mtp":
+            saved_spec_type = "mtp"
+        self.server_spec_type_combo.setCurrentText(saved_spec_type)
         self.server_spec_draft_n_max.setValue(int(settings.value("server/spec_draft_n_max", self.MTP_DRAFT_N_MAX)))
         self.server_ngram_min.setValue(int(settings.value("server/spec_ngram_min", self.NGRAM_MOD_N_MIN)))
         self.server_ngram_match.setValue(int(settings.value("server/spec_ngram_match", self.NGRAM_MOD_N_MATCH)))

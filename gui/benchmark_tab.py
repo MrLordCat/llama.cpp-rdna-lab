@@ -945,7 +945,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         label = f"gui-bench-{model.stem}-{stamp}"
         spec_mode = self.spec_combo.currentText()
         server_extra = self._active_lane_base_server_extra(self.ctx_spin.value())
-        spec_extra = [f"--spec-type {spec_mode}"]
+        spec_cli_mode = "draft-mtp" if spec_mode == "mtp" else spec_mode
+        spec_extra = [f"--spec-type {spec_cli_mode}"]
         if spec_mode in {"ngram-mod", "ngram-mtp"}:
             spec_extra.append(f"--spec-ngram-mod-n-min {self.NGRAM_MOD_N_MIN}")
             spec_extra.append(f"--spec-ngram-mod-n-match {self.NGRAM_MOD_N_MATCH}")
@@ -1556,7 +1557,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             for raw in match.group(1).split("|"):
                 mode = raw.strip().lower()
                 if mode:
-                    spec_type_modes.append(mode)
+                    spec_type_modes.append("mtp" if mode == "draft-mtp" else mode)
 
         allowed_modes = set(spec_type_modes)
         mtp_compatible = model_supports_mtp(model)

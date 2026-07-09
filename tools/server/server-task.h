@@ -571,28 +571,46 @@ struct server_prompt_checkpoint {
 
     int64_t n_tokens;
 
-    std::vector<uint8_t> data;
+    std::vector<uint8_t> data_tgt;
+    std::vector<uint8_t> data_dft;
+    std::vector<uint8_t> data_spec;
 
     size_t size() const {
-        return data.size();
+        return data_tgt.size() + data_dft.size() + data_spec.size();
     }
 
     bool empty() const {
-        return data.empty();
+        return data_tgt.empty();
     }
 
     void clear() {
         pos_min = 0;
         pos_max = 0;
         n_tokens = 0;
-        data.clear();
+        data_tgt.clear();
+        data_dft.clear();
+        data_spec.clear();
+    }
+};
+
+struct server_prompt_data {
+    std::vector<uint8_t> main;
+    std::vector<uint8_t> drft;
+
+    size_t size() const {
+        return main.size() + drft.size();
+    }
+
+    void clear() {
+        main.clear();
+        drft.clear();
     }
 };
 
 struct server_prompt {
     server_tokens tokens;
 
-    std::vector<uint8_t> data;
+    server_prompt_data data;
 
     std::list<server_prompt_checkpoint> checkpoints;
 
@@ -637,9 +655,9 @@ struct server_prompt_cache {
 
     size_t n_tokens() const;
 
-    server_prompt * alloc(const server_prompt & prompt, size_t state_size);
+    server_prompt * alloc(const server_prompt & prompt, size_t state_size_main, size_t state_size_drft);
 
-    bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx, int32_t id_slot);
+    bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_main, llama_context * ctx_drft, int32_t id_slot);
 
     void update();
 };

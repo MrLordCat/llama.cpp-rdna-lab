@@ -11,8 +11,10 @@
 #include "llama.h"
 #include "log.h"
 
+#include <algorithm>
 #include <atomic>
 #include <clocale>
+#include <cstdlib>
 #include <exception>
 #include <signal.h>
 #include <thread> // for std::thread::hardware_concurrency
@@ -82,6 +84,19 @@ int main(int argc, char ** argv) {
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
         return 1;
     }
+
+#if defined(GGML_USE_HIP)
+    const bool spec_dflash =
+        std::find(params.speculative.types.begin(), params.speculative.types.end(), COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) != params.speculative.types.end();
+    if (spec_dflash && std::getenv("GGML_CUDA_DISABLE_GRAPHS") == nullptr) {
+#if defined(_WIN32)
+        _putenv_s("GGML_CUDA_DISABLE_GRAPHS", "1");
+#else
+        setenv("GGML_CUDA_DISABLE_GRAPHS", "1", 0);
+#endif
+        LOG_WRN("%s: disabling HIP graphs for DFlash speculative decoding on ROCm (GGML_CUDA_DISABLE_GRAPHS=1)\n", __func__);
+    }
+#endif
 
     // validate batch size for embeddings
     // embeddings require all tokens to be processed in a single ubatch
@@ -307,7 +322,7 @@ int main(int argc, char ** argv) {
     sigaction(SIGTERM, &sigint_action, NULL);
 #elif defined (_WIN32)
     auto console_ctrl_handler = +[](DWORD ctrl_type) -> BOOL {
-        return (ctrl_type == CTRL_C_EVENT) ? (signal_handler(SIGINT), true) : false;
+        return (ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_BREAK_EVENT) ? (signal_handler(SIGINT), true) : false;
     };
     SetConsoleCtrlHandler(reinterpret_cast<PHANDLER_ROUTINE>(console_ctrl_handler), true);
 #endif

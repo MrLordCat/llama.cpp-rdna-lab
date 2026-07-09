@@ -613,25 +613,71 @@ def wait_for_server(base_url: str, timeout_s: float, proc: subprocess.Popen[str]
     raise TimeoutError(f"server did not become ready within {timeout_s:.0f}s; last error: {last_error}")
 
 
-def terminate_process(proc: subprocess.Popen[str]) -> None:
+def _close_proc_log(proc: subprocess.Popen[str]) -> None:
+    log_file = getattr(proc, "_llama_log_file", None)
+    if log_file is not None:
+        try:
+            log_file.close()
+        except Exception:
+            pass
+        try:
+            delattr(proc, "_llama_log_file")
+        except Exception:
+            pass
+
+
+def terminate_process(proc: subprocess.Popen[str]) -> bool:
+    """Ask llama-server to exit gently.
+
+    Returns true if the process exited. By default this function deliberately
+    avoids hard-killing ROCm servers: terminating HIP teardown mid-flight has
+    correlated with Windows driver/device loss on this rig. Set
+    LLAMA_BENCH_ALLOW_HARD_KILL=1 only when an operator explicitly wants the
+    old behavior.
+    """
     if proc.poll() is not None:
-        return
-    if os.name == "nt":
-        proc.send_signal(signal.CTRL_BREAK_EVENT)
-    else:
-        proc.terminate()
+        _close_proc_log(proc)
+        return True
+
+    soft_timeout = float(os.environ.get("LLAMA_BENCH_SOFT_STOP_TIMEOUT", "180"))
+    try:
+        if os.name == "nt":
+            # The server is launched in its own process group. On Windows,
+            # CTRL_BREAK_EVENT is the reliable targeted console event for that
+            # shape; local server.cpp handles it as a graceful shutdown signal.
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            proc.terminate()
+    except Exception as exc:
+        print(f"WARNING: failed to send graceful stop to llama-server pid={proc.pid}: {exc}")
+
     try:
         # llama-server teardown at large ctx legitimately takes tens of seconds
         # (freeing >10GB of VRAM + HIP contexts). Hard-killing mid-teardown leaves
         # the ROCm driver with orphaned allocations and correlates with the GPU
-        # dropping off the bus (Windows code 43) — give it time to exit cleanly.
-        proc.wait(timeout=60)
+        # dropping off the bus (Windows code 43), so wait generously.
+        proc.wait(timeout=soft_timeout)
+        _close_proc_log(proc)
+        return True
     except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            pass  # unkillable: leave it; do NOT block the harness forever
+        pass
+
+    if os.environ.get("LLAMA_BENCH_ALLOW_HARD_KILL", "").strip() not in ("1", "true", "TRUE", "yes", "on"):
+        print(
+            f"WARNING: llama-server pid={proc.pid} did not exit after {soft_timeout:.0f}s; "
+            "leaving it alive to avoid a hard ROCm teardown. Stop it manually after GPU activity settles, "
+            "or set LLAMA_BENCH_ALLOW_HARD_KILL=1 for the old force-kill behavior."
+        )
+        return False
+
+    print(f"WARNING: force-killing llama-server pid={proc.pid} because LLAMA_BENCH_ALLOW_HARD_KILL=1")
+    proc.kill()
+    try:
+        proc.wait(timeout=30)
+        _close_proc_log(proc)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
 
 
 def split_server_extra(server_extra: str) -> list[str]:
@@ -713,7 +759,7 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
     log_file = server_log.open("w", encoding="utf-8")
     print("Starting server:", " ".join(cmd))
     print("Server log:", server_log)
-    return subprocess.Popen(
+    proc = subprocess.Popen(
         cmd,
         cwd=ROOT,
         env=env,
@@ -722,6 +768,8 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
         text=True,
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
     )
+    setattr(proc, "_llama_log_file", log_file)
+    return proc
 
 
 def run_task(
@@ -771,8 +819,7 @@ def run_task(
         timeout_error = f"TaskHardTimeoutExceeded(wall_s={wall_s:.2f}s, limit={args.task_hard_timeout:.2f}s)"
         error = timeout_error if not error else f"{error}; {timeout_error}"
         if proc is not None and proc.poll() is None:
-            terminate_process(proc)
-            terminated_server = True
+            terminated_server = terminate_process(proc)
 
     usage = response.get("usage", {}) if isinstance(response, dict) else {}
     timings = response.get("timings", {}) if isinstance(response, dict) else {}
@@ -933,7 +980,26 @@ def parse_server_log_diagnostics(server_log: Path) -> dict[str, Any]:
     # broken, so MTP is pure overhead.
     mtp_gen_tokens = sum(int(x) for x in re.findall(r"#gen tokens =\s*(\d+)", text))
     mtp_acc_tokens = sum(int(x) for x in re.findall(r"#acc tokens =\s*(\d+)", text))
-    mtp_present = mtp_gen_tokens > 0 or "statistics mtp" in text or "statistics dflash" in text
+
+    # Upstream-style speculative stats print one compact line per request:
+    #   draft acceptance rate = 0.57895 ( 209 accepted / 361 generated)
+    # Keep this separate from the older "#gen/#acc tokens" format to avoid
+    # double-counting logs that may contain both in the future.
+    draft_accept_matches = re.findall(
+        r"draft acceptance rate =\s*([0-9.]+)\s*\(\s*(\d+)\s+accepted\s*/\s*(\d+)\s+generated\)",
+        text,
+    )
+    if draft_accept_matches and mtp_gen_tokens == 0 and mtp_acc_tokens == 0:
+        mtp_acc_tokens = sum(int(m[1]) for m in draft_accept_matches)
+        mtp_gen_tokens = sum(int(m[2]) for m in draft_accept_matches)
+
+    mtp_present = (
+        mtp_gen_tokens > 0
+        or bool(draft_accept_matches)
+        or "statistics mtp" in text
+        or "statistics dflash" in text
+        or "speculative decoding context initialized" in text
+    )
     mtp_acceptance = (mtp_acc_tokens / mtp_gen_tokens) if mtp_gen_tokens > 0 else 0.0
 
     # Newer stats also print "#verify tokens = N, eff acceptance = X%" — the honest
@@ -1249,6 +1315,8 @@ def run_preflight_gate(args: argparse.Namespace) -> tuple[bool, str]:
 
 def normalize_spec_mode(value: str) -> str:
     value = value.strip().lower()
+    if value in {"draft-mtp", "draft_mtp"}:
+        return "mtp"
     if value in {"mtp", "ngram-mtp", "ngram-mod", "draft", "none", "eagle", "eagle3"}:
         return value
     if value.startswith("eagle3"):
@@ -2014,7 +2082,7 @@ def update_model_preset_file(
             extra_bits.append(f"--spec-ngram-mod-n-max {args.autotune_ngram_max}")
             extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")
         elif spec_mode == "mtp":
-            extra_bits.append("--spec-type mtp")
+            extra_bits.append("--spec-type draft-mtp")
             extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")
         elif spec_mode:
             extra_bits.append(f"--spec-type {spec_mode}")
@@ -2072,7 +2140,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0, help="server port; 0 picks a free port when starting a server")
     parser.add_argument("--api-model", default="local-model")
-    parser.add_argument("--server-extra", default="", help="extra llama-server args, e.g. '--spec-type mtp --spec-draft-n-max 3'")
+    parser.add_argument("--server-extra", default="", help="extra llama-server args, e.g. '--spec-type draft-mtp --spec-draft-n-max 3'")
     parser.add_argument("--build-id", default="", help="build registry ID linked to this benchmark run")
     parser.add_argument("--artifact-mode", choices=["full", "unified"], default="full",
                         help="artifact mode: full writes per-run CSV/JSONL, unified writes only history")
@@ -2203,7 +2271,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--background-server-policy",
         choices=["warn", "fail", "ignore"],
-        default="warn",
+        default="fail",
         help="what to do if llama-server is already running before benchmark start",
     )
     parser.add_argument(
@@ -2720,7 +2788,7 @@ def main() -> int:
                                 extra_bits.append(f"--spec-ngram-mod-n-max {args.autotune_ngram_max}")
                                 extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")
                             elif spec_mode == "mtp":
-                                extra_bits.append("--spec-type mtp")
+                                extra_bits.append("--spec-type draft-mtp")
                                 extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")
                             elif spec_mode not in {"none", ""}:
                                 extra_bits.append(f"--spec-type {spec_mode}")

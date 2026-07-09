@@ -34,7 +34,6 @@ enum llm_graph_type {
     LLM_GRAPH_TYPE_ENCODER,
     LLM_GRAPH_TYPE_DECODER,
     LLM_GRAPH_TYPE_DECODER_MTP,
-    LLM_GRAPH_TYPE_DFLASH_KV_UPDATE, // DFlash drafter K/V projection-cache update graph
 };
 
 enum llm_ffn_op_type {
@@ -59,23 +58,6 @@ enum llm_norm_type {
     LLM_NORM_GROUP,
 };
 
-// DFlash (ported from beellama): drafter-side cache of projected cross-attention
-// K/V. When present and filled for the current window, the drafter graph consumes
-// the staged K/V tensors directly instead of recomputing wk/wv over the whole
-// cross window every speculative cycle.
-struct llama_dflash_kv_cache_view {
-    int     n_layers    = 0;
-    int64_t n_embd_head = 0;
-    int64_t n_head_kv   = 0;
-    int64_t ctx_len     = 0;
-    int64_t n_filled    = 0;
-    int64_t ring_size   = 0;
-    int64_t write_pos   = 0;
-
-    std::vector<ggml_tensor *> k_ring;
-    std::vector<ggml_tensor *> v_ring;
-};
-
 // TODO: tmp - need something better to pass the data from the encoder to the decoder
 struct llama_cross {
     // the output embeddings from the encoder as a ggml tensor
@@ -83,39 +65,11 @@ struct llama_cross {
     //       ref: https://github.com/ggml-org/llama.cpp/pull/11213#discussion_r1969892524
     //ggml_tensor * t_embd = nullptr;
 
-    int64_t n_embd     = 0;
-    int64_t n_enc      = 0;  // may be padded to bucket for graph stability
-    int64_t n_enc_real = 0;  // actual data length (unpadded) — DFlash
+    int64_t n_embd = 0;
+    int64_t n_enc  = 0;
 
     // embeddings data copied to host memory (tmp)
-    // Single-slot / encoder-decoder path: graph builders read from here directly.
     std::vector<float> v_embd;
-
-    // ---- DFlash (ported from beellama) ----
-    // GPU D2D path: device pointer to interleaved cross data (set by GPU ring interleave, Phase 2)
-    const void * v_embd_gpu = nullptr;
-    int64_t v_embd_gpu_n_enc_real = 0;
-    void (*fn_set_tensor_d2d)(void * d_dst, const void * d_src, size_t offset, size_t size) = nullptr;
-
-    // Temporary DFlash K/V-update input: lets the drafter projection cache read newly
-    // committed hidden states without mutating the main cross window shape.
-    const void * dflash_kv_update_gpu = nullptr;
-    int64_t dflash_kv_update_n_embd = 0;
-    int64_t dflash_kv_update_n_enc_real = 0;
-    void (*dflash_kv_update_fn_set_tensor_d2d)(void * d_dst, const void * d_src, size_t offset, size_t size) = nullptr;
-
-    // Per-seq cross buffers for DFlash multi-slot. When non-empty, graph builders
-    // pack these into target_hidden per slot instead of reading v_embd.
-    struct seq_cross {
-        int64_t n_enc      = 0;  // padded length (graph stability)
-        int64_t n_enc_real = 0;  // actual data length
-        std::vector<float> v_embd;
-        const void * v_embd_gpu = nullptr;
-        int64_t v_embd_gpu_n_enc_real = 0;
-    };
-    std::map<llama_seq_id, seq_cross> v_embd_per_seq;
-
-    llama_dflash_kv_cache_view * dflash_kv_cache = nullptr;
 
     // needed to construct the cross-attention mask in the decoder
     std::vector<std::set<llama_seq_id>> seq_ids_enc;
@@ -164,6 +118,23 @@ public:
 
     ggml_tensor * tokens = nullptr; // I32 [n_batch]
     ggml_tensor * embd   = nullptr; // F32 [n_embd, n_batch]
+
+    const int64_t n_embd = 0;
+};
+
+// similar to llm_graph_input_embd but with an additional hidden-state input
+class llm_graph_input_embd_h : public llm_graph_input_i {
+public:
+    llm_graph_input_embd_h(int64_t n_embd) : n_embd(n_embd) {}
+    virtual ~llm_graph_input_embd_h() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    bool can_reuse(const llm_graph_params & params) override;
+
+    ggml_tensor * tokens = nullptr; // I32 [n_batch]
+    ggml_tensor * embd   = nullptr; // F32 [n_embd, n_batch]
+    ggml_tensor * h      = nullptr; // F32 [n_embd, n_batch]
 
     const int64_t n_embd = 0;
 };
@@ -692,8 +663,8 @@ public:
     ggml_tensor * get_logits()      const { return t_logits; }
     ggml_tensor * get_embd()        const { return t_embd; }
     ggml_tensor * get_embd_pooled() const { return t_embd_pooled; }
-
-    ggml_tensor * get_h_pre_norm() const { return t_h_pre_norm; }
+    ggml_tensor * get_h_nextn()     const { return t_h_nextn; }
+    ggml_tensor * get_layer_inp(int il) const { return t_layer_inp[il]; }
 
     ggml_cgraph  * get_gf()  const { return gf; }
     ggml_context * get_ctx() const { return ctx_compute.get(); }
@@ -703,7 +674,7 @@ public:
     void reset();
 
     void set_inputs(const llama_ubatch * ubatch);
-    void set_outputs();
+    void set_outputs(const llm_graph_params & params);
 
     // try to update the existing graph result using the new graph parameters in order to reuse it
     // this can only be done if we determine that the resulting graph using the new graph parameters
@@ -723,24 +694,9 @@ public:
     ggml_tensor * t_embd        = nullptr;
     ggml_tensor * t_embd_pooled = nullptr;
 
-    // MTP related inputs/outputs
-    ggml_tensor * t_h_pre_norm  = nullptr; // [n_embd, n_outputs] hidden state required for MTP
-    ggml_tensor * t_mtp_out     = nullptr; // [n_embd, n_tokens]
+    ggml_tensor * t_h_nextn     = nullptr; // [n_embd, n_outputs] hidden state before final output norm
 
-    // Upstream-port: NextN hidden state (post final output_norm, #24025 contract).
-    // [n_embd, n_outputs] when cparams.embeddings_nextn_masked, else [n_embd, n_tokens].
-    ggml_tensor * t_h_nextn     = nullptr;
-    ggml_tensor * get_h_nextn() const { return t_h_nextn; }
-
-    // DFlash graph-embedded target hidden capture: per captured layer, a dup of
-    // that layer's l_out marked as a graph output (Phase 2 — replaces the eval
-    // callback which forced per-node syncs and disabled HIP graphs).
-    std::vector<ggml_tensor *> t_dflash_capture; // each [n_embd, n_tokens]
-
-    // DFlash drafter outputs (ported from beellama)
-    ggml_tensor * t_logits_argmax = nullptr; // [n_tokens] argmax (or top-K) token ids from the drafter
-    std::vector<ggml_tensor *> dflash_k_update; // per-layer drafter K projection-cache update (kv_update graph)
-    std::vector<ggml_tensor *> dflash_v_update; // per-layer drafter V projection-cache update (kv_update graph)
+    std::vector<ggml_tensor *> t_layer_inp;
 
     std::map<llama_seq_id, ggml_tensor*> t_sampled_logits;
     std::map<llama_seq_id, ggml_tensor*> t_candidates;
