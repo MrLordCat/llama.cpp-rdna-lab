@@ -31,7 +31,7 @@ This is the compact historical base for performance work. `RESULTS_LOG.md` remai
 
 ## Compact Experiment Ledger
 
-Rows parsed from `docs/research/RESULTS_LOG.md`: 330.
+Rows parsed from `docs/research/RESULTS_LOG.md`: 331.
 
 | Date | ID | Short name | Delta | Decision | Artifacts |
 | --- | --- | --- | --- | --- | --- |
@@ -365,3 +365,4 @@ Rows parsed from `docs/research/RESULTS_LOG.md`: 330.
 | 2026-07-07 | E266 | ROCm MTP depth-8 decode profile | `+64.28%` aggregate, `+69.95%` decode; acceptance `54.33%` | Keep code fixes; use `--spec-type mtp --spec-draft-n-max 8` as current ROCm two-GPU generation-heavy MTP profile; do not claim 130k/60k-prompt headline yet | `build_logs/agent-workload/mtp-temp0-postbuild-none-confirm3.*`, `build_logs/agent-workload/mtp-temp0-postbuild-n8-confirm3.*`, `docs/research/experiments/E2... |
 | 2026-07-08 | E267 | ROCm MTP big-prompt gate | `-26.5%` aggregate, `-28.1%` prompt, `-10.1%` decode; acceptance `54.62%` | Reject MTP n8 as cold large-prompt default until MTP prefill/hook overhead is fixed; keep E266 only as generation-heavy profile | `build_logs/agent-workload/mtp-bigprompt-none-r1.*`, `build_logs/agent-workload/mtp-bigprompt-n8-r1.*`, `docs/research/experiments/E267_rocm_mtp_bigprompt_ga... |
 | 2026-07-09 | E268 | ROCm MTP windowed NextN gate | short `+67.4%` wall, `+78.2%` decode; dual layer `+62.2%` wall, `+66.4%` decode, accept... | Keep windowed target NextN gate with default `LLAMA_SPEC_PREFILL_WINDOW=8192`; GUI/default MTP profile uses `--spec-type draft-mtp --spec-draft-n-max 8` with `-dev ROCm1,ROCm0 -sm layer -ts 1,1`; `-sm none` is single-... | `build_logs/agent-workload/mtp-windowed-*.{csv,diagnostics.md,server.log}`, `build_logs/agent-workload/rocm-dual-layer-mtp-polish-mt256-*.{csv,diagnostics.md... |
+| 2026-07-09 | E269 | ROCm dual split baseline host-stage copy | kept code `+5.10%` aggregate, `+4.80%` decode vs dual baseline; direct peer-copy opt-in... | Keep safe buffer-copy fallback; do not enable `GGML_ROCM_ENABLE_PEER_COPY=1` by default; remaining single-vs-dual gap is host-staged split/sync overhead | `build_logs/agent-workload/rocm-dual-split-bufferhostcopy-mt256-none-r3.*`, `build_logs/agent-workload/rocm-dual-split-peercopy-dev01-mg1-mt64-none-r1.*`, `d... |

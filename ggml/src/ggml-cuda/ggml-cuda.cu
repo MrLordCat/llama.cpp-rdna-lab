@@ -1248,9 +1248,23 @@ static bool ggml_backend_cuda_buffer_cpy_tensor(ggml_backend_buffer_t buffer, co
             return false;
 #else
             if (!ggml_cuda_peer_copy_enabled()) {
-                return false;
+                const size_t nbytes = ggml_nbytes(src);
+                static thread_local std::vector<uint8_t> host_stage;
+                try {
+                    if (host_stage.size() < nbytes) {
+                        host_stage.resize(nbytes);
+                    }
+                } catch (...) {
+                    return false;
+                }
+
+                ggml_cuda_set_device(src_ctx->device);
+                CUDA_CHECK(cudaMemcpy(host_stage.data(), src->data, nbytes, cudaMemcpyDeviceToHost));
+                ggml_cuda_set_device(dst_ctx->device);
+                CUDA_CHECK(cudaMemcpyAsync(dst->data, host_stage.data(), nbytes, cudaMemcpyHostToDevice, cudaStreamPerThread));
+            } else {
+                CUDA_CHECK(cudaMemcpyPeerAsync(dst->data, dst_ctx->device, src->data, src_ctx->device, ggml_nbytes(src), cudaStreamPerThread));
             }
-            CUDA_CHECK(cudaMemcpyPeerAsync(dst->data, dst_ctx->device, src->data, src_ctx->device, ggml_nbytes(src), cudaStreamPerThread));
 #endif
         }
         CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));

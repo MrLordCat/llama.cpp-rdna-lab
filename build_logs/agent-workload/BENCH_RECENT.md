@@ -7,6 +7,19 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-07-09 20:37:03 | cold-first | rocm | rocm-dual-split-bufferhostcopy-mt256-none-r3 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 25.6137 | 749.8933 | 26.2633 | 0 |
+| 2026-07-09 20:35:54 | cold-first | rocm | rocm-dual-split-bufferhostcopy-mt256-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 25.6938 | 646.8700 | 26.4400 | 0 |
+| 2026-07-09 20:35:08 | cold-first | rocm | rocm-dual-split-bufferhostcopy-dev01-mg1-ts1_3-mt256-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 25.4359 | 606.5600 | 26.1700 | 0 |
+| 2026-07-09 20:33:24 | cold-first | rocm | rocm-dual-split-dev01-mg1-ts1_3-mt256-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 25.1269 | 598.5800 | 25.8500 | 0 |
+| 2026-07-09 20:32:45 | cold-first | rocm | rocm-dual-split-dev01-mg1-ts1_2-mt256-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 25.0514 | 604.9500 | 25.8100 | 0 |
+| 2026-07-09 20:30:52 | cold-first | rocm | rocm-dual-split-peercopy-dev01-mg1-mt64-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 4.2176 | 742.9500 | - | 0 |
+| 2026-07-09 20:30:09 | cold-first | rocm | rocm-dual-split-dev01-mg0-mt256-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 24.6180 | 633.5400 | 25.3200 | 0 |
+| 2026-07-09 20:29:21 | cold-first | rocm | rocm-dual-split-dev01-mg1-mt256-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 25.1185 | 635.4900 | 25.8100 | 0 |
+| 2026-07-09 20:28:27 | cold-first | rocm | rocm-dual-split-layer-mg1-mt256-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 24.9866 | 645.0900 | 25.6900 | 0 |
+| 2026-07-09 20:25:40 | cold-first | rocm | rocm-dual-split-hoststage-async-mt256-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 19.7278 | 477.9800 | 20.2900 | 0 |
+| 2026-07-09 20:19:37 | cold-first | rocm | rocm-dual-split-layer-ts1_2-mt256-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 21.7593 | 455.3400 | 22.4800 | 0 |
+| 2026-07-09 20:18:46 | cold-first | rocm | rocm-dual-split-layer-ts2_1-mt256-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 19.3897 | 544.6300 | 19.9000 | 0 |
+| 2026-07-09 20:17:25 | cold-first | rocm | rocm-dual-split-row-mt256-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 0.0000 | - | - | 1 |
 | 2026-07-09 20:07:46 | cold-first | rocm | rocm-dual-layer-mtp-polish-mt256-n8-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | mtp | 39.5312 | 516.7400 | 41.7100 | 0 |
 | 2026-07-09 20:07:07 | cold-first | rocm | rocm-dual-layer-mtp-polish-mt256-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 24.3710 | 618.7700 | 25.0600 | 0 |
 | 2026-07-09 20:05:42 | cold-first | rocm | rocm1-mtp-polish-mt256-n8-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | mtp | 42.6461 | 503.7600 | 45.3100 | 0 |
@@ -74,16 +87,3 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-07-09 13:20:07 | cold-first | rocm | upstream-port-rocm1-dflash-compat3-devd-c8192-n4-mt64-r1 | Qwen3.6-27B-Q3_K_S.gguf | 8192 | 512/128 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |
 | 2026-07-09 13:18:07 | cold-first | rocm | upstream-port-rocm1-dflash-compat2-devd-c8192-n4-mt64-r1 | Qwen3.6-27B-Q3_K_S.gguf | 8192 | 512/128 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |
 | 2026-07-09 13:04:56 | cold-first | rocm | upstream-port-dual-mtpgguf-none-c8192-mt256-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 18.2087 | 922.2600 | 26.1500 | 0 |
-| 2026-07-09 13:04:15 | cold-first | rocm | upstream-port-dual-mtp-c8192-n8-processfix-mt256-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | mtp | 25.6636 | 784.2700 | 51.5400 | 0 |
-| 2026-07-09 13:03:21 | cold-first | rocm | upstream-port-dual-mtpgguf-none-c8192-mt64-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 7.4970 | 910.4600 | 26.1100 | 0 |
-| 2026-07-09 13:02:11 | cold-first | rocm | upstream-port-rocm1-mtp-c8192-n2-processfix-mt256-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | mtp | 17.9258 | 707.0200 | 29.3200 | 0 |
-| 2026-07-09 13:01:21 | cold-first | rocm | upstream-port-rocm1-mtp-c8192-n4-processfix-mt256-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | mtp | 14.8165 | 709.4200 | 21.7900 | 0 |
-| 2026-07-09 13:00:18 | cold-first | rocm | upstream-port-rocm1-mtpgguf-none-c8192-mt256-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 18.7266 | 767.9700 | 29.8700 | 0 |
-| 2026-07-09 12:59:31 | cold-first | rocm | upstream-port-rocm1-mtp-c8192-n8-processfix-mt256-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | mtp | 25.1266 | 713.0000 | 54.6400 | 0 |
-| 2026-07-09 12:58:29 | cold-first | rocm | upstream-port-rocm1-mtpgguf-none-c8192-mt64-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 6.7949 | 758.0800 | 29.9200 | 0 |
-| 2026-07-09 12:57:41 | cold-first | rocm | upstream-port-rocm1-mtp-c8192-n8-processfix-mt64-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | mtp | 6.7683 | 704.2000 | 39.4700 | 0 |
-| 2026-07-09 12:55:59 | cold-first | rocm | upstream-port-rocm1-mtp-c8192-n8-archfix-mt64-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | mtp | 0.0000 | - | - | 1 |
-| 2026-07-09 12:52:56 | cold-first | rocm | upstream-port-rocm1-mtp-c8192-n8-kvfix-mt64-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | mtp | 6.5174 | 746.5300 | 26.3500 | 0 |
-| 2026-07-09 12:16:17 | cold-first | rocm | upstream-port-rocm1-mtp-c8192-n8-mt32-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | mtp | 3.6547 | 738.2100 | 26.9300 | 0 |
-| 2026-07-09 12:15:21 | cold-first | rocm | upstream-port-rocm1-mtpgguf-none-c8192-mt32-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/128 | q4_0/q4_0 | none | 3.7804 | 753.1200 | 30.1500 | 0 |
-| 2026-07-09 10:47:58 | cold-first | - | mtp-s2-dual-128-n1-nextn-rebuilt | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/128 | q4_0/q4_0 | mtp | 21.5007 | 436.9200 | 23.0700 | 0 |

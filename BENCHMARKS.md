@@ -3643,3 +3643,31 @@ Absolute dual baseline is lower than ROCm1-only because Windows ROCm peer copies
 are disabled and cross-device transfers are host-staged, but the dual profile
 keeps the model/KV resident across both cards and avoids the one-card VRAM/RAM
 spill path.
+
+## ROCm Dual Split Baseline Host-Stage Copy (E269, 2026-07-09)
+
+E269 isolates the `--spec-type none` slowdown when the same MTP-capable Qwen3.6
+model is split across both GPUs. Lane: `Qwen3.6-27B-Q3_K_S_mtp.gguf`, ROCm,
+`ctx=8192`, `b512/ub128`, q4 KV, FlashAttention on, `max_tokens=256`,
+`temperature=0.0`, no reuse/no prime, thinking enabled.
+
+The kept code change is a safe ROCm/Windows fallback in the CUDA/HIP buffer copy
+path: when direct peer copy is disabled, cross-device CUDA-buffer copies are
+handled through a thread-local host staging buffer instead of falling through to
+the slower generic tensor get/set path. Direct `GGML_ROCM_ENABLE_PEER_COPY=1`
+remains rejected: the diagnostic run stopped after one empty token.
+
+| Variant | Device/split | Label | Runs | Aggregate TPS | Decode tok/s | Prompt tok/s | Decision |
+| --- | --- | --- | ---: | ---: | ---: | ---: | --- |
+| single diagnostic | `ROCm1 -sm none` | `rocm1-mtp-polish-mt256-none-r1` | 1 | `28.9357` | `29.93` | `598.78` | diagnostic only |
+| old dual baseline | `ROCm1,ROCm0 -sm layer -ts 1,1` | `rocm-dual-layer-mtp-polish-mt256-none-r1` | 1 | `24.3710` | `25.06` | `618.77` | baseline |
+| host-stage buffer copy | `ROCm1,ROCm0 -sm layer -ts 1,1` | `rocm-dual-split-bufferhostcopy-mt256-none-r3` | 3 | `25.6137` | `26.26` | `749.89` | keep |
+| placement scout | `ROCm0,ROCm1 -sm layer -ts 1,3 -mg 1` | `rocm-dual-split-bufferhostcopy-dev01-mg1-ts1_3-mt256-none-r1` | 1 | `25.4359` | `26.17` | `606.56` | optional profile |
+| direct peer-copy opt-in | `ROCm0,ROCm1 -sm layer -ts 1,3 -mg 1` | `rocm-dual-split-peercopy-dev01-mg1-mt64-none-r1` | 1 | invalid | invalid | prompt ok | reject |
+
+Decision: keep the safe buffer-copy fallback. It recovers about `+5.10%` wall
+TPS and `+4.80%` decode tok/s versus the old dual baseline, but it does not yet
+restore the single-GPU diagnostic speed. The remaining gap is still the ROCm
+Windows host-staged split/sync cost, so further work should target safer pinned
+host staging or a correctness fix for HIP peer copies before any default peer
+copy change.
