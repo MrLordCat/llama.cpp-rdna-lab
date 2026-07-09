@@ -142,7 +142,6 @@ struct llama_context {
     void set_dflash_cross(const float * data, int64_t n_feat, int64_t n_tokens);
 
     void            set_mtp(llama_context * ctx_mtp_in);
-    void            set_mtp_hook_active(bool active); // windowed-prefill gate (see llama_mtp::hook_active)
     llama_context * get_mtp() const { return mtp.ctx_mtp; }
 
     llama_token * get_sampled_tokens() const;
@@ -309,14 +308,6 @@ private:
 
     llm_graph_cb graph_get_cb() const;
 
-    void handle_mtp_for_ubatch(
-            int32_t                n_tokens,
-            const llama_token    * tokens,
-            const llama_pos      * positions,
-            int32_t              * n_seq_id,
-            llama_seq_id        ** seq_id,
-            struct ggml_tensor   * t_h_pre_norm);
-
     // TODO: read/write lora adapters and cvec
     size_t state_write_data(llama_io_write_i & io);
     size_t state_read_data (llama_io_read_i  & io);
@@ -399,8 +390,9 @@ private:
     std::vector<swap_info> output_swaps;
 
     ggml_backend_sched_ptr sched;    // PP scheduler: sized for ubatch (large compute buffer)
-    ggml_backend_sched_ptr sched_tg; // TG scheduler: sized for 1 token (small compute buffer)
+    ggml_backend_sched_ptr sched_tg; // TG scheduler: sized for small decode batches (small compute buffer)
     bool sched_is_tg = false;        // which scheduler is currently active in sched
+    uint32_t sched_tg_n_tokens = 1;  // max tokens supported by the active TG scheduler
 
     bool sched_need_reserve = true;
     uint32_t sched_reserve_pp_outputs = 1;

@@ -438,9 +438,6 @@ llama_context::~llama_context() {
             }
         }
     }
-    if (mtp.hook_batch.pos != nullptr) {
-        llama_batch_free(mtp.hook_batch);
-    }
     ggml_opt_free(opt_ctx);
 }
 
@@ -676,22 +673,28 @@ void llama_context::sched_reserve() {
         }
     }
 
-    // Build a separate TG (token generation) scheduler with a small compute buffer (1-token graph).
-    // During decode (n_tokens=1), we switch to this scheduler so the GPU compute buffer
-    // does not occupy cache bandwidth with unused PP-sized scratch memory.
+    // Build a separate TG (token generation) scheduler with a small compute buffer.
+    // During decode (and MTP verify micro-batches), we switch to this scheduler so
+    // the GPU compute buffer does not occupy cache bandwidth with unused PP-sized
+    // scratch memory. cparams.n_rs_seq is set to spec draft n_max for MTP, so the
+    // reserve shape covers sampled + draft tokens.
     {
-        const size_t max_nodes_tg = this->graph_max_nodes(n_seqs); // n_seqs == 1
+        const uint32_t n_tokens_tg = std::max<uint32_t>(n_seqs, n_seqs * std::max<uint32_t>(1, cparams.n_rs_seq + 1));
+        sched_tg_n_tokens = n_tokens_tg;
+
+        const size_t max_nodes_tg = this->graph_max_nodes(n_tokens_tg);
         gf_res_prev_tg.reset(new llm_graph_result(max_nodes_tg));
 
         // Temporarily swap sched ↔ sched_tg so graph_reserve() uses sched_tg
         sched_tg.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes_tg, false, cparams.op_offload));
         std::swap(sched, sched_tg);
 
-        auto * gf = graph_reserve(n_seqs, n_seqs, n_seqs, mctx.get(), model.hparams.no_alloc);
+        auto * gf = graph_reserve(n_tokens_tg, n_seqs, n_tokens_tg, mctx.get(), model.hparams.no_alloc);
         if (!gf) {
             LLAMA_LOG_WARN("%s: failed to reserve TG compute buffers, dual-sched disabled\n", __func__);
             std::swap(sched, sched_tg);
             sched_tg.reset();
+            sched_tg_n_tokens = 1;
         } else {
             for (size_t i = 0; i < backend_ptrs.size(); ++i) {
                 ggml_backend_t             backend = backend_ptrs[i];
@@ -1355,12 +1358,13 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         t_apply_us = ggml_time_us() - t_total_start_us;
     }
 
-    // Switch between TG (1-token decode) and PP (multi-token prefill) schedulers.
+    // Switch between TG (small decode / MTP verify) and PP (multi-token prefill)
+    // schedulers.
     // The TG scheduler has a much smaller compute buffer, reducing GPU cache pressure
-    // during decode where actual batch size is always 1 regardless of ubatch setting.
+    // during decode where actual batch size is tiny regardless of ubatch setting.
     if (sched_tg) {
         const int64_t t_start_us = trace_timing ? ggml_time_us() : 0;
-        const bool want_tg = (ubatch.n_tokens == 1);
+        const bool want_tg = (ubatch.n_tokens <= sched_tg_n_tokens);
         if (want_tg != sched_is_tg) {
             // Flush any pending async work on both schedulers before switching
             if (sched_tg) { ggml_backend_sched_synchronize(sched_tg.get()); }
@@ -1461,16 +1465,6 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                 reused_graph ? 1 : 0, sched_is_tg ? 1 : 0,
                 t_apply_us/1000.0, t_switch_us/1000.0, t_build_us/1000.0, t_alloc_us/1000.0,
                 t_inputs_us/1000.0, t_compute_us/1000.0, t_sync_us/1000.0, t_total_us/1000.0);
-    }
-
-    if (mtp.ctx_mtp) {
-        handle_mtp_for_ubatch(
-                (int32_t) ubatch.n_tokens,
-                ubatch.token,
-                ubatch.pos,
-                ubatch.n_seq_id,
-                ubatch.seq_id,
-                res->t_h_pre_norm);
     }
 
     // DFlash graph-embedded hidden capture: read the dup'd l_out tensors back
@@ -3525,137 +3519,16 @@ void llama_set_mtp(struct llama_context * ctx_target, struct llama_context * ctx
     ctx_target->set_mtp(ctx_mtp);
 }
 
-void llama_set_mtp_hook_active(struct llama_context * ctx_target, bool active) {
-    if (!ctx_target) return;
-    ctx_target->set_mtp_hook_active(active);
-}
-
-void llama_context::set_mtp_hook_active(bool active) {
-    if (mtp.hook_active != active && mtp.ctx_mtp != nullptr) {
-        LLAMA_LOG_INFO("%s: MTP streaming hook %s (windowed prefill)\n",
-                       __func__, active ? "enabled" : "disabled");
-    }
-    mtp.hook_active = active;
-}
-
 void llama_context::set_mtp(llama_context * ctx_mtp_in) {
     if (mtp.ctx_mtp == ctx_mtp_in) return;
 
-    if (mtp.hook_batch.pos != nullptr) {
-        llama_batch_free(mtp.hook_batch);
-        mtp.hook_batch = llama_batch{};
-    }
-
-    mtp.ctx_mtp     = ctx_mtp_in;
-    mtp.pending.clear();
+    mtp.ctx_mtp = ctx_mtp_in;
 
     if (mtp.ctx_mtp) {
-        const int32_t n_ub   = (int32_t) cparams.n_ubatch;
-        const int32_t n_embd = (int32_t) model.hparams.n_embd;
-        const int32_t n_seq  = (int32_t) cparams.n_seq_max;
-        mtp.hook_batch       = llama_batch_init(n_ub, n_embd, n_seq);
-        mtp.hook_batch.token = (llama_token *) malloc(sizeof(llama_token) * n_ub);
-        mtp.pending.resize(n_seq);
-        for (auto & pending : mtp.pending) {
-            pending.h.assign(n_embd, 0.0f);
-            pending.pos = -1;
-        }
-        LLAMA_LOG_INFO("%s: MTP draft head registered (ctx_mtp=%p, n_ubatch=%d, n_seq=%d, n_embd=%d)\n",
-                       __func__, (const void *) mtp.ctx_mtp, n_ub, n_seq, n_embd);
+        LLAMA_LOG_INFO("%s: MTP context registered for seq_rm mirroring (ctx_mtp=%p)\n",
+                       __func__, (const void *) mtp.ctx_mtp);
     } else {
-        mtp.pending.clear();
-        mtp.pending.shrink_to_fit();
-        LLAMA_LOG_INFO("%s: MTP draft head unregistered\n", __func__);
-    }
-}
-
-void llama_context::handle_mtp_for_ubatch(
-        int32_t                n_tokens,
-        const llama_token    * tokens,
-        const llama_pos      * positions,
-        int32_t              * n_seq_id,
-        llama_seq_id        ** seq_id,
-        struct ggml_tensor   * t) {
-    if (n_tokens == 0 || t == nullptr) {
-        return;
-    }
-    // Windowed prefill: when the hook is gated off (bulk of a long prompt), skip
-    // BEFORE the synchronize() below — the sync alone drains the pipeline and
-    // wrecks prompt-eval throughput. Invalidate pending so re-enabling at the
-    // tail window starts a fresh (gap-tolerant) pairing.
-    if (!mtp.hook_active) {
-        for (auto & pending : mtp.pending) {
-            pending.pos = -1;
-        }
-        return;
-    }
-    if (t->ne[1] != (int64_t) n_tokens) {
-        return;
-    }
-    const int64_t n_embd = model.hparams.n_embd;
-    GGML_ASSERT(t->ne[0] == n_embd);
-
-    synchronize();
-
-    const size_t row_bytes = (size_t) n_embd * sizeof(float);
-    const size_t total_bytes = (size_t) n_tokens * row_bytes;
-    if (total_bytes > ggml_nbytes(t)) {
-        return;
-    }
-
-    mtp.hidden_rows.resize((size_t) n_tokens * (size_t) n_embd);
-    ggml_backend_tensor_get(t, mtp.hidden_rows.data(), 0, total_bytes);
-
-    int32_t      n_out     = 0;
-
-    for (int32_t row = 0; row < n_tokens; ++row) {
-        if (n_seq_id[row] != 1 || seq_id[row] == nullptr) {
-            continue;
-        }
-
-        const llama_seq_id cur_seq = seq_id[row][0];
-        if (cur_seq < 0 || (size_t) cur_seq >= mtp.pending.size()) {
-            continue;
-        }
-
-        auto & pending = mtp.pending[cur_seq];
-        const llama_pos cur_pos = positions[row];
-
-        const llama_pos pos_max_mtp = llama_memory_seq_pos_max(llama_get_memory(mtp.ctx_mtp), cur_seq);
-        if (cur_pos > pos_max_mtp) {
-            const bool pending_continues = pending.pos >= 0 && pending.pos + 1 == cur_pos;
-            if (pending.pos >= 0 && !pending_continues) {
-                pending.pos = -1;
-            }
-
-            if (pending_continues) {
-                GGML_ASSERT(n_out < n_tokens);
-                std::memcpy(mtp.hook_batch.embd + (size_t) n_out * n_embd,
-                            pending.h.data(), row_bytes);
-                mtp.hook_batch.token[n_out]     = tokens[row];
-                mtp.hook_batch.pos[n_out]       = cur_pos;
-                mtp.hook_batch.n_seq_id[n_out]  = 1;
-                mtp.hook_batch.seq_id[n_out][0] = cur_seq;
-                mtp.hook_batch.logits[n_out]    = 0;
-                ++n_out;
-            }
-        }
-
-        // Stash this h-row as the new pending state for this sequence.
-        std::memcpy(pending.h.data(),
-                    mtp.hidden_rows.data() + (size_t) row * (size_t) n_embd,
-                    row_bytes);
-        pending.pos = cur_pos;
-    }
-
-    if (n_out > 0) {
-        mtp.hook_batch.n_tokens = n_out;
-
-        const int32_t rc_dec = llama_decode(mtp.ctx_mtp, mtp.hook_batch);
-        if (rc_dec != 0) {
-            LLAMA_LOG_ERROR("%s: llama_decode(ctx_mtp) failed rc=%d (n=%d)\n",
-                            __func__, (int) rc_dec, n_out);
-        }
+        LLAMA_LOG_INFO("%s: MTP context unregistered\n", __func__);
     }
 }
 
