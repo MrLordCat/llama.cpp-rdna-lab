@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QSpinBox,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -115,6 +116,10 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
                 self.settings.value("benchmark/autotune/reset_session", self.autotune_reset_session_checkbox.isChecked(), type=bool)
             )
 
+            mode_index = self.settings.value("benchmark/mode_tab", 0, type=int)
+            if 0 <= mode_index < self.mode_tabs.count():
+                self.mode_tabs.setCurrentIndex(mode_index)
+
             self._update_autotune_grid_preview()
         except Exception as exc:
             self.log_output.append(f"[WARN] Failed to load autotune settings: {exc}")
@@ -144,6 +149,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.settings.setValue("benchmark/autotune/custom_extra", self.autotune_custom_extra_input.text())
             self.settings.setValue("benchmark/autotune/resume_session", self.autotune_resume_checkbox.isChecked())
             self.settings.setValue("benchmark/autotune/reset_session", self.autotune_reset_session_checkbox.isChecked())
+            self.settings.setValue("benchmark/mode_tab", self.mode_tabs.currentIndex())
         except Exception as exc:
             self.log_output.append(f"[WARN] Failed to save autotune settings: {exc}")
 
@@ -229,10 +235,15 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         build_group.setLayout(build_layout)
         left_layout.addWidget(build_group)
 
-        params_group = QGroupBox("Parameters")
-        params_layout = QVBoxLayout()
+        # Mode sub-tabs: Single Bench and Auto-tune each carry their own
+        # parameters and run button, so settings sit next to the action.
+        self.mode_tabs = QTabWidget()
 
-        single_group = QGroupBox("Single Benchmark (used by Run Benchmark)")
+        single_page = QWidget()
+        single_page_layout = QVBoxLayout(single_page)
+        single_page_layout.setContentsMargins(6, 6, 6, 6)
+        single_page_layout.setSpacing(8)
+
         single_layout = QGridLayout()
         single_layout.setHorizontalSpacing(8)
         single_layout.setVerticalSpacing(6)
@@ -293,12 +304,20 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.max_tokens_spin.setValue(16)
         single_layout.addWidget(self.max_tokens_spin, 7, 1)
         single_layout.setColumnStretch(1, 1)
+        single_page_layout.addLayout(single_layout)
 
-        single_group.setLayout(single_layout)
-        params_layout.addWidget(single_group)
+        self.run_bench_btn = QPushButton("▶ Run Benchmark")
+        self.run_bench_btn.setToolTip("Run a single benchmark with the parameters above")
+        self.run_bench_btn.clicked.connect(self.run_benchmark)
+        single_page_layout.addWidget(self.run_bench_btn)
+        single_page_layout.addStretch(1)
 
-        autotune_group = QGroupBox("Auto-tune Grid (used by Run Auto-tune 130K)")
-        autotune_layout = QVBoxLayout()
+        self.mode_tabs.addTab(single_page, "▶ Single Bench")
+
+        autotune_page = QWidget()
+        autotune_layout = QVBoxLayout(autotune_page)
+        autotune_layout.setContentsMargins(6, 6, 6, 6)
+        autotune_layout.setSpacing(8)
 
         autotune_mode_info = QLabel(
             "Fixed mode: ctx=131072, tasks=quick:triage_diff, runs=1, repo-snapshot chars=24576, "
@@ -472,11 +491,14 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.autotune_grid_preview_label.setWordWrap(True)
         autotune_layout.addWidget(self.autotune_grid_preview_label)
 
-        autotune_group.setLayout(autotune_layout)
-        params_layout.addWidget(autotune_group)
+        self.run_autotune_btn = QPushButton("🔁 Run Auto-tune 130K")
+        self.run_autotune_btn.setToolTip("Run the 130K cold repo-snapshot autotune grid")
+        self.run_autotune_btn.clicked.connect(self.run_autotune)
+        autotune_layout.addWidget(self.run_autotune_btn)
+        autotune_layout.addStretch(1)
 
-        params_group.setLayout(params_layout)
-        left_layout.addWidget(params_group)
+        self.mode_tabs.addTab(autotune_page, "🔁 Auto-tune 130K")
+        left_layout.addWidget(self.mode_tabs)
 
         for combo, minimum_contents_length in [
             (self.model_combo, 18),
@@ -521,34 +543,22 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.autotune_custom_extra_input.textChanged.connect(self.save_settings)
         self.autotune_resume_checkbox.toggled.connect(self.save_settings)
         self.autotune_reset_session_checkbox.toggled.connect(self.save_settings)
+        self.mode_tabs.currentChanged.connect(lambda _index: self.save_settings())
         self._update_autotune_grid_preview()
 
-        btn_grid = QGridLayout()
-        btn_grid.setHorizontalSpacing(8)
-        btn_grid.setVerticalSpacing(6)
-        self.run_bench_btn = QPushButton("Run Benchmark")
-        self.run_bench_btn.setToolTip("Run the single benchmark profile above")
-        self.run_bench_btn.clicked.connect(self.run_benchmark)
-        btn_grid.addWidget(self.run_bench_btn, 0, 0)
-
-        self.run_autotune_btn = QPushButton("Run Auto-tune 130K")
-        self.run_autotune_btn.setToolTip("Run the 130K cold repo-snapshot autotune grid")
-        self.run_autotune_btn.clicked.connect(self.run_autotune)
-        btn_grid.addWidget(self.run_autotune_btn, 1, 0)
-
-        self.stop_btn = QPushButton("Stop")
+        shared_btn_row = QHBoxLayout()
+        shared_btn_row.setSpacing(8)
+        self.stop_btn = QPushButton("⏹ Stop")
         self.stop_btn.setToolTip("Stop the current benchmark or autotune run")
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self.stop_current_run)
-        btn_grid.addWidget(self.stop_btn, 2, 0)
+        shared_btn_row.addWidget(self.stop_btn, 1)
 
         self.open_history_btn = QPushButton("Open History")
         self.open_history_btn.setToolTip("Open build_logs/agent-workload/BENCH_HISTORY.md")
         self.open_history_btn.clicked.connect(self.open_history_md)
-        btn_grid.addWidget(self.open_history_btn, 3, 0)
-
-        btn_grid.setColumnStretch(0, 1)
-        left_layout.addLayout(btn_grid)
+        shared_btn_row.addWidget(self.open_history_btn, 1)
+        left_layout.addLayout(shared_btn_row)
 
         self.status_label = QLabel("Ready")
         left_layout.addWidget(self.status_label)
