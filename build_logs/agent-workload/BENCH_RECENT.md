@@ -7,6 +7,9 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-07-10 08:57:40 | cold-first | rocm | rocm-dual-mtpgguf-130k-big-c152k-mt64-n2-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 131072 | 512/128 | q4_0/q4_0 | mtp | 0.5789 | 524.9200 | 20.8500 | 0 |
+| 2026-07-10 08:55:02 | cold-first | rocm | rocm-dual-mtpgguf-130k-big-c152k-mt64-n8-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 131072 | 512/128 | q4_0/q4_0 | mtp | 0.5805 | 525.1300 | 22.7200 | 0 |
+| 2026-07-10 08:52:40 | cold-first | rocm | rocm-dual-mtpgguf-130k-big-c152k-mt64-none-r3 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 0.5988 | 543.8300 | 20.3400 | 0 |
 | 2026-07-09 22:47:50 | cold-first | vulkan | vulkan-dual-mtpgguf-smoke-n3-auto-default512-mt64-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/256 | q4_0/q4_0 | mtp | 16.7882 | 447.9700 | 18.6800 | 0 |
 | 2026-07-09 22:46:56 | cold-first | vulkan | vulkan-dual-mtpgguf-130k-big-c152k-mt64-n2-auto-default512-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 131072 | 512/256 | q4_0/q4_0 | mtp | 1.2481 | 1143.4300 | 34.5700 | 0 |
 | 2026-07-09 22:44:26 | cold-first | vulkan | vulkan-dual-mtpgguf-130k-big-c152k-mt64-n2-auto-w512-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 131072 | 512/256 | q4_0/q4_0 | mtp | 1.2462 | 1141.9300 | 34.1800 | 0 |
@@ -83,7 +86,3 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-07-09 16:26:12 | cold-first | rocm | upstream-port-rocm1-dflash-encode-reservefix-mt16-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/32 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |
 | 2026-07-09 16:24:22 | cold-first | rocm | upstream-port-rocm1-dflash-trace-sync-mt16-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/32 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |
 | 2026-07-09 16:22:15 | cold-first | rocm | upstream-port-rocm1-dflash-trace-stage-mt16-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/32 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |
-| 2026-07-09 16:19:11 | cold-first | rocm | upstream-port-rocm1-dflash-trace-graphstate-mt16-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/32 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |
-| 2026-07-09 14:26:32 | cold-first | rocm | upstream-port-rocm1-dflash-trace-mt16-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/32 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |
-| 2026-07-09 14:25:31 | cold-first | rocm | upstream-port-rocm1-dflash-clean-mt16-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/32 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |
-| 2026-07-09 14:24:17 | cold-first | rocm | upstream-port-rocm1-dflash-early-env-ub32-mt1-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/32 | q4_0/q4_0 | other | 1.1294 | 161.8200 | - | 0 |
