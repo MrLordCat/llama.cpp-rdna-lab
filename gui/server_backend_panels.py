@@ -51,8 +51,8 @@ class _RocmPanel(QWidget):
         dev_row = QHBoxLayout()
         dev_row.addWidget(QLabel("Devices:"))
         self.device_combo = QComboBox()
-        for display, _dev, _sm in self.DEVICE_CHOICES:
-            self.device_combo.addItem(display)
+        for choice in self.DEVICE_CHOICES:
+            self.device_combo.addItem(choice[0])
         self.device_combo.setToolTip(
             "Which GPUs the server uses.\n"
             "For large MTP runs, use ROCm1,ROCm0 layer split so weights/KV stay\n"
@@ -135,12 +135,14 @@ class _RocmPanel(QWidget):
 
 
 class _VulkanPanel(QWidget):
-    """Vulkan-specific launch parameters."""
+    """Vulkan-specific launch parameters. MTP is supported on Vulkan too."""
 
+    # (display, -dev value or None for all, -sm value or None, -ts value or None)
     DEVICE_CHOICES = [
-        ("All GPUs — layer split", None,      None),
-        ("Vulkan0 only",           "Vulkan0", "none"),
-        ("Vulkan1 only",           "Vulkan1", "none"),
+        ("All GPUs — layer split",                   None,              "layer", None),
+        ("Vulkan0 only — diagnostics",               "Vulkan0",         "none",  None),
+        ("Vulkan1 only — diagnostics",               "Vulkan1",         "none",  None),
+        ("Vulkan0,Vulkan1 — layer split (MTP)",      "Vulkan0,Vulkan1", "layer", "1,1"),
     ]
 
     def __init__(self, parent: QWidget | None = None):
@@ -151,8 +153,13 @@ class _VulkanPanel(QWidget):
         dev_row = QHBoxLayout()
         dev_row.addWidget(QLabel("Devices:"))
         self.device_combo = QComboBox()
-        for display, _dev, _sm in self.DEVICE_CHOICES:
-            self.device_combo.addItem(display)
+        for choice in self.DEVICE_CHOICES:
+            self.device_combo.addItem(choice[0])
+        self.device_combo.setToolTip(
+            "Which GPUs the server uses.\n"
+            "For large MTP runs, use the explicit dual-GPU layer split so\n"
+            "weights/KV stay on the two cards instead of spilling into RAM."
+        )
         dev_row.addWidget(self.device_combo, 1)
         layout.addLayout(dev_row)
 
@@ -161,27 +168,47 @@ class _VulkanPanel(QWidget):
         self.large_matmul_check.setToolTip("Measured faster on RX 9070 XT; disable to compare.")
         layout.addWidget(self.large_matmul_check)
 
+        spec_row = QHBoxLayout()
+        spec_row.addWidget(QLabel("Spec prefill window (tokens):"))
+        self.spec_window_spin = QSpinBox()
+        self.spec_window_spin.setRange(0, 131072)
+        self.spec_window_spin.setSingleStep(1024)
+        self.spec_window_spin.setValue(8192)
+        self.spec_window_spin.setToolTip(
+            "LLAMA_SPEC_PREFILL_WINDOW: with MTP/DFlash on long prompts, only the\n"
+            "last N prompt tokens feed the draft context (skips the expensive\n"
+            "full-prompt pass; small acceptance cost). 0 = always feed everything."
+        )
+        spec_row.addWidget(self.spec_window_spin)
+        spec_row.addStretch()
+        layout.addLayout(spec_row)
+
         layout.addStretch(1)
 
     def args(self) -> list[str]:
         out: list[str] = []
-        _display, dev, sm = self.DEVICE_CHOICES[self.device_combo.currentIndex()]
+        _display, dev, sm, ts = self.DEVICE_CHOICES[self.device_combo.currentIndex()]
         if dev:
             out.extend(["-dev", dev])
         if sm:
             out.extend(["-sm", sm])
+        if ts:
+            out.extend(["-ts", ts])
         return out
 
     def env(self) -> dict[str, str]:
         out: dict[str, str] = {}
         if self.large_matmul_check.isChecked():
             out["GGML_VK_FORCE_AMD_LARGE_MATMUL"] = "1"
+        if self.spec_window_spin.value() != 8192:  # 8192 is the built-in default
+            out["LLAMA_SPEC_PREFILL_WINDOW"] = str(self.spec_window_spin.value())
         return out
 
     def to_settings(self) -> dict:
         return {
             "device_index": self.device_combo.currentIndex(),
             "large_matmul": self.large_matmul_check.isChecked(),
+            "spec_window": self.spec_window_spin.value(),
         }
 
     def from_settings(self, data: dict) -> None:
@@ -189,6 +216,7 @@ class _VulkanPanel(QWidget):
         if 0 <= idx < self.device_combo.count():
             self.device_combo.setCurrentIndex(idx)
         self.large_matmul_check.setChecked(bool(data.get("large_matmul", True)))
+        self.spec_window_spin.setValue(int(data.get("spec_window", 8192)))
 
 
 class _CpuPanel(QWidget):
