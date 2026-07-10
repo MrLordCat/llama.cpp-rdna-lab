@@ -2780,6 +2780,13 @@ def main() -> int:
                             if extra_args:
                                 extra_bits.append(extra_args)
 
+                            # an extra preset may pin its own draft budget
+                            # (e.g. "mtp-n2::--spec-draft-n-max 2"); the sweep
+                            # default must not override it
+                            has_draft_n_override = server_extra_has_flag(
+                                split_server_extra(" ".join(extra_bits)), "--spec-draft-n-max"
+                            )
+
                             if spec_mode == "ngram-mod":
                                 extra_bits.append("--spec-type ngram-mod")
                                 extra_bits.append(f"--spec-ngram-mod-n-min {args.autotune_ngram_min}")
@@ -2792,10 +2799,12 @@ def main() -> int:
                                 extra_bits.append(f"--spec-ngram-mod-n-min {args.autotune_ngram_min}")
                                 extra_bits.append(f"--spec-ngram-mod-n-match {args.autotune_ngram_match}")
                                 extra_bits.append(f"--spec-ngram-mod-n-max {args.autotune_ngram_max}")
-                                extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")
+                                if not has_draft_n_override:
+                                    extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")
                             elif spec_mode == "mtp":
                                 extra_bits.append("--spec-type draft-mtp")
-                                extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")
+                                if not has_draft_n_override:
+                                    extra_bits.append(f"--spec-draft-n-max {args.autotune_mtp_draft_n_max}")
                             elif spec_mode not in {"none", ""}:
                                 extra_bits.append(f"--spec-type {spec_mode}")
 

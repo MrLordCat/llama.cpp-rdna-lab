@@ -108,6 +108,9 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         if self.settings is None:
             return
 
+        # widget-change signals fire save_settings while values are being
+        # restored, overwriting not-yet-loaded keys with stale widget state
+        self._loading_settings = True
         try:
             self.at_batch_min_spin.setValue(self.settings.value("benchmark/autotune/batch_min", self.at_batch_min_spin.value(), type=int))
             self.at_batch_max_spin.setValue(self.settings.value("benchmark/autotune/batch_max", self.at_batch_max_spin.value(), type=int))
@@ -158,13 +161,21 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.scale_prompt_check.setChecked(
                 self.settings.value("benchmark/scale_prompt", False, type=bool)
             )
+            self.mtp_draft_spin.setValue(
+                self.settings.value("benchmark/mtp_draft_n", self.MTP_DRAFT_N_MAX, type=int)
+            )
+            self.at_mtp_draft_spin.setValue(
+                self.settings.value("benchmark/autotune/mtp_draft_n", self.MTP_DRAFT_N_MAX, type=int)
+            )
 
             self._update_autotune_grid_preview()
         except Exception as exc:
             self.log_output.append(f"[WARN] Failed to load autotune settings: {exc}")
+        finally:
+            self._loading_settings = False
 
     def save_settings(self) -> None:
-        if self.settings is None:
+        if self.settings is None or getattr(self, "_loading_settings", False):
             return
 
         try:
@@ -194,6 +205,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.settings.setValue("benchmark/autotune/device_sweep", self.autotune_device_sweep_check.isChecked())
             self.settings.setValue("benchmark/devices", self.device_combo.currentText())
             self.settings.setValue("benchmark/scale_prompt", self.scale_prompt_check.isChecked())
+            self.settings.setValue("benchmark/mtp_draft_n", self.mtp_draft_spin.value())
+            self.settings.setValue("benchmark/autotune/mtp_draft_n", self.at_mtp_draft_spin.value())
         except Exception as exc:
             self.log_output.append(f"[WARN] Failed to save autotune settings: {exc}")
 
@@ -363,6 +376,16 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.max_tokens_spin.setMaximum(1024)
         self.max_tokens_spin.setValue(16)
         single_layout.addWidget(self.max_tokens_spin, 7, 1)
+
+        single_layout.addWidget(QLabel("MTP draft N:"), 8, 0)
+        self.mtp_draft_spin = QSpinBox()
+        self.mtp_draft_spin.setRange(1, 20)
+        self.mtp_draft_spin.setValue(self.MTP_DRAFT_N_MAX)
+        self.mtp_draft_spin.setToolTip(
+            "--spec-draft-n-max, used when Spec is mtp/ngram-mtp.\n"
+            "8 measured best on short ctx; 2 measured better on big prompts."
+        )
+        single_layout.addWidget(self.mtp_draft_spin, 8, 1)
         single_layout.setColumnStretch(1, 1)
         single_page_layout.addLayout(single_layout)
 
@@ -540,6 +563,21 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         spec_grid.setColumnStretch(3, 1)
         autotune_layout.addLayout(spec_grid)
 
+        mtp_draft_row = QHBoxLayout()
+        mtp_draft_row.addWidget(QLabel("MTP draft N max:"))
+        self.at_mtp_draft_spin = QSpinBox()
+        self.at_mtp_draft_spin.setRange(1, 20)
+        self.at_mtp_draft_spin.setValue(self.MTP_DRAFT_N_MAX)
+        self.at_mtp_draft_spin.setToolTip(
+            "--spec-draft-n-max for mtp/ngram-mtp sweep configs.\n"
+            "8 measured best on short ctx (E266); 2 measured better on big\n"
+            "prompts (E267). To sweep several values in one run, add custom\n"
+            "extras like: mtp-n2::--spec-draft-n-max 2||mtp-n4::--spec-draft-n-max 4"
+        )
+        mtp_draft_row.addWidget(self.at_mtp_draft_spin)
+        mtp_draft_row.addStretch()
+        autotune_layout.addLayout(mtp_draft_row)
+
         extra_grid = QGridLayout()
         extra_grid.setHorizontalSpacing(14)
         extra_grid.setVerticalSpacing(4)
@@ -571,8 +609,12 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         custom_extra_row = QHBoxLayout()
         custom_extra_row.addWidget(QLabel("Custom extras:"))
         self.autotune_custom_extra_input = QLineEdit()
-        self.autotune_custom_extra_input.setPlaceholderText("name::--arg value||name2::--arg2 value")
-        self.autotune_custom_extra_input.setToolTip("Optional extra presets; separate presets with ||")
+        self.autotune_custom_extra_input.setPlaceholderText("mtp-n2::--spec-draft-n-max 2||mtp-n4::--spec-draft-n-max 4")
+        self.autotune_custom_extra_input.setToolTip(
+            "Optional extra presets; separate presets with ||.\n"
+            "A preset's --spec-draft-n-max overrides the MTP draft N default,\n"
+            "so several presets sweep draft budgets in one run."
+        )
         self.autotune_custom_extra_input.setMinimumWidth(0)
         custom_extra_row.addWidget(self.autotune_custom_extra_input)
         autotune_layout.addLayout(custom_extra_row)
@@ -656,6 +698,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.at_ubatch_max_spin,
             self.at_ubatch_step_spin,
             self.lane_custom_ctx_spin,
+            self.mtp_draft_spin,
+            self.at_mtp_draft_spin,
         ]:
             self._configure_spinbox(spin_box)
 
@@ -686,6 +730,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.autotune_device_sweep_check.toggled.connect(self.save_settings)
         self.device_combo.currentIndexChanged.connect(lambda _index: self.save_settings())
         self.scale_prompt_check.toggled.connect(self.save_settings)
+        self.mtp_draft_spin.valueChanged.connect(self.save_settings)
+        self.at_mtp_draft_spin.valueChanged.connect(self.save_settings)
         self._update_autotune_grid_preview()
 
         shared_btn_row = QHBoxLayout()
@@ -1095,7 +1141,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             spec_extra.append(f"--spec-ngram-mod-n-match {self.NGRAM_MOD_N_MATCH}")
             spec_extra.append(f"--spec-ngram-mod-n-max {self.NGRAM_MOD_N_MAX}")
         if spec_mode in {"mtp", "ngram-mtp"}:
-            spec_extra.append(f"--spec-draft-n-max {self.MTP_DRAFT_N_MAX}")
+            spec_extra.append(f"--spec-draft-n-max {self.mtp_draft_spin.value()}")
         server_extra.extend(spec_extra)
 
         command = [
@@ -1331,6 +1377,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             str(self.NGRAM_MOD_N_MATCH),
             "--autotune-ngram-max",
             str(self.NGRAM_MOD_N_MAX),
+            "--autotune-mtp-draft-n-max",
+            str(self.at_mtp_draft_spin.value()),
             "--autotune-max-configs",
             str(max(64, config_count + 8)),
             "--autotune-update-preset",
