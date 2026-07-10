@@ -7,6 +7,8 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-07-10 09:45:35 | cold-first | vulkan | vulkan-dual-mtpgguf-130k-big-c152k-mt64-n4-guard-ht120-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 131072 | 512/256 | q4_0/q4_0 | mtp | 1.2160 | 1138.6100 | 21.3800 | 0 |
+| 2026-07-10 09:42:25 | cold-first | vulkan | vulkan-dual-mtpgguf-smoke-n4-guard-mt64-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 8192 | 512/256 | q4_0/q4_0 | mtp | 9.8872 | 1369.2600 | 26.5900 | 0 |
 | 2026-07-10 08:57:40 | cold-first | rocm | rocm-dual-mtpgguf-130k-big-c152k-mt64-n2-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 131072 | 512/128 | q4_0/q4_0 | mtp | 0.5789 | 524.9200 | 20.8500 | 0 |
 | 2026-07-10 08:55:02 | cold-first | rocm | rocm-dual-mtpgguf-130k-big-c152k-mt64-n8-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 131072 | 512/128 | q4_0/q4_0 | mtp | 0.5805 | 525.1300 | 22.7200 | 0 |
 | 2026-07-10 08:52:40 | cold-first | rocm | rocm-dual-mtpgguf-130k-big-c152k-mt64-none-r3 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 131072 | 512/128 | q4_0/q4_0 | none | 0.5988 | 543.8300 | 20.3400 | 0 |
@@ -84,5 +86,3 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-07-09 16:31:53 | cold-first | rocm | upstream-port-rocm1-dflash-ctx5-mt16-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/32 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |
 | 2026-07-09 16:30:30 | cold-first | rocm | upstream-port-rocm1-dflash-ctxubfix-mt16-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/32 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |
 | 2026-07-09 16:26:12 | cold-first | rocm | upstream-port-rocm1-dflash-encode-reservefix-mt16-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/32 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |
-| 2026-07-09 16:24:22 | cold-first | rocm | upstream-port-rocm1-dflash-trace-sync-mt16-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/32 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |
-| 2026-07-09 16:22:15 | cold-first | rocm | upstream-port-rocm1-dflash-trace-stage-mt16-r1 | Qwen3.6-27B-Q3_K_S.gguf | 4096 | 512/32 | q4_0/q4_0 | other | 0.0000 | - | - | 1 |

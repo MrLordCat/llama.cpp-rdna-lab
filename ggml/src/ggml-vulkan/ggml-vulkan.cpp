@@ -2190,9 +2190,32 @@ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipelin
     VK_LOG_DEBUG("ggml_vk_create_pipeline(" << device->name << ", " << pipeline->name << ", " << entrypoint << ", " << parameter_count <<
                  ", (" << wg_denoms[0] << "," << wg_denoms[1] << "," << wg_denoms[2] << "), specialization_constants, " <<
                  disable_robustness << ", " << require_full_subgroups << ", " << required_subgroup_size << ")");
+    static const bool trace_pipeline_create = std::getenv("GGML_VK_PIPELINE_CREATE_TRACE") != nullptr;
     GGML_ASSERT(parameter_count > 0);
     GGML_ASSERT(parameter_count <= MAX_PARAMETER_COUNT);
     GGML_ASSERT(wg_denoms[0] > 0 && wg_denoms[1] > 0 && wg_denoms[2] > 0); // NOLINT
+
+    if (trace_pipeline_create) {
+        std::ostringstream ss;
+        ss << "ggml_vulkan: create pipeline begin: device=" << device->name
+           << " name=" << pipeline->name
+           << " entry=" << entrypoint
+           << " params=" << parameter_count
+           << " wg_denoms=(" << wg_denoms[0] << "," << wg_denoms[1] << "," << wg_denoms[2] << ")"
+           << " disable_robustness=" << disable_robustness
+           << " full_subgroups=" << require_full_subgroups
+           << " required_subgroup_size=" << required_subgroup_size
+           << " spv_size=" << spv_size
+           << " spec=[";
+        for (size_t i = 0; i < specialization_constants.size(); ++i) {
+            if (i > 0) {
+                ss << ",";
+            }
+            ss << specialization_constants[i];
+        }
+        ss << "]";
+        std::cerr << ss.str() << std::endl;
+    }
 
     vk::ShaderModuleCreateInfo shader_module_create_info({}, spv_size, reinterpret_cast<const uint32_t *>(spv_data));
 
@@ -2329,6 +2352,11 @@ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipelin
     }
 #endif
 
+    if (trace_pipeline_create) {
+        std::cerr << "ggml_vulkan: create compute pipeline: device=" << device->name
+                  << " name=" << pipeline->name << std::endl;
+    }
+
     try {
         pipeline->pipeline = device->device.createComputePipeline(VK_NULL_HANDLE, compute_pipeline_create_info).value;
     } catch (const vk::SystemError& e) {
@@ -2337,6 +2365,11 @@ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipelin
         throw e;
     }
     pipeline->compiled = true;
+
+    if (trace_pipeline_create) {
+        std::cerr << "ggml_vulkan: create pipeline done: device=" << device->name
+                  << " name=" << pipeline->name << std::endl;
+    }
 
     if (vk_instance.debug_utils_support) {
         vk::DebugUtilsObjectNameInfoEXT duoni;
@@ -3747,6 +3780,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
             if (!pipeline->needed || pipeline->compiled) {
                 continue;
             }
+
             // TODO: We're no longer benefitting from the async compiles (shaders are
             // compiled individually, as needed) and this complexity can be removed.
             {
@@ -8811,6 +8845,21 @@ static void ggml_vk_mul_mat(ggml_backend_vk_context * ctx, vk_context& subctx, c
     // This only supports batchsize == 1.
     const size_t nbytes = ggml_vk_device_size(src0);
     const bool needs_split = dst->ne[2] == 1 && dst->ne[3] == 1 && nbytes > ctx->device->properties.limits.maxStorageBufferRange;
+    const bool batched_mul_mat_vec =
+        dst->ne[1] > 1 && dst->ne[1] <= mul_mat_vec_max_cols && src1->ne[2] * src1->ne[3] == 1;
+    bool avoid_batched_mul_mat_vec = false;
+#if defined(_WIN32)
+    // AMDVLK can crash while compiling the F32xF32 batched mat-vec shader with
+    // COLS >= 5. MTP n_max=4 hits this shape because verify uses draft+target.
+    avoid_batched_mul_mat_vec =
+        batched_mul_mat_vec &&
+        dst->ne[1] >= 5 &&
+        src0->type == GGML_TYPE_F32 &&
+        src1->type == GGML_TYPE_F32 &&
+        ctx->device->vendor_id == VK_VENDOR_ID_AMD &&
+        std::getenv("GGML_VK_ALLOW_AMD_F32_BATCHED_MUL_MAT_VEC_5_PLUS") == nullptr;
+#endif
+
     if (needs_split) {
         // Choose the number of rows that can fit (and divide by two, to allow for any additional offsets)
         const uint32_t M_split = ctx->device->properties.limits.maxStorageBufferRange / (2 * src0->nb[1]);
@@ -8851,9 +8900,9 @@ static void ggml_vk_mul_mat(ggml_backend_vk_context * ctx, vk_context& subctx, c
                src0->ne[1] <= ctx->device->properties.limits.maxComputeWorkGroupCount[1] &&
                src1->ne[2] <= ctx->device->properties.limits.maxComputeWorkGroupCount[2]) {
         ggml_vk_mul_mat_vec_nc_f16_f32(ctx, subctx, cgraph, node_idx);
-    // mul_mat_vec supports batching ne12*ne13 when ne11==1, or treating ne11 as the batch size (up to four)
+    // mul_mat_vec supports batching ne12*ne13 when ne11==1, or treating ne11 as the batch size
     // when ne12 and ne13 are one.
-    } else if ((dst->ne[1] == 1 || (dst->ne[1] <= mul_mat_vec_max_cols && src1->ne[2] * src1->ne[3] == 1)) &&
+    } else if ((dst->ne[1] == 1 || (batched_mul_mat_vec && !avoid_batched_mul_mat_vec)) &&
                (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16 || src0->type == GGML_TYPE_BF16 || ggml_is_quantized(src0->type))) {
         ggml_vk_mul_mat_vec_q_f16(ctx, subctx, cgraph, node_idx);
     } else {
