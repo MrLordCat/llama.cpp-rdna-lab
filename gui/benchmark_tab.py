@@ -621,13 +621,13 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.autotune_grid_preview_label.setWordWrap(True)
         autotune_layout.addWidget(self.autotune_grid_preview_label)
 
-        self.run_autotune_btn = QPushButton("🔁 Run Auto-tune 130K")
-        self.run_autotune_btn.setToolTip("Run the 130K cold repo-snapshot autotune grid")
+        self.run_autotune_btn = QPushButton("🔁 Run Auto-tune")
+        self.run_autotune_btn.setToolTip("Run the autotune grid on the selected context lane")
         self.run_autotune_btn.clicked.connect(self.run_autotune)
         autotune_layout.addWidget(self.run_autotune_btn)
         autotune_layout.addStretch(1)
 
-        self.mode_tabs.addTab(autotune_page, "🔁 Auto-tune 130K")
+        self.mode_tabs.addTab(autotune_page, "🔁 Auto-tune")
         left_layout.addWidget(self.mode_tabs)
 
         for combo, minimum_contents_length in [
@@ -718,11 +718,13 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         presets_group = QGroupBox("Autotune Runs History (Best Result Per Run)")
         presets_layout = QVBoxLayout()
         self.presets_table = QTableWidget()
-        self.presets_table.setColumnCount(14)
+        self.presets_table.setColumnCount(16)
         self.presets_table.setHorizontalHeaderLabels([
             "Run Time",
             "Model",
             "Best TPS",
+            "Prompt TPS",
+            "Decode TPS",
             "Ctx",
             "Batch/UBatch",
             "KV",
@@ -741,7 +743,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.presets_table.setMinimumHeight(190)
         self._configure_compact_table(
             self.presets_table,
-            [140, 180, 82, 70, 105, 72, 96, 110, 180, 120, 120, 120, 150, 160],
+            [140, 180, 82, 84, 84, 70, 105, 72, 96, 110, 180, 120, 120, 120, 150, 160],
         )
         presets_layout.addWidget(self.presets_table)
 
@@ -786,7 +788,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         history_group = QGroupBox("Current Autotune Run History (Live)")
         history_layout = QVBoxLayout()
         self.autotune_history_table = QTableWidget()
-        self.autotune_history_table.setColumnCount(9)
+        self.autotune_history_table.setColumnCount(11)
         self.autotune_history_table.setHorizontalHeaderLabels([
             "Run",
             "Ctx",
@@ -795,14 +797,16 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             "KV",
             "Spec",
             "Extra",
-            "TPS",
+            "Agg TPS",
+            "Prompt TPS",
+            "Decode TPS",
             "Status",
         ])
         self.autotune_history_table.setSortingEnabled(True)
         self.autotune_history_table.setMinimumHeight(190)
         self._configure_compact_table(
             self.autotune_history_table,
-            [62, 70, 76, 76, 70, 96, 120, 70, 78],
+            [62, 70, 76, 76, 70, 96, 120, 70, 84, 84, 78],
         )
         history_layout.addWidget(self.autotune_history_table)
         history_group.setLayout(history_layout)
@@ -1747,6 +1751,10 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             f"Lane: ctx={lane_ctx}, repo-snapshot chars={lane_chars} (~{prompt_tokens} prompt tokens), "
             "tasks=quick:triage_diff, runs=1, max_tokens=16, no-reuse, no-prime, thinking on."
         )
+        lane_short = self.AUTOTUNE_LANES[self.lane_combo.currentIndex()][0].split(" — ")[0]
+        if lane_short == "Custom":
+            lane_short = f"Custom {lane_ctx}"
+        self.run_autotune_btn.setText(f"🔁 Run Auto-tune — {lane_short}")
 
         lines = [
             f"Batch values: {self._format_values_preview(batch_values)}",
@@ -1923,7 +1931,10 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self._autotune_result["summary_json"] = line.split("Wrote ", 1)[-1].strip()
         if line.endswith("-autotune-summary.csv"):
             self._autotune_result["summary_csv"] = line.split("Wrote ", 1)[-1].strip()
-        if "Aggregate completion TPS" in line or line.startswith("BEST:") or line.startswith("CURRENT BEST:"):
+        if (
+            "Aggregate completion TPS" in line
+            or line.startswith(("BEST:", "CURRENT BEST:", "RUN RESULT:", "CONFIG RESULT:"))
+        ):
             self.status_label.setText(line)
         if line.startswith("CONFIG FAILED ("):
             self.status_label.setText(line)
@@ -1935,7 +1946,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             if self._current_mode == "autotune" and self._autotune_active_run is not None:
                 stopped_row = self._find_autotune_history_row(self._autotune_active_run)
                 if stopped_row is not None:
-                    self.autotune_history_table.setItem(stopped_row, 8, QTableWidgetItem("stopped"))
+                    self.autotune_history_table.setItem(stopped_row, 10, QTableWidgetItem("stopped"))
                 self._autotune_active_run = None
             self.status_label.setText("Benchmark stopped")
             self.log_output.append("[INFO] Benchmark/autotune stopped by user")
@@ -1966,7 +1977,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             if self._current_mode == "autotune" and self._autotune_active_run is not None:
                 failed_row = self._find_autotune_history_row(self._autotune_active_run)
                 if failed_row is not None:
-                    self.autotune_history_table.setItem(failed_row, 8, QTableWidgetItem("failed"))
+                    self.autotune_history_table.setItem(failed_row, 10, QTableWidgetItem("failed"))
                 self._autotune_active_run = None
             if self._current_mode == "autotune":
                 self.refresh_saved_presets_table()
@@ -2096,7 +2107,9 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.autotune_history_table.setItem(row, 5, QTableWidgetItem(spec_mode))
             self.autotune_history_table.setItem(row, 6, QTableWidgetItem(extra_value))
             self.autotune_history_table.setItem(row, 7, QTableWidgetItem("-"))
-            self.autotune_history_table.setItem(row, 8, QTableWidgetItem("running"))
+            self.autotune_history_table.setItem(row, 8, QTableWidgetItem("-"))
+            self.autotune_history_table.setItem(row, 9, QTableWidgetItem("-"))
+            self.autotune_history_table.setItem(row, 10, QTableWidgetItem("running"))
             self._autotune_active_run = run_label
             self.autotune_history_table.scrollToBottom()
             self.status_label.setText(line)
@@ -2113,16 +2126,31 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         if tps_match:
             tps_value = float(tps_match.group(1))
             self.autotune_history_table.setItem(active_row, 7, NumericTableWidgetItem(f"{tps_value:.2f}", tps_value))
-            self.autotune_history_table.setItem(active_row, 8, QTableWidgetItem("done"))
+            self.autotune_history_table.setItem(active_row, 10, QTableWidgetItem("done"))
+            # keep the run active: CONFIG RESULT (prompt/decode TPS) prints next
+            return
+
+        result_match = re.search(
+            r"CONFIG RESULT: aggregate_tps=([0-9.]+) prompt_tps=([0-9.]+) decode_tps=([0-9.]+)",
+            line,
+        )
+        if result_match:
+            agg_value, prompt_value, decode_value = (float(g) for g in result_match.groups())
+            self.autotune_history_table.setItem(active_row, 7, NumericTableWidgetItem(f"{agg_value:.2f}", agg_value))
+            self.autotune_history_table.setItem(active_row, 8, NumericTableWidgetItem(f"{prompt_value:.1f}", prompt_value))
+            self.autotune_history_table.setItem(active_row, 9, NumericTableWidgetItem(f"{decode_value:.2f}", decode_value))
+            self.autotune_history_table.setItem(active_row, 10, QTableWidgetItem("done"))
             self._autotune_active_run = None
             return
 
         if line.strip().startswith("error:"):
-            self.autotune_history_table.setItem(active_row, 8, QTableWidgetItem("error"))
+            status_item = self.autotune_history_table.item(active_row, 10)
+            if status_item is None or status_item.text() == "running":
+                self.autotune_history_table.setItem(active_row, 10, QTableWidgetItem("error"))
             self._autotune_active_run = None
             return
 
         if line.startswith("CONFIG FAILED ("):
-            self.autotune_history_table.setItem(active_row, 8, QTableWidgetItem("failed"))
+            self.autotune_history_table.setItem(active_row, 10, QTableWidgetItem("failed"))
             self._autotune_active_run = None
 

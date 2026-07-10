@@ -165,8 +165,8 @@ class BenchHistoryMixin:
 
         run_time_item = self.presets_table.item(row, 0)
         model_item = self.presets_table.item(row, 1)
-        run_id_item = self.presets_table.item(row, 12)
-        label_item = self.presets_table.item(row, 13)
+        run_id_item = self.presets_table.item(row, 14)
+        label_item = self.presets_table.item(row, 15)
 
         run_time = run_time_item.text().strip() if run_time_item is not None else ""
         model_name = model_item.text().strip() if model_item is not None else ""
@@ -772,22 +772,31 @@ class BenchHistoryMixin:
             row = self.presets_table.rowCount()
             self.presets_table.insertRow(row)
 
+            def tps_item(raw_text: str, digits: int = 2) -> QTableWidgetItem:
+                try:
+                    value = float(raw_text)
+                except (TypeError, ValueError):
+                    value = 0.0
+                return NumericTableWidgetItem(f"{value:.{digits}f}" if value > 0 else "-", value)
+
             run_item = QTableWidgetItem(run_time)
             run_item.setData(Qt.ItemDataRole.UserRole, run_id)
             self.presets_table.setItem(row, 0, run_item)
             self.presets_table.setItem(row, 1, QTableWidgetItem(model_name or "-"))
             self.presets_table.setItem(row, 2, NumericTableWidgetItem(f"{aggregate_value:.4f}", aggregate_value))
-            self.presets_table.setItem(row, 3, QTableWidgetItem(parsed_cfg["ctx"]))
-            self.presets_table.setItem(row, 4, QTableWidgetItem(f"{parsed_cfg['batch']}/{parsed_cfg['ubatch']}"))
-            self.presets_table.setItem(row, 5, QTableWidgetItem(parsed_cfg["kv"]))
-            self.presets_table.setItem(row, 6, QTableWidgetItem(parsed_cfg["spec"]))
-            self.presets_table.setItem(row, 7, QTableWidgetItem(parsed_cfg["extra_preset"]))
-            self.presets_table.setItem(row, 8, QTableWidgetItem(parsed_cfg["extra_args"]))
-            self.presets_table.setItem(row, 9, QTableWidgetItem(swept_specs))
-            self.presets_table.setItem(row, 10, QTableWidgetItem(swept_extras))
-            self.presets_table.setItem(row, 11, QTableWidgetItem(build_id or "-"))
-            self.presets_table.setItem(row, 12, QTableWidgetItem(run_id or "-"))
-            self.presets_table.setItem(row, 13, QTableWidgetItem(label or "-"))
+            self.presets_table.setItem(row, 3, tps_item(str(row_data.get("prompt_eval_tps", "")), digits=1))
+            self.presets_table.setItem(row, 4, tps_item(str(row_data.get("decode_eval_tps", ""))))
+            self.presets_table.setItem(row, 5, QTableWidgetItem(parsed_cfg["ctx"]))
+            self.presets_table.setItem(row, 6, QTableWidgetItem(f"{parsed_cfg['batch']}/{parsed_cfg['ubatch']}"))
+            self.presets_table.setItem(row, 7, QTableWidgetItem(parsed_cfg["kv"]))
+            self.presets_table.setItem(row, 8, QTableWidgetItem(parsed_cfg["spec"]))
+            self.presets_table.setItem(row, 9, QTableWidgetItem(parsed_cfg["extra_preset"]))
+            self.presets_table.setItem(row, 10, QTableWidgetItem(parsed_cfg["extra_args"]))
+            self.presets_table.setItem(row, 11, QTableWidgetItem(swept_specs))
+            self.presets_table.setItem(row, 12, QTableWidgetItem(swept_extras))
+            self.presets_table.setItem(row, 13, QTableWidgetItem(build_id or "-"))
+            self.presets_table.setItem(row, 14, QTableWidgetItem(run_id or "-"))
+            self.presets_table.setItem(row, 15, QTableWidgetItem(label or "-"))
 
     def delete_selected_preset(self) -> None:
         row_data = self._selected_history_row_data()

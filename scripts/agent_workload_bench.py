@@ -2542,6 +2542,12 @@ def main() -> int:
         server_diag = parse_server_log_diagnostics(out_dir / f"{args.label}.server.log")
 
         aggregate_tps = aggregate_completion_tps(rows)
+        if server_diag.get("available"):
+            print(
+                f"RUN RESULT: aggregate_tps={aggregate_tps:.2f} "
+                f"prompt_tps={float(server_diag.get('prompt_eval_tps', {}).get('mean', 0.0) or 0.0):.2f} "
+                f"decode_tps={float(server_diag.get('decode_eval_tps', {}).get('mean', 0.0) or 0.0):.2f}"
+            )
         tps_values = [float(r["completion_tps_wall"]) for r in rows if r.get("completion_tps_wall") is not None]
         model_path = str(Path(args.model) if args.model else default_model() or "")
         append_history_entry(
@@ -2846,6 +2852,13 @@ def main() -> int:
                                 for r in rows
                                 if r.get("completion_tps_wall") is not None
                             ]
+                            cfg_diag = parse_server_log_diagnostics(out_dir / f"{run_args.label}.server.log")
+                            if cfg_diag.get("available"):
+                                cfg_prompt_tps = float(cfg_diag.get("prompt_eval_tps", {}).get("mean", 0.0) or 0.0)
+                                cfg_decode_tps = float(cfg_diag.get("decode_eval_tps", {}).get("mean", 0.0) or 0.0)
+                            else:
+                                cfg_prompt_tps = 0.0
+                                cfg_decode_tps = 0.0
                             summary = {
                                 "label": run_args.label,
                                 "ctx_size": ctx_size,
@@ -2857,9 +2870,15 @@ def main() -> int:
                                 "extra_args": extra_args,
                                 "aggregate_tps": round(agg_tps, 4),
                                 "mean_task_tps": round(statistics.mean(task_tps_values), 4) if task_tps_values else 0.0,
+                                "prompt_eval_tps": round(cfg_prompt_tps, 2),
+                                "decode_eval_tps": round(cfg_decode_tps, 2),
                                 "errors": int(has_error),
                             }
                             summaries.append(summary)
+                            print(
+                                f"CONFIG RESULT: aggregate_tps={summary['aggregate_tps']:.2f} "
+                                f"prompt_tps={cfg_prompt_tps:.2f} decode_tps={cfg_decode_tps:.2f}"
+                            )
                             completed_keys.add(config_key)
                             save_autotune_session(completed=False)
 
@@ -2946,6 +2965,8 @@ def main() -> int:
             "extra_args",
             "aggregate_tps",
             "mean_task_tps",
+            "prompt_eval_tps",
+            "decode_eval_tps",
             "errors",
         ]
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -3008,12 +3029,14 @@ def main() -> int:
             "top_p": args.top_p,
             "aggregate_tps": f"{aggregate_tps:.4f}",
             "mean_task_tps": f"{mean_tps:.4f}",
+            "prompt_eval_tps": f"{float(best.get('prompt_eval_tps', 0.0) or 0.0):.2f}" if best else "",
+            "decode_eval_tps": f"{float(best.get('decode_eval_tps', 0.0) or 0.0):.2f}" if best else "",
             "errors": sum(int(r.get("errors", 0)) for r in summaries),
             "best_config": best_cfg,
             "jsonl_file": "",
             "csv_file": "",
             "summary_file": summary_csv.name,
-            "server_log_file": "",
+            "server_log_file": f"{best['label']}.server.log" if best and best.get("label") else "",
         },
         out_dir,
         history_csv_name=history_csv_name,
