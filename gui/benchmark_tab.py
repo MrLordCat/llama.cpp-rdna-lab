@@ -35,6 +35,11 @@ from PyQt6.QtWidgets import (
 from backend_names import backend_key_from_display, display_backend_from_key
 from bench_history import BenchHistoryMixin
 from bench_runner import BenchCommandThread
+from server_backend_panels import (
+    ROCM_DEVICE_CHOICES,
+    VULKAN_DEVICE_CHOICES,
+    device_choice_args,
+)
 from bench_widgets import (
     NumericTableWidgetItem,
     configure_combo,
@@ -57,6 +62,20 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
     NGRAM_MOD_N_MATCH = 16
     NGRAM_MOD_N_MAX = 32
     MTP_DRAFT_N_MAX = 8
+
+    # Autotune context lanes: (display, ctx, repo-snapshot chars).
+    # Screen lane = fast preset hunt (short prompt, cheap prefill); Long lanes
+    # scale the prompt with ctx (~3 chars/token fills ~80%); Max 130K keeps the
+    # legacy short-prompt KV-stress semantics for comparability with history.
+    AUTOTUNE_LANES = [
+        ("Screen 12K — fast preset hunt",             12288,  24576),
+        ("Long 50K — long-prompt check",              49152,  147456),
+        ("Long 100K — long-prompt check",             98304,  294912),
+        ("Max 130K — KV stress (short prompt)",       131072, 24576),
+        ("Custom",                                    0,      0),
+    ]
+
+    VALIDATE_CTX_CHOICES = [("50K", 49152), ("100K", 98304), ("130K", 131072)]
 
     def __init__(self, parent):
         super().__init__()
@@ -121,6 +140,25 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             if 0 <= mode_index < self.mode_tabs.count():
                 self.mode_tabs.setCurrentIndex(mode_index)
 
+            lane_index = self.settings.value("benchmark/autotune/lane", 0, type=int)
+            if 0 <= lane_index < self.lane_combo.count():
+                self.lane_combo.setCurrentIndex(lane_index)
+            self.lane_custom_ctx_spin.setValue(
+                self.settings.value("benchmark/autotune/lane_custom_ctx", self.lane_custom_ctx_spin.value(), type=int)
+            )
+            self.lane_custom_ctx_spin.setEnabled(self.AUTOTUNE_LANES[self.lane_combo.currentIndex()][1] == 0)
+            self.autotune_device_sweep_check.setChecked(
+                self.settings.value("benchmark/autotune/device_sweep", False, type=bool)
+            )
+            device_text = self.settings.value("benchmark/devices", "")
+            if device_text:
+                idx = self.device_combo.findText(device_text)
+                if idx >= 0:
+                    self.device_combo.setCurrentIndex(idx)
+            self.scale_prompt_check.setChecked(
+                self.settings.value("benchmark/scale_prompt", False, type=bool)
+            )
+
             self._update_autotune_grid_preview()
         except Exception as exc:
             self.log_output.append(f"[WARN] Failed to load autotune settings: {exc}")
@@ -151,6 +189,11 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.settings.setValue("benchmark/autotune/resume_session", self.autotune_resume_checkbox.isChecked())
             self.settings.setValue("benchmark/autotune/reset_session", self.autotune_reset_session_checkbox.isChecked())
             self.settings.setValue("benchmark/mode_tab", self.mode_tabs.currentIndex())
+            self.settings.setValue("benchmark/autotune/lane", self.lane_combo.currentIndex())
+            self.settings.setValue("benchmark/autotune/lane_custom_ctx", self.lane_custom_ctx_spin.value())
+            self.settings.setValue("benchmark/autotune/device_sweep", self.autotune_device_sweep_check.isChecked())
+            self.settings.setValue("benchmark/devices", self.device_combo.currentText())
+            self.settings.setValue("benchmark/scale_prompt", self.scale_prompt_check.isChecked())
         except Exception as exc:
             self.log_output.append(f"[WARN] Failed to save autotune settings: {exc}")
 
@@ -197,25 +240,30 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
 
         model_group = QGroupBox("Model")
         model_layout = QVBoxLayout()
+
+        model_path_row = QHBoxLayout()
         self.model_path_input = QLineEdit()
         self.model_path_input.setPlaceholderText("Path to GGUF model...")
         self.model_path_input.setMinimumWidth(0)
-        model_layout.addWidget(self.model_path_input)
+        model_path_row.addWidget(self.model_path_input, 1)
 
         self.model_browse_btn = QPushButton("Browse")
         self.model_browse_btn.setToolTip("Select a GGUF model file")
         self.model_browse_btn.clicked.connect(self.browse_model)
-        model_layout.addWidget(self.model_browse_btn)
+        model_path_row.addWidget(self.model_browse_btn)
+        model_layout.addLayout(model_path_row)
 
-        model_layout.addWidget(QLabel("Detected models:"))
+        model_list_row = QHBoxLayout()
+        model_list_row.addWidget(QLabel("Detected:"))
         self.model_combo = QComboBox()
         self.model_combo.currentTextChanged.connect(self.on_model_selected)
-        model_layout.addWidget(self.model_combo)
+        model_list_row.addWidget(self.model_combo, 1)
 
         self.model_refresh_btn = QPushButton("Refresh")
         self.model_refresh_btn.setToolTip("Refresh detected GGUF models")
         self.model_refresh_btn.clicked.connect(self.refresh_models_list)
-        model_layout.addWidget(self.model_refresh_btn)
+        model_list_row.addWidget(self.model_refresh_btn)
+        model_layout.addLayout(model_list_row)
 
         model_group.setLayout(model_layout)
         left_layout.addWidget(model_group)
@@ -232,9 +280,20 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         build_layout.addWidget(QLabel("Version:"), 1, 0)
         self.build_version_combo = QComboBox()
         build_layout.addWidget(self.build_version_combo, 1, 1)
+
+        build_layout.addWidget(QLabel("Devices:"), 2, 0)
+        self.device_combo = QComboBox()
+        self.device_combo.setToolTip(
+            "GPU selection for bench/autotune server runs (-dev/-sm/-ts).\n"
+            "Auto = backend default. Applies to both Single Bench and Auto-tune;\n"
+            "ignored by Auto-tune when the single-vs-dual sweep is enabled."
+        )
+        build_layout.addWidget(self.device_combo, 2, 1)
         build_layout.setColumnStretch(1, 1)
         build_group.setLayout(build_layout)
         left_layout.addWidget(build_group)
+        self._device_choices: list[tuple[str, list[str]]] = [("Auto — backend default", [])]
+        self._refresh_device_choices()
 
         # Mode sub-tabs: Single Bench and Auto-tune each carry their own
         # parameters and run button, so settings sit next to the action.
@@ -307,6 +366,15 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         single_layout.setColumnStretch(1, 1)
         single_page_layout.addLayout(single_layout)
 
+        self.scale_prompt_check = QCheckBox("Long-prompt mode: scale prompt to ctx (~80% fill)")
+        self.scale_prompt_check.setChecked(False)
+        self.scale_prompt_check.setToolTip(
+            "OFF: fixed 24576-char repo snapshot (~7K-token prompt), comparable\n"
+            "with existing history. ON: prompt scales to ~80% of the context —\n"
+            "use this to actually test long-prompt behavior at 50-100K."
+        )
+        single_page_layout.addWidget(self.scale_prompt_check)
+
         self.apply_best_btn = QPushButton("⭐ Apply Best Known")
         self.apply_best_btn.setToolTip(
             "Fill ctx/batch/ubatch/KV/spec from the best autotune result recorded for the selected model"
@@ -318,6 +386,23 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.run_bench_btn.setToolTip("Run a single benchmark with the parameters above")
         self.run_bench_btn.clicked.connect(self.run_benchmark)
         single_page_layout.addWidget(self.run_bench_btn)
+
+        validate_row = QHBoxLayout()
+        validate_row.addWidget(QLabel("Validate best at:"))
+        self.validate_ctx_combo = QComboBox()
+        for display, _ctx in self.VALIDATE_CTX_CHOICES:
+            self.validate_ctx_combo.addItem(display)
+        validate_row.addWidget(self.validate_ctx_combo)
+
+        self.validate_best_btn = QPushButton("🔬 Validate Best (long prompt)")
+        self.validate_best_btn.setToolTip(
+            "Stage 2 of the screen→validate flow: apply the model's best known\n"
+            "config, set the chosen long context, enable long-prompt mode and\n"
+            "run a single benchmark — one click."
+        )
+        self.validate_best_btn.clicked.connect(self.validate_best_at_long_ctx)
+        validate_row.addWidget(self.validate_best_btn, 1)
+        single_page_layout.addLayout(validate_row)
         single_page_layout.addStretch(1)
 
         self.mode_tabs.addTab(single_page, "▶ Single Bench")
@@ -327,18 +412,39 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         autotune_layout.setContentsMargins(6, 6, 6, 6)
         autotune_layout.setSpacing(8)
 
-        autotune_mode_info = QLabel(
-            "Fixed mode: ctx=131072, tasks=quick:triage_diff, runs=1, repo-snapshot chars=24576, "
-            "max_tokens=16, no-reuse, no-prime, thinking on. 130K may spill KV/context into system RAM."
+        lane_row = QHBoxLayout()
+        lane_row.addWidget(QLabel("Lane:"))
+        self.lane_combo = QComboBox()
+        for display, _ctx, _chars in self.AUTOTUNE_LANES:
+            self.lane_combo.addItem(display)
+        self.lane_combo.setToolTip(
+            "Context lane for this autotune run.\n"
+            "Screen 12K: fast preset hunt (short prompt, cheap prefill).\n"
+            "Long 50K/100K: prompt scales to ~80% of ctx — real long-prompt test.\n"
+            "Max 130K: legacy short-prompt KV-stress lane (comparable with history)."
         )
-        autotune_mode_info.setWordWrap(True)
-        autotune_mode_info.setStyleSheet("color: #b0b0b0;")
-        autotune_layout.addWidget(autotune_mode_info)
+        lane_row.addWidget(self.lane_combo, 1)
+
+        lane_row.addWidget(QLabel("ctx:"))
+        self.lane_custom_ctx_spin = QSpinBox()
+        self.lane_custom_ctx_spin.setRange(8192, 131072)
+        self.lane_custom_ctx_spin.setSingleStep(4096)
+        self.lane_custom_ctx_spin.setValue(32768)
+        self.lane_custom_ctx_spin.setEnabled(False)
+        self.lane_custom_ctx_spin.setToolTip("Context size for the Custom lane")
+        lane_row.addWidget(self.lane_custom_ctx_spin)
+        autotune_layout.addLayout(lane_row)
+
+        self.autotune_mode_info = QLabel("")
+        self.autotune_mode_info.setWordWrap(True)
+        self.autotune_mode_info.setStyleSheet("color: #b0b0b0;")
+        autotune_layout.addWidget(self.autotune_mode_info)
 
         batch_grid = QGridLayout()
         batch_grid.setHorizontalSpacing(8)
         batch_grid.setVerticalSpacing(6)
-        batch_grid.addWidget(QLabel("Batch min:"), 0, 0)
+
+        batch_grid.addWidget(QLabel("Batch:"), 0, 0)
         self.at_batch_min_spin = QSpinBox()
         self.at_batch_min_spin.setMinimum(32)
         self.at_batch_min_spin.setMaximum(8192)
@@ -346,58 +452,49 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.at_batch_min_spin.setSingleStep(32)
         self.at_batch_min_spin.setToolTip("Minimal batch value in sweep (>= 32)")
         batch_grid.addWidget(self.at_batch_min_spin, 0, 1)
-
-        batch_grid.addWidget(QLabel("Batch max:"), 1, 0)
+        batch_grid.addWidget(QLabel("–"), 0, 2)
         self.at_batch_max_spin = QSpinBox()
         self.at_batch_max_spin.setMinimum(32)
         self.at_batch_max_spin.setMaximum(8192)
         self.at_batch_max_spin.setValue(1024)
         self.at_batch_max_spin.setSingleStep(32)
         self.at_batch_max_spin.setToolTip("Maximal batch value in sweep")
-        batch_grid.addWidget(self.at_batch_max_spin, 1, 1)
-
-        batch_grid.addWidget(QLabel("Batch step:"), 2, 0)
+        batch_grid.addWidget(self.at_batch_max_spin, 0, 3)
+        batch_grid.addWidget(QLabel("step"), 0, 4)
         self.at_batch_step_spin = QSpinBox()
         self.at_batch_step_spin.setMinimum(1)
         self.at_batch_step_spin.setMaximum(8192)
         self.at_batch_step_spin.setValue(256)
         self.at_batch_step_spin.setSingleStep(1)
         self.at_batch_step_spin.setToolTip("Increment for batch range")
-        batch_grid.addWidget(self.at_batch_step_spin, 2, 1)
-        batch_grid.setColumnStretch(1, 1)
-        autotune_layout.addLayout(batch_grid)
+        batch_grid.addWidget(self.at_batch_step_spin, 0, 5)
 
-        ubatch_grid = QGridLayout()
-        ubatch_grid.setHorizontalSpacing(8)
-        ubatch_grid.setVerticalSpacing(6)
-        ubatch_grid.addWidget(QLabel("UBatch min:"), 0, 0)
+        batch_grid.addWidget(QLabel("UBatch:"), 1, 0)
         self.at_ubatch_min_spin = QSpinBox()
         self.at_ubatch_min_spin.setMinimum(32)
         self.at_ubatch_min_spin.setMaximum(8192)
         self.at_ubatch_min_spin.setValue(64)
         self.at_ubatch_min_spin.setSingleStep(32)
         self.at_ubatch_min_spin.setToolTip("Minimal ubatch value in sweep (>= 32)")
-        ubatch_grid.addWidget(self.at_ubatch_min_spin, 0, 1)
-
-        ubatch_grid.addWidget(QLabel("UBatch max:"), 1, 0)
+        batch_grid.addWidget(self.at_ubatch_min_spin, 1, 1)
+        batch_grid.addWidget(QLabel("–"), 1, 2)
         self.at_ubatch_max_spin = QSpinBox()
         self.at_ubatch_max_spin.setMinimum(32)
         self.at_ubatch_max_spin.setMaximum(8192)
         self.at_ubatch_max_spin.setValue(256)
         self.at_ubatch_max_spin.setSingleStep(32)
         self.at_ubatch_max_spin.setToolTip("Maximal ubatch value in sweep")
-        ubatch_grid.addWidget(self.at_ubatch_max_spin, 1, 1)
-
-        ubatch_grid.addWidget(QLabel("UBatch step:"), 2, 0)
+        batch_grid.addWidget(self.at_ubatch_max_spin, 1, 3)
+        batch_grid.addWidget(QLabel("step"), 1, 4)
         self.at_ubatch_step_spin = QSpinBox()
         self.at_ubatch_step_spin.setMinimum(1)
         self.at_ubatch_step_spin.setMaximum(8192)
         self.at_ubatch_step_spin.setValue(64)
         self.at_ubatch_step_spin.setSingleStep(1)
         self.at_ubatch_step_spin.setToolTip("Increment for ubatch range")
-        ubatch_grid.addWidget(self.at_ubatch_step_spin, 2, 1)
-        ubatch_grid.setColumnStretch(1, 1)
-        autotune_layout.addLayout(ubatch_grid)
+        batch_grid.addWidget(self.at_ubatch_step_spin, 1, 5)
+        batch_grid.setColumnStretch(6, 1)
+        autotune_layout.addLayout(batch_grid)
 
         kv_grid = QGridLayout()
         kv_grid.setHorizontalSpacing(14)
@@ -480,6 +577,31 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         custom_extra_row.addWidget(self.autotune_custom_extra_input)
         autotune_layout.addLayout(custom_extra_row)
 
+        self.autotune_device_sweep_check = QCheckBox("Sweep single vs dual GPU (adds device extra presets)")
+        self.autotune_device_sweep_check.setChecked(False)
+        self.autotune_device_sweep_check.setToolTip(
+            "Cross-multiplies every extra preset with two device configurations\n"
+            "(dual layer-split and primary-GPU-only), so one run tells you which\n"
+            "placement wins. Overrides the Devices selection above."
+        )
+        autotune_layout.addWidget(self.autotune_device_sweep_check)
+
+        quickset_row = QHBoxLayout()
+        quickset_row.addWidget(QLabel("Grid quick-set:"))
+        self.screen_grid_btn = QPushButton("Screen grid")
+        self.screen_grid_btn.setToolTip(
+            "Minimal stage-1 grid: batch=512, ubatch 64–256, kv=q4_0, spec=none, extras=base"
+        )
+        self.screen_grid_btn.clicked.connect(self._apply_screen_grid)
+        quickset_row.addWidget(self.screen_grid_btn)
+
+        self.full_grid_btn = QPushButton("Full grid")
+        self.full_grid_btn.setToolTip("Wide sweep: batch 256–1024, ubatch 64–256, kv q4_0+q8_0")
+        self.full_grid_btn.clicked.connect(self._apply_full_grid)
+        quickset_row.addWidget(self.full_grid_btn)
+        quickset_row.addStretch()
+        autotune_layout.addLayout(quickset_row)
+
         session_grid = QGridLayout()
         session_grid.setHorizontalSpacing(14)
         session_grid.setVerticalSpacing(4)
@@ -512,9 +634,12 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             (self.model_combo, 18),
             (self.build_backend_combo, 10),
             (self.build_version_combo, 18),
+            (self.device_combo, 18),
             (self.tasks_combo, 8),
             (self.spec_combo, 10),
             (self.kv_combo, 8),
+            (self.lane_combo, 18),
+            (self.validate_ctx_combo, 6),
         ]:
             self._configure_combo(combo, minimum_contents_length)
 
@@ -530,6 +655,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.at_ubatch_min_spin,
             self.at_ubatch_max_spin,
             self.at_ubatch_step_spin,
+            self.lane_custom_ctx_spin,
         ]:
             self._configure_spinbox(spin_box)
 
@@ -552,6 +678,14 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.autotune_resume_checkbox.toggled.connect(self.save_settings)
         self.autotune_reset_session_checkbox.toggled.connect(self.save_settings)
         self.mode_tabs.currentChanged.connect(lambda _index: self.save_settings())
+
+        self.lane_combo.currentIndexChanged.connect(self._on_lane_changed)
+        self.lane_custom_ctx_spin.valueChanged.connect(self._update_autotune_grid_preview)
+        self.lane_custom_ctx_spin.valueChanged.connect(self.save_settings)
+        self.autotune_device_sweep_check.toggled.connect(self._update_autotune_grid_preview)
+        self.autotune_device_sweep_check.toggled.connect(self.save_settings)
+        self.device_combo.currentIndexChanged.connect(lambda _index: self.save_settings())
+        self.scale_prompt_check.toggled.connect(self.save_settings)
         self._update_autotune_grid_preview()
 
         shared_btn_row = QHBoxLayout()
@@ -622,27 +756,27 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.delete_history_run_btn = QPushButton("Delete")
         self.delete_history_run_btn.setToolTip("Delete the selected autotune run from history")
         self.delete_history_run_btn.clicked.connect(self.delete_selected_preset)
-        presets_actions.addWidget(self.delete_history_run_btn, 1, 0)
+        presets_actions.addWidget(self.delete_history_run_btn, 0, 1)
 
         self.refresh_history_btn = QPushButton("Refresh")
         self.refresh_history_btn.setToolTip("Refresh autotune run history")
         self.refresh_history_btn.clicked.connect(self.refresh_saved_presets_table)
-        presets_actions.addWidget(self.refresh_history_btn, 2, 0)
+        presets_actions.addWidget(self.refresh_history_btn, 0, 2)
 
         self.open_history_log_btn = QPushButton("Open Log")
         self.open_history_log_btn.setToolTip("Open the log for the selected run")
         self.open_history_log_btn.clicked.connect(self.open_selected_history_log)
-        presets_actions.addWidget(self.open_history_log_btn, 3, 0)
+        presets_actions.addWidget(self.open_history_log_btn, 1, 0)
 
         self.copy_history_log_btn = QPushButton("Copy Log")
         self.copy_history_log_btn.setToolTip("Copy the selected run log content")
         self.copy_history_log_btn.clicked.connect(self.copy_selected_history_log_to_clipboard)
-        presets_actions.addWidget(self.copy_history_log_btn, 4, 0)
+        presets_actions.addWidget(self.copy_history_log_btn, 1, 1)
 
         self.copy_history_row_btn = QPushButton("Copy Row")
         self.copy_history_row_btn.setToolTip("Copy the selected run data")
         self.copy_history_row_btn.clicked.connect(self.copy_selected_history_row_to_clipboard)
-        presets_actions.addWidget(self.copy_history_row_btn, 5, 0)
+        presets_actions.addWidget(self.copy_history_row_btn, 1, 2)
 
         presets_layout.addLayout(presets_actions)
 
@@ -698,9 +832,11 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.build_backend_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.build_backend_combo.blockSignals(False)
         self.refresh_versions_for_backend(select_latest=True)
+        self._refresh_device_choices()
 
     def _on_backend_changed(self, *_args):
         self.refresh_versions_for_backend(select_latest=True)
+        self._refresh_device_choices()
 
     def refresh_versions_for_backend(self, select_latest: bool):
         backend_display = self.build_backend_combo.currentText().strip()
@@ -945,6 +1081,9 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         label = f"gui-bench-{model.stem}-{stamp}"
         spec_mode = self.spec_combo.currentText()
         server_extra = self._active_lane_base_server_extra(self.ctx_spin.value())
+        device_args = self._selected_device_args()
+        if device_args:
+            server_extra.extend(device_args)
         spec_cli_mode = "draft-mtp" if spec_mode == "mtp" else spec_mode
         spec_extra = [f"--spec-type {spec_cli_mode}"]
         if spec_mode in {"ngram-mod", "ngram-mtp"}:
@@ -999,7 +1138,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             "--real-context-mode",
             "repo-snapshot",
             "--real-context-chars",
-            "24576",
+            str(self.ctx_spin.value() * 3 if self.scale_prompt_check.isChecked() else 24576),
             "--real-context-safe-fill",
             "0.88",
             "--no-reuse",
@@ -1011,6 +1150,9 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
 
         if self.tasks_combo.currentText() == "quick":
             command.extend(["--task-ids", "triage_diff"])
+
+        if self.ctx_spin.value() > 16384 and self._bench_supports_flag("--allow-ctx-above-16k"):
+            command.append("--allow-ctx-above-16k")
 
         bench_env = self._bench_env_overrides()
 
@@ -1046,9 +1188,10 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             QMessageBox.warning(self, "Auto-tune", "llama-server not found for selected build version")
             return
 
-        profile_key = "ctx130k-only"
-        autotune_min_ctx = 131072
-        autotune_ctx_values = "131072"
+        lane_ctx, lane_chars = self._selected_lane()
+        profile_key = f"ctx{lane_ctx // 1024}k"
+        autotune_min_ctx = lane_ctx
+        autotune_ctx_values = str(lane_ctx)
         batch_values = self._build_autotune_range_values(
             self.at_batch_min_spin.value(),
             self.at_batch_max_spin.value(),
@@ -1095,13 +1238,14 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         if not extra_presets:
             QMessageBox.warning(self, "Auto-tune", "No valid extra presets resolved for autotune.")
             return
+        extra_presets = self._apply_device_sweep_to_extra_presets(extra_presets)
 
         autotune_extra_presets = "||".join(extra_presets)
         autotune_kv_values = ",".join(kv_values)
         autotune_tasks = "quick"
         autotune_task_ids = "triage_diff"
         autotune_max_tokens = "16"
-        autotune_real_context_chars = "24576"
+        autotune_real_context_chars = str(lane_chars)
 
         ctx_count = len([v for v in autotune_ctx_values.split(",") if v.strip()])
         batch_count = len(batch_values)
@@ -1113,10 +1257,15 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
 
         run_stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         label = f"gui-autotune-{model.stem}-{run_stamp}"
-        session_label = f"gui-autotune-{model.stem}"
+        # session checkpoint is per model AND lane: resuming a 12K session into
+        # a 100K run would mix incompatible config lists
+        session_label = f"gui-autotune-{model.stem}-{profile_key}"
         autotune_session_file = self.project_root / "build_logs" / "agent-workload" / f"{session_label}-autotune-session.json"
         compatibility_notes: list[str] = []
         base_server_extra = self._active_lane_base_server_extra(autotune_min_ctx)
+        # global device selection applies unless the sweep provides per-config devices
+        if not self.autotune_device_sweep_check.isChecked():
+            base_server_extra = base_server_extra + self._selected_device_args()
 
         command = [
             sys.executable,
@@ -1246,7 +1395,11 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.log_output.clear()
         self.log_output.append(f"[INFO] Starting autotune for {model.name}")
         self.log_output.append(f"[INFO] Build ID: {build_id or '-'}")
-        self.log_output.append(f"[INFO] Autotune profile: 130K fixed, configs: {config_count}")
+        self.log_output.append(
+            f"[INFO] Lane: ctx={lane_ctx}, prompt chars={lane_chars}, configs: {config_count}"
+        )
+        if self.autotune_device_sweep_check.isChecked() and self._device_sweep_presets():
+            self.log_output.append("[INFO] Device sweep: single vs dual GPU (per-config extra presets)")
         if bench_env:
             env_summary = ", ".join(f"{key}={value}" for key, value in sorted(bench_env.items()))
             self.log_output.append(f"[INFO] Env overrides: {env_summary}")
@@ -1390,6 +1543,136 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             return ["--no-mmap"]
         return []
 
+    # -- device selection -------------------------------------------------------
+    def _backend_device_choices(self) -> list[tuple]:
+        backend_key = self._backend_key_from_display(self.build_backend_combo.currentText().strip()).lower()
+        if backend_key == "rocm":
+            return ROCM_DEVICE_CHOICES
+        if backend_key == "vulkan":
+            return VULKAN_DEVICE_CHOICES
+        return []
+
+    def _refresh_device_choices(self) -> None:
+        choices: list[tuple[str, list[str]]] = [("Auto — backend default", [])]
+        for choice in self._backend_device_choices():
+            choices.append((choice[0], device_choice_args(choice)))
+
+        previous = self.device_combo.currentText()
+        self._device_choices = choices
+        self.device_combo.blockSignals(True)
+        self.device_combo.clear()
+        for display, _args in choices:
+            self.device_combo.addItem(display)
+        idx = self.device_combo.findText(previous)
+        self.device_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.device_combo.blockSignals(False)
+
+    def _selected_device_args(self) -> list[str]:
+        idx = self.device_combo.currentIndex()
+        if 0 <= idx < len(self._device_choices):
+            return list(self._device_choices[idx][1])
+        return []
+
+    def _device_sweep_presets(self) -> list[tuple[str, str]]:
+        """(name, server-args) pairs for the single-vs-dual autotune sweep."""
+        backend_key = self._backend_key_from_display(self.build_backend_combo.currentText().strip()).lower()
+        if backend_key == "rocm":
+            return [
+                ("dual", "-dev ROCm1,ROCm0 -sm layer -ts 1,1"),
+                ("single", "-dev ROCm1 -sm none"),
+            ]
+        if backend_key == "vulkan":
+            return [
+                ("dual", "-dev Vulkan0,Vulkan1 -sm layer -ts 1,1"),
+                ("single", "-dev Vulkan0 -sm none"),
+            ]
+        return []
+
+    def _apply_device_sweep_to_extra_presets(self, extra_presets: list[str]) -> list[str]:
+        """Cross-multiply extra presets with device sweep configs when enabled."""
+        if not self.autotune_device_sweep_check.isChecked():
+            return extra_presets
+        device_presets = self._device_sweep_presets()
+        if not device_presets:
+            return extra_presets
+
+        combined: list[str] = []
+        for item in extra_presets:
+            name, sep, args = item.partition("::")
+            for device_name, device_args in device_presets:
+                combo_name = device_name if name == "base" else f"{name}+{device_name}"
+                combo_args = f"{args} {device_args}".strip() if sep else device_args
+                combined.append(f"{combo_name}::{combo_args}")
+        return combined
+
+    # -- context lanes ----------------------------------------------------------
+    def _selected_lane(self) -> tuple[int, int]:
+        """(ctx, repo-snapshot chars) of the active autotune lane."""
+        idx = self.lane_combo.currentIndex()
+        _display, ctx, chars = self.AUTOTUNE_LANES[idx]
+        if ctx == 0:  # Custom
+            ctx = self.lane_custom_ctx_spin.value()
+            chars = 24576 if ctx <= 16384 else ctx * 3
+        return ctx, chars
+
+    def _on_lane_changed(self, *_args) -> None:
+        is_custom = self.AUTOTUNE_LANES[self.lane_combo.currentIndex()][1] == 0
+        self.lane_custom_ctx_spin.setEnabled(is_custom)
+        self._update_autotune_grid_preview()
+        self.save_settings()
+
+    def _apply_screen_grid(self) -> None:
+        """Stage-1 minimal grid for a fast preset hunt."""
+        self.at_batch_min_spin.setValue(512)
+        self.at_batch_max_spin.setValue(512)
+        self.at_batch_step_spin.setValue(256)
+        self.at_ubatch_min_spin.setValue(64)
+        self.at_ubatch_max_spin.setValue(256)
+        self.at_ubatch_step_spin.setValue(64)
+        for name, checkbox in self.autotune_kv_checks.items():
+            checkbox.setChecked(name == "q4_0")
+        for name, checkbox in self.autotune_spec_checks.items():
+            checkbox.setChecked(name == "none")
+        for name, checkbox in self.autotune_extra_checks.items():
+            checkbox.setChecked(name == "base")
+        self.status_label.setText("Screen grid applied: 4 configs (b=512, ub 64–256, q4_0, spec=none)")
+
+    def _apply_full_grid(self) -> None:
+        """Wider stage-1 grid when the screen grid is too coarse."""
+        self.at_batch_min_spin.setValue(256)
+        self.at_batch_max_spin.setValue(1024)
+        self.at_batch_step_spin.setValue(256)
+        self.at_ubatch_min_spin.setValue(64)
+        self.at_ubatch_max_spin.setValue(256)
+        self.at_ubatch_step_spin.setValue(64)
+        for name, checkbox in self.autotune_kv_checks.items():
+            checkbox.setChecked(name in ("q4_0", "q8_0"))
+        self.status_label.setText("Full grid applied: batch 256–1024, ubatch 64–256, kv q4_0+q8_0")
+
+    def validate_best_at_long_ctx(self) -> None:
+        """Stage 2 of screen→validate: run the best known config at long ctx."""
+        model = self._resolve_selected_model()
+        if model is None:
+            QMessageBox.warning(self, "Validate", "Select a model first")
+            return
+        record = self._best_known_config_for_model(model.name)
+        if record is None:
+            QMessageBox.warning(
+                self,
+                "Validate",
+                f"No autotune history for {model.name}.\nRun a screening autotune first (Screen 12K lane).",
+            )
+            return
+
+        self.apply_best_known_config()
+        _display, ctx = self.VALIDATE_CTX_CHOICES[self.validate_ctx_combo.currentIndex()]
+        self.ctx_spin.setValue(ctx)
+        self.scale_prompt_check.setChecked(True)
+        self.log_output.append(
+            f"[INFO] Validate stage: best known config at ctx={ctx}, long-prompt mode on"
+        )
+        self.run_benchmark()
+
     @staticmethod
     def _vulkan_runtime_env() -> dict[str, str]:
         return {
@@ -1416,7 +1699,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
 
         kv_values = self._selected_autotune_kv_values()
         selected_spec_values = self._selected_autotune_spec_values()
-        extra_presets = self._selected_autotune_extra_presets()
+        extra_presets = self._apply_device_sweep_to_extra_presets(self._selected_autotune_extra_presets())
 
         kv_text = ",".join(kv_values) if kv_values else "-"
         spec_text = ",".join(selected_spec_values) if selected_spec_values else "-"
@@ -1450,6 +1733,21 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             else 0
         )
 
+        lane_ctx, lane_chars = self._selected_lane()
+        # rough per-config cost: server load + prefill (~500 tok/s aggregate)
+        prompt_tokens = min(int(lane_chars / 3.7), int(lane_ctx * 0.88))
+        per_config_sec = 75 + prompt_tokens / 500
+        total_min = total_configs * per_config_sec / 60.0
+        if total_min >= 90:
+            eta_text = f"~{total_min / 60.0:.1f} h"
+        else:
+            eta_text = f"~{max(1, int(round(total_min)))} min"
+
+        self.autotune_mode_info.setText(
+            f"Lane: ctx={lane_ctx}, repo-snapshot chars={lane_chars} (~{prompt_tokens} prompt tokens), "
+            "tasks=quick:triage_diff, runs=1, max_tokens=16, no-reuse, no-prime, thinking on."
+        )
+
         lines = [
             f"Batch values: {self._format_values_preview(batch_values)}",
             f"UBatch values: {self._format_values_preview(ubatch_values)}",
@@ -1457,8 +1755,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             f"Spec modes (selected): {spec_text}",
             f"Extra presets: {extra_preview or '-'}",
             f"Estimated configs: {total_configs} (ctx=1 x kv x batch x ubatch x spec x extra)",
-            "Runtime lane: ctx=131072 repo-snapshot chars=24576, no-reuse, no-prime, thinking on",
-            "Hint: for the active 130K quick lane use batch 256..1024 and ubatch 64..256",
+            f"Estimated runtime: {eta_text} (rough, ~{int(per_config_sec)}s/config)",
         ]
 
         if has_runtime_context:

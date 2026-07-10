@@ -31,17 +31,40 @@ _TAB_TITLES = {
     BACKEND_CPU:    "🧠 CPU",
 }
 
+# (display, -dev value or None for all, -sm value or None, -ts value or None)
+# shared with the bench tab so bench/autotune runs get the same device options
+ROCM_DEVICE_CHOICES = [
+    ("All GPUs — layer split (default order)", None,          "layer", None),
+    ("ROCm1 only — diagnostics",               "ROCm1",      "none",  None),
+    ("ROCm0 only — diagnostics",               "ROCm0",      "none",  None),
+    ("ROCm1,ROCm0 — layer split (MTP)",         "ROCm1,ROCm0", "layer", "1,1"),
+]
+
+VULKAN_DEVICE_CHOICES = [
+    ("All GPUs — layer split",                   None,              "layer", None),
+    ("Vulkan0 only — diagnostics",               "Vulkan0",         "none",  None),
+    ("Vulkan1 only — diagnostics",               "Vulkan1",         "none",  None),
+    ("Vulkan0,Vulkan1 — layer split (MTP)",      "Vulkan0,Vulkan1", "layer", "1,1"),
+]
+
+
+def device_choice_args(choice: tuple) -> list[str]:
+    """CLI args (-dev/-sm/-ts) for one device choice tuple."""
+    _display, dev, sm, ts = choice
+    out: list[str] = []
+    if dev:
+        out.extend(["-dev", dev])
+    if sm:
+        out.extend(["-sm", sm])
+    if ts:
+        out.extend(["-ts", ts])
+    return out
+
 
 class _RocmPanel(QWidget):
     """ROCm-specific launch parameters (2x RX 9070 XT rig defaults)."""
 
-    # (display, -dev value or None for all, -sm value or None, -ts value or None)
-    DEVICE_CHOICES = [
-        ("All GPUs — layer split (default order)", None,          "layer", None),
-        ("ROCm1 only — diagnostics",               "ROCm1",      "none",  None),
-        ("ROCm0 only — diagnostics",               "ROCm0",      "none",  None),
-        ("ROCm1,ROCm0 — layer split (MTP)",         "ROCm1,ROCm0", "layer", "1,1"),
-    ]
+    DEVICE_CHOICES = ROCM_DEVICE_CHOICES
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -97,15 +120,7 @@ class _RocmPanel(QWidget):
         layout.addStretch(1)
 
     def args(self) -> list[str]:
-        out: list[str] = []
-        _display, dev, sm, ts = self.DEVICE_CHOICES[self.device_combo.currentIndex()]
-        if dev:
-            out.extend(["-dev", dev])
-        if sm:
-            out.extend(["-sm", sm])
-        if ts:
-            out.extend(["-ts", ts])
-        return out
+        return device_choice_args(self.DEVICE_CHOICES[self.device_combo.currentIndex()])
 
     def env(self) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -137,13 +152,7 @@ class _RocmPanel(QWidget):
 class _VulkanPanel(QWidget):
     """Vulkan-specific launch parameters. MTP is supported on Vulkan too."""
 
-    # (display, -dev value or None for all, -sm value or None, -ts value or None)
-    DEVICE_CHOICES = [
-        ("All GPUs — layer split",                   None,              "layer", None),
-        ("Vulkan0 only — diagnostics",               "Vulkan0",         "none",  None),
-        ("Vulkan1 only — diagnostics",               "Vulkan1",         "none",  None),
-        ("Vulkan0,Vulkan1 — layer split (MTP)",      "Vulkan0,Vulkan1", "layer", "1,1"),
-    ]
+    DEVICE_CHOICES = VULKAN_DEVICE_CHOICES
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
