@@ -5684,8 +5684,45 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
 static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
     bool graph_evaluated_or_captured = false;
-    const bool trace_node_timing = std::getenv("GGML_TRACE_CUDA_NODE_TIMING") != nullptr;
+    const bool trace_node_timing_requested = std::getenv("GGML_TRACE_CUDA_NODE_TIMING") != nullptr;
+    static std::atomic<uint64_t> trace_node_timing_graph_counter{0};
+    const uint64_t trace_node_timing_graph_idx =
+        trace_node_timing_requested ? trace_node_timing_graph_counter.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
+    uint64_t trace_node_timing_skip_graphs = 0;
+    uint64_t trace_node_timing_max_graphs = 0;
+    if (trace_node_timing_requested) {
+        if (const char * env = std::getenv("GGML_TRACE_CUDA_NODE_TIMING_SKIP_GRAPHS")) {
+            trace_node_timing_skip_graphs = std::strtoull(env, nullptr, 10);
+        }
+        if (const char * env = std::getenv("GGML_TRACE_CUDA_NODE_TIMING_MAX_GRAPHS")) {
+            trace_node_timing_max_graphs = std::strtoull(env, nullptr, 10);
+        }
+    }
+    const bool trace_node_timing_graph_all =
+        trace_node_timing_requested && std::getenv("GGML_TRACE_CUDA_NODE_TIMING_GRAPH_ALL") != nullptr;
+    const bool trace_node_timing =
+        trace_node_timing_requested &&
+        trace_node_timing_graph_idx > trace_node_timing_skip_graphs &&
+        (trace_node_timing_max_graphs == 0 ||
+         trace_node_timing_graph_idx <= trace_node_timing_skip_graphs + trace_node_timing_max_graphs);
     const bool trace_node_timing_sync = trace_node_timing && std::getenv("GGML_TRACE_CUDA_NODE_TIMING_SYNC") != nullptr;
+    double trace_node_timing_min_ms = 0.0;
+    if (trace_node_timing) {
+        if (const char * env = std::getenv("GGML_TRACE_CUDA_NODE_TIMING_MIN_MS")) {
+            trace_node_timing_min_ms = std::max(0.0, std::atof(env));
+        }
+    }
+    if (trace_node_timing || trace_node_timing_graph_all) {
+        GGML_LOG_INFO(
+            "GGML_TRACE_CUDA_NODE_TIMING_GRAPH: graph_idx=%llu n_nodes=%d active=%d skip_graphs=%llu max_graphs=%llu min_ms=%.3f sync=%d\n",
+            (unsigned long long) trace_node_timing_graph_idx,
+            cgraph->n_nodes,
+            trace_node_timing ? 1 : 0,
+            (unsigned long long) trace_node_timing_skip_graphs,
+            (unsigned long long) trace_node_timing_max_graphs,
+            trace_node_timing_min_ms,
+            trace_node_timing_sync ? 1 : 0);
+    }
 
     // flag used to determine whether it is an integrated_gpu
     const bool integrated            = ggml_cuda_info().devices[cuda_ctx->device].integrated;
@@ -5852,42 +5889,45 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                             sync_ms = ggml_cuda_trace_stream_sync(cuda_ctx->stream(), sync_applied, capture_active);
                         }
 
-                        GGML_LOG_INFO(
-                            "GGML_TRACE_CUDA_NODE_TIMING: idx=%d kind=fused skip=%d op=%s name=%s stream=%d type=%s src0_type=%s src1_type=%s buf=%s src0_buf=%s src1_buf=%s ne=(%lld,%lld,%lld,%lld) off=%lld src0_off=%lld src1_off=%lld nbytes=%llu src0_nbytes=%llu src1_nbytes=%llu data_mod64k=%llu data_mod2m=%llu src0_mod64k=%llu src0_mod2m=%llu src1_mod64k=%llu src1_mod2m=%llu pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
-                            i,
-                            nodes_to_skip,
-                            ggml_op_name(node->op),
-                            node->name,
-                            cuda_ctx->curr_stream_no,
-                            ggml_cuda_trace_tensor_type_name(node),
-                            ggml_cuda_trace_tensor_type_name(node->src[0]),
-                            ggml_cuda_trace_tensor_type_name(node->src[1]),
-                            ggml_cuda_trace_tensor_buffer_name(node),
-                            ggml_cuda_trace_tensor_buffer_name(node->src[0]),
-                            ggml_cuda_trace_tensor_buffer_name(node->src[1]),
-                            (long long) node->ne[0],
-                            (long long) node->ne[1],
-                            (long long) node->ne[2],
-                            (long long) node->ne[3],
-                            ggml_cuda_trace_tensor_buffer_offset(node),
-                            ggml_cuda_trace_tensor_buffer_offset(node->src[0]),
-                            ggml_cuda_trace_tensor_buffer_offset(node->src[1]),
-                            ggml_cuda_trace_tensor_nbytes(node),
-                            ggml_cuda_trace_tensor_nbytes(node->src[0]),
-                            ggml_cuda_trace_tensor_nbytes(node->src[1]),
-                            ggml_cuda_trace_tensor_ptr_mod(node, 64ull*1024),
-                            ggml_cuda_trace_tensor_ptr_mod(node, 2ull*1024*1024),
-                            ggml_cuda_trace_tensor_ptr_mod(node->src[0], 64ull*1024),
-                            ggml_cuda_trace_tensor_ptr_mod(node->src[0], 2ull*1024*1024),
-                            ggml_cuda_trace_tensor_ptr_mod(node->src[1], 64ull*1024),
-                            ggml_cuda_trace_tensor_ptr_mod(node->src[1], 2ull*1024*1024),
-                            node_pre_sync_applied ? 1 : 0,
-                            sync_applied ? 1 : 0,
-                            capture_active || node_pre_capture_active,
-                            node_pre_sync_ms,
-                            enqueue_ms,
-                            sync_ms,
-                            enqueue_ms + sync_ms);
+                        const double total_ms = enqueue_ms + sync_ms;
+                        if (total_ms >= trace_node_timing_min_ms) {
+                            GGML_LOG_INFO(
+                                "GGML_TRACE_CUDA_NODE_TIMING: idx=%d kind=fused skip=%d op=%s name=%s stream=%d type=%s src0_type=%s src1_type=%s buf=%s src0_buf=%s src1_buf=%s ne=(%lld,%lld,%lld,%lld) off=%lld src0_off=%lld src1_off=%lld nbytes=%llu src0_nbytes=%llu src1_nbytes=%llu data_mod64k=%llu data_mod2m=%llu src0_mod64k=%llu src0_mod2m=%llu src1_mod64k=%llu src1_mod2m=%llu pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+                                i,
+                                nodes_to_skip,
+                                ggml_op_name(node->op),
+                                node->name,
+                                cuda_ctx->curr_stream_no,
+                                ggml_cuda_trace_tensor_type_name(node),
+                                ggml_cuda_trace_tensor_type_name(node->src[0]),
+                                ggml_cuda_trace_tensor_type_name(node->src[1]),
+                                ggml_cuda_trace_tensor_buffer_name(node),
+                                ggml_cuda_trace_tensor_buffer_name(node->src[0]),
+                                ggml_cuda_trace_tensor_buffer_name(node->src[1]),
+                                (long long) node->ne[0],
+                                (long long) node->ne[1],
+                                (long long) node->ne[2],
+                                (long long) node->ne[3],
+                                ggml_cuda_trace_tensor_buffer_offset(node),
+                                ggml_cuda_trace_tensor_buffer_offset(node->src[0]),
+                                ggml_cuda_trace_tensor_buffer_offset(node->src[1]),
+                                ggml_cuda_trace_tensor_nbytes(node),
+                                ggml_cuda_trace_tensor_nbytes(node->src[0]),
+                                ggml_cuda_trace_tensor_nbytes(node->src[1]),
+                                ggml_cuda_trace_tensor_ptr_mod(node, 64ull*1024),
+                                ggml_cuda_trace_tensor_ptr_mod(node, 2ull*1024*1024),
+                                ggml_cuda_trace_tensor_ptr_mod(node->src[0], 64ull*1024),
+                                ggml_cuda_trace_tensor_ptr_mod(node->src[0], 2ull*1024*1024),
+                                ggml_cuda_trace_tensor_ptr_mod(node->src[1], 64ull*1024),
+                                ggml_cuda_trace_tensor_ptr_mod(node->src[1], 2ull*1024*1024),
+                                node_pre_sync_applied ? 1 : 0,
+                                sync_applied ? 1 : 0,
+                                capture_active || node_pre_capture_active,
+                                node_pre_sync_ms,
+                                enqueue_ms,
+                                sync_ms,
+                                total_ms);
+                        }
                     }
                     i += nodes_to_skip;
                     continue;
@@ -5921,41 +5961,44 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                         sync_ms = ggml_cuda_trace_stream_sync(cuda_ctx->stream(), sync_applied, capture_active);
                     }
 
-                    GGML_LOG_INFO(
-                        "GGML_TRACE_CUDA_NODE_TIMING: idx=%d kind=forward skip=0 op=%s name=%s stream=%d type=%s src0_type=%s src1_type=%s buf=%s src0_buf=%s src1_buf=%s ne=(%lld,%lld,%lld,%lld) off=%lld src0_off=%lld src1_off=%lld nbytes=%llu src0_nbytes=%llu src1_nbytes=%llu data_mod64k=%llu data_mod2m=%llu src0_mod64k=%llu src0_mod2m=%llu src1_mod64k=%llu src1_mod2m=%llu pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
-                        i,
-                        ggml_op_name(node->op),
-                        node->name,
-                        cuda_ctx->curr_stream_no,
-                        ggml_cuda_trace_tensor_type_name(node),
-                        ggml_cuda_trace_tensor_type_name(node->src[0]),
-                        ggml_cuda_trace_tensor_type_name(node->src[1]),
-                        ggml_cuda_trace_tensor_buffer_name(node),
-                        ggml_cuda_trace_tensor_buffer_name(node->src[0]),
-                        ggml_cuda_trace_tensor_buffer_name(node->src[1]),
-                        (long long) node->ne[0],
-                        (long long) node->ne[1],
-                        (long long) node->ne[2],
-                        (long long) node->ne[3],
-                        ggml_cuda_trace_tensor_buffer_offset(node),
-                        ggml_cuda_trace_tensor_buffer_offset(node->src[0]),
-                        ggml_cuda_trace_tensor_buffer_offset(node->src[1]),
-                        ggml_cuda_trace_tensor_nbytes(node),
-                        ggml_cuda_trace_tensor_nbytes(node->src[0]),
-                        ggml_cuda_trace_tensor_nbytes(node->src[1]),
-                        ggml_cuda_trace_tensor_ptr_mod(node, 64ull*1024),
-                        ggml_cuda_trace_tensor_ptr_mod(node, 2ull*1024*1024),
-                        ggml_cuda_trace_tensor_ptr_mod(node->src[0], 64ull*1024),
-                        ggml_cuda_trace_tensor_ptr_mod(node->src[0], 2ull*1024*1024),
-                        ggml_cuda_trace_tensor_ptr_mod(node->src[1], 64ull*1024),
-                        ggml_cuda_trace_tensor_ptr_mod(node->src[1], 2ull*1024*1024),
-                        node_pre_sync_applied ? 1 : 0,
-                        sync_applied ? 1 : 0,
-                        capture_active || node_pre_capture_active,
-                        node_pre_sync_ms,
-                        enqueue_ms,
-                        sync_ms,
-                        enqueue_ms + sync_ms);
+                    const double total_ms = enqueue_ms + sync_ms;
+                    if (total_ms >= trace_node_timing_min_ms) {
+                        GGML_LOG_INFO(
+                            "GGML_TRACE_CUDA_NODE_TIMING: idx=%d kind=forward skip=0 op=%s name=%s stream=%d type=%s src0_type=%s src1_type=%s buf=%s src0_buf=%s src1_buf=%s ne=(%lld,%lld,%lld,%lld) off=%lld src0_off=%lld src1_off=%lld nbytes=%llu src0_nbytes=%llu src1_nbytes=%llu data_mod64k=%llu data_mod2m=%llu src0_mod64k=%llu src0_mod2m=%llu src1_mod64k=%llu src1_mod2m=%llu pre_sync_applied=%d sync_applied=%d capture=%d pre_sync_ms=%.3f enqueue_ms=%.3f sync_ms=%.3f total_ms=%.3f\n",
+                            i,
+                            ggml_op_name(node->op),
+                            node->name,
+                            cuda_ctx->curr_stream_no,
+                            ggml_cuda_trace_tensor_type_name(node),
+                            ggml_cuda_trace_tensor_type_name(node->src[0]),
+                            ggml_cuda_trace_tensor_type_name(node->src[1]),
+                            ggml_cuda_trace_tensor_buffer_name(node),
+                            ggml_cuda_trace_tensor_buffer_name(node->src[0]),
+                            ggml_cuda_trace_tensor_buffer_name(node->src[1]),
+                            (long long) node->ne[0],
+                            (long long) node->ne[1],
+                            (long long) node->ne[2],
+                            (long long) node->ne[3],
+                            ggml_cuda_trace_tensor_buffer_offset(node),
+                            ggml_cuda_trace_tensor_buffer_offset(node->src[0]),
+                            ggml_cuda_trace_tensor_buffer_offset(node->src[1]),
+                            ggml_cuda_trace_tensor_nbytes(node),
+                            ggml_cuda_trace_tensor_nbytes(node->src[0]),
+                            ggml_cuda_trace_tensor_nbytes(node->src[1]),
+                            ggml_cuda_trace_tensor_ptr_mod(node, 64ull*1024),
+                            ggml_cuda_trace_tensor_ptr_mod(node, 2ull*1024*1024),
+                            ggml_cuda_trace_tensor_ptr_mod(node->src[0], 64ull*1024),
+                            ggml_cuda_trace_tensor_ptr_mod(node->src[0], 2ull*1024*1024),
+                            ggml_cuda_trace_tensor_ptr_mod(node->src[1], 64ull*1024),
+                            ggml_cuda_trace_tensor_ptr_mod(node->src[1], 2ull*1024*1024),
+                            node_pre_sync_applied ? 1 : 0,
+                            sync_applied ? 1 : 0,
+                            capture_active || node_pre_capture_active,
+                            node_pre_sync_ms,
+                            enqueue_ms,
+                            sync_ms,
+                            total_ms);
+                    }
                 }
 
                 if (!is_concurrent_event_active) {

@@ -38,5 +38,8 @@ if [ -f "$STRAWBERRY_BIN/libgomp-1.dll" ]; then
     cp -u "$STRAWBERRY_BIN/libgomp-1.dll" "$VULKAN_BIN/"
 fi
 
-echo "Done. Verify: ./$VULKAN_BIN/llama-server.exe --version"
-"$VULKAN_BIN/llama-server.exe" --version
+echo "Done. Skipped llama-server.exe --version to avoid touching GPU drivers after staging."
+echo "Set STAGE_VULKAN_VERIFY=1 to run the old post-stage version check manually."
+if [ "${STAGE_VULKAN_VERIFY:-0}" = "1" ]; then
+    "$VULKAN_BIN/llama-server.exe" --version
+fi

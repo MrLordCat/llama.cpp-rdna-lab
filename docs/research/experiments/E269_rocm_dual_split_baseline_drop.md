@@ -102,3 +102,65 @@ Rejected code/diagnostic probes:
   - Investigate why HIP direct peer-copy produces immediate EOS/empty output before considering any peer-copy default.
   - Consider a pinned host-stage buffer or lower-sync host staging, but only behind an A/B gate; the current keep patch recovers a small safe slice, not the whole single-GPU gap.
   - Re-test the kept patch on the real `ctx=131072` large-prompt lane before making a 130k headline claim.
+
+## 2026-07-10 long-context trace update
+
+Context:
+
+- User reported that decode falls at high `ubatch` for both ROCm and Vulkan, including `spec=none`.
+- New controlled ROCm traces used small scouts first, then the GUI-like long prompt lane:
+  - model: `models/Qwen3.6-27B-Q3_K_S_mtp.gguf` for long prompt, `--spec-type none`
+  - ctx: `49152`
+  - batch/ubatch: `8192/1024`
+  - real prompt: `~38950-38999` tokens after safe cap
+  - dual: `-dev ROCm1,ROCm0 -sm layer -ts 1,1`
+
+Key measurements:
+
+| Lane | Label | Device/split | Prompt tok/s | Decode tok/s | Interpretation |
+| --- | --- | --- | ---: | ---: | --- |
+| small single | `trace-small-rocm1-none-ub1024-r1` | `ROCm1` | `1017.86` | `29.04` | high ubatch does not harm decode on one GPU |
+| small dual layer | `trace-small-rocm-dual-none-ub1024-r1` | `ROCm1,ROCm0 layer` | `952.47` | `25.14` | layer split costs decode even on small ctx |
+| long single | `trace-long-rocm1-none-ub1024-r1` | `ROCm1` | `684.43` | `23.73` | single fits this 49k/q8 lane but prefill is slower |
+| long dual layer | `trace-long-rocm-dual-mtpg-none-ub1024-r1` | `ROCm1,ROCm0 layer` | `652.30` | `20.92` | synced timing trace; long dual decode remains lower |
+| tensor split f16 KV | `trace-small-rocm-dual-tensor-none-f16kv-ub1024-r1` | `ROCm1,ROCm0 tensor` | `185.94` | `7.28` | ROCm tensor split starts with f16 KV but is not usable on this lane |
+
+Scheduler split trace:
+
+- Added env-gated split timing in `ggml_backend_sched_compute_splits()`:
+  - `GGML_SCHED_SPLIT_TIMING=1`
+  - `GGML_SCHED_SPLIT_TIMING_SYNC=1`
+- Diagnostic artifact:
+  - `build_logs/agent-workload/trace-long-rocm-dual-split-tg-ub1024-r1.server.log`
+- Clean TG rows after `sched_release_inactive_pp`:
+  - token 1:
+    - ROCm1 split: `copy=1.381 ms`, `compute=6.600 ms`, `compute_sync=22.712 ms`, `total=30.693 ms`
+    - ROCm0 split: `copy=1.301 ms`, `compute=5.978 ms`, `compute_sync=19.840 ms`, `total=27.120 ms`
+  - token 2:
+    - ROCm1 split: `total=28.205 ms`
+    - ROCm0 split: `total=28.185 ms`
+  - token 3:
+    - ROCm1 split: `total=23.376 ms`
+    - ROCm0 split: `total=23.692 ms`
+- Root cause: with `-sm layer`, TG is serial across devices. One token runs the first layer block on ROCm1, then the second layer block on ROCm0. The per-token cost is approximately the sum of both halves plus small copy overhead, not the max of both halves. That explains why dual split helps/targets prefill residency but lowers decode vs a single-GPU fit.
+
+Ubatch conclusion:
+
+- The controlled small ROCm runs do not support "high ubatch directly lowers decode":
+  - single `ub128 -> ub1024`: decode `28.53 -> 29.04`
+  - dual layer `ub128 -> ub1024`: decode `25.59 -> 25.14`
+- In the long GUI-like lane, the decode drop tracks context length + layer split TG serialization, while high ubatch mainly improves prompt throughput.
+
+Tensor split status:
+
+- `-sm tensor` with `q8_0/q8_0` KV fails during context init by design:
+  - `llama_init_from_model: simultaneous use of SPLIT_MODE_TENSOR and KV cache quantization not implemented`
+- `-sm tensor` with `f16/f16` KV starts, but is much slower on ROCm:
+  - `trace-small-rocm-dual-tensor-none-f16kv-ub1024-r1`: prompt `185.94`, decode `7.28`
+- Current verdict: tensor split is not a usable ROCm fix yet. A real fix would need both quantized-KV support and a much faster Meta/tensor-parallel ROCm path.
+
+Next implementation directions:
+
+1. Hybrid placement: keep dual layer split for PP/prompt, but use a single-GPU TG graph when the full model + active KV fits on the primary GPU. This requires duplicated/alternate TG weight placement, not just a flag.
+2. Tensor split rehabilitation: implement/enable quantized KV support for `SPLIT_MODE_TENSOR`, then trace why the f16-KV Meta path is currently ~4x slower than layer split on ROCm.
+3. Layer split micro-optimizations can recover only a small slice now. The dominant TG cost is not host-staged copy (`~1-2 ms/split`) but serialized half-model execution (`~20-23 ms/split`).

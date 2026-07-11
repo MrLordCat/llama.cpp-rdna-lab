@@ -171,9 +171,10 @@ struct common_speculative_impl {
     // TODO: track performance of most recent calls
     const bool gen_perf = true; // whether to generate performance stats.
 
-    int64_t t_begin_us  = 0; // total time spent in refresh of this implementation in microseconds.
-    int64_t t_draft_us  = 0; // total time spent in generating drafts in this implementation in microseconds.
-    int64_t t_accept_us = 0; // total time spent in accumulation of this implementation in microseconds.
+    int64_t t_begin_us   = 0; // total time spent in refresh of this implementation in microseconds.
+    int64_t t_process_us = 0; // total time spent processing target outputs in this implementation in microseconds.
+    int64_t t_draft_us   = 0; // total time spent in generating drafts in this implementation in microseconds.
+    int64_t t_accept_us  = 0; // total time spent in accumulation of this implementation in microseconds.
 
     common_speculative_impl(common_speculative_type type, uint32_t n_seq) : type(type), n_seq(n_seq) {}
 
@@ -2758,6 +2759,7 @@ bool common_speculative_process(common_speculative * spec, const llama_batch & b
     }
 
     for (auto & impl : spec->impls) {
+        common_time_meas tm(impl->t_process_us, !impl->gen_perf);
         result = result && impl->process(batch);
     }
 
@@ -2951,9 +2953,10 @@ void common_speculative_print_stats(const common_speculative * spec) {
         if (impl->gen_perf) {
             std::ostringstream oss;
             oss << std::fixed << std::setprecision(3) << impl->t_begin_us / 1000.0 << ", ";
+            oss << std::fixed << std::setprecision(3) << impl->t_process_us / 1000.0 << ", ";
             oss << std::fixed << std::setprecision(3) << impl->t_draft_us / 1000.0 << ", ";
             oss << std::fixed << std::setprecision(3) << impl->t_accept_us / 1000.0;
-            str_perf = ", dur(b,g,a) = " + oss.str() + " ms";
+            str_perf = ", dur(b,p,g,a) = " + oss.str() + " ms";
         } else {
             str_perf = "";
         }

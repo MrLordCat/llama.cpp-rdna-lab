@@ -52,6 +52,47 @@ static llm_graph_type llama_ctx_type_to_graph_type(llama_context_type ctx_type) 
     return LLM_GRAPH_TYPE_DECODER;
 }
 
+static uint32_t llama_env_u32_clamped(const char * name, uint32_t fallback, uint32_t min_value, uint32_t max_value) {
+    const char * value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return fallback;
+    }
+
+    char * end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (end == value) {
+        return fallback;
+    }
+
+    if (parsed < (long) min_value) {
+        return min_value;
+    }
+    if ((unsigned long) parsed > (unsigned long) max_value) {
+        return max_value;
+    }
+
+    return (uint32_t) parsed;
+}
+
+static bool llama_env_bool(const char * name, bool fallback) {
+    const char * value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return fallback;
+    }
+
+    if (std::strcmp(value, "0") == 0 ||
+        std::strcmp(value, "false") == 0 ||
+        std::strcmp(value, "FALSE") == 0 ||
+        std::strcmp(value, "off") == 0 ||
+        std::strcmp(value, "OFF") == 0 ||
+        std::strcmp(value, "no") == 0 ||
+        std::strcmp(value, "NO") == 0) {
+        return false;
+    }
+
+    return true;
+}
+
 //
 // llama_context
 //
@@ -217,6 +258,21 @@ llama_context::llama_context(
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
     cparams.n_outputs_max = params.n_outputs_max == 0 || llama_model_has_encoder(&model) ? cparams.n_batch : params.n_outputs_max;
 
+    // Speculative MTP verification submits tiny multi-token batches (1 target token
+    // plus a few drafts). Treat those as TG work so a high PP ubatch can speed up
+    // prefill without forcing generation through the ubatch-sized PP scheduler.
+    const uint32_t tg_seq_tokens_default = hparams.nextn_predict_layers > 0 ? 16u : 1u;
+    sched_tg_max_seq_tokens = llama_env_u32_clamped(
+            "LLAMA_TG_SCHED_MAX_SEQ_TOKENS",
+            std::min(tg_seq_tokens_default, std::max(1u, cparams.n_ubatch)),
+            1u,
+            std::max(1u, cparams.n_ubatch));
+    const bool drop_inactive_pp_default =
+            !hparams.no_alloc &&
+            cparams.n_seq_max == 1 &&
+            cparams.n_ubatch > sched_tg_max_seq_tokens;
+    sched_drop_inactive_pp = llama_env_bool("LLAMA_TG_DROP_PP_SCHED", drop_inactive_pp_default);
+
     cparams.op_offload = params.op_offload;
     cparams.kv_unified = params.kv_unified;
 
@@ -256,6 +312,10 @@ llama_context::llama_context(
     LLAMA_LOG_INFO("%s: n_ctx_seq     = %u\n",   __func__, cparams.n_ctx_seq);
     LLAMA_LOG_INFO("%s: n_batch       = %u\n",   __func__, cparams.n_batch);
     LLAMA_LOG_INFO("%s: n_ubatch      = %u\n",   __func__, cparams.n_ubatch);
+    LLAMA_LOG_INFO("%s: tg_max_seq_tokens = %u\n", __func__, sched_tg_max_seq_tokens);
+    if (sched_drop_inactive_pp) {
+        LLAMA_LOG_INFO("%s: TG scheduler will release inactive PP buffers after prefill (LLAMA_TG_DROP_PP_SCHED=0 to disable)\n", __func__);
+    }
     LLAMA_LOG_INFO("%s: causal_attn   = %d\n",   __func__, cparams.causal_attn);
     LLAMA_LOG_INFO("%s: flash_attn    = %s\n",   __func__, llama_flash_attn_type_name(params.flash_attn_type));
     LLAMA_LOG_INFO("%s: kv_unified    = %s\n",   __func__, cparams.kv_unified ? "true" : "false");
@@ -376,6 +436,12 @@ llama_context::llama_context(
             !model.has_tensor_overrides();
 
         if (pipeline_parallel && model.hparams.nextn_predict_layers > 0) {
+            const char * mtp_pp = std::getenv("LLAMA_MTP_PIPELINE_PARALLEL");
+            if (mtp_pp != nullptr && std::strcmp(mtp_pp, "0") == 0) {
+                pipeline_parallel = false;
+                LLAMA_LOG_INFO("%s: pipeline parallelism disabled for NextN/MTP model by LLAMA_MTP_PIPELINE_PARALLEL=0\n", __func__);
+            }
+
             bool has_vulkan_backend = false;
             for (auto & backend : backends) {
                 auto dev_type = ggml_backend_dev_type(ggml_backend_get_device(backend.get()));
@@ -390,10 +456,13 @@ llama_context::llama_context(
                 }
             }
 
+            const bool force_mtp_pp = mtp_pp != nullptr && std::strcmp(mtp_pp, "1") == 0;
             const char * force_vk_mtp_pp = std::getenv("LLAMA_VK_MTP_PIPELINE_PARALLEL");
-            if (has_vulkan_backend && (force_vk_mtp_pp == nullptr || std::strcmp(force_vk_mtp_pp, "1") != 0)) {
+            if (pipeline_parallel && has_vulkan_backend && !force_mtp_pp &&
+                    (force_vk_mtp_pp == nullptr || std::strcmp(force_vk_mtp_pp, "1") != 0)) {
                 pipeline_parallel = false;
-                LLAMA_LOG_INFO("%s: pipeline parallelism disabled for Vulkan NextN/MTP model (set LLAMA_VK_MTP_PIPELINE_PARALLEL=1 to force-enable)\n", __func__);
+                LLAMA_LOG_INFO("%s: pipeline parallelism disabled for Vulkan NextN/MTP model "
+                        "(set LLAMA_MTP_PIPELINE_PARALLEL=1 to force-enable)\n", __func__);
             }
         }
 
@@ -460,22 +529,38 @@ llama_context::~llama_context() {
         if (sched_tg && sched_is_tg) {
             std::swap(sched, sched_tg);
         }
-        for (size_t i = 0; i < backend_ptrs.size(); ++i) {
-            ggml_backend_t             backend = backend_ptrs[i];
-            ggml_backend_buffer_type_t buft    = backend_buft[i];
+        if (sched_is_tg && !sched_tg) {
+            LLAMA_LOG_DEBUG("%s: PP scheduler was released; skipping PP compute buffer size validation\n", __func__);
+        } else {
+            for (size_t i = 0; i < backend_ptrs.size(); ++i) {
+                ggml_backend_t             backend = backend_ptrs[i];
+                ggml_backend_buffer_type_t buft    = backend_buft[i];
 
-            const size_t size_exp = backend_buf_exp_size[i];
-            const size_t size_act = ggml_backend_sched_get_buffer_size(sched.get(), backend);
-            if (size_exp == size_act) {
-                LLAMA_LOG_DEBUG("%s: %10s compute buffer size is %8.4f MiB, matches expectation of %8.4f MiB\n",
-                    __func__, ggml_backend_buft_name(buft), size_act / (1024.0*1024.0), size_exp / (1024.0*1024.0));
-            } else {
-                LLAMA_LOG_WARN("%s: %10s compute buffer size of %8.4f MiB, does not match expectation of %8.4f MiB\n",
-                    __func__, ggml_backend_buft_name(buft), size_act / (1024.0*1024.0), size_exp / (1024.0*1024.0));
+                const size_t size_exp = backend_buf_exp_size[i];
+                const size_t size_act = ggml_backend_sched_get_buffer_size(sched.get(), backend);
+                if (size_exp == size_act) {
+                    LLAMA_LOG_DEBUG("%s: %10s compute buffer size is %8.4f MiB, matches expectation of %8.4f MiB\n",
+                        __func__, ggml_backend_buft_name(buft), size_act / (1024.0*1024.0), size_exp / (1024.0*1024.0));
+                } else {
+                    LLAMA_LOG_WARN("%s: %10s compute buffer size of %8.4f MiB, does not match expectation of %8.4f MiB\n",
+                        __func__, ggml_backend_buft_name(buft), size_act / (1024.0*1024.0), size_exp / (1024.0*1024.0));
+                }
             }
         }
     }
     ggml_opt_free(opt_ctx);
+}
+
+void llama_context::sched_release_inactive_pp() {
+    if (!sched_drop_inactive_pp || !sched_is_tg || !sched_tg) {
+        return;
+    }
+
+    ggml_backend_sched_synchronize(sched_tg.get());
+    sched_tg.reset();
+    gf_res_prev_tg.reset();
+
+    LLAMA_LOG_DEBUG("%s: released inactive PP scheduler; it will be rebuilt before the next PP batch\n", __func__);
 }
 
 void llama_context::sched_reserve() {
@@ -485,7 +570,7 @@ void llama_context::sched_reserve() {
 
     sched_need_reserve = false;
 
-    LLAMA_LOG_INFO("%s: reserving ...\n", __func__);
+    LLAMA_LOG_DEBUG("%s: reserving ...\n", __func__);
 
     synchronize();
 
@@ -651,7 +736,7 @@ void llama_context::sched_reserve() {
     const uint32_t n_outputs_pp_reserve = n_outputs_pp_requested == uint32_t(-1) ?
             n_tokens : std::min(n_tokens, std::max(n_seqs, n_outputs_pp_requested));
     if (n_outputs_pp_reserve != n_tokens) {
-        LLAMA_LOG_INFO("%s: PP reserve outputs %u -> %u\n", __func__, n_tokens, n_outputs_pp_reserve);
+        LLAMA_LOG_DEBUG("%s: PP reserve outputs %u -> %u\n", __func__, n_tokens, n_outputs_pp_reserve);
     }
 
     // reserve pp (prompt processing) graph first so that buffers are only allocated once
@@ -704,15 +789,15 @@ void llama_context::sched_reserve() {
             backend_buf_exp_size[i] = ggml_backend_sched_get_buffer_size(sched.get(), backend);
         }
         if (backend_buf_exp_size[i] > 1) {
-            LLAMA_LOG_INFO("%s: %10s compute buffer size = %8.2f MiB\n", __func__,
+            LLAMA_LOG_DEBUG("%s: %10s compute buffer size = %8.2f MiB\n", __func__,
                     ggml_backend_buft_name(buft),
                     backend_buf_exp_size[i] / 1024.0 / 1024.0);
         }
     }
 
-    // Build a separate TG (token generation) scheduler with a small compute buffer (1-token graph).
-    // During decode (n_tokens=1), we switch to this scheduler so the GPU compute buffer
-    // does not occupy cache bandwidth with unused PP-sized scratch memory.
+    // Build a separate TG (token generation) scheduler with a small compute buffer.
+    // During decode and speculative verification, we switch to this scheduler so the GPU
+    // compute buffer does not occupy cache bandwidth with unused PP-sized scratch memory.
     //
     // DFlash alternates tiny encoder and KV-injection graphs inside the draft context. On ROCm this
     // constant PP/TG scheduler swapping can leave graph inputs in a bad state; the draft context is
@@ -725,14 +810,20 @@ void llama_context::sched_reserve() {
         sched_tg.reset();
         sched_is_tg = false;
     } else {
-        const size_t max_nodes_tg = this->graph_max_nodes(n_seqs); // n_seqs == 1
+        const uint32_t n_seq_tokens_tg = std::max<uint32_t>(
+                1u,
+                std::min<uint32_t>(
+                    sched_tg_max_seq_tokens,
+                    std::max<uint32_t>(1u, n_tokens / std::max<uint32_t>(1u, n_seqs))));
+        const uint32_t n_tokens_tg = n_seq_tokens_tg*n_seqs;
+        const size_t max_nodes_tg = this->graph_max_nodes(n_tokens_tg);
         gf_res_prev_tg.reset(new llm_graph_result(max_nodes_tg));
 
         // Temporarily swap sched ↔ sched_tg so graph_reserve() uses sched_tg
         sched_tg.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes_tg, false, cparams.op_offload));
         std::swap(sched, sched_tg);
 
-        auto * gf = graph_reserve(n_seqs, n_seqs, n_seqs, mctx.get(), model.hparams.no_alloc);
+        auto * gf = graph_reserve(n_tokens_tg, n_seqs, n_tokens_tg, mctx.get(), model.hparams.no_alloc);
         if (!gf) {
             LLAMA_LOG_WARN("%s: failed to reserve TG compute buffers, dual-sched disabled\n", __func__);
             std::swap(sched, sched_tg);
@@ -743,7 +834,7 @@ void llama_context::sched_reserve() {
                 ggml_backend_buffer_type_t buft    = backend_buft[i];
                 const size_t sz = ggml_backend_sched_get_buffer_size(sched.get(), backend);
                 if (sz > 1) {
-                    LLAMA_LOG_INFO("%s: %10s TG compute buffer size = %8.2f MiB\n", __func__,
+                    LLAMA_LOG_DEBUG("%s: %10s TG compute buffer size = %8.2f MiB\n", __func__,
                             ggml_backend_buft_name(buft),
                             sz / 1024.0 / 1024.0);
                 }
@@ -755,20 +846,20 @@ void llama_context::sched_reserve() {
     }
 
     if (n_nodes_pp == n_nodes_tg) {
-        LLAMA_LOG_INFO("%s: graph nodes  = %d\n", __func__, n_nodes_pp);
+        LLAMA_LOG_DEBUG("%s: graph nodes  = %d\n", __func__, n_nodes_pp);
     } else {
-        LLAMA_LOG_INFO("%s: graph nodes  = %d (with bs=%d), %d (with bs=1)\n", __func__, n_nodes_pp, n_tokens, n_nodes_tg);
+        LLAMA_LOG_DEBUG("%s: graph nodes  = %d (with bs=%d), %d (with bs=1)\n", __func__, n_nodes_pp, n_tokens, n_nodes_tg);
     }
 
     if (n_splits_pp == n_splits_tg) {
-        LLAMA_LOG_INFO("%s: graph splits = %d\n", __func__, n_splits_pp);
+        LLAMA_LOG_DEBUG("%s: graph splits = %d\n", __func__, n_splits_pp);
     } else {
-        LLAMA_LOG_INFO("%s: graph splits = %d (with bs=%d), %d (with bs=1)\n", __func__, n_splits_pp, n_tokens, n_splits_tg);
+        LLAMA_LOG_DEBUG("%s: graph splits = %d (with bs=%d), %d (with bs=1)\n", __func__, n_splits_pp, n_tokens, n_splits_tg);
     }
 
     const int64_t t_end_us = ggml_time_us();
 
-    LLAMA_LOG_INFO("%s: reserve took %.2f ms, sched copies = %d\n",
+    LLAMA_LOG_DEBUG("%s: reserve took %.2f ms, sched copies = %d\n",
             __func__, (t_end_us - t_start_us)/1000.0, ggml_backend_sched_get_n_copies(sched.get()));
 
     sched_reserved_pp_outputs = sched_reserve_pp_outputs;
@@ -1489,13 +1580,20 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         t_apply_us = ggml_time_us() - t_total_start_us;
     }
 
-    // Switch between TG (1-token decode) and PP (multi-token prefill) schedulers.
-    // The TG scheduler has a much smaller compute buffer, reducing GPU cache pressure
-    // during decode where actual batch size is always 1 regardless of ubatch setting.
-    if (sched_tg) {
+    // Switch between TG (small decode/verify) and PP (large prompt prefill) schedulers.
+    // MTP verification batches contain a sampled token plus a few draft tokens, so they
+    // are multi-token but still decode-shaped and should not use the ubatch-sized PP buffers.
+    if (sched_tg || sched_is_tg) {
         const int64_t t_start_us = trace_timing ? ggml_time_us() : 0;
-        const bool want_tg = (ubatch.n_tokens == 1);
-        if (want_tg != sched_is_tg) {
+        const bool want_tg = ubatch.n_seq_tokens <= sched_tg_max_seq_tokens;
+
+        if (!want_tg && sched_is_tg && !sched_tg) {
+            if (trace_dflash) {
+                LLAMA_LOG_INFO("%s: DFlash rebuilding PP scheduler from released TG mode\n", __func__);
+            }
+            sched_need_reserve = true;
+            sched_reserve();
+        } else if (want_tg != sched_is_tg) {
             if (trace_dflash) {
                 LLAMA_LOG_INFO("%s: DFlash switching scheduler: want_tg=%d sched_is_tg=%d\n",
                         __func__, want_tg ? 1 : 0, sched_is_tg ? 1 : 0);
@@ -1507,6 +1605,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             std::swap(gf_res_prev, gf_res_prev_tg);
             sched_is_tg = want_tg;
         }
+
+        sched_release_inactive_pp();
+
         if (trace_dflash) {
             LLAMA_LOG_INFO("%s: DFlash scheduler ready: sched_is_tg=%d\n", __func__, sched_is_tg ? 1 : 0);
         }
@@ -1629,11 +1730,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
     if (trace_timing) {
         const int64_t t_total_us = ggml_time_us() - t_total_start_us;
+        const char * ctx_type_name = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "mtp" : "target";
         LLAMA_LOG_INFO(
-                "%s: ubatch timing n_tokens=%u n_seq_tokens=%u n_seqs=%u reused=%d tg=%d "
+                "%s: ubatch timing ctx=%s n_tokens=%u n_seq_tokens=%u n_seqs=%u reused=%d tg=%d tg_limit=%u "
                 "apply=%.3f switch=%.3f build=%.3f alloc=%.3f inputs=%.3f compute_call=%.3f sync=%.3f total=%.3f ms\n",
-                __func__, ubatch.n_tokens, ubatch.n_seq_tokens, ubatch.n_seqs,
-                reused_graph ? 1 : 0, sched_is_tg ? 1 : 0,
+                __func__, ctx_type_name, ubatch.n_tokens, ubatch.n_seq_tokens, ubatch.n_seqs,
+                reused_graph ? 1 : 0, sched_is_tg ? 1 : 0, sched_tg_max_seq_tokens,
                 t_apply_us/1000.0, t_switch_us/1000.0, t_build_us/1000.0, t_alloc_us/1000.0,
                 t_inputs_us/1000.0, t_compute_us/1000.0, t_sync_us/1000.0, t_total_us/1000.0);
     }
@@ -1692,6 +1794,9 @@ int llama_context::encode(const llama_batch & batch_inp) {
     sched_reserve_pp_outputs =
         (model.arch == LLM_ARCH_DFLASH || model.arch == LLM_ARCH_DFLASH_DRAFT) ?
             uint32_t(-1) : (n_tokens == 1 ? 1 : uint32_t(-1));
+    if (n_tokens > sched_tg_max_seq_tokens && sched_is_tg && !sched_tg) {
+        sched_need_reserve = true;
+    }
     if (sched_reserved_pp_outputs != sched_reserve_pp_outputs) {
         sched_need_reserve = true;
     }
@@ -2074,6 +2179,9 @@ int llama_context::decode(const llama_batch & batch_inp) {
     sched_reserve_pp_outputs =
         (model.arch == LLM_ARCH_DFLASH || model.arch == LLM_ARCH_DFLASH_DRAFT) ?
             uint32_t(-1) : sched_pp_outputs;
+    if (n_tokens_all > sched_tg_max_seq_tokens && sched_is_tg && !sched_tg) {
+        sched_need_reserve = true;
+    }
     if (sched_reserved_pp_outputs != sched_reserve_pp_outputs) {
         sched_need_reserve = true;
     }

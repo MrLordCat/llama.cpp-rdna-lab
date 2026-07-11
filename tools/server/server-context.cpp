@@ -47,6 +47,15 @@ static bool server_spec_has_type(const common_params_speculative & spec, common_
     return std::find(spec.types.begin(), spec.types.end(), type) != spec.types.end();
 }
 
+static int32_t server_spec_prefill_window() {
+    static const int32_t value = [] {
+        const char * env = std::getenv("LLAMA_SPEC_PREFILL_WINDOW");
+        return env ? std::max(0, std::atoi(env)) : 512;
+    }();
+
+    return value;
+}
+
 static void server_prompt_checkpoint_update_pos(server_prompt_checkpoint & ckpt, int64_t n_tokens, llama_pos pos_min, llama_pos pos_max) {
     ckpt.pos_min  = pos_min;
     ckpt.pos_max  = pos_max;
@@ -420,7 +429,13 @@ struct server_slot {
                     /* .prompt   = */ &tokens,
                     /* .result   = */ &spec_draft,
                 };
+                const bool trace_spec_phase = server_env_enabled("LLAMA_SPEC_SERVER_PHASE_TIMING");
+                const int64_t t_draft_start = trace_spec_phase ? ggml_time_us() : 0;
                 common_speculative_draft(spec);
+                if (trace_spec_phase) {
+                    SLT_INF(*this, "spec phase=draft rows=%zu wall=%.3f ms\n",
+                            spec_draft.size(), (ggml_time_us() - t_draft_start) / 1000.0);
+                }
                 n_draft_total += spec_draft.size();
 
                 if (spec_draft.size() > (size_t) n_draft_max) {
@@ -2758,6 +2773,19 @@ private:
                     // MTP prompt-tail extraction uses the NextN output pipeline.
                     const bool need_embd = slot.need_embd();
                     while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.n_tokens < n_batch) {
+                        // Keep the expensive MTP/NextN tail on an exact physical-batch
+                        // boundary. Otherwise a 512-token window can enable NextN for the
+                        // entire final prompt batch (6206 rows in the 48k trace).
+                        if (spec && common_speculative_need_embd_nextn(spec.get())) {
+                            const int32_t prefill_window = server_spec_prefill_window();
+                            const int32_t tail_start = std::max(0, slot.task->n_tokens() - prefill_window);
+                            const bool slot_has_tokens_in_batch = batch.n_tokens > n_tokens_prev;
+
+                            if (prefill_window > 0 && slot_has_tokens_in_batch && slot.prompt.n_tokens() == tail_start) {
+                                break;
+                            }
+                        }
+
                         // get next token to process
                         llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
                         if (cur_tok == LLAMA_TOKEN_NULL) {
@@ -2918,10 +2946,7 @@ private:
             };
 
             if (spec && common_speculative_need_embd_nextn(spec.get())) {
-                static const int32_t spec_prefill_window = [] {
-                    const char * env = std::getenv("LLAMA_SPEC_PREFILL_WINDOW");
-                    return env ? std::max(0, std::atoi(env)) : 512;
-                }();
+                const int32_t spec_prefill_window = server_spec_prefill_window();
 
                 bool process_enabled = true;
                 if (spec_prefill_window > 0) {
@@ -2949,7 +2974,11 @@ private:
                 common_speculative_set_process_enabled(spec.get(), process_enabled);
             }
 
+            const bool trace_spec_phase = server_env_enabled("LLAMA_SPEC_SERVER_PHASE_TIMING") &&
+                spec && n_tokens <= 16;
+            const int64_t t_decode_start = trace_spec_phase ? ggml_time_us() : 0;
             const int ret = llama_decode(ctx, batch_view);
+            const int64_t t_decode_return = trace_spec_phase ? ggml_time_us() : 0;
 
             metrics.on_decoded(slots);
 
@@ -3002,7 +3031,16 @@ private:
                 continue; // continue loop of n_batch
             }
 
-            if (spec && !common_speculative_process(spec.get(), batch_view)) {
+            const int64_t t_process_start = trace_spec_phase ? ggml_time_us() : 0;
+            const bool process_ok = !spec || common_speculative_process(spec.get(), batch_view);
+            if (trace_spec_phase) {
+                SRV_INF("spec phase=target rows=%d decode_return=%.3f process=%.3f total=%.3f ms\n",
+                        n_tokens,
+                        (t_decode_return - t_decode_start) / 1000.0,
+                        (ggml_time_us() - t_process_start) / 1000.0,
+                        (ggml_time_us() - t_decode_start) / 1000.0);
+            }
+            if (!process_ok) {
                 SRV_ERR("%s", "failed to process speculative batch\n");
                 break;
             }
@@ -3148,7 +3186,10 @@ private:
                     }
 
                     GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
+                    const bool trace_spec_phase = server_env_enabled("LLAMA_SPEC_SERVER_PHASE_TIMING");
+                    const int64_t t_verify_start = trace_spec_phase ? ggml_time_us() : 0;
                     auto accepted = common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx, slot.spec_i_batch, slot.spec_draft);
+                    const int64_t t_verify_sample = trace_spec_phase ? ggml_time_us() : 0;
                     slot.spec_i_batch.clear();
 
                     GGML_ASSERT(accepted.size() >= 1);
@@ -3202,6 +3243,14 @@ private:
 
                     common_speculative_accept(slot.spec, slot.id, accepted.size() - 1);
 
+                    if (trace_spec_phase) {
+                        SLT_INF(slot, "spec phase=verify draft=%zu accepted=%zu sample=%.3f accept=%.3f total=%.3f ms\n",
+                                n_draft, accepted.size() - 1,
+                                (t_verify_sample - t_verify_start) / 1000.0,
+                                (ggml_time_us() - t_verify_sample) / 1000.0,
+                                (ggml_time_us() - t_verify_start) / 1000.0);
+                    }
+
                     slot.spec_draft = std::move(accepted);
                 }
 
@@ -3222,9 +3271,18 @@ private:
                 slot.sampled = ids.back(); // last accepted token
                 SLT_DBG(slot, "add accepted tokens: sampled=%d, ids.size=%zu, n_draft=%zu\n", slot.sampled, ids.size(), n_draft);
 
+                const bool trace_spec_phase = server_env_enabled("LLAMA_SPEC_SERVER_PHASE_TIMING");
+                const int64_t t_rm_start = trace_spec_phase ? ggml_time_us() : 0;
                 llama_context_seq_rm(slot.ctx, slot.id, slot.prompt.tokens.pos_next(), -1);
+                const int64_t t_rm_target = trace_spec_phase ? ggml_time_us() : 0;
                 if (slot.ctx_dft) {
                     llama_context_seq_rm(slot.ctx_dft, slot.id, slot.prompt.tokens.pos_next(), -1);
+                }
+                if (trace_spec_phase) {
+                    SLT_INF(slot, "spec phase=rollback target=%.3f draft=%.3f total=%.3f ms\n",
+                            (t_rm_target - t_rm_start) / 1000.0,
+                            (ggml_time_us() - t_rm_target) / 1000.0,
+                            (ggml_time_us() - t_rm_start) / 1000.0);
                 }
 
                 for (size_t i = 0; i < ids.size(); ++i) {

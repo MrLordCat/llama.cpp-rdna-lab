@@ -212,7 +212,7 @@ def run_single_case(args: argparse.Namespace, runner: Path, ctx_size: int, label
     if args.task_ids:
         cmd.extend(["--task-ids", args.task_ids])
     if server_extra:
-        cmd.extend(["--server-extra", server_extra])
+        cmd.append(f"--server-extra={server_extra}")
 
     cmd.append("--flash-attn" if args.flash_attn else "--no-flash-attn")
     cmd.append("--warmup" if args.warmup else "--no-warmup")

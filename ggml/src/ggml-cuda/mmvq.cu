@@ -3,6 +3,7 @@
 #include "unary.cuh"
 #include "vecdotq.cuh"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -276,6 +277,25 @@ int get_mmvq_mmid_max_batch(ggml_type type, int cc) {
 }
 
 bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
+    if (GGML_CUDA_CC_IS_RDNA4(cc) && type == GGML_TYPE_Q3_K) {
+        static const int64_t max_batch = [] {
+            const char * env = std::getenv("GGML_MMVQ_RDNA4_Q3K_MAX_BATCH");
+            if (env == nullptr || env[0] == '\0') {
+                return int64_t{1};
+            }
+
+            char * end = nullptr;
+            const long parsed = std::strtol(env, &end, 10);
+            if (end == env) {
+                return int64_t{1};
+            }
+
+            return std::clamp<int64_t>(parsed, 0, MMVQ_MAX_BATCH_SIZE);
+        }();
+
+        return ne11 <= max_batch;
+    }
+
     if (GGML_CUDA_CC_IS_CDNA(cc)) {
         if (GGML_CUDA_CC_IS_CDNA1(cc)) {
             switch (type) {

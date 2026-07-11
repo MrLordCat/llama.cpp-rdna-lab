@@ -39,6 +39,7 @@ struct llama_context {
     //   - changing attention type
     //   - etc.
     void sched_reserve();
+    void sched_release_inactive_pp();
 
     void synchronize();
 
@@ -321,8 +322,10 @@ private:
     std::vector<swap_info> output_swaps;
 
     ggml_backend_sched_ptr sched;    // PP scheduler: sized for ubatch (large compute buffer)
-    ggml_backend_sched_ptr sched_tg; // TG scheduler: sized for 1 token (small compute buffer)
+    ggml_backend_sched_ptr sched_tg; // TG scheduler: sized for a small decode/verify window
     bool sched_is_tg = false;        // which scheduler is currently active in sched
+    uint32_t sched_tg_max_seq_tokens = 1;
+    bool sched_drop_inactive_pp = false;
 
     bool sched_need_reserve = true;
     uint32_t sched_reserve_pp_outputs = 1;

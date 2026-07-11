@@ -385,15 +385,7 @@ struct common_params_speculative {
         return !draft.mparams.empty();
     }
 
-    uint32_t need_n_rs_seq() const {
-        const bool needs_rs_seq = std::any_of(types.begin(), types.end(), [](auto t) {
-            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP
-                || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3
-                || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH;
-        });
-
-        return needs_rs_seq ? draft.n_max : 0u;
-    }
+    uint32_t need_n_rs_seq() const;
 };
 
 struct common_params_vocoder {

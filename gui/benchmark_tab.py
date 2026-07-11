@@ -1571,7 +1571,9 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         autotune_kv_values = ",".join(kv_values)
         autotune_tasks = "quick"
         autotune_task_ids = "triage_diff"
-        autotune_max_tokens = "16"
+        # Sixteen-token runs are dominated by the first backend graph and make
+        # speculative and non-speculative decode rates incomparable.
+        autotune_max_tokens = "128"
         autotune_real_context_chars = str(lane_chars)
 
         ctx_count = len([v for v in autotune_ctx_values.split(",") if v.strip()])
@@ -2186,7 +2188,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.autotune_mode_info.setText(
             f"Lane: ctx={lane_ctx}, repo-snapshot chars={effective_chars}/{lane_chars} "
             f"(~{prompt_tokens} prompt tokens), "
-            "tasks=quick:triage_diff, runs=1, max_tokens=16, no-reuse, no-prime, thinking on."
+            "tasks=quick:triage_diff, runs=1, max_tokens=128, no-reuse, no-prime, thinking on."
         )
         lane_short = self.AUTOTUNE_LANES[self.lane_combo.currentIndex()][0].split(" — ")[0]
         if lane_short == "Custom":
@@ -2608,4 +2610,3 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         if line.startswith("CONFIG FAILED ("):
             self.autotune_history_table.setItem(active_row, 11, QTableWidgetItem("failed"))
             self._autotune_active_run = None
-

@@ -1,6 +1,6 @@
 # Experiment Digest
 
-Updated: 2026-07-09.
+Updated: 2026-07-11.
 
 This is the compact historical base for performance work. `RESULTS_LOG.md` remains the detailed ledger; this file groups the evidence so agents can pick the next route without rereading every E/D note.
 
@@ -31,10 +31,13 @@ This is the compact historical base for performance work. `RESULTS_LOG.md` remai
 
 ## Compact Experiment Ledger
 
-Rows parsed from `docs/research/RESULTS_LOG.md`: 336.
+Rows parsed from `docs/research/RESULTS_LOG.md`: 340.
 
 | Date | ID | Short name | Delta | Decision | Artifacts |
 | --- | --- | --- | --- | --- | --- |
+| 2026-07-11 | E278 | Vulkan MTP long-KV first-graph diagnosis | MTP `1.33x` decode; aggregate `4.10 -> 4.12`; prompt `1449.41 -> 1401.10` | Keep autotune at 128 tokens and env-gated server phase trace. First verify is about 630 ms then 42-49 ms; ordinary/exact warmup did not survive long prefill and was reverted | docs/research/experiments/E278_vulkan_mtp_long_kv_round_phases.md, build_logs/agent-workload/e278-vulkan-49k-n3-server-phase-r1.*, build_logs/agent-workload/... |
+| 2026-07-11 | E277 | MTP deferred accepted-prefix catch-up | `+0.42%` (noise) with identical `81/136` acceptance | Reject and revert prototype. Keep `process` phase timing; it showed NextN read primarily synchronizes required target verify rather than exposing removable draft catch-up work | docs/research/experiments/E277_rocm_mtp_deferred_accept_catchup.md, build_logs/agent-workload/h60-rocm-n3-phase-process-r1.*, build_logs/agent-workload/e277-... |
+| 2026-07-11 | D078 | RDNA4 Q3_K small-N DP4A MMQ | `+18.14%` decode vs MTP control; `1.65x` decode vs spec none | Keep DP4A as the RDNA4 Q3_K default for N=2..4; N=5 remains opt-in. Long 56k-token prompt still gains `1.41x` decode (`19.02 -> 26.85`) but prefill dominates end-to-end | docs/research/major-topology/D078_P002_ROCM_MTP_SMALLN_DP4A_MMQ.md, build_logs/agent-workload/d078-rocm-n3-control-r3.*, build_logs/agent-workload/d078-rocm-... |
 | 2026-05-28 | D075 | P003 Q4 lossless pack v1 (quality-safe storage prototype) | no TPS delta; storage-format prototype only | Keep as the correct quality-safe direction. This stage proves exact payload restoration, but VRAM/runtime wins require next-stage runtime decode route with fail-closed fallback | docs/research/major-topology/D075_P003_Q4_LOSSLESS_PACK_V1.md, scripts/research/q4_metacomp_lossless_pack.py, build_logs/agent-workload/q4metacomp-losslesspa... |
 | 2026-05-28 | D074 | P003 H54-B guarded runtime application (CPU residency proof) | residency shift: GPU `-3046.16 MiB`, Host `+3046.16 MiB` (applied behavior proven) | Keep as guarded applied milestone only. This proves runtime application but is residency redistribution, not true payload compression; next stage must shrink resident bytes via compressed storage/decode route | docs/research/major-topology/D074_P003_H54B_GUARDED_RUNTIME_APPLICATION_CPU_RESIDENCY.md, src/llama-model-loader.cpp, src/llama-model-loader.h, build_logs/ag... |
 | 2026-05-28 | D073 | P003 H54-B guarded runtime reader integration | no TPS delta; runtime integration milestone | Keep as guarded integration. Default path unchanged; next stage is applying validated rows to real runtime Q4 transform route plus controlled A/B and quality checks | docs/research/major-topology/D073_P003_H54B_GUARDED_RUNTIME_READER_INTEGRATION.md, src/llama-model-loader.cpp |
@@ -371,3 +374,4 @@ Rows parsed from `docs/research/RESULTS_LOG.md`: 336.
 | 2026-07-09 | E272 | Vulkan dual layer 130k big-prompt baseline | vs best single GPU0: wall `-16.9%`, prompt `-21.1%`, decode `+110.5%`; dual is stable b... | Use physical GPU0 single as Vulkan no-MTP 130k big-prompt baseline; GPU asymmetry is expected because B550 Gaming X V2 primary slot is CPU PCIe 4.0 x16 while second x16-sized slot is chipset PCIe 3.0 x2; dual layer re... | `build_logs/agent-workload/vulkan-single-gpu0-130k-big-c152k-mt64-none-r1.*`, `build_logs/agent-workload/vulkan-single-gpu1-130k-big-c152k-mt64-none-r1.*`, `... |
 | 2026-07-09 | E273 | Dual backend 130k big-prompt delta | Vulkan dual vs ROCm dual: aggregate `+35.6%`, prompt `+36.4%`, decode `+10.7%`, wall ti... | For no-MTP practical 130k big-prompt dual mode, Vulkan is currently faster; ROCm remains the MTP backend focus | `build_logs/agent-workload/rocm-dual-layer-130k-big-c152k-mt64-none-r1.*`, `build_logs/agent-workload/vulkan-dual-layer-130k-big-c152k-mt64-none-r2.*`, `docs... |
 | 2026-07-09 | E274 | Vulkan dual MTP NextN placement | long-prompt `+3.63%` aggregate, `+2.85%` prompt, `+24.53%` decode; smoke n2 `+19.0%` ag... | Keep Vulkan MTP defaults and recommend `--spec-draft-n-max 2`; n3 is stable but slower and n4 still crashes server process without driver drop | `build_logs/agent-workload/vulkan-dual-mtpgguf-130k-big-c152k-mt64-n2-auto-default512-r1.*`, `build_logs/agent-workload/vulkan-dual-mtpgguf-smoke-n2-autonext... |
+| 2026-07-11 | E275 | Exact MTP prefill boundary + ROCm multi-column verify route | short decode `+41.0%`, aggregate `+19.9%`; 49k prompt tax reduced to about `-3%`, decod... | Keep exact tail and RDNA4 Q3_K MMQ cutoff; recommend ROCm n4, Vulkan n2. Next 1.6x route is fused multi-column Q3_K verify, not scheduler toggles or deeper draft | `build_logs/agent-workload/e275-*`, `docs/research/experiments/E275_mtp_exact_prefill_window_boundary.md` |

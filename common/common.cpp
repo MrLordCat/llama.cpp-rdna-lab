@@ -67,6 +67,35 @@ common_time_meas::~common_time_meas() {
     }
 }
 
+uint32_t common_params_speculative::need_n_rs_seq() const {
+    const bool needs_rs_seq = std::any_of(types.begin(), types.end(), [](auto t) {
+        return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP
+            || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3
+            || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH;
+    });
+
+    uint32_t n_rs_seq = needs_rs_seq ? (uint32_t) std::max(0, draft.n_max) : 0u;
+    if (n_rs_seq == 0) {
+        return 0;
+    }
+
+    const char * env = std::getenv("LLAMA_SPEC_RS_SEQ_MAX");
+    if (env == nullptr || *env == '\0') {
+        env = std::getenv("LLAMA_MTP_RS_SEQ_MAX");
+    }
+    if (env == nullptr || *env == '\0') {
+        return n_rs_seq;
+    }
+
+    char * end = nullptr;
+    const long cap = std::strtol(env, &end, 10);
+    if (end == env || cap < 0) {
+        return n_rs_seq;
+    }
+
+    return std::min<uint32_t>(n_rs_seq, (uint32_t) cap);
+}
+
 //
 // CPU utils
 //
@@ -1506,6 +1535,11 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.n_ctx             = params.n_ctx;
     cparams.n_seq_max         = params.n_parallel;
     cparams.n_rs_seq          = params.speculative.need_n_rs_seq();
+    if (const char * env = std::getenv("LLAMA_SPEC_RS_SEQ_MAX")) {
+        LOG_INF("%s: speculative n_rs_seq=%u (LLAMA_SPEC_RS_SEQ_MAX=%s)\n", __func__, cparams.n_rs_seq, env);
+    } else if (const char * env_mtp = std::getenv("LLAMA_MTP_RS_SEQ_MAX")) {
+        LOG_INF("%s: speculative n_rs_seq=%u (LLAMA_MTP_RS_SEQ_MAX=%s)\n", __func__, cparams.n_rs_seq, env_mtp);
+    }
     cparams.n_outputs_max     = params.n_outputs_max;
     cparams.n_batch           = params.n_batch;
     cparams.n_ubatch          = params.n_ubatch;

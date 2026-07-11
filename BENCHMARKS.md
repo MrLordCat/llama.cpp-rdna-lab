@@ -33,6 +33,43 @@ build_logs\agent-workload\<label>.server.log
 
 Для активной 130k performance lane runner по умолчанию держит thinking включённым. Для явного отключения thinking укажи `--disable-thinking`.
 
+## ROCm RDNA4 MTP small-N DP4A (2026-07-11)
+
+Для dual RX 9070 XT добавлен отдельный Q3_K DP4A MMQ-маршрут для малых
+verification batch MTP (`N=2..4`). Он включён по умолчанию только на HIP RDNA4,
+только для dense Q3_K и не затрагивает prompt/large-N WMMA. Откат:
+`GGML_RDNA4_Q3K_SMALLN_DP4A=0`. Ненулевое значение также включает
+экспериментальный `N=5`, который пока не рекомендуется.
+
+На cold-first lane `ctx=12288,b=8192,ub=1024,q8/q8,max_tokens=256`, thinking
+on, no reuse/no prime, MTP `n_max=3` вырос с `34.9170` до `41.2505` decode
+tok/s (`+18.14%`) и достиг `1.65x` относительно spec-none baseline
+`25.02 tok/s`. Новый default подтверждён отдельным r1: `41.35 tok/s`.
+`n_max=2` дал `39.06`, а `n_max=4` только `35.06`, поэтому текущая рекомендация
+для ROCm: `--spec-type draft-mtp --spec-draft-n-max 3`.
+
+На практическом long-prompt lane `ctx=131072`, 56,305 prompt tokens и 128 output
+tokens: spec none `1088.67` prompt / `19.02` decode tok/s; MTP n3 `1045.62`
+prompt / `26.85` decode tok/s (`1.41x` decode, acceptance `68.55%`). Общий wall
+TPS почти одинаков (`2.1859` vs `2.1799`), потому что 52-54 секунд prefill
+доминируют над 4.8-6.7 секунд decode, а MTP сам prefill не ускоряет.
+
+## Vulkan MTP long-KV autotune correction (2026-07-11)
+
+Прежний GUI autotune с `max_tokens=16` занижал Vulkan MTP: первый target
+verify после длинного prefill занимал около `630 ms`, тогда как следующие
+verify-раунды занимали `42-49 ms`. Поэтому результат `18.02 decode tok/s` для
+MTP n3 в основном измерял одноразовый переход PP -> TG, а не устойчивый decode.
+
+На одинаковом prompt в 38,757 токенов и `max_tokens=128` spec-none получил
+`1449.41` prompt / `29.15` decode tok/s, а MTP n3 — `1401.10` prompt / `38.78`
+decode tok/s. Это `1.33x` по decode при `3.3%` prompt tax. GUI autotune теперь
+использует 128 output tokens для всех spec-режимов, чтобы отдельные none/MTP
+запуски оставались сопоставимыми. Фазовая диагностика доступна только через
+`LLAMA_SPEC_SERVER_PHASE_TIMING=1` и по умолчанию ничего не логирует.
+Финальная пересборка без warmup-прототипа подтвердила MTP результат:
+`1399.85` prompt / `38.61` decode tok/s.
+
 ## MTP single-request sanity (2026-07-07)
 
 После ROCm dual-GPU peer-copy fix и MTP pending-row/argmax правок проверен именно
@@ -3671,3 +3708,27 @@ restore the single-GPU diagnostic speed. The remaining gap is still the ROCm
 Windows host-staged split/sync cost, so further work should target safer pinned
 host staging or a correctness fix for HIP peer copies before any default peer
 copy change.
+
+## MTP Exact Prefill Tail + ROCm Verify Route (E275, 2026-07-11)
+
+The server now splits the final prompt batch exactly at the 512-token MTP tail.
+On the 49k lane this changes the MTP-enabled region from the full 6206-row final
+batch to exactly 512 rows. Fresh cold-first results with 38888 prompt tokens:
+
+| Backend | Mode | Prompt tok/s | Decode tok/s |
+| --- | --- | ---: | ---: |
+| ROCm | none | `1275.42` | `20.88` |
+| ROCm | MTP n4 | `1233.79` | `26.75` |
+| Vulkan | none | `1448.29` | `28.80` |
+| Vulkan | MTP n2 | `1407.52` | `34.06` |
+
+The prompt penalty is now about `3%` instead of the earlier double-digit loss.
+ROCm tracing also found that target verify `N=3` spent `94.44 ms` in the legacy
+multi-column Q3_K MMVQ route. Keeping the tuned MMVQ path for `N=1` and routing
+RDNA4 Q3_K `N>=2` to MMQ reduced it to `65.12 ms`. On the clean 12k/256-token
+lane, ROCm MTP n4 reached `35.58` decode tok/s versus `25.23` baseline
+(`+41.0%`) and `20.57` aggregate TPS versus `17.16` (`+19.9%`).
+
+Use MTP n4 for ROCm on this model and n2 for Vulkan. The remaining route toward
+`1.6x` ROCm decode is a fused multi-column Q3_K verify body; deeper drafts and
+pipeline-parallel toggles were measured and do not close the gap.
