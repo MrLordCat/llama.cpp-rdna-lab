@@ -22,6 +22,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -690,6 +691,50 @@ def server_extra_has_flag(tokens: list[str], flag: str) -> bool:
     return any(token == flag or token.startswith(flag + "=") for token in tokens)
 
 
+def bench_auto_fit_allowed() -> bool:
+    return os.environ.get("LLAMA_BENCH_ALLOW_AUTO_FIT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def enforce_bench_safe_fit_args(tokens: list[str]) -> tuple[list[str], bool]:
+    """Disable llama-server auto-fit during bench runs.
+
+    ROCm/Windows can crash before real workload starts while auto-fit queries
+    memory through hipMemGetInfo. Bench/autotune should use explicit params.
+    """
+    if bench_auto_fit_allowed():
+        return tokens, False
+
+    filtered: list[str] = []
+    removed_fit = False
+    skip_next = False
+    fit_flags = {"-fit", "--fit"}
+
+    for idx, token in enumerate(tokens):
+        if skip_next:
+            skip_next = False
+            continue
+
+        if token in fit_flags:
+            removed_fit = True
+            if idx + 1 < len(tokens) and not tokens[idx + 1].startswith("-"):
+                skip_next = True
+            continue
+
+        if any(token.startswith(flag + "=") for flag in fit_flags):
+            removed_fit = True
+            continue
+
+        filtered.append(token)
+
+    filtered.extend(["-fit", "off"])
+    return filtered, removed_fit
+
+
 def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
     server_bin = Path(args.server_bin) if args.server_bin else default_server_bin()
     model = Path(args.model) if args.model else default_model()
@@ -732,6 +777,13 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
             cmd.extend(["--ctx-checkpoints", "0"])
     if extra_tokens:
         cmd.extend(extra_tokens)
+
+    cmd, removed_fit = enforce_bench_safe_fit_args(cmd)
+    if removed_fit:
+        print(
+            "WARNING: bench/autotune disabled auto-fit (-fit off) to avoid the ROCm "
+            "hipMemGetInfo startup path. Set LLAMA_BENCH_ALLOW_AUTO_FIT=1 to allow it."
+        )
 
     env = rocm_env()
     apply_trace_preset(env, args.trace_preset)
@@ -803,6 +855,17 @@ def run_task(
     request_timeout = float(args.request_timeout)
     if args.task_hard_timeout > 0:
         request_timeout = min(request_timeout, float(args.task_hard_timeout))
+    progress_stop = threading.Event()
+    progress_thread: threading.Thread | None = None
+    if not args.no_start:
+        server_log = Path(args.out_dir) / f"{args.label}.server.log"
+        progress_start_offset = server_log.stat().st_size if server_log.exists() else 0
+        progress_thread = threading.Thread(
+            target=tail_prompt_progress,
+            args=(server_log, progress_stop, str(task["id"]), progress_start_offset),
+            daemon=True,
+        )
+        progress_thread.start()
     try:
         response = http_json("POST", base_url + "/v1/chat/completions", payload, timeout=request_timeout)
         message = response["choices"][0].get("message", {})
@@ -810,6 +873,10 @@ def run_task(
     except Exception as exc:  # noqa: BLE001 - benchmark records failures as rows
         caught_exc = exc
         error = repr(exc)
+    finally:
+        progress_stop.set()
+        if progress_thread is not None:
+            progress_thread.join(timeout=1.0)
     wall_s = time.perf_counter() - started
 
     if args.task_hard_timeout > 0 and (
@@ -950,6 +1017,81 @@ def aggregate_completion_tps(rows: list[dict[str, Any]]) -> float:
     total_completion = sum(row.get("completion_tokens") or 0 for row in rows)
     total_wall = sum(row.get("wall_s") or 0.0 for row in rows)
     return (total_completion / total_wall) if total_wall > 0 and total_completion > 0 else 0.0
+
+
+def tail_prompt_progress(
+    server_log: Path,
+    stop_event: threading.Event,
+    task_id: str,
+    start_offset: int = 0,
+) -> None:
+    """Emit compact prompt-prefill progress lines while a blocking HTTP request runs."""
+    offset = max(0, int(start_offset))
+    buffer = ""
+    total_tokens: int | None = None
+    last_pct = -1.0
+
+    progress_re = re.compile(
+        r"prompt processing progress,\s*n_tokens =\s*(\d+),\s*"
+        r"batch\.n_tokens =\s*(\d+),\s*progress =\s*([0-9.]+)"
+    )
+    done_re = re.compile(r"prompt processing done,\s*n_tokens =\s*(\d+),\s*batch\.n_tokens =\s*(\d+)")
+    task_tokens_re = re.compile(r"task\.n_tokens =\s*(\d+)")
+
+    while not stop_event.wait(0.25):
+        try:
+            if not server_log.exists():
+                continue
+            with server_log.open("r", encoding="utf-8", errors="replace") as f:
+                f.seek(offset)
+                data = f.read()
+                offset = f.tell()
+        except Exception:
+            continue
+
+        if not data:
+            continue
+
+        buffer += data
+        lines = buffer.splitlines(keepends=True)
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            buffer = lines.pop()
+        else:
+            buffer = ""
+
+        for raw_line in lines:
+            line = raw_line.strip()
+            task_match = task_tokens_re.search(line)
+            if task_match:
+                total_tokens = int(task_match.group(1))
+
+            progress_match = progress_re.search(line)
+            if progress_match:
+                processed = int(progress_match.group(1))
+                progress = float(progress_match.group(3))
+                pct = max(0.0, min(100.0, progress * 100.0))
+                if total_tokens is None and progress > 0:
+                    total_tokens = max(processed, int(round(processed / progress)))
+                if pct - last_pct >= 0.5:
+                    total_text = str(total_tokens) if total_tokens else "?"
+                    print(
+                        f"PROMPT PROGRESS: task={task_id} pct={pct:.1f} "
+                        f"tokens={processed}/{total_text} status=running",
+                        flush=True,
+                    )
+                    last_pct = pct
+                continue
+
+            done_match = done_re.search(line)
+            if done_match:
+                processed = int(done_match.group(1))
+                total_tokens = total_tokens or processed
+                print(
+                    f"PROMPT PROGRESS: task={task_id} pct=100.0 "
+                    f"tokens={processed}/{total_tokens} status=done",
+                    flush=True,
+                )
+                return
 
 
 def parse_server_log_diagnostics(server_log: Path) -> dict[str, Any]:
@@ -2198,8 +2340,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--real-context-chars-per-token",
         type=float,
-        default=3.4,
-        help="heuristic conversion from token budget to char budget for snapshot injection",
+        default=2.6,
+        help="conservative conversion from token budget to char budget for snapshot injection",
     )
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--top-p", type=float, default=0.9)
@@ -2500,9 +2642,20 @@ def main() -> int:
             print("ERROR: --task-ids filter left no tasks to run")
             return 5
 
+    real_context_ctx_size = int(args.ctx_size)
+    if args.autotune:
+        try:
+            autotune_ctx_candidates = parse_int_csv(args.autotune_ctx_values)
+        except ValueError as exc:
+            print(f"ERROR: invalid --autotune-ctx-values: {exc}")
+            return 4
+        autotune_ctx_candidates = [v for v in autotune_ctx_candidates if v >= args.autotune_min_ctx]
+        if autotune_ctx_candidates:
+            real_context_ctx_size = min(autotune_ctx_candidates)
+
     if args.real_context_mode == "repo-snapshot":
         safe_fill = min(max(float(args.real_context_safe_fill), 0.05), 0.95)
-        usable_tokens = int(args.ctx_size * safe_fill) - int(args.max_tokens) - int(args.real_context_reserve_tokens)
+        usable_tokens = int(real_context_ctx_size * safe_fill) - int(args.max_tokens) - int(args.real_context_reserve_tokens)
         usable_tokens = max(1024, usable_tokens)
         safe_char_cap = int(usable_tokens * float(args.real_context_chars_per_token))
 
@@ -2513,7 +2666,8 @@ def main() -> int:
         tasks = apply_real_context_prefix(tasks, prefix)
         print(
             f"Real context injection: mode=repo-snapshot chars={chars} files={files} "
-            f"requested={requested_chars} safe_cap={safe_char_cap} effective={effective_chars}"
+            f"requested={requested_chars} safe_cap={safe_char_cap} effective={effective_chars} "
+            f"ctx_cap={real_context_ctx_size}"
         )
 
     preflight_ok, preflight_error = run_preflight_gate(args)
@@ -2822,9 +2976,16 @@ def main() -> int:
                             if config_key in completed_keys:
                                 continue
 
+                            mtp_draft_n = ""
+                            if spec_mode in {"mtp", "ngram-mtp"}:
+                                extra_token_list = split_server_extra(run_args.server_extra)
+                                for token_idx, token in enumerate(extra_token_list[:-1]):
+                                    if token == "--spec-draft-n-max":
+                                        mtp_draft_n = extra_token_list[token_idx + 1]
+
                             print(
                                 f"Autotune [{run_idx}/{total_configs}]: ctx={ctx_size}, b={batch_size}, ub={ubatch_size}, "
-                                f"kv={kv_type}, spec={spec_mode}, extra={extra_name}"
+                                f"kv={kv_type}, spec={spec_mode}, extra={extra_name}, draftn={mtp_draft_n or '-'}"
                             )
                             startup_error = ""
                             try:
@@ -2881,6 +3042,7 @@ def main() -> int:
                                 "mean_task_tps": round(statistics.mean(task_tps_values), 4) if task_tps_values else 0.0,
                                 "prompt_eval_tps": round(cfg_prompt_tps, 2),
                                 "decode_eval_tps": round(cfg_decode_tps, 2),
+                                "mtp_draft_n": mtp_draft_n,
                                 "errors": int(has_error),
                             }
                             summaries.append(summary)
@@ -2976,6 +3138,7 @@ def main() -> int:
             "mean_task_tps",
             "prompt_eval_tps",
             "decode_eval_tps",
+            "mtp_draft_n",
             "errors",
         ]
         writer = csv.DictWriter(f, fieldnames=fields)

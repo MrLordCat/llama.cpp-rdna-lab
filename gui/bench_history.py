@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import QApplication, QMessageBox, QTableWidgetItem
 
 from bench_widgets import NumericTableWidgetItem
@@ -163,10 +164,10 @@ class BenchHistoryMixin:
         if row < 0:
             return None
 
-        run_time_item = self.presets_table.item(row, 0)
-        model_item = self.presets_table.item(row, 1)
-        run_id_item = self.presets_table.item(row, 14)
-        label_item = self.presets_table.item(row, 15)
+        run_time_item = self.presets_table.item(row, 1)
+        model_item = self.presets_table.item(row, 2)
+        run_id_item = self.presets_table.item(row, 16)
+        label_item = self.presets_table.item(row, 17)
 
         run_time = run_time_item.text().strip() if run_time_item is not None else ""
         model_name = model_item.text().strip() if model_item is not None else ""
@@ -190,23 +191,26 @@ class BenchHistoryMixin:
 
         return None
 
-    def _extract_sweep_sets_from_summary(self, row_data: dict[str, str]) -> tuple[str, str]:
+    def _extract_sweep_sets_from_summary(self, row_data: dict[str, str]) -> tuple[str, str, str]:
+        """(swept specs, swept extras, best config's mtp draft N) from the summary CSV."""
         summary_file = str(row_data.get("summary_file", "")).strip()
         if not summary_file:
-            return "-", "-"
+            return "-", "-", "-"
 
         if summary_file in self._summary_sweep_cache:
             return self._summary_sweep_cache[summary_file]
 
         summary_path = self.project_root / "build_logs" / "agent-workload" / summary_file
         if not summary_path.exists():
-            self._summary_sweep_cache[summary_file] = ("-", "-")
-            return "-", "-"
+            self._summary_sweep_cache[summary_file] = ("-", "-", "-")
+            return "-", "-", "-"
 
         spec_values: list[str] = []
         extra_values: list[str] = []
         seen_specs: set[str] = set()
         seen_extras: set[str] = set()
+        best_tps = -1.0
+        best_draft_n = "-"
 
         try:
             with summary_path.open("r", encoding="utf-8", newline="") as f:
@@ -221,14 +225,22 @@ class BenchHistoryMixin:
                     if extra and extra not in seen_extras:
                         seen_extras.add(extra)
                         extra_values.append(extra)
+
+                    try:
+                        tps = float(str(row.get("aggregate_tps", "0") or "0"))
+                    except ValueError:
+                        continue
+                    if tps > best_tps and str(row.get("errors", "0")) in ("", "0"):
+                        best_tps = tps
+                        best_draft_n = str(row.get("mtp_draft_n", "") or "").strip() or "-"
         except Exception:
-            self._summary_sweep_cache[summary_file] = ("-", "-")
-            return "-", "-"
+            self._summary_sweep_cache[summary_file] = ("-", "-", "-")
+            return "-", "-", "-"
 
         specs_text = ",".join(spec_values) if spec_values else "-"
         extras_text = ",".join(extra_values) if extra_values else "-"
-        self._summary_sweep_cache[summary_file] = (specs_text, extras_text)
-        return specs_text, extras_text
+        self._summary_sweep_cache[summary_file] = (specs_text, extras_text, best_draft_n)
+        return specs_text, extras_text, best_draft_n
 
     @staticmethod
     def _kv_cache_index_from_name(kv_name: str) -> int:
@@ -733,19 +745,23 @@ class BenchHistoryMixin:
             + (" and applied to Launch Server tab." if applied_live else "."),
         )
 
-    def refresh_saved_presets_table(self):
-        rows = self._load_autotune_history_rows()
-        self._summary_sweep_cache.clear()
-        self.presets_table.setRowCount(0)
+    @staticmethod
+    def _is_mtp_spec(spec_text: str) -> bool:
+        return "mtp" in (spec_text or "").lower()
 
-        for row_data in rows:
-            run_time = str(row_data.get("timestamp", "") or "-")
-            model_raw = str(row_data.get("model", "") or "-")
-            model_name = Path(model_raw).name if model_raw not in {"", "-"} else "-"
-            run_id = str(row_data.get("run_id", "") or "-")
-            build_id = str(row_data.get("build_id", "") or "-")
-            label = str(row_data.get("label", "") or "-")
+    @staticmethod
+    def _history_backend_label(backend: str) -> str:
+        value = (backend or "").strip().lower()
+        if value == "rocm":
+            return "ROCm"
+        if value == "vulkan":
+            return "Vulkan"
+        return value or "-"
 
+    def _collect_history_entries(self) -> list[dict]:
+        """Load history rows and precompute display fields, lane, and class."""
+        entries: list[dict] = []
+        for row_data in self._load_autotune_history_rows():
             aggregate_text = str(row_data.get("aggregate_tps", "0") or "0")
             try:
                 aggregate_value = float(aggregate_text)
@@ -767,36 +783,150 @@ class BenchHistoryMixin:
             parsed_cfg["spec"] = self._sanitize_compact_token(parsed_cfg["spec"])
             parsed_cfg["extra_preset"] = self._sanitize_compact_token(parsed_cfg["extra_preset"], fallback="base")
 
-            swept_specs, swept_extras = self._extract_sweep_sets_from_summary(row_data)
+            model_raw = str(row_data.get("model", "") or "-")
+            entries.append({
+                "row_data": row_data,
+                "run_time": str(row_data.get("timestamp", "") or "-"),
+                "model_name": Path(model_raw).name if model_raw not in {"", "-"} else "-",
+                "run_id": str(row_data.get("run_id", "") or "-"),
+                "build_id": str(row_data.get("build_id", "") or "-"),
+                "label": str(row_data.get("label", "") or "-"),
+                "aggregate_value": aggregate_value,
+                "parsed_cfg": parsed_cfg,
+                "lane": parsed_cfg["ctx"],
+                "backend": str(row_data.get("build_backend", "") or "-").strip().lower() or "-",
+                "is_mtp": self._is_mtp_spec(parsed_cfg["spec"]),
+            })
+        return entries
 
-            row = self.presets_table.rowCount()
-            self.presets_table.insertRow(row)
+    @staticmethod
+    def _repopulate_filter_combo(combo, values: list[str], all_label: str, wished: str) -> None:
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(all_label)
+        for value in values:
+            combo.addItem(value)
+        idx = combo.findText(wished)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
 
-            def tps_item(raw_text: str, digits: int = 2) -> QTableWidgetItem:
-                try:
-                    value = float(raw_text)
-                except (TypeError, ValueError):
-                    value = 0.0
-                return NumericTableWidgetItem(f"{value:.{digits}f}" if value > 0 else "-", value)
+    def _refresh_history_filters(self, entries: list[dict]) -> None:
+        lane_combo = getattr(self, "history_lane_filter_combo", None)
+        if lane_combo is not None:
+            def lane_sort_key(value: str) -> int:
+                return -int(value) if value.isdigit() else 0
 
-            run_item = QTableWidgetItem(run_time)
-            run_item.setData(Qt.ItemDataRole.UserRole, run_id)
-            self.presets_table.setItem(row, 0, run_item)
-            self.presets_table.setItem(row, 1, QTableWidgetItem(model_name or "-"))
-            self.presets_table.setItem(row, 2, NumericTableWidgetItem(f"{aggregate_value:.4f}", aggregate_value))
-            self.presets_table.setItem(row, 3, tps_item(str(row_data.get("prompt_eval_tps", "")), digits=1))
-            self.presets_table.setItem(row, 4, tps_item(str(row_data.get("decode_eval_tps", ""))))
-            self.presets_table.setItem(row, 5, QTableWidgetItem(parsed_cfg["ctx"]))
-            self.presets_table.setItem(row, 6, QTableWidgetItem(f"{parsed_cfg['batch']}/{parsed_cfg['ubatch']}"))
-            self.presets_table.setItem(row, 7, QTableWidgetItem(parsed_cfg["kv"]))
-            self.presets_table.setItem(row, 8, QTableWidgetItem(parsed_cfg["spec"]))
-            self.presets_table.setItem(row, 9, QTableWidgetItem(parsed_cfg["extra_preset"]))
-            self.presets_table.setItem(row, 10, QTableWidgetItem(parsed_cfg["extra_args"]))
-            self.presets_table.setItem(row, 11, QTableWidgetItem(swept_specs))
-            self.presets_table.setItem(row, 12, QTableWidgetItem(swept_extras))
-            self.presets_table.setItem(row, 13, QTableWidgetItem(build_id or "-"))
-            self.presets_table.setItem(row, 14, QTableWidgetItem(run_id or "-"))
-            self.presets_table.setItem(row, 15, QTableWidgetItem(label or "-"))
+            lanes = sorted({e["lane"] for e in entries if e["lane"] not in {"", "-"}}, key=lane_sort_key)
+            wished = getattr(self, "_history_lane_filter_saved", "") or lane_combo.currentText()
+            self._history_lane_filter_saved = ""
+            self._repopulate_filter_combo(lane_combo, lanes, "All lanes", wished)
+
+        backend_combo = getattr(self, "history_backend_filter_combo", None)
+        if backend_combo is not None:
+            backends = sorted({e["backend"] for e in entries if e["backend"] not in {"", "-"}})
+            wished = getattr(self, "_history_backend_filter_saved", "") or backend_combo.currentText()
+            self._history_backend_filter_saved = ""
+            labels = [self._history_backend_label(value) for value in backends]
+            if wished not in {"", "All backends"}:
+                wished = self._history_backend_label(wished)
+            self._repopulate_filter_combo(backend_combo, labels, "All backends", wished)
+
+    def refresh_saved_presets_table(self):
+        self._summary_sweep_cache.clear()
+        entries = self._collect_history_entries()
+        self._refresh_history_filters(entries)
+
+        # best aggregate per (backend, lane, mtp-or-not), over ALL runs so the
+        # marker stays consistent under any filter
+        best_by_class: dict[tuple[str, str, bool], float] = {}
+        for entry in entries:
+            key = (entry["backend"], entry["lane"], entry["is_mtp"])
+            if entry["aggregate_value"] > best_by_class.get(key, -1.0):
+                best_by_class[key] = entry["aggregate_value"]
+
+        spec_combo = getattr(self, "history_spec_filter_combo", None)
+        spec_filter = spec_combo.currentText() if spec_combo is not None else "All"
+        lane_combo = getattr(self, "history_lane_filter_combo", None)
+        lane_filter = lane_combo.currentText() if lane_combo is not None else "All lanes"
+        backend_combo = getattr(self, "history_backend_filter_combo", None)
+        backend_filter = backend_combo.currentText() if backend_combo is not None else "All backends"
+
+        def tps_item(raw_text: str, digits: int = 2) -> QTableWidgetItem:
+            try:
+                value = float(raw_text)
+            except (TypeError, ValueError):
+                value = 0.0
+            return NumericTableWidgetItem(f"{value:.{digits}f}" if value > 0 else "-", value)
+
+        def draft_n_for(entry: dict, swept_draft_n: str) -> str:
+            if swept_draft_n not in {"", "-"}:
+                return swept_draft_n
+            # fallback: preset-pinned value inside the best extra args
+            match = re.search(r"--spec-draft-n-max\s+(\d+)", str(entry["parsed_cfg"].get("extra_args", "")))
+            return match.group(1) if match else "-"
+
+        table = self.presets_table
+        header = table.horizontalHeader()
+        # keep the user's sort choice across refreshes; first fill = time desc
+        if table.isSortingEnabled():
+            sort_col = header.sortIndicatorSection()
+            sort_order = header.sortIndicatorOrder()
+        else:
+            sort_col = 1  # Run Time
+            sort_order = Qt.SortOrder.DescendingOrder
+        table.setSortingEnabled(False)
+
+        best_brush = QBrush(QColor(27, 77, 43))
+        table.setRowCount(0)
+
+        for entry in entries:
+            if spec_filter == "MTP only" and not entry["is_mtp"]:
+                continue
+            if spec_filter == "Non-MTP" and entry["is_mtp"]:
+                continue
+            if backend_filter != "All backends" and self._history_backend_label(entry["backend"]) != backend_filter:
+                continue
+            if lane_filter != "All lanes" and entry["lane"] != lane_filter:
+                continue
+
+            row_data = entry["row_data"]
+            parsed_cfg = entry["parsed_cfg"]
+            swept_specs, swept_extras, swept_draft_n = self._extract_sweep_sets_from_summary(row_data)
+
+            row = table.rowCount()
+            table.insertRow(row)
+
+            table.setItem(row, 0, QTableWidgetItem(self._history_backend_label(entry["backend"])))
+
+            run_item = QTableWidgetItem(entry["run_time"])
+            run_item.setData(Qt.ItemDataRole.UserRole, entry["run_id"])
+            table.setItem(row, 1, run_item)
+            table.setItem(row, 2, QTableWidgetItem(entry["model_name"] or "-"))
+            table.setItem(row, 3, NumericTableWidgetItem(f"{entry['aggregate_value']:.4f}", entry["aggregate_value"]))
+            table.setItem(row, 4, tps_item(str(row_data.get("prompt_eval_tps", "")), digits=1))
+            table.setItem(row, 5, tps_item(str(row_data.get("decode_eval_tps", ""))))
+            table.setItem(row, 6, QTableWidgetItem(parsed_cfg["ctx"]))
+            table.setItem(row, 7, QTableWidgetItem(f"{parsed_cfg['batch']}/{parsed_cfg['ubatch']}"))
+            table.setItem(row, 8, QTableWidgetItem(parsed_cfg["kv"]))
+            table.setItem(row, 9, QTableWidgetItem(parsed_cfg["spec"]))
+            table.setItem(row, 10, QTableWidgetItem(draft_n_for(entry, swept_draft_n)))
+            table.setItem(row, 11, QTableWidgetItem(parsed_cfg["extra_preset"]))
+            table.setItem(row, 12, QTableWidgetItem(parsed_cfg["extra_args"]))
+            table.setItem(row, 13, QTableWidgetItem(swept_specs))
+            table.setItem(row, 14, QTableWidgetItem(swept_extras))
+            table.setItem(row, 15, QTableWidgetItem(entry["build_id"] or "-"))
+            table.setItem(row, 16, QTableWidgetItem(entry["run_id"] or "-"))
+            table.setItem(row, 17, QTableWidgetItem(entry["label"] or "-"))
+
+            best_of_class = best_by_class.get((entry["backend"], entry["lane"], entry["is_mtp"]), -1.0)
+            if entry["aggregate_value"] > 0 and entry["aggregate_value"] >= best_of_class:
+                for col in range(table.columnCount()):
+                    item = table.item(row, col)
+                    if item is not None:
+                        item.setBackground(best_brush)
+
+        table.setSortingEnabled(True)
+        table.sortItems(sort_col, sort_order)
 
     def delete_selected_preset(self) -> None:
         row_data = self._selected_history_row_data()

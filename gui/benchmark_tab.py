@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -50,6 +54,193 @@ from bench_widgets import (
 from model_capabilities import model_supports_mtp
 
 
+class LlamaServerStopThread(QThread):
+    """Soft-stop leftover llama-server processes without force-killing GPU work."""
+
+    output = pyqtSignal(str)
+    finished_signal = pyqtSignal(int, int)
+
+    def __init__(self, wait_seconds: float = 90.0):
+        super().__init__()
+        self.wait_seconds = wait_seconds
+
+    @staticmethod
+    def _creationflags() -> int:
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+    @staticmethod
+    def _list_llama_servers() -> list[dict[str, object]]:
+        if os.name == "nt":
+            ps_script = (
+                "$procs = Get-CimInstance Win32_Process -Filter \"name = 'llama-server.exe'\" | "
+                "Select-Object ProcessId,ParentProcessId,CommandLine; "
+                "if ($procs) { $procs | ConvertTo-Json -Compress }"
+            )
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+                creationflags=LlamaServerStopThread._creationflags(),
+            )
+            payload = result.stdout.strip()
+            if not payload:
+                return []
+            data = json.loads(payload)
+            if isinstance(data, dict):
+                data = [data]
+            procs = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    pid = int(item.get("ProcessId", 0))
+                except (TypeError, ValueError):
+                    continue
+                if pid <= 0:
+                    continue
+                procs.append(
+                    {
+                        "pid": pid,
+                        "parent_pid": item.get("ParentProcessId"),
+                        "command": str(item.get("CommandLine") or ""),
+                    }
+                )
+            return procs
+
+        result = subprocess.run(
+            ["pgrep", "-af", "llama-server"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        procs = []
+        for line in result.stdout.splitlines():
+            parts = line.strip().split(maxsplit=1)
+            if not parts:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            if pid == os.getpid():
+                continue
+            procs.append({"pid": pid, "parent_pid": None, "command": parts[1] if len(parts) > 1 else ""})
+        return procs
+
+    @staticmethod
+    def _send_windows_ctrl_break(pid: int) -> tuple[bool, str]:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ctrl_break_event = 1
+
+        kernel32.FreeConsole()
+        if not kernel32.AttachConsole(pid):
+            return False, f"AttachConsole failed: winerr={ctypes.get_last_error()}"
+
+        try:
+            kernel32.SetConsoleCtrlHandler(None, True)
+            ctypes.set_last_error(0)
+            ok = bool(kernel32.GenerateConsoleCtrlEvent(ctrl_break_event, pid))
+            err = ctypes.get_last_error()
+            time.sleep(0.5)
+            if ok:
+                return True, "CTRL_BREAK sent"
+            return False, f"GenerateConsoleCtrlEvent failed: winerr={err}"
+        finally:
+            kernel32.SetConsoleCtrlHandler(None, False)
+            kernel32.FreeConsole()
+
+    @staticmethod
+    def _request_soft_terminate(pid: int) -> tuple[bool, str]:
+        if os.name == "nt":
+            result = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+                creationflags=LlamaServerStopThread._creationflags(),
+            )
+            message = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+            return result.returncode == 0, message
+
+        os.kill(pid, signal.SIGTERM)
+        return True, "SIGTERM sent"
+
+    @staticmethod
+    def _remaining_pids(target_pids: set[int]) -> set[int]:
+        try:
+            current = {int(proc["pid"]) for proc in LlamaServerStopThread._list_llama_servers()}
+        except Exception:
+            return target_pids
+        return target_pids & current
+
+    def run(self):
+        try:
+            procs = self._list_llama_servers()
+        except Exception as exc:
+            self.output.emit(f"[WARN] Failed to list llama-server processes: {exc}")
+            self.finished_signal.emit(0, 0)
+            return
+
+        total = len(procs)
+        if total == 0:
+            self.output.emit("[INFO] No leftover llama-server processes found.")
+            self.finished_signal.emit(0, 0)
+            return
+
+        target_pids = {int(proc["pid"]) for proc in procs}
+        for proc in procs:
+            pid = int(proc["pid"])
+            command = str(proc.get("command") or "")
+            short_command = command if len(command) <= 180 else command[:177] + "..."
+            self.output.emit(f"[INFO] Soft-stopping llama-server pid={pid}: {short_command}")
+            try:
+                if os.name == "nt":
+                    ok, message = self._send_windows_ctrl_break(pid)
+                else:
+                    ok, message = self._request_soft_terminate(pid)
+                level = "INFO" if ok else "WARN"
+                self.output.emit(f"[{level}] pid={pid}: {message}")
+            except Exception as exc:
+                self.output.emit(f"[WARN] pid={pid}: graceful stop failed: {exc}")
+
+        first_wait = min(5.0, max(0.5, self.wait_seconds / 4.0))
+        time.sleep(first_wait)
+
+        remaining = self._remaining_pids(target_pids)
+        for pid in sorted(remaining):
+            try:
+                ok, message = self._request_soft_terminate(pid)
+                level = "INFO" if ok else "WARN"
+                self.output.emit(f"[{level}] pid={pid}: soft task terminate: {message}")
+            except Exception as exc:
+                self.output.emit(f"[WARN] pid={pid}: soft task terminate failed: {exc}")
+
+        deadline = time.monotonic() + self.wait_seconds
+        while time.monotonic() < deadline:
+            remaining = self._remaining_pids(target_pids)
+            if not remaining:
+                break
+            time.sleep(1.0)
+
+        remaining = self._remaining_pids(target_pids)
+        stopped = total - len(remaining)
+        if remaining:
+            self.output.emit(
+                "[WARN] Still running after soft stop: "
+                + ", ".join(str(pid) for pid in sorted(remaining))
+                + ". No /F force-kill was used."
+            )
+        else:
+            self.output.emit("[INFO] All leftover llama-server processes stopped softly.")
+        self.finished_signal.emit(stopped, len(remaining))
+
+
 class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
     """Dedicated Bench & Autotune tab.
 
@@ -61,12 +252,15 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
     NGRAM_MOD_N_MIN = 12
     NGRAM_MOD_N_MATCH = 16
     NGRAM_MOD_N_MAX = 32
-    MTP_DRAFT_N_MAX = 8
+    MTP_DRAFT_N_MAX = 2
+    REAL_CONTEXT_SAFE_FILL = 0.88
+    REAL_CONTEXT_RESERVE_TOKENS = 2048
+    REAL_CONTEXT_CHARS_PER_TOKEN = 2.6
 
     # Autotune context lanes: (display, ctx, repo-snapshot chars).
     # Screen lane = fast preset hunt (short prompt, cheap prefill); Long lanes
-    # scale the prompt with ctx (~3 chars/token fills ~80%); Max 130K keeps the
-    # legacy short-prompt KV-stress semantics for comparability with history.
+    # request a large prompt but are capped by the benchmark script so they fit
+    # the selected ctx; Max 130K keeps the legacy short-prompt KV-stress semantics.
     AUTOTUNE_LANES = [
         ("Screen 12K — fast preset hunt",             12288,  24576),
         ("Long 50K — long-prompt check",              49152,  147456),
@@ -76,6 +270,22 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
     ]
 
     VALIDATE_CTX_CHOICES = [("50K", 49152), ("100K", 98304), ("130K", 131072)]
+
+    @staticmethod
+    def _request_timeout_for_ctx(ctx_size: int) -> int:
+        if ctx_size >= 131072:
+            return 1800
+        if ctx_size >= 98304:
+            return 1500
+        if ctx_size >= 49152:
+            return 900
+        return 300
+
+    @staticmethod
+    def _server_extra_arg(server_extra: str) -> str:
+        # argparse treats a separate value that starts with '-' as a new option.
+        # Use --flag=value form so server flags such as "--no-mmap" are preserved.
+        return f"--server-extra={server_extra}"
 
     def __init__(self, parent):
         super().__init__()
@@ -98,6 +308,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self._bench_help_cache: dict[str, str] = {}
         self._autotune_result = {"best": "", "summary_json": "", "summary_csv": ""}
         self._autotune_active_run: str | None = None
+        self.stop_all_thread: LlamaServerStopThread | None = None
         self.create_ui()
         self.refresh_models_list()
         self.refresh_build_choices()
@@ -161,12 +372,29 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.scale_prompt_check.setChecked(
                 self.settings.value("benchmark/scale_prompt", False, type=bool)
             )
-            self.mtp_draft_spin.setValue(
-                self.settings.value("benchmark/mtp_draft_n", self.MTP_DRAFT_N_MAX, type=int)
+            mtp_draft_n = self.settings.value("benchmark/mtp_draft_n", self.MTP_DRAFT_N_MAX, type=int)
+            at_mtp_draft_n = self.settings.value("benchmark/autotune/mtp_draft_n", self.MTP_DRAFT_N_MAX, type=int)
+            if not self.settings.value("benchmark/mtp_draft_n_default_migrated_v2", False, type=bool):
+                if mtp_draft_n == 8:
+                    mtp_draft_n = self.MTP_DRAFT_N_MAX
+                    self.settings.setValue("benchmark/mtp_draft_n", mtp_draft_n)
+                if at_mtp_draft_n == 8:
+                    at_mtp_draft_n = self.MTP_DRAFT_N_MAX
+                    self.settings.setValue("benchmark/autotune/mtp_draft_n", at_mtp_draft_n)
+                self.settings.setValue("benchmark/mtp_draft_n_default_migrated_v2", True)
+            self.mtp_draft_spin.setValue(mtp_draft_n)
+            # CSV field superseded the autotune spinbox; legacy int is the fallback
+            self.at_mtp_draft_input.setText(
+                str(self.settings.value("benchmark/autotune/mtp_draft_values", str(at_mtp_draft_n)))
             )
-            self.at_mtp_draft_spin.setValue(
-                self.settings.value("benchmark/autotune/mtp_draft_n", self.MTP_DRAFT_N_MAX, type=int)
-            )
+
+            spec_filter = self.settings.value("benchmark/history/spec_filter", "All")
+            idx = self.history_spec_filter_combo.findText(spec_filter)
+            if idx >= 0:
+                self.history_spec_filter_combo.setCurrentIndex(idx)
+            # the lane combo is populated during table refresh; stash the wish
+            self._history_lane_filter_saved = self.settings.value("benchmark/history/lane_filter", "All lanes")
+            self._history_backend_filter_saved = self.settings.value("benchmark/history/backend_filter", "All backends")
 
             self._update_autotune_grid_preview()
         except Exception as exc:
@@ -206,7 +434,10 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.settings.setValue("benchmark/devices", self.device_combo.currentText())
             self.settings.setValue("benchmark/scale_prompt", self.scale_prompt_check.isChecked())
             self.settings.setValue("benchmark/mtp_draft_n", self.mtp_draft_spin.value())
-            self.settings.setValue("benchmark/autotune/mtp_draft_n", self.at_mtp_draft_spin.value())
+            self.settings.setValue("benchmark/autotune/mtp_draft_values", self.at_mtp_draft_input.text().strip())
+            self.settings.setValue("benchmark/history/spec_filter", self.history_spec_filter_combo.currentText())
+            self.settings.setValue("benchmark/history/lane_filter", self.history_lane_filter_combo.currentText())
+            self.settings.setValue("benchmark/history/backend_filter", self.history_backend_filter_combo.currentText())
         except Exception as exc:
             self.log_output.append(f"[WARN] Failed to save autotune settings: {exc}")
 
@@ -383,7 +614,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.mtp_draft_spin.setValue(self.MTP_DRAFT_N_MAX)
         self.mtp_draft_spin.setToolTip(
             "--spec-draft-n-max, used when Spec is mtp/ngram-mtp.\n"
-            "8 measured best on short ctx; 2 measured better on big prompts."
+            "2 is the safer default for big prompts; try 4/8 only when tuning short-context decode."
         )
         single_layout.addWidget(self.mtp_draft_spin, 8, 1)
         single_layout.setColumnStretch(1, 1)
@@ -565,16 +796,16 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
 
         mtp_draft_row = QHBoxLayout()
         mtp_draft_row.addWidget(QLabel("MTP draft N max:"))
-        self.at_mtp_draft_spin = QSpinBox()
-        self.at_mtp_draft_spin.setRange(1, 20)
-        self.at_mtp_draft_spin.setValue(self.MTP_DRAFT_N_MAX)
-        self.at_mtp_draft_spin.setToolTip(
+        self.at_mtp_draft_input = QLineEdit()
+        self.at_mtp_draft_input.setText(str(self.MTP_DRAFT_N_MAX))
+        self.at_mtp_draft_input.setMaximumWidth(120)
+        self.at_mtp_draft_input.setToolTip(
             "--spec-draft-n-max for mtp/ngram-mtp sweep configs.\n"
-            "8 measured best on short ctx (E266); 2 measured better on big\n"
-            "prompts (E267). To sweep several values in one run, add custom\n"
-            "extras like: mtp-n2::--spec-draft-n-max 2||mtp-n4::--spec-draft-n-max 4"
+            "One value (e.g. 8) or a comma list (e.g. 2,4,8) — a list sweeps\n"
+            "every draft budget in the same autotune run (multiplies the grid).\n"
+            "2 is the safer default for big prompts; 4/8 for short-ctx decode."
         )
-        mtp_draft_row.addWidget(self.at_mtp_draft_spin)
+        mtp_draft_row.addWidget(self.at_mtp_draft_input)
         mtp_draft_row.addStretch()
         autotune_layout.addLayout(mtp_draft_row)
 
@@ -699,7 +930,6 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.at_ubatch_step_spin,
             self.lane_custom_ctx_spin,
             self.mtp_draft_spin,
-            self.at_mtp_draft_spin,
         ]:
             self._configure_spinbox(spin_box)
 
@@ -731,7 +961,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.device_combo.currentIndexChanged.connect(lambda _index: self.save_settings())
         self.scale_prompt_check.toggled.connect(self.save_settings)
         self.mtp_draft_spin.valueChanged.connect(self.save_settings)
-        self.at_mtp_draft_spin.valueChanged.connect(self.save_settings)
+        self.at_mtp_draft_input.textChanged.connect(self._update_autotune_grid_preview)
+        self.at_mtp_draft_input.textChanged.connect(self.save_settings)
         self._update_autotune_grid_preview()
 
         shared_btn_row = QHBoxLayout()
@@ -741,6 +972,13 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self.stop_current_run)
         shared_btn_row.addWidget(self.stop_btn, 1)
+
+        self.stop_all_servers_btn = QPushButton("Stop All Servers")
+        self.stop_all_servers_btn.setToolTip(
+            "Soft-stop leftover llama-server processes with CTRL_BREAK/taskkill without /F"
+        )
+        self.stop_all_servers_btn.clicked.connect(self.stop_all_llama_servers)
+        shared_btn_row.addWidget(self.stop_all_servers_btn, 1)
 
         self.open_history_btn = QPushButton("Open History")
         self.open_history_btn.setToolTip("Open build_logs/agent-workload/BENCH_HISTORY.md")
@@ -763,9 +1001,40 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
 
         presets_group = QGroupBox("Autotune Runs History (Best Result Per Run)")
         presets_layout = QVBoxLayout()
+
+        history_filter_row = QHBoxLayout()
+        history_filter_row.addWidget(QLabel("Spec:"))
+        self.history_spec_filter_combo = QComboBox()
+        self.history_spec_filter_combo.addItems(["All", "MTP only", "Non-MTP"])
+        self.history_spec_filter_combo.setToolTip("Show only runs whose best spec was MTP-based (mtp/ngram-mtp) or not")
+        history_filter_row.addWidget(self.history_spec_filter_combo)
+
+        history_filter_row.addWidget(QLabel("Backend:"))
+        self.history_backend_filter_combo = QComboBox()
+        self.history_backend_filter_combo.addItem("All backends")
+        self.history_backend_filter_combo.setToolTip("Filter autotune history by backend")
+        history_filter_row.addWidget(self.history_backend_filter_combo)
+
+        history_filter_row.addWidget(QLabel("Lane:"))
+        self.history_lane_filter_combo = QComboBox()
+        self.history_lane_filter_combo.addItem("All lanes")
+        self.history_lane_filter_combo.setToolTip("Filter runs by context lane (ctx)")
+        history_filter_row.addWidget(self.history_lane_filter_combo)
+
+        history_legend = QLabel("■ best per backend / lane / spec")
+        history_legend.setStyleSheet("color: #4CAF50;")
+        history_filter_row.addWidget(history_legend)
+        history_filter_row.addStretch()
+        presets_layout.addLayout(history_filter_row)
+
+        self.history_spec_filter_combo.currentIndexChanged.connect(self._on_history_filter_changed)
+        self.history_backend_filter_combo.currentIndexChanged.connect(self._on_history_filter_changed)
+        self.history_lane_filter_combo.currentIndexChanged.connect(self._on_history_filter_changed)
+
         self.presets_table = QTableWidget()
-        self.presets_table.setColumnCount(16)
+        self.presets_table.setColumnCount(18)
         self.presets_table.setHorizontalHeaderLabels([
+            "Backend",
             "Run Time",
             "Model",
             "Best TPS",
@@ -775,6 +1044,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             "Batch/UBatch",
             "KV",
             "Best Spec",
+            "Draft N",
             "Best Extra",
             "Extra args",
             "Swept Specs",
@@ -789,7 +1059,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.presets_table.setMinimumHeight(190)
         self._configure_compact_table(
             self.presets_table,
-            [140, 180, 82, 84, 84, 70, 105, 72, 96, 110, 180, 120, 120, 120, 150, 160],
+            [76, 140, 180, 82, 84, 84, 70, 105, 72, 96, 66, 110, 180, 120, 120, 120, 150, 160],
         )
         presets_layout.addWidget(self.presets_table)
 
@@ -834,7 +1104,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         history_group = QGroupBox("Current Autotune Run History (Live)")
         history_layout = QVBoxLayout()
         self.autotune_history_table = QTableWidget()
-        self.autotune_history_table.setColumnCount(11)
+        self.autotune_history_table.setColumnCount(12)
         self.autotune_history_table.setHorizontalHeaderLabels([
             "Run",
             "Ctx",
@@ -842,6 +1112,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             "UBatch",
             "KV",
             "Spec",
+            "Draft N",
             "Extra",
             "Agg TPS",
             "Prompt TPS",
@@ -852,7 +1123,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.autotune_history_table.setMinimumHeight(190)
         self._configure_compact_table(
             self.autotune_history_table,
-            [62, 70, 76, 76, 70, 96, 120, 70, 84, 84, 78],
+            [62, 70, 76, 76, 70, 96, 62, 120, 70, 84, 84, 110],
         )
         history_layout.addWidget(self.autotune_history_table)
         history_group.setLayout(history_layout)
@@ -1144,6 +1415,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             spec_extra.append(f"--spec-draft-n-max {self.mtp_draft_spin.value()}")
         server_extra.extend(spec_extra)
 
+        request_timeout = self._request_timeout_for_ctx(self.ctx_spin.value())
+
         command = [
             sys.executable,
             "scripts/agent_workload_bench.py",
@@ -1180,9 +1453,9 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             "--startup-timeout",
             "900",
             "--request-timeout",
-            "180",
+            str(request_timeout),
             "--task-hard-timeout",
-            "45",
+            "0",
             "--background-server-policy",
             "fail",
             "--real-context-mode",
@@ -1190,12 +1463,15 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             "--real-context-chars",
             str(self.ctx_spin.value() * 3 if self.scale_prompt_check.isChecked() else 24576),
             "--real-context-safe-fill",
-            "0.88",
+            f"{self.REAL_CONTEXT_SAFE_FILL:g}",
+            "--real-context-reserve-tokens",
+            str(self.REAL_CONTEXT_RESERVE_TOKENS),
+            "--real-context-chars-per-token",
+            str(self.REAL_CONTEXT_CHARS_PER_TOKEN),
             "--no-reuse",
             "--no-v2-prime-pass",
             "--no-disable-thinking",
-            "--server-extra",
-            " ".join(server_extra),
+            self._server_extra_arg(" ".join(server_extra)),
         ]
 
         if self.tasks_combo.currentText() == "quick":
@@ -1288,6 +1564,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         if not extra_presets:
             QMessageBox.warning(self, "Auto-tune", "No valid extra presets resolved for autotune.")
             return
+        extra_presets = self._apply_draft_sweep_to_extra_presets(extra_presets)
         extra_presets = self._apply_device_sweep_to_extra_presets(extra_presets)
 
         autotune_extra_presets = "||".join(extra_presets)
@@ -1317,6 +1594,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         if not self.autotune_device_sweep_check.isChecked():
             base_server_extra = base_server_extra + self._selected_device_args()
 
+        request_timeout = self._request_timeout_for_ctx(autotune_min_ctx)
+
         command = [
             sys.executable,
             "scripts/agent_workload_bench.py",
@@ -1344,9 +1623,9 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             "--startup-timeout",
             "900",
             "--request-timeout",
-            "180",
+            str(request_timeout),
             "--task-hard-timeout",
-            "45",
+            "0",
             "--background-server-policy",
             "fail",
             "--allow-ctx-above-16k",
@@ -1355,7 +1634,11 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             "--real-context-chars",
             autotune_real_context_chars,
             "--real-context-safe-fill",
-            "0.88",
+            f"{self.REAL_CONTEXT_SAFE_FILL:g}",
+            "--real-context-reserve-tokens",
+            str(self.REAL_CONTEXT_RESERVE_TOKENS),
+            "--real-context-chars-per-token",
+            str(self.REAL_CONTEXT_CHARS_PER_TOKEN),
             "--no-reuse",
             "--no-v2-prime-pass",
             "--no-disable-thinking",
@@ -1378,7 +1661,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             "--autotune-ngram-max",
             str(self.NGRAM_MOD_N_MAX),
             "--autotune-mtp-draft-n-max",
-            str(self.at_mtp_draft_spin.value()),
+            str(self._selected_mtp_draft_values()[0]),
             "--autotune-max-configs",
             str(max(64, config_count + 8)),
             "--autotune-update-preset",
@@ -1387,7 +1670,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         ]
 
         if base_server_extra:
-            command.extend(["--server-extra", " ".join(base_server_extra)])
+            command.append(self._server_extra_arg(" ".join(base_server_extra)))
 
         if autotune_task_ids:
             command.extend(["--task-ids", autotune_task_ids])
@@ -1485,7 +1768,9 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             f"reset={'on' if self.autotune_reset_session_checkbox.isChecked() else 'off'}"
         )
 
-        self.log_output.append("[INFO] Task timeout policy: 45s hard, fail timeout off")
+        self.log_output.append(
+            f"[INFO] Task timeout policy: request {request_timeout}s, hard timeout off, fail timeout off"
+        )
 
         for note in compatibility_notes:
             self.log_output.append(f"[INFO] Compatibility: {note}")
@@ -1513,6 +1798,60 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.status_label.setText("Stopping benchmark/autotune...")
         self.log_output.append("[INFO] Stop requested by user. Terminating benchmark process...")
         self.bench_thread.request_stop()
+
+    def stop_all_llama_servers(self):
+        if self.stop_all_thread and self.stop_all_thread.isRunning():
+            QMessageBox.information(self, "Stop All Servers", "A soft cleanup is already running")
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Stop All Servers",
+            "Soft-stop all leftover llama-server processes now?\n\n"
+            "This sends CTRL_BREAK/SIGTERM and taskkill without /F. It will not force-kill GPU work.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        timeout = 90.0
+        try:
+            timeout = float(os.environ.get("LLAMA_GUI_STOP_ALL_TIMEOUT", "90"))
+        except ValueError:
+            timeout = 90.0
+
+        self.status_label.setText("Soft-stopping leftover llama-server processes...")
+        self.log_output.append("[INFO] Stop All Servers requested. No force-kill will be used.")
+        self.stop_all_servers_btn.setEnabled(False)
+        self.stop_all_thread = LlamaServerStopThread(wait_seconds=timeout)
+        self.stop_all_thread.output.connect(self._on_stop_all_servers_output)
+        self.stop_all_thread.finished_signal.connect(self._on_stop_all_servers_finished)
+        self.stop_all_thread.start()
+
+    def _on_stop_all_servers_output(self, line: str):
+        self.log_output.append(line)
+
+    def _on_stop_all_servers_finished(self, stopped: int, remaining: int):
+        self.stop_all_servers_btn.setEnabled(True)
+        self.stop_all_thread = None
+        if stopped == 0 and remaining == 0:
+            self.status_label.setText("No leftover llama-server processes")
+            QMessageBox.information(self, "Stop All Servers", "No leftover llama-server processes found.")
+            return
+
+        if remaining:
+            self.status_label.setText(f"Soft stop incomplete: {remaining} server(s) still running")
+            QMessageBox.warning(
+                self,
+                "Stop All Servers",
+                f"Soft-stopped {stopped} server(s), but {remaining} still remain.\n"
+                "No /F force-kill was used.",
+            )
+            return
+
+        self.status_label.setText(f"Soft-stopped {stopped} llama-server process(es)")
+        QMessageBox.information(self, "Stop All Servers", f"Soft-stopped {stopped} llama-server process(es).")
 
     @staticmethod
     def _build_autotune_range_values(min_value: int, max_value: int, step: int) -> list[int]:
@@ -1640,6 +1979,41 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             ]
         return []
 
+    def _selected_mtp_draft_values(self) -> list[int]:
+        """Draft-N budgets from the CSV field; invalid chunks are dropped."""
+        values: list[int] = []
+        for chunk in self.at_mtp_draft_input.text().split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            try:
+                value = int(chunk)
+            except ValueError:
+                continue
+            if 1 <= value <= 20 and value not in values:
+                values.append(value)
+        return values or [self.MTP_DRAFT_N_MAX]
+
+    def _apply_draft_sweep_to_extra_presets(self, extra_presets: list[str]) -> list[str]:
+        """Cross-multiply extra presets with draft-N budgets when several are given.
+
+        Relies on the bench script honoring a preset-pinned --spec-draft-n-max
+        over the sweep default. Only meaningful for mtp/ngram-mtp specs; other
+        spec modes ignore the flag.
+        """
+        values = self._selected_mtp_draft_values()
+        if len(values) <= 1:
+            return extra_presets
+
+        combined: list[str] = []
+        for item in extra_presets:
+            name, sep, args = item.partition("::")
+            for value in values:
+                combo_name = f"n{value}" if name == "base" else f"{name}+n{value}"
+                combo_args = f"{args} --spec-draft-n-max {value}".strip() if sep else f"--spec-draft-n-max {value}"
+                combined.append(f"{combo_name}::{combo_args}")
+        return combined
+
     def _apply_device_sweep_to_extra_presets(self, extra_presets: list[str]) -> list[str]:
         """Cross-multiply extra presets with device sweep configs when enabled."""
         if not self.autotune_device_sweep_check.isChecked():
@@ -1666,6 +2040,10 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             ctx = self.lane_custom_ctx_spin.value()
             chars = 24576 if ctx <= 16384 else ctx * 3
         return ctx, chars
+
+    def _on_history_filter_changed(self, *_args) -> None:
+        self.refresh_saved_presets_table()
+        self.save_settings()
 
     def _on_lane_changed(self, *_args) -> None:
         is_custom = self.AUTOTUNE_LANES[self.lane_combo.currentIndex()][1] == 0
@@ -1751,7 +2129,9 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
 
         kv_values = self._selected_autotune_kv_values()
         selected_spec_values = self._selected_autotune_spec_values()
-        extra_presets = self._apply_device_sweep_to_extra_presets(self._selected_autotune_extra_presets())
+        extra_presets = self._apply_device_sweep_to_extra_presets(
+            self._apply_draft_sweep_to_extra_presets(self._selected_autotune_extra_presets())
+        )
 
         kv_text = ",".join(kv_values) if kv_values else "-"
         spec_text = ",".join(selected_spec_values) if selected_spec_values else "-"
@@ -1787,7 +2167,15 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
 
         lane_ctx, lane_chars = self._selected_lane()
         # rough per-config cost: server load + prefill (~500 tok/s aggregate)
-        prompt_tokens = min(int(lane_chars / 3.7), int(lane_ctx * 0.88))
+        usable_prompt_tokens = (
+            int(lane_ctx * self.REAL_CONTEXT_SAFE_FILL)
+            - 16
+            - int(self.REAL_CONTEXT_RESERVE_TOKENS)
+        )
+        usable_prompt_tokens = max(1024, usable_prompt_tokens)
+        safe_chars = int(usable_prompt_tokens * self.REAL_CONTEXT_CHARS_PER_TOKEN)
+        effective_chars = safe_chars if lane_chars <= 0 else min(lane_chars, safe_chars)
+        prompt_tokens = min(int(effective_chars / self.REAL_CONTEXT_CHARS_PER_TOKEN), usable_prompt_tokens)
         per_config_sec = 75 + prompt_tokens / 500
         total_min = total_configs * per_config_sec / 60.0
         if total_min >= 90:
@@ -1796,7 +2184,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             eta_text = f"~{max(1, int(round(total_min)))} min"
 
         self.autotune_mode_info.setText(
-            f"Lane: ctx={lane_ctx}, repo-snapshot chars={lane_chars} (~{prompt_tokens} prompt tokens), "
+            f"Lane: ctx={lane_ctx}, repo-snapshot chars={effective_chars}/{lane_chars} "
+            f"(~{prompt_tokens} prompt tokens), "
             "tasks=quick:triage_diff, runs=1, max_tokens=16, no-reuse, no-prime, thinking on."
         )
         lane_short = self.AUTOTUNE_LANES[self.lane_combo.currentIndex()][0].split(" — ")[0]
@@ -1994,7 +2383,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             if self._current_mode == "autotune" and self._autotune_active_run is not None:
                 stopped_row = self._find_autotune_history_row(self._autotune_active_run)
                 if stopped_row is not None:
-                    self.autotune_history_table.setItem(stopped_row, 10, QTableWidgetItem("stopped"))
+                    self.autotune_history_table.setItem(stopped_row, 11, QTableWidgetItem("stopped"))
                 self._autotune_active_run = None
             self.status_label.setText("Benchmark stopped")
             self.log_output.append("[INFO] Benchmark/autotune stopped by user")
@@ -2025,7 +2414,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             if self._current_mode == "autotune" and self._autotune_active_run is not None:
                 failed_row = self._find_autotune_history_row(self._autotune_active_run)
                 if failed_row is not None:
-                    self.autotune_history_table.setItem(failed_row, 10, QTableWidgetItem("failed"))
+                    self.autotune_history_table.setItem(failed_row, 11, QTableWidgetItem("failed"))
                 self._autotune_active_run = None
             if self._current_mode == "autotune":
                 self.refresh_saved_presets_table()
@@ -2143,6 +2532,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             kv = self._sanitize_compact_token(fields.get("kv", ""))
             spec_mode = self._sanitize_compact_token(fields.get("spec", ""))
             extra_value = self._sanitize_compact_token(fields.get("extra", "base"), fallback="base")
+            draft_n = self._sanitize_compact_token(fields.get("draftn", "-"))
 
             run_label = f"{run_idx}/{total}"
             row = self.autotune_history_table.rowCount()
@@ -2153,11 +2543,12 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.autotune_history_table.setItem(row, 3, NumericTableWidgetItem(str(ubatch), ubatch))
             self.autotune_history_table.setItem(row, 4, QTableWidgetItem(kv))
             self.autotune_history_table.setItem(row, 5, QTableWidgetItem(spec_mode))
-            self.autotune_history_table.setItem(row, 6, QTableWidgetItem(extra_value))
-            self.autotune_history_table.setItem(row, 7, QTableWidgetItem("-"))
+            self.autotune_history_table.setItem(row, 6, QTableWidgetItem(draft_n))
+            self.autotune_history_table.setItem(row, 7, QTableWidgetItem(extra_value))
             self.autotune_history_table.setItem(row, 8, QTableWidgetItem("-"))
             self.autotune_history_table.setItem(row, 9, QTableWidgetItem("-"))
-            self.autotune_history_table.setItem(row, 10, QTableWidgetItem("running"))
+            self.autotune_history_table.setItem(row, 10, QTableWidgetItem("-"))
+            self.autotune_history_table.setItem(row, 11, QTableWidgetItem("running"))
             self._autotune_active_run = run_label
             self.autotune_history_table.scrollToBottom()
             self.status_label.setText(line)
@@ -2170,11 +2561,27 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         if active_row is None:
             return
 
+        progress_match = re.search(
+            r"PROMPT PROGRESS:\s*task=(\S+)\s+pct=([0-9.]+)\s+tokens=(\d+)/(\d+|\?)\s+status=(\w+)",
+            line,
+        )
+        if progress_match:
+            _task_id, pct_text, done_tokens, total_tokens, progress_status = progress_match.groups()
+            pct_value = float(pct_text)
+            if total_tokens == "?":
+                detail_text = f"prompt {pct_value:.1f}%"
+            else:
+                detail_text = f"prompt {pct_value:.1f}% ({done_tokens}/{total_tokens})"
+            table_text = f"prompt {pct_value:.1f}%"
+            self.autotune_history_table.setItem(active_row, 11, QTableWidgetItem(table_text))
+            self.status_label.setText(detail_text if progress_status == "running" else "prompt done, decoding")
+            return
+
         tps_match = re.search(r"Aggregate completion TPS by wall time:\s*([0-9]+(?:\.[0-9]+)?)", line)
         if tps_match:
             tps_value = float(tps_match.group(1))
-            self.autotune_history_table.setItem(active_row, 7, NumericTableWidgetItem(f"{tps_value:.2f}", tps_value))
-            self.autotune_history_table.setItem(active_row, 10, QTableWidgetItem("done"))
+            self.autotune_history_table.setItem(active_row, 8, NumericTableWidgetItem(f"{tps_value:.2f}", tps_value))
+            self.autotune_history_table.setItem(active_row, 11, QTableWidgetItem("done"))
             # keep the run active: CONFIG RESULT (prompt/decode TPS) prints next
             return
 
@@ -2184,21 +2591,21 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         )
         if result_match:
             agg_value, prompt_value, decode_value = (float(g) for g in result_match.groups())
-            self.autotune_history_table.setItem(active_row, 7, NumericTableWidgetItem(f"{agg_value:.2f}", agg_value))
-            self.autotune_history_table.setItem(active_row, 8, NumericTableWidgetItem(f"{prompt_value:.1f}", prompt_value))
-            self.autotune_history_table.setItem(active_row, 9, NumericTableWidgetItem(f"{decode_value:.2f}", decode_value))
-            self.autotune_history_table.setItem(active_row, 10, QTableWidgetItem("done"))
+            self.autotune_history_table.setItem(active_row, 8, NumericTableWidgetItem(f"{agg_value:.2f}", agg_value))
+            self.autotune_history_table.setItem(active_row, 9, NumericTableWidgetItem(f"{prompt_value:.1f}", prompt_value))
+            self.autotune_history_table.setItem(active_row, 10, NumericTableWidgetItem(f"{decode_value:.2f}", decode_value))
+            self.autotune_history_table.setItem(active_row, 11, QTableWidgetItem("done"))
             self._autotune_active_run = None
             return
 
         if line.strip().startswith("error:"):
-            status_item = self.autotune_history_table.item(active_row, 10)
+            status_item = self.autotune_history_table.item(active_row, 11)
             if status_item is None or status_item.text() == "running":
-                self.autotune_history_table.setItem(active_row, 10, QTableWidgetItem("error"))
+                self.autotune_history_table.setItem(active_row, 11, QTableWidgetItem("error"))
             self._autotune_active_run = None
             return
 
         if line.startswith("CONFIG FAILED ("):
-            self.autotune_history_table.setItem(active_row, 10, QTableWidgetItem("failed"))
+            self.autotune_history_table.setItem(active_row, 11, QTableWidgetItem("failed"))
             self._autotune_active_run = None
 

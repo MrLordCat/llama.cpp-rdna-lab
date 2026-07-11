@@ -1072,7 +1072,7 @@ class BuildTabWidget(QWidget):
             "--no-reuse",
             "--no-v2-prime-pass",
             "--no-disable-thinking",
-            "--server-extra", "--spec-type none",
+            "--server-extra=--spec-type none",
         ]
 
         if hasattr(self, "quick_bench_btn"):

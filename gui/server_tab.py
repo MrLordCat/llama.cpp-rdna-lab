@@ -28,7 +28,8 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
     NGRAM_MOD_N_MIN = 12
     NGRAM_MOD_N_MATCH = 16
     NGRAM_MOD_N_MAX = 32
-    MTP_DRAFT_N_MAX = 8
+    MTP_DRAFT_N_MAX = 2
+    SERVER_CONTEXT_MAX = 262144
     
     def __init__(self, parent):
         super().__init__()
@@ -244,9 +245,13 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         gpu_layout.addWidget(QLabel("Context:"))
         self.server_context_spinbox = QSpinBox()
         self.server_context_spinbox.setMinimum(8192)
-        self.server_context_spinbox.setMaximum(131072)
+        self.server_context_spinbox.setMaximum(self.SERVER_CONTEXT_MAX)
         self.server_context_spinbox.setValue(32768)
         self.server_context_spinbox.setSingleStep(8192)
+        self.server_context_spinbox.setToolTip(
+            "Server context size in tokens. Qwen3.6 advertises 262144 tokens;\n"
+            "larger values still require enough VRAM/RAM and may need quantized KV cache."
+        )
         gpu_layout.addWidget(self.server_context_spinbox)
         gpu_layout.addStretch()
         resources_layout.addLayout(gpu_layout)
@@ -296,7 +301,10 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_spec_draft_n_max.setMinimum(1)
         self.server_spec_draft_n_max.setMaximum(20)
         self.server_spec_draft_n_max.setValue(self.MTP_DRAFT_N_MAX)
-        self.server_spec_draft_n_max.setToolTip("--spec-draft-n-max: max draft tokens per verify step")
+        self.server_spec_draft_n_max.setToolTip(
+            "--spec-draft-n-max: max draft tokens per verify step. "
+            "2 is the safer default for long prompts; tune higher values manually."
+        )
         draft_layout.addWidget(self.server_spec_draft_n_max)
         draft_layout.addStretch()
         spec_layout.addLayout(draft_layout)
@@ -1095,7 +1103,13 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         if saved_spec_type.lower() == "draft-mtp":
             saved_spec_type = "mtp"
         self.server_spec_type_combo.setCurrentText(saved_spec_type)
-        self.server_spec_draft_n_max.setValue(int(settings.value("server/spec_draft_n_max", self.MTP_DRAFT_N_MAX)))
+        spec_draft_n_max = int(settings.value("server/spec_draft_n_max", self.MTP_DRAFT_N_MAX))
+        if not settings.value("server/spec_draft_n_max_default_migrated_v2", False, type=bool):
+            if spec_draft_n_max == 8:
+                spec_draft_n_max = self.MTP_DRAFT_N_MAX
+                settings.setValue("server/spec_draft_n_max", spec_draft_n_max)
+            settings.setValue("server/spec_draft_n_max_default_migrated_v2", True)
+        self.server_spec_draft_n_max.setValue(spec_draft_n_max)
         self.server_ngram_min.setValue(int(settings.value("server/spec_ngram_min", self.NGRAM_MOD_N_MIN)))
         self.server_ngram_match.setValue(int(settings.value("server/spec_ngram_match", self.NGRAM_MOD_N_MATCH)))
         self.server_ngram_max.setValue(int(settings.value("server/spec_ngram_max", self.NGRAM_MOD_N_MAX)))
