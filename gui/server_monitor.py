@@ -33,11 +33,14 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+# NB: "Utilization Percentage" is a rate counter — a single sample always reads
+# 0, so the engine query takes two samples 1s apart and reports the second one.
 _GPU_COUNTER_PS = (
     "$ci=[System.Globalization.CultureInfo]::InvariantCulture; "
-    "(Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage',"
-    "'\\GPU Engine(*)\\Utilization Percentage' -ErrorAction SilentlyContinue)"
-    ".CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue.ToString($ci) }"
+    "(Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage' -ErrorAction SilentlyContinue)"
+    ".CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue.ToString($ci) }; "
+    "$u = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -SampleInterval 1 -MaxSamples 2 -ErrorAction SilentlyContinue; "
+    "if ($u) { $u[-1].CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue.ToString($ci) } }"
 )
 
 # dedicated VRAM size per display adapter (bytes), from the driver registry keys
@@ -81,7 +84,7 @@ def _query_gpu_totals(timeout: float = 8.0) -> list[float]:
     return totals
 
 
-def _query_gpu_counters(timeout: float = 6.0) -> list[dict]:
+def _query_gpu_counters(timeout: float = 12.0) -> list[dict]:
     """Per-adapter VRAM usage (GB) and load (%) via Windows perf counters."""
     if os.name != "nt":
         return []
@@ -148,7 +151,9 @@ class ServerMonitorThread(QThread):
 
     stats_ready = pyqtSignal(dict)
 
-    POLL_INTERVAL_MS = 3000
+    # the GPU query itself takes ~2-3s (two-sample rate counters), so the
+    # effective refresh period is roughly POLL_INTERVAL_MS + 3s
+    POLL_INTERVAL_MS = 2000
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -156,12 +161,14 @@ class ServerMonitorThread(QThread):
         self._base_url: str = ""
         self._api_key: str = ""
         self._server_pid: int | None = None
+        self._ctx_tokens: int = 0
         self._prev_totals: tuple[float, float, float] | None = None  # (t, prompt, decode)
         self._gpu_totals: list[float] | None = None
 
-    def set_server(self, base_url: str, api_key: str = "", pid: int | None = None) -> None:
+    def set_server(self, base_url: str, api_key: str = "", pid: int | None = None, ctx_tokens: int = 0) -> None:
         self._api_key = api_key
         self._server_pid = pid
+        self._ctx_tokens = ctx_tokens
         self._prev_totals = None
         self._base_url = base_url.rstrip("/")
 
@@ -214,7 +221,10 @@ class ServerMonitorThread(QThread):
             "decode_tps_now": decode_now,
             "prompt_tokens_total": prompt_total,
             "predicted_tokens_total": decode_total,
-            "kv_pct": metrics.get("llamacpp:kv_cache_usage_ratio", 0.0) * 100.0,
+            # this server build exports no KV-cache metrics; n_tokens_max is the
+            # high watermark of occupied context tokens
+            "tokens_peak": int(metrics.get("llamacpp:n_tokens_max", 0.0)),
+            "ctx_tokens": self._ctx_tokens,
             "busy": int(metrics.get("llamacpp:requests_processing", 0.0)),
             "deferred": int(metrics.get("llamacpp:requests_deferred", 0.0)),
         }
@@ -324,9 +334,10 @@ class ServerMonitorPanel(QGroupBox):
         top.addWidget(QLabel("Server:"), 0, 0)
         top.addWidget(self.server_state, 0, 1)
 
-        self.kv_bar = _make_bar()
-        top.addWidget(QLabel("KV:"), 0, 2)
-        top.addWidget(self.kv_bar, 0, 3)
+        self.ctx_bar = _make_bar()
+        self.ctx_bar.setToolTip("Peak occupied context tokens (llamacpp:n_tokens_max) vs configured ctx")
+        top.addWidget(QLabel("Ctx:"), 0, 2)
+        top.addWidget(self.ctx_bar, 0, 3)
 
         self.prompt_label = QLabel("—")
         self.decode_label = QLabel("—")
@@ -372,13 +383,13 @@ class ServerMonitorPanel(QGroupBox):
             self.server_state.setStyleSheet("color: #888888; font-weight: bold;")
             self.prompt_label.setText("—")
             self.decode_label.setText("—")
-            _set_bar(self.kv_bar, 0, "—")
+            _set_bar(self.ctx_bar, 0, "—")
         elif server.get("error"):
             self.server_state.setText("● no metrics")
             self.server_state.setStyleSheet("color: #d7a72d; font-weight: bold;")
             self.prompt_label.setText("—")
             self.decode_label.setText("—")
-            _set_bar(self.kv_bar, 0, "—")
+            _set_bar(self.ctx_bar, 0, "—")
         else:
             busy = server.get("busy", 0)
             deferred = server.get("deferred", 0)
@@ -391,8 +402,12 @@ class ServerMonitorPanel(QGroupBox):
             self.decode_label.setText(
                 f"{server.get('decode_tps_now', 0.0):6.2f} tok/s (avg {server.get('decode_tps_avg', 0.0):.2f})"
             )
-            kv_pct = server.get("kv_pct", 0.0)
-            _set_bar(self.kv_bar, kv_pct, f"{kv_pct:.0f}%")
+            tokens_peak = server.get("tokens_peak", 0)
+            ctx_tokens = server.get("ctx_tokens", 0)
+            if ctx_tokens > 0:
+                _set_bar(self.ctx_bar, tokens_peak / ctx_tokens * 100.0, f"peak {tokens_peak} / {ctx_tokens} tok")
+            else:
+                _set_bar(self.ctx_bar, 0, f"peak {tokens_peak} tok" if tokens_peak else "—")
 
         gpu_totals = stats.get("gpu_totals") or []
         for gpu in stats.get("gpus") or []:

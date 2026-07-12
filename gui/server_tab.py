@@ -1118,7 +1118,12 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         pid = None
         if self.server_thread is not None and getattr(self.server_thread, "process", None) is not None:
             pid = self.server_thread.process.pid
-        self.monitor_thread.set_server(url, api_key=self.server_api_key_input.text().strip(), pid=pid)
+        self.monitor_thread.set_server(
+            url,
+            api_key=self.server_api_key_input.text().strip(),
+            pid=pid,
+            ctx_tokens=self.server_context_spinbox.value(),
+        )
 
     def on_server_finished(self, exit_code: int):
         """Handle server process exit"""
