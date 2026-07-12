@@ -3,10 +3,11 @@
 import json
 from pathlib import Path
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton, QLineEdit, QSpinBox, QDoubleSpinBox,
-    QComboBox, QCheckBox, QTextEdit, QFileDialog, QMessageBox, QScrollArea, QSplitter, QSizePolicy
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton, QLineEdit, QSpinBox,
+    QDoubleSpinBox, QComboBox, QCheckBox, QTextEdit, QFileDialog, QMessageBox, QScrollArea, QSplitter, QSizePolicy
 )
 import os
+import re
 import shlex
 
 from PyQt6.QtCore import Qt, QTimer
@@ -14,6 +15,7 @@ from PyQt6.QtCore import Qt, QTimer
 from backend_names import backend_key_from_display, display_backend_from_key
 from threads import ServerThread
 from server_backend_panels import BackendPanels
+from server_monitor import ServerMonitorPanel, ServerMonitorThread
 from server_presets import ServerPresetsMixin
 
 
@@ -45,11 +47,19 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self._preview_timer.setInterval(300)
         self._preview_timer.timeout.connect(self._update_command_preview)
         self.create_ui()
+        self._on_vision_toggled(False)
         self.refresh_server_build_choices()
         self.refresh_server_models_list()
         self.load_settings()
         self.on_spec_type_changed()  # sync spec-field enablement with loaded type
         self._wire_command_preview()
+
+        self.monitor_thread = ServerMonitorThread(self)
+        self.monitor_thread.stats_ready.connect(self.monitor_panel.update_stats)
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.monitor_thread.stop)
+        self.monitor_thread.start()
 
     def create_ui(self):
         """Create server tab UI with QSplitter layout"""
@@ -102,6 +112,26 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_models_refresh_btn.clicked.connect(self.refresh_server_models_list)
         model_list_row.addWidget(self.server_models_refresh_btn)
         model_layout.addLayout(model_list_row)
+
+        vision_row = QHBoxLayout()
+        self.server_vision_check = QCheckBox("Vision")
+        self.server_vision_check.setToolTip("Load a multimodal projector with --mmproj")
+        self.server_vision_check.toggled.connect(self._on_vision_toggled)
+        vision_row.addWidget(self.server_vision_check)
+
+        self.server_mmproj_path = QLineEdit()
+        self.server_mmproj_path.setPlaceholderText("Path to mmproj GGUF...")
+        vision_row.addWidget(self.server_mmproj_path, 1)
+
+        self.server_mmproj_browse_btn = QPushButton("Browse...")
+        self.server_mmproj_browse_btn.clicked.connect(self.browse_server_mmproj)
+        vision_row.addWidget(self.server_mmproj_browse_btn)
+
+        self.server_mmproj_offload_check = QCheckBox("GPU offload")
+        self.server_mmproj_offload_check.setChecked(True)
+        self.server_mmproj_offload_check.setToolTip("Keep the vision encoder on GPU; disable to save VRAM")
+        vision_row.addWidget(self.server_mmproj_offload_check)
+        model_layout.addLayout(vision_row)
 
         # Presets: quick presets apply on selection; the model preset comes
         # from gui/model_presets.json and is re-applied automatically when a
@@ -277,6 +307,39 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         kv_layout.addWidget(self.server_kv_type_combo)
         kv_layout.addStretch()
         resources_layout.addLayout(kv_layout)
+
+        cache_layout = QHBoxLayout()
+        cache_layout.addWidget(QLabel("Prompt Cache MiB:"))
+        self.server_prompt_cache_ram_spinbox = QSpinBox()
+        self.server_prompt_cache_ram_spinbox.setRange(0, 65536)
+        self.server_prompt_cache_ram_spinbox.setSingleStep(256)
+        self.server_prompt_cache_ram_spinbox.setValue(0)
+        self.server_prompt_cache_ram_spinbox.setToolTip(
+            "RAM budget for saved idle prompts. Zero disables the separate prompt cache; active-slot prefix reuse remains available."
+        )
+        cache_layout.addWidget(self.server_prompt_cache_ram_spinbox)
+
+        cache_layout.addWidget(QLabel("Checkpoints:"))
+        self.server_ctx_checkpoints_spinbox = QSpinBox()
+        self.server_ctx_checkpoints_spinbox.setRange(0, 64)
+        self.server_ctx_checkpoints_spinbox.setValue(4)
+        self.server_ctx_checkpoints_spinbox.setToolTip(
+            "Number of recurrent/SWA rollback checkpoints retained per slot. Qwen3.6 checkpoints are about 150 MiB each."
+        )
+        cache_layout.addWidget(self.server_ctx_checkpoints_spinbox)
+
+        cache_layout.addWidget(QLabel("Interval:"))
+        self.server_checkpoint_interval_spinbox = QSpinBox()
+        self.server_checkpoint_interval_spinbox.setRange(-1, self.SERVER_CONTEXT_MAX)
+        self.server_checkpoint_interval_spinbox.setSpecialValueText("Off")
+        self.server_checkpoint_interval_spinbox.setSingleStep(1024)
+        self.server_checkpoint_interval_spinbox.setValue(-1)
+        self.server_checkpoint_interval_spinbox.setToolTip(
+            "Checkpoint interval during long prefill. Off still permits the required near-end rollback checkpoint."
+        )
+        cache_layout.addWidget(self.server_checkpoint_interval_spinbox)
+        cache_layout.addStretch()
+        resources_layout.addLayout(cache_layout)
 
         resources_group.setLayout(resources_layout)
         scroll_layout.addWidget(resources_group)
@@ -480,6 +543,10 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_status_label.setStyleSheet("font-weight: bold; color: red;")
         right_layout.addWidget(self.server_status_label)
 
+        # Live monitor: GPU/RAM load + server throughput from /metrics
+        self.monitor_panel = ServerMonitorPanel()
+        right_layout.addWidget(self.monitor_panel)
+
         # Live command preview: exactly what Start Server will run
         preview_group = QGroupBox("Command Preview")
         preview_layout = QVBoxLayout()
@@ -524,12 +591,60 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         if file_path:
             self.server_model_path.setText(file_path)
 
+    def browse_server_mmproj(self):
+        """Browse for a multimodal projector GGUF."""
+        current = self.server_mmproj_path.text().strip()
+        start_dir = str(Path(current).parent) if current else str(self.models_dir)
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Multimodal Projector",
+            start_dir,
+            "GGUF Files (*.gguf);;All Files (*.*)",
+        )
+        if file_path:
+            self.server_mmproj_path.setText(file_path)
+            self.server_vision_check.setChecked(True)
+
+    def _on_vision_toggled(self, enabled: bool):
+        self.server_mmproj_path.setEnabled(enabled)
+        self.server_mmproj_browse_btn.setEnabled(enabled)
+        self.server_mmproj_offload_check.setEnabled(enabled)
+        if enabled and not self.server_mmproj_path.text().strip():
+            self._autodetect_mmproj()
+
+    def _autodetect_mmproj(self):
+        model_path = Path(self.server_model_path.text().strip())
+        search_dir = model_path.parent if model_path.parent.exists() else self.models_dir
+        model_name = model_path.name.lower()
+        projectors = sorted(search_dir.glob("*mmproj*.gguf"), key=lambda p: p.name.lower())
+
+        family_match = re.search(r"qwen3[._-]?[56]", model_name)
+        size_match = re.search(r"(\d+(?:\.\d+)?b(?:-a\d+b)?)", model_name)
+        if family_match and size_match:
+            family = family_match.group(0).replace("_", ".").replace("-", ".")
+            size = size_match.group(1).replace("-", ".")
+            for candidate in projectors:
+                candidate_name = candidate.name.lower().replace("_", ".").replace("-", ".")
+                if family in candidate_name and size in candidate_name:
+                    self.server_mmproj_path.setText(str(candidate))
+                    return
+
+        preferred = ["mmproj-F16.gguf", "mmproj-BF16.gguf", "mmproj-F32.gguf"]
+        candidates = [search_dir / name for name in preferred]
+        candidates.extend(projectors)
+        for candidate in candidates:
+            if candidate.exists():
+                self.server_mmproj_path.setText(str(candidate))
+                return
+
     def on_server_model_selected(self, model_name: str):
         """Handle model selection from combo"""
         if model_name and model_name != "-- Select Model --" and model_name != "-- No .gguf models found --":
             model_path = self.models_dir / model_name
             self.server_model_path.setText(str(model_path))
             self.apply_model_file_preset()
+            if self.server_vision_check.isChecked():
+                self._autodetect_mmproj()
 
     def refresh_server_models_list(self):
         """Populate model list from models directory"""
@@ -627,6 +742,29 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             for tok in extra_tokens
         )
         has_no_mmap_in_extra = "--no-mmap" in extra_tokens
+
+        def extra_has_any(*flags: str) -> bool:
+            return any(tok in flags or any(tok.startswith(flag + "=") for flag in flags) for tok in extra_tokens)
+
+        # Prometheus endpoint feeds the Live Monitor panel
+        if "--metrics" not in extra_tokens:
+            command.append("--metrics")
+
+        if not extra_has_any("--cache-ram"):
+            command.extend(["--cache-ram", str(self.server_prompt_cache_ram_spinbox.value())])
+        if not extra_has_any("-ctxcp", "--ctx-checkpoints", "--swa-checkpoints"):
+            command.extend(["--ctx-checkpoints", str(self.server_ctx_checkpoints_spinbox.value())])
+        if not extra_has_any("-cpent", "--checkpoint-every-n-tokens"):
+            command.extend(["--checkpoint-every-n-tokens", str(self.server_checkpoint_interval_spinbox.value())])
+
+        if self.server_vision_check.isChecked():
+            mmproj_path = self.server_mmproj_path.text().strip()
+            if not mmproj_path or not Path(mmproj_path).is_file():
+                problems.append("Vision is enabled but the mmproj file is missing")
+            elif not extra_has_any("-mm", "--mmproj"):
+                command.extend(["--mmproj", mmproj_path])
+            if not self.server_mmproj_offload_check.isChecked() and not extra_has_any("--no-mmproj-offload"):
+                command.append("--no-mmproj-offload")
 
         spec_type = self.server_spec_type_combo.currentText().strip().lower()
         if not has_spec_type_in_extra:
@@ -977,8 +1115,14 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         if self.parent.statusBar():
             self.parent.statusBar().showMessage(f"Server running: {url}")
 
+        pid = None
+        if self.server_thread is not None and getattr(self.server_thread, "process", None) is not None:
+            pid = self.server_thread.process.pid
+        self.monitor_thread.set_server(url, api_key=self.server_api_key_input.text().strip(), pid=pid)
+
     def on_server_finished(self, exit_code: int):
         """Handle server process exit"""
+        self.monitor_thread.clear_server()
         self.server_start_btn.setEnabled(True)
         self.server_stop_btn.setEnabled(False)
         self.server_web_btn.setEnabled(False)
@@ -1017,6 +1161,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
 
     def on_server_error(self, error: str):
         """Handle server error"""
+        self.monitor_thread.clear_server()
         self.server_log.append(f"[ERROR] {error}")
         self.server_status_label.setText("Status: Error ✗")
         self.server_status_label.setStyleSheet("font-weight: bold; color: red;")
@@ -1031,16 +1176,16 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         """Stop llama-server"""
         if self.server_thread and self.server_thread.isRunning():
             self.server_thread.stop()
-            self.server_thread.wait(2000)
+            self.server_stop_btn.setEnabled(False)
+            self.server_web_btn.setEnabled(False)
+            self.server_status_label.setText("Status: Stopping")
+            self.server_status_label.setStyleSheet("font-weight: bold; color: #d7a72d;")
+            self.server_log.append("[INFO] Graceful server shutdown requested")
+            if self.parent.statusBar():
+                self.parent.statusBar().showMessage("Stopping server gracefully")
+            return
 
-        self.server_start_btn.setEnabled(True)
-        self.server_stop_btn.setEnabled(False)
-        self.server_web_btn.setEnabled(False)
-        self.server_status_label.setText("Status: Stopped")
-        self.server_status_label.setStyleSheet("font-weight: bold; color: red;")
-        self.server_log.append("[INFO] Server stopped")
-        if self.parent.statusBar():
-            self.parent.statusBar().showMessage("Server stopped")
+        self.on_server_finished(0)
 
     def open_web_ui(self):
         """Open web UI in browser"""
@@ -1094,6 +1239,14 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_http_threads_spinbox.setValue(int(settings.value("server/http_threads", max(1, (os.cpu_count() or 8) // 2))))
         self.server_parallel_spinbox.setValue(int(settings.value("server/parallel", 1)))
         self.server_kv_type_combo.setCurrentText(settings.value("server/kv_type", "f16"))
+        self.server_prompt_cache_ram_spinbox.setValue(int(settings.value("server/prompt_cache_ram", 0)))
+        self.server_ctx_checkpoints_spinbox.setValue(int(settings.value("server/ctx_checkpoints", 4)))
+        self.server_checkpoint_interval_spinbox.setValue(int(settings.value("server/checkpoint_interval", -1)))
+
+        self.server_vision_check.setChecked(settings.value("server/vision", False, type=bool))
+        self.server_mmproj_path.setText(settings.value("server/mmproj_path", ""))
+        self.server_mmproj_offload_check.setChecked(settings.value("server/mmproj_offload", True, type=bool))
+        self._on_vision_toggled(self.server_vision_check.isChecked())
 
         self.server_temperature_spinbox.setValue(float(settings.value("server/temperature", 0.7)))
         self.server_top_p_spinbox.setValue(float(settings.value("server/top_p", 0.95)))
@@ -1160,6 +1313,13 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         settings.setValue("server/http_threads", self.server_http_threads_spinbox.value())
         settings.setValue("server/parallel", self.server_parallel_spinbox.value())
         settings.setValue("server/kv_type", self.server_kv_type_combo.currentText())
+        settings.setValue("server/prompt_cache_ram", self.server_prompt_cache_ram_spinbox.value())
+        settings.setValue("server/ctx_checkpoints", self.server_ctx_checkpoints_spinbox.value())
+        settings.setValue("server/checkpoint_interval", self.server_checkpoint_interval_spinbox.value())
+
+        settings.setValue("server/vision", self.server_vision_check.isChecked())
+        settings.setValue("server/mmproj_path", self.server_mmproj_path.text().strip())
+        settings.setValue("server/mmproj_offload", self.server_mmproj_offload_check.isChecked())
 
         settings.setValue("server/temperature", self.server_temperature_spinbox.value())
         settings.setValue("server/top_p", self.server_top_p_spinbox.value())
