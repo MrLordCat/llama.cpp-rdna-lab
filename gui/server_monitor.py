@@ -2,7 +2,7 @@
 
 ServerMonitorThread polls system stats (psutil + Windows GPU perf counters)
 and, while a server is running, its Prometheus /metrics endpoint (the launch
-command includes --metrics). ServerMonitorPanel renders the numbers.
+command includes --metrics). ServerMonitorPanel renders progress bars.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 
 try:
     import psutil
@@ -22,7 +23,15 @@ except ImportError:
     requests = None
 
 from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtWidgets import QGroupBox, QLabel, QVBoxLayout
+from PyQt6.QtWidgets import (
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QProgressBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 _GPU_COUNTER_PS = (
     "$ci=[System.Globalization.CultureInfo]::InvariantCulture; "
@@ -31,9 +40,45 @@ _GPU_COUNTER_PS = (
     ".CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue.ToString($ci) }"
 )
 
+# dedicated VRAM size per display adapter (bytes), from the driver registry keys
+_GPU_TOTALS_PS = (
+    "Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\"
+    "{4d36e968-e325-11ce-bfc1-08002be10318}\\0*' -Name 'HardwareInformation.qwMemorySize' "
+    "-ErrorAction SilentlyContinue | ForEach-Object { $_.'HardwareInformation.qwMemorySize' }"
+)
+
 # adapters are identified by their full LUID; phys_N alone collides across cards
 _VRAM_RE = re.compile(r"gpu adapter memory\((luid_.+?_phys_\d+)\)\\dedicated usage", re.IGNORECASE)
 _UTIL_RE = re.compile(r"gpu engine\(pid_\d+_(luid_.+?_phys_\d+)_engtype_\w+\)\\utilization percentage", re.IGNORECASE)
+
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _run_powershell(script: str, timeout: float) -> str:
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        creationflags=_NO_WINDOW,
+    )
+    return result.stdout
+
+
+def _query_gpu_totals(timeout: float = 8.0) -> list[float]:
+    """Total dedicated VRAM in GB per adapter, best effort."""
+    if os.name != "nt":
+        return []
+    try:
+        output = _run_powershell(_GPU_TOTALS_PS, timeout)
+    except Exception:
+        return []
+    totals = []
+    for line in output.splitlines():
+        line = line.strip()
+        if line.isdigit() and int(line) > 0:
+            totals.append(int(line) / (1024 ** 3))
+    return totals
 
 
 def _query_gpu_counters(timeout: float = 6.0) -> list[dict]:
@@ -41,20 +86,13 @@ def _query_gpu_counters(timeout: float = 6.0) -> list[dict]:
     if os.name != "nt":
         return []
     try:
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", _GPU_COUNTER_PS],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            creationflags=creationflags,
-        )
+        output = _run_powershell(_GPU_COUNTER_PS, timeout)
     except Exception:
         return []
 
     vram_by_luid: dict[str, float] = {}
     util_by_luid: dict[str, float] = {}
-    for line in result.stdout.splitlines():
+    for line in output.splitlines():
         if "|" not in line:
             continue
         path, _, raw_value = line.rpartition("|")
@@ -74,14 +112,17 @@ def _query_gpu_counters(timeout: float = 6.0) -> list[dict]:
             util_by_luid[luid] = util_by_luid.get(luid, 0.0) + value
 
     gpus = []
-    for luid in sorted(set(vram_by_luid) | set(util_by_luid)):
-        vram_gb = vram_by_luid.get(luid, 0.0) / (1024 ** 3)
-        if vram_gb < 0.05 and util_by_luid.get(luid, 0.0) <= 0:
-            continue  # ghost adapters (e.g. remote display) with no usage
+    for luid in sorted(vram_by_luid):
+        vram = vram_by_luid.get(luid, 0.0)
+        util = util_by_luid.get(luid, 0.0)
+        # ghost adapters (basic render etc.) report exactly 0 committed bytes;
+        # a real idle card still holds a few MB of driver allocations
+        if vram <= 0.0 and util <= 0.0:
+            continue
         gpus.append({
             "index": len(gpus),
-            "vram_gb": vram_gb,
-            "util_pct": min(100.0, util_by_luid.get(luid, 0.0)),
+            "vram_gb": vram / (1024 ** 3),
+            "util_pct": min(100.0, util),
         })
     return gpus
 
@@ -115,23 +156,75 @@ class ServerMonitorThread(QThread):
         self._base_url: str = ""
         self._api_key: str = ""
         self._server_pid: int | None = None
+        self._prev_totals: tuple[float, float, float] | None = None  # (t, prompt, decode)
+        self._gpu_totals: list[float] | None = None
 
     def set_server(self, base_url: str, api_key: str = "", pid: int | None = None) -> None:
         self._api_key = api_key
         self._server_pid = pid
+        self._prev_totals = None
         self._base_url = base_url.rstrip("/")
 
     def clear_server(self) -> None:
         self._base_url = ""
         self._server_pid = None
+        self._prev_totals = None
 
     def stop(self) -> None:
         self.requestInterruption()
         self.wait(2000)
 
+    def _collect_server_stats(self) -> dict | None:
+        base_url = self._base_url
+        if not base_url or requests is None:
+            return None
+        try:
+            headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+            response = requests.get(f"{base_url}/metrics", headers=headers, timeout=1.5)
+            if response.status_code != 200:
+                return {"error": True}
+            metrics = _parse_prometheus(response.text)
+        except Exception:
+            return {"error": True}
+
+        def ratio(numerator: str, denominator: str) -> float:
+            den = metrics.get(denominator, 0.0)
+            return metrics.get(numerator, 0.0) / den if den > 0 else 0.0
+
+        prompt_total = metrics.get("llamacpp:prompt_tokens_total", 0.0)
+        decode_total = metrics.get("llamacpp:tokens_predicted_total", 0.0)
+
+        # instantaneous throughput from counter deltas between ticks
+        now = time.monotonic()
+        prompt_now = decode_now = 0.0
+        if self._prev_totals is not None:
+            prev_time, prev_prompt, prev_decode = self._prev_totals
+            elapsed = now - prev_time
+            if elapsed > 0:
+                prompt_now = max(0.0, prompt_total - prev_prompt) / elapsed
+                decode_now = max(0.0, decode_total - prev_decode) / elapsed
+        self._prev_totals = (now, prompt_total, decode_total)
+
+        return {
+            "prompt_tps_avg": metrics.get("llamacpp:prompt_tokens_seconds", 0.0)
+            or ratio("llamacpp:prompt_tokens_total", "llamacpp:prompt_seconds_total"),
+            "decode_tps_avg": metrics.get("llamacpp:predicted_tokens_seconds", 0.0)
+            or ratio("llamacpp:tokens_predicted_total", "llamacpp:tokens_predicted_seconds_total"),
+            "prompt_tps_now": prompt_now,
+            "decode_tps_now": decode_now,
+            "prompt_tokens_total": prompt_total,
+            "predicted_tokens_total": decode_total,
+            "kv_pct": metrics.get("llamacpp:kv_cache_usage_ratio", 0.0) * 100.0,
+            "busy": int(metrics.get("llamacpp:requests_processing", 0.0)),
+            "deferred": int(metrics.get("llamacpp:requests_deferred", 0.0)),
+        }
+
     def run(self):
+        if self._gpu_totals is None:
+            self._gpu_totals = _query_gpu_totals()
+
         while not self.isInterruptionRequested():
-            stats: dict = {"server": None, "gpus": [], "system": {}}
+            stats: dict = {"server": None, "gpus": [], "system": {}, "gpu_totals": self._gpu_totals}
 
             if psutil is not None:
                 try:
@@ -151,32 +244,7 @@ class ServerMonitorThread(QThread):
                     pass
 
             stats["gpus"] = _query_gpu_counters()
-
-            base_url = self._base_url
-            if base_url and requests is not None:
-                try:
-                    headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-                    response = requests.get(f"{base_url}/metrics", headers=headers, timeout=1.5)
-                    if response.status_code == 200:
-                        metrics = _parse_prometheus(response.text)
-
-                        def ratio(numerator: str, denominator: str) -> float:
-                            den = metrics.get(denominator, 0.0)
-                            return metrics.get(numerator, 0.0) / den if den > 0 else 0.0
-
-                        stats["server"] = {
-                            "prompt_tps_avg": metrics.get("llamacpp:prompt_tokens_seconds", 0.0)
-                            or ratio("llamacpp:prompt_tokens_total", "llamacpp:prompt_seconds_total"),
-                            "decode_tps_avg": metrics.get("llamacpp:predicted_tokens_seconds", 0.0)
-                            or ratio("llamacpp:tokens_predicted_total", "llamacpp:tokens_predicted_seconds_total"),
-                            "prompt_tokens_total": metrics.get("llamacpp:prompt_tokens_total", 0.0),
-                            "predicted_tokens_total": metrics.get("llamacpp:tokens_predicted_total", 0.0),
-                            "kv_pct": metrics.get("llamacpp:kv_cache_usage_ratio", 0.0) * 100.0,
-                            "busy": int(metrics.get("llamacpp:requests_processing", 0.0)),
-                            "deferred": int(metrics.get("llamacpp:requests_deferred", 0.0)),
-                        }
-                except Exception:
-                    stats["server"] = {"error": True}
+            stats["server"] = self._collect_server_stats()
 
             self.stats_ready.emit(stats)
 
@@ -187,60 +255,163 @@ class ServerMonitorThread(QThread):
                 self.msleep(200)
 
 
+_BAR_STYLE = """
+QProgressBar {
+    border: 1px solid #3a3a3a;
+    border-radius: 3px;
+    background-color: #202020;
+    text-align: center;
+    font-size: 10px;
+    color: #dddddd;
+    min-height: 14px;
+    max-height: 14px;
+}
+QProgressBar::chunk { background-color: %s; border-radius: 2px; }
+"""
+
+_CHUNK_OK = "#2e7d32"
+_CHUNK_WARN = "#b26a00"
+_CHUNK_HOT = "#b71c1c"
+
+
+def _make_bar() -> QProgressBar:
+    bar = QProgressBar()
+    bar.setRange(0, 100)
+    bar.setValue(0)
+    bar.setTextVisible(True)
+    bar.setStyleSheet(_BAR_STYLE % _CHUNK_OK)
+    return bar
+
+
+def _set_bar(bar: QProgressBar, pct: float, text: str) -> None:
+    pct = max(0.0, min(100.0, pct))
+    bar.setValue(int(round(pct)))
+    bar.setFormat(text)
+    chunk = _CHUNK_OK if pct < 75 else _CHUNK_WARN if pct < 92 else _CHUNK_HOT
+    bar.setStyleSheet(_BAR_STYLE % chunk)
+
+
+class _GpuRow(QWidget):
+    def __init__(self, index: int, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        name = QLabel(f"GPU{index}")
+        name.setFixedWidth(38)
+        layout.addWidget(name)
+        self.util_bar = _make_bar()
+        layout.addWidget(self.util_bar, 2)
+        self.vram_bar = _make_bar()
+        layout.addWidget(self.vram_bar, 3)
+
+
 class ServerMonitorPanel(QGroupBox):
-    """Compact live readout: server throughput, GPU, RAM/CPU."""
+    """Live readout: server throughput, per-GPU load/VRAM, RAM/CPU bars."""
 
     def __init__(self, parent=None):
         super().__init__("Live Monitor", parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 6)
-        layout.setSpacing(2)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 4, 8, 6)
+        root.setSpacing(4)
 
-        self.server_line = QLabel("Server: stopped")
-        self.speed_line = QLabel("Prompt: — · Decode: —")
-        self.gpu_line = QLabel("GPU: —")
-        self.system_line = QLabel("RAM: — · CPU: —")
-        for label in (self.server_line, self.speed_line, self.gpu_line, self.system_line):
-            label.setStyleSheet("font-family: Consolas, 'Courier New', monospace; font-size: 11px;")
-            layout.addWidget(label)
+        top = QGridLayout()
+        top.setHorizontalSpacing(8)
+        top.setVerticalSpacing(2)
+
+        self.server_state = QLabel("● stopped")
+        self.server_state.setStyleSheet("color: #888888; font-weight: bold;")
+        top.addWidget(QLabel("Server:"), 0, 0)
+        top.addWidget(self.server_state, 0, 1)
+
+        self.kv_bar = _make_bar()
+        top.addWidget(QLabel("KV:"), 0, 2)
+        top.addWidget(self.kv_bar, 0, 3)
+
+        self.prompt_label = QLabel("—")
+        self.decode_label = QLabel("—")
+        for value_label in (self.prompt_label, self.decode_label):
+            value_label.setStyleSheet("font-family: Consolas, monospace; font-size: 11px;")
+        top.addWidget(QLabel("Prompt:"), 1, 0)
+        top.addWidget(self.prompt_label, 1, 1)
+        top.addWidget(QLabel("Decode:"), 1, 2)
+        top.addWidget(self.decode_label, 1, 3)
+        top.setColumnStretch(1, 2)
+        top.setColumnStretch(3, 3)
+        root.addLayout(top)
+
+        self._gpu_rows: list[_GpuRow] = []
+        self._gpu_container = QVBoxLayout()
+        self._gpu_container.setSpacing(2)
+        root.addLayout(self._gpu_container)
+
+        bottom = QHBoxLayout()
+        bottom.setSpacing(6)
+        ram_name = QLabel("RAM")
+        ram_name.setFixedWidth(38)
+        bottom.addWidget(ram_name)
+        self.ram_bar = _make_bar()
+        bottom.addWidget(self.ram_bar, 3)
+        cpu_name = QLabel("CPU")
+        bottom.addWidget(cpu_name)
+        self.cpu_bar = _make_bar()
+        bottom.addWidget(self.cpu_bar, 2)
+        root.addLayout(bottom)
+
+    def _gpu_row(self, index: int) -> _GpuRow:
+        while len(self._gpu_rows) <= index:
+            row = _GpuRow(len(self._gpu_rows))
+            self._gpu_rows.append(row)
+            self._gpu_container.addWidget(row)
+        return self._gpu_rows[index]
 
     def update_stats(self, stats: dict) -> None:
         server = stats.get("server")
         if server is None:
-            self.server_line.setText("Server: stopped")
-            self.speed_line.setText("Prompt: — · Decode: —")
+            self.server_state.setText("● stopped")
+            self.server_state.setStyleSheet("color: #888888; font-weight: bold;")
+            self.prompt_label.setText("—")
+            self.decode_label.setText("—")
+            _set_bar(self.kv_bar, 0, "—")
         elif server.get("error"):
-            self.server_line.setText("Server: metrics unavailable")
-            self.speed_line.setText("Prompt: — · Decode: —")
+            self.server_state.setText("● no metrics")
+            self.server_state.setStyleSheet("color: #d7a72d; font-weight: bold;")
+            self.prompt_label.setText("—")
+            self.decode_label.setText("—")
+            _set_bar(self.kv_bar, 0, "—")
         else:
             busy = server.get("busy", 0)
             deferred = server.get("deferred", 0)
-            queue_text = f", queue {deferred}" if deferred else ""
-            self.server_line.setText(
-                f"Server: ● running ({busy} req{queue_text}) · KV cache {server.get('kv_pct', 0.0):.0f}%"
+            queue_text = f" +{deferred} queued" if deferred else ""
+            self.server_state.setText(f"● running · {busy} req{queue_text}")
+            self.server_state.setStyleSheet("color: #4CAF50; font-weight: bold;")
+            self.prompt_label.setText(
+                f"{server.get('prompt_tps_now', 0.0):7.1f} tok/s (avg {server.get('prompt_tps_avg', 0.0):.1f})"
             )
-            prompt_total = int(server.get("prompt_tokens_total", 0))
-            decode_total = int(server.get("predicted_tokens_total", 0))
-            self.speed_line.setText(
-                f"Prompt avg: {server.get('prompt_tps_avg', 0.0):.1f} tok/s ({prompt_total} tok) · "
-                f"Decode avg: {server.get('decode_tps_avg', 0.0):.2f} tok/s ({decode_total} tok)"
+            self.decode_label.setText(
+                f"{server.get('decode_tps_now', 0.0):6.2f} tok/s (avg {server.get('decode_tps_avg', 0.0):.2f})"
             )
+            kv_pct = server.get("kv_pct", 0.0)
+            _set_bar(self.kv_bar, kv_pct, f"{kv_pct:.0f}%")
 
-        gpus = stats.get("gpus") or []
-        if gpus:
-            self.gpu_line.setText("   ".join(
-                f"GPU{gpu['index']}: {gpu['util_pct']:.0f}% · {gpu['vram_gb']:.1f} GB VRAM"
-                for gpu in gpus
-            ))
-        else:
-            self.gpu_line.setText("GPU: —")
+        gpu_totals = stats.get("gpu_totals") or []
+        for gpu in stats.get("gpus") or []:
+            row = self._gpu_row(gpu["index"])
+            util = gpu.get("util_pct", 0.0)
+            _set_bar(row.util_bar, util, f"{util:.0f}%")
+            used = gpu.get("vram_gb", 0.0)
+            # registry can hold stale duplicate entries; clamp the index
+            total = gpu_totals[min(gpu["index"], len(gpu_totals) - 1)] if gpu_totals else 0.0
+            if total > 0:
+                _set_bar(row.vram_bar, used / total * 100.0, f"{used:.1f} / {total:.0f} GB")
+            else:
+                _set_bar(row.vram_bar, 0, f"{used:.1f} GB")
 
         system = stats.get("system") or {}
-        if system:
-            proc_text = f"server {system['proc_rss_gb']:.1f} GB · " if "proc_rss_gb" in system else ""
-            self.system_line.setText(
-                f"RAM: {proc_text}sys {system.get('ram_used_gb', 0.0):.1f}/{system.get('ram_total_gb', 0.0):.0f} GB · "
-                f"CPU: {system.get('cpu_pct', 0.0):.0f}%"
-            )
-        else:
-            self.system_line.setText("RAM: — · CPU: —")
+        ram_total = system.get("ram_total_gb", 0.0)
+        if ram_total > 0:
+            ram_used = system.get("ram_used_gb", 0.0)
+            proc_text = f" · srv {system['proc_rss_gb']:.1f}" if "proc_rss_gb" in system else ""
+            _set_bar(self.ram_bar, ram_used / ram_total * 100.0, f"{ram_used:.1f} / {ram_total:.0f} GB{proc_text}")
+            cpu_pct = system.get("cpu_pct", 0.0)
+            _set_bar(self.cpu_bar, cpu_pct, f"{cpu_pct:.0f}%")
