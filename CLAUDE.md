@@ -17,12 +17,11 @@ llama.cpp-with-GUI/
 │   ├── build_tab.py        # Build/setup tab
 │   ├── benchmark_tab.py    # Bench/autotune tab
 │   ├── build_manager.py    # CMake оркестрация сборки (~850 строк)
-│   ├── build_manager_v2.py # Альтернативный build manager (~400 строк)
 │   ├── dependency_checker.py    # Проверка зависимостей
 │   ├── dependency_installer.py  # Автоустановка (MSVC, CMake и т.д.)
 │   ├── hardware_detector.py     # Определение CPU/GPU/RAM
-│   ├── hardware_detector_v2.py  # Альтернативный детектор
 │   ├── model_downloader.py      # HuggingFace интеграция (~600 строк)
+│   ├── server_monitor.py        # Live-монитор (GPU/RAM/CPU + /metrics)
 │   ├── requirements-gui.txt     # PyQt6, huggingface-hub, psutil, requests, tqdm
 │   ├── README.md           # Документация GUI
 │   └── QUICKSTART.md       # Быстрый старт
@@ -256,11 +255,10 @@ start-gui.bat              # Windows (с проверкой зависимост
 2. **TBQ типы — CPU-only**, GUI автоматически ставит `--ngl 0` при их выборе
 3. **TQ3_0 — GPU-only** (CUDA/HIP), нет CPU fallback
 4. При merge из upstream возможны конфликты в `.github/workflows/` — GUI разрешает их автоматически
-5. `build_manager_v2.py` и `hardware_detector_v2.py` — альтернативные/legacy версии, основные — без суффикса `_v2`
-6. Файл `AGENTS.md` из upstream не используется в этом форке (в `.gitignore`)
-7. Сборка ROCm требует Ninja (не Visual Studio generator)
-8. **MSVC detection** имеет 3-уровневую стратегию: PATH → filesystem → Registry
-9. При временном переключении на другую задачу для performance-работ обязательно обновлять:
+5. Файл `AGENTS.md` из upstream не используется в этом форке (в `.gitignore`)
+6. Сборка ROCm требует Ninja (не Visual Studio generator)
+7. **MSVC detection** имеет 3-уровневую стратегию: PATH → filesystem → Registry
+8. При временном переключении на другую задачу для performance-работ обязательно обновлять:
   - `docs/research/decode-hotspots/C01_RESUME_PLAYBOOK.md`
   - `docs/research/decode-hotspots/DECODE_TRACE_CHECKLIST.md`
 

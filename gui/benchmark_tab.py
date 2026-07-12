@@ -302,7 +302,6 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self._last_selected_model = ""
         self._current_autotune_profile = "ctx130k-only"
         self._current_build_id = ""
-        self._live_best_by_key: dict[str, dict[str, str]] = {}
         self._summary_sweep_cache: dict[str, tuple[str, str]] = {}
         self._server_help_cache: dict[str, str] = {}
         self._bench_help_cache: dict[str, str] = {}
@@ -1976,8 +1975,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             ]
         if backend_key == "vulkan":
             return [
-                ("dual", "-dev Vulkan0,Vulkan1 -sm layer -ts 1,1"),
-                ("single", "-dev Vulkan0 -sm none"),
+                ("dual", "-dev Vulkan1,Vulkan0 -sm layer -ts 1,1"),
+                ("single", "-dev Vulkan1 -sm none"),
             ]
         return []
 
@@ -2453,46 +2452,6 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.autotune_resume_checkbox.setEnabled(not running)
         self.autotune_reset_session_checkbox.setEnabled(not running)
 
-    def _live_key_for_current_profile(self) -> str:
-        profile_bucket = "ctx130k-only"
-        model_name = self._last_selected_model or Path(self.model_path_input.text().strip() or "model.gguf").name
-        return f"{model_name}::{profile_bucket}"
-
-    def _update_live_best_from_line(self, line: str) -> None:
-        # Expected format:
-        # CURRENT BEST: ctx=131072 b=2048 ub=512 kv=q4_0 spec=none extra=base aggregate_tps=1.23
-        match = re.search(
-            r"ctx=(\d+)\s+b=(\d+)\s+ub=(\d+)\s+kv=([^\s,]+)\s+spec=([^\s,]+)(?:\s+extra=([^\s,]+))?\s+aggregate_tps=([0-9]+(?:\.[0-9]+)?)",
-            line,
-        )
-        if not match:
-            return
-
-        ctx, batch, ubatch, kv, spec_mode, extra_preset, tps = match.groups()
-        kv = kv.strip().rstrip(",;")
-        spec_mode = spec_mode.strip().rstrip(",;")
-        extra_preset = (extra_preset or "base").strip().rstrip(",;")
-        model_name = self._last_selected_model or Path(self.model_path_input.text().strip() or "model.gguf").name
-        profile_bucket = "ctx130k-only"
-        key = f"{model_name}::{profile_bucket}"
-        self._live_best_by_key[key] = {
-            "model": model_name,
-            "profile": profile_bucket,
-            "best_tps": tps,
-            "ctx": ctx,
-            "batch": batch,
-            "ubatch": ubatch,
-            "kv_k": kv,
-            "kv_v": kv,
-            "spec_mode": spec_mode,
-            "extra_preset": extra_preset or "base",
-            "extra_args": "",
-            "build_id": self._current_build_id,
-            "run_id": "",
-            "label": "",
-            "timestamp": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        self.refresh_saved_presets_table()
 
     def _reset_autotune_live_history(self) -> None:
         self._autotune_active_run = None

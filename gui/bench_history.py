@@ -35,66 +35,6 @@ class BenchHistoryMixin:
             return {}
         return {}
 
-    def _save_best_presets(self, presets: dict[str, dict[str, str]]) -> None:
-        self.best_presets_path.parent.mkdir(parents=True, exist_ok=True)
-        self.best_presets_path.write_text(json.dumps(presets, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-    def _update_best_preset_for_model(self, model_name: str, profile_key: str = "model-best", min_ctx: int | None = None) -> None:
-        if not model_name or not self.history_csv.exists():
-            return
-
-        best_row = None
-        best_tps = -1.0
-        try:
-            with self.history_csv.open("r", encoding="utf-8", newline="") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    if str(row.get("errors", "0")) not in ("", "0"):
-                        continue
-                    row_model = Path(str(row.get("model", ""))).name
-                    if row_model.lower() != model_name.lower():
-                        continue
-                    if min_ctx is not None:
-                        try:
-                            row_ctx = int(str(row.get("ctx", "0") or "0"))
-                        except ValueError:
-                            row_ctx = 0
-                        if row_ctx < min_ctx:
-                            continue
-                    try:
-                        tps = float(str(row.get("aggregate_tps", "0") or "0"))
-                    except ValueError:
-                        tps = 0.0
-                    if tps > best_tps:
-                        best_tps = tps
-                        best_row = row
-        except Exception:
-            return
-
-        if not best_row:
-            return
-
-        presets = self._load_best_presets()
-        store_key = model_name if profile_key == "model-best" else f"{model_name}::{profile_key}"
-        presets[store_key] = {
-            "model": model_name,
-            "profile": profile_key,
-            "best_tps": f"{best_tps:.4f}",
-            "ctx": str(best_row.get("ctx", "")),
-            "batch": str(best_row.get("batch", "")),
-            "ubatch": str(best_row.get("ubatch", "")),
-            "kv_k": str(best_row.get("kv_k", "")),
-            "kv_v": str(best_row.get("kv_v", "")),
-            "spec_mode": str(best_row.get("spec_mode", "")),
-            "extra_preset": str(best_row.get("extra_preset", "")),
-            "extra_args": str(best_row.get("extra_args", "")),
-            "build_id": str(best_row.get("build_id", "")),
-            "run_id": str(best_row.get("run_id", "")),
-            "label": str(best_row.get("label", "")),
-            "timestamp": str(best_row.get("timestamp", "")),
-        }
-        self._save_best_presets(presets)
-        self.refresh_saved_presets_table()
 
     @staticmethod
     def _parse_best_config_text(best_config: str) -> dict[str, str]:
