@@ -88,13 +88,13 @@ int main(int argc, char ** argv) {
 #if defined(GGML_USE_HIP)
     const bool spec_dflash =
         std::find(params.speculative.types.begin(), params.speculative.types.end(), COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) != params.speculative.types.end();
-    if (spec_dflash && std::getenv("GGML_CUDA_DISABLE_GRAPHS") == nullptr) {
+    if (spec_dflash && std::getenv("GGML_HIP_DISABLE_GRAPHS") == nullptr) {
 #if defined(_WIN32)
-        _putenv_s("GGML_CUDA_DISABLE_GRAPHS", "1");
+        _putenv_s("GGML_HIP_DISABLE_GRAPHS", "1");
 #else
-        setenv("GGML_CUDA_DISABLE_GRAPHS", "1", 0);
+        setenv("GGML_HIP_DISABLE_GRAPHS", "1", 0);
 #endif
-        LOG_WRN("%s: disabling HIP graphs for DFlash speculative decoding on ROCm (GGML_CUDA_DISABLE_GRAPHS=1)\n", __func__);
+        LOG_WRN("%s: disabling HIP graphs for DFlash speculative decoding on ROCm (GGML_HIP_DISABLE_GRAPHS=1)\n", __func__);
     }
 #endif
 

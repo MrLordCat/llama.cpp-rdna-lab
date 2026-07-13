@@ -94,6 +94,9 @@ LLAMA_API llama_memory_breakdown llama_get_memory_breakdown(const struct llama_c
 // If masked == false, output the embeddings for all tokens in the batch regardless of batch.logits
 LLAMA_API void llama_set_embeddings_nextn(struct llama_context * ctx, bool value, bool masked);
 
+// Retain a warmed NextN TG scheduler while windowed prompt processing uses a non-NextN PP graph.
+LLAMA_API void llama_set_nextn_tg_cache(struct llama_context * ctx, bool enabled);
+
 // Select which appended NextN block the DECODER_MTP graph runs.
 LLAMA_API void llama_set_nextn_layer_offset(struct llama_context * ctx, int32_t offset);
 

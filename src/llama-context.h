@@ -40,6 +40,7 @@ struct llama_context {
     //   - etc.
     void sched_reserve();
     void sched_release_inactive_pp();
+    void sched_cache_nextn_tg();
 
     void synchronize();
 
@@ -73,6 +74,7 @@ struct llama_context {
 
     // Upstream-port: NextN embeddings (spec decoding hidden handoff)
     void    set_embeddings_nextn(bool value, bool masked);
+    void    set_nextn_tg_cache(bool enabled);
     float * get_embeddings_nextn();
     float * get_embeddings_nextn_ith(int32_t i);
 
@@ -323,9 +325,12 @@ private:
 
     ggml_backend_sched_ptr sched;    // PP scheduler: sized for ubatch (large compute buffer)
     ggml_backend_sched_ptr sched_tg; // TG scheduler: sized for a small decode/verify window
+    ggml_backend_sched_ptr sched_tg_nextn_cache; // warmed NextN TG scheduler retained across windowed prefill
     bool sched_is_tg = false;        // which scheduler is currently active in sched
     uint32_t sched_tg_max_seq_tokens = 1;
     bool sched_drop_inactive_pp = false;
+    bool sched_cache_nextn_tg_enabled = false;
+    bool sched_tg_nextn_cache_masked = false;
 
     bool sched_need_reserve = true;
     uint32_t sched_reserve_pp_outputs = 1;
@@ -352,6 +357,7 @@ private:
 
     llm_graph_result_ptr gf_res_prev;
     llm_graph_result_ptr gf_res_prev_tg; // separate graph cache for TG mode
+    llm_graph_result_ptr gf_res_prev_tg_nextn_cache;
     llm_graph_result_ptr gf_res_reserve;
 
     // host buffer for the model output (logits and embeddings)

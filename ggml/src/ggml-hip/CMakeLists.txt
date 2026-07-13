@@ -88,10 +88,10 @@ if (GGML_HIP_PROFILE_REDUCED_FATTN)
     endif()
 endif()
 
-if (GGML_CUDA_FA_ALL_QUANTS)
+if (GGML_HIP_FA_ALL_QUANTS)
     if (GGML_HIP_PROFILE_NO_FA)
         message(WARNING
-            "GGML_CUDA_FA_ALL_QUANTS=ON has no effect when GGML_HIP_EXPERIMENT_PROFILE=${GGML_HIP_SOURCE_PROFILE} "
+            "GGML_HIP_FA_ALL_QUANTS=ON has no effect when GGML_HIP_EXPERIMENT_PROFILE=${GGML_HIP_SOURCE_PROFILE} "
             "disables FlashAttention kernels.")
     else()
         add_compile_definitions(GGML_CUDA_FA_ALL_QUANTS)
@@ -149,22 +149,22 @@ if (GGML_HIP_ROCWMMA_FATTN)
     endif()
 endif()
 
-# TODO: do not use CUDA definitions for HIP
+# The shared upstream kernel ABI still uses GGML_USE_CUDA internally.
 if (NOT GGML_BACKEND_DL)
     target_compile_definitions(ggml PUBLIC GGML_USE_CUDA)
 endif()
 
 add_compile_definitions(GGML_USE_HIP)
 
-if (GGML_CUDA_FORCE_MMQ)
+if (GGML_HIP_FORCE_MMQ)
     add_compile_definitions(GGML_CUDA_FORCE_MMQ)
 endif()
 
-if (GGML_CUDA_FORCE_CUBLAS)
+if (GGML_HIP_FORCE_HIPBLAS)
     add_compile_definitions(GGML_CUDA_FORCE_CUBLAS)
 endif()
 
-if (GGML_CUDA_NO_PEER_COPY)
+if (GGML_HIP_NO_PEER_COPY)
     add_compile_definitions(GGML_CUDA_NO_PEER_COPY)
 endif()
 
@@ -192,7 +192,7 @@ if (GGML_HIP_EXPORT_METRICS)
     set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -Rpass-analysis=kernel-resource-usage --save-temps")
 endif()
 
-if (NOT GGML_CUDA_FA OR GGML_HIP_PROFILE_NO_FA)
+if (NOT GGML_HIP_FA OR GGML_HIP_PROFILE_NO_FA)
     add_compile_definitions(GGML_CUDA_NO_FA)
 endif()
 

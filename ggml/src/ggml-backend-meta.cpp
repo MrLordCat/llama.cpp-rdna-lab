@@ -7,9 +7,12 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <cinttypes>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -1673,6 +1676,20 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
     GGML_ASSERT(cgraph->grads == nullptr);
     const size_t n_backends = ggml_backend_meta_n_backends(backend);
     ggml_backend_meta_context * backend_ctx = (ggml_backend_meta_context *) backend->context;
+    static const bool trace_timing = [] {
+        const char * value = std::getenv("GGML_META_TIMING");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    static const bool trace_partials = [] {
+        const char * value = std::getenv("GGML_META_PARTIAL_TRACE");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    using clock = std::chrono::steady_clock;
+    double main_compute_ms = 0.0;
+    double allreduce_ms = 0.0;
+    size_t allreduce_count = 0;
+    size_t allreduce_tensor_bytes = 0;
+    size_t fallback_count = 0;
 
     // If the previous cgraph had a defined UID it can be used to skip rebuilding the subgraphs per simple backend.
     const bool needs_rebuild = (cgraph->uid == 0) || (cgraph->uid != backend_ctx->uid);
@@ -1820,6 +1837,12 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(node, /*assume_sync =*/ false);
                 if (split_state.axis == GGML_BACKEND_SPLIT_AXIS_PARTIAL) {
                     max_tmp_size = std::max(max_tmp_size, ggml_nbytes(node));
+                    if (trace_partials) {
+                        GGML_LOG_INFO("meta partial: index=%d op=%s name=%s ne=[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "] bytes=%zu uses=%d\n",
+                                i, ggml_op_name(node->op), node->name,
+                                node->ne[0], node->ne[1], node->ne[2], node->ne[3],
+                                ggml_nbytes(node), ggml_node_get_use_count(cgraph, i));
+                    }
                 }
                 const bool new_subgraph = i + 1 == cgraph->n_nodes || split_state.axis == GGML_BACKEND_SPLIT_AXIS_PARTIAL;
                 if (!new_subgraph) {
@@ -1857,6 +1880,24 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
 
         backend_ctx->uid         = cgraph->uid;
         backend_ctx->n_subgraphs = n_subgraphs;
+
+        if (trace_timing) {
+            size_t partial_count = 0;
+            size_t partial_bytes = 0;
+            for (int i = 0; i < cgraph->n_nodes; i++) {
+                ggml_tensor * node = cgraph->nodes[i];
+                if (node->buffer == nullptr || !ggml_backend_buffer_is_meta(node->buffer)) {
+                    continue;
+                }
+                if (ggml_backend_meta_get_split_state(node, false).axis == GGML_BACKEND_SPLIT_AXIS_PARTIAL) {
+                    partial_count++;
+                    partial_bytes += ggml_nbytes(node);
+                }
+            }
+            GGML_LOG_INFO("meta timing rebuild: uid=%" PRIu64 " nodes=%d subgraphs=%zu partial_nodes=%zu partial_bytes=%zu max_tmp=%zu backends=%zu native_allreduce=%d\n",
+                    cgraph->uid, cgraph->n_nodes, n_subgraphs, partial_count, partial_bytes,
+                    max_tmp_size, n_backends, backend_ctx->comm_ctx != nullptr ? 1 : 0);
+        }
 
         if (max_tmp_size > backend_ctx->max_tmp_size) {
             for (size_t j = 0; j < n_backends; j++) {
@@ -1946,7 +1987,7 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
         return ret;
     };
 
-    // Preferentially use backend-specific allreduce_tensor_async (e.g. NCCL for CUDA), use a generic fallback if unavailable:
+    // Prefer a backend-specific allreduce_tensor_async implementation and use a generic fallback if unavailable.
     auto allreduce_fallback = [&](size_t i) -> ggml_status {
         std::vector<ggml_cgraph *> step_cgraphs(n_backends, nullptr);
 
@@ -2063,6 +2104,7 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
 
 
     for (size_t i = 0; i < backend_ctx->n_subgraphs; i++) {
+        const auto main_start = trace_timing ? clock::now() : clock::time_point{};
         for (size_t j = 0; j < n_backends; j++) {
             auto & bcj = backend_ctx->backend_configs[j];
             const ggml_status status = ggml_backend_graph_compute_async(bcj.backend, bcj.cgraphs[i].cgraph_main);
@@ -2070,8 +2112,13 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 return status;
             }
         }
+        if (trace_timing) {
+            ggml_backend_meta_synchronize(backend);
+            main_compute_ms += std::chrono::duration<double, std::milli>(clock::now() - main_start).count();
+        }
 
         if (n_backends > 1 && i < backend_ctx->n_subgraphs - 1) {
+            const auto reduce_start = trace_timing ? clock::now() : clock::time_point{};
             bool backend_allreduce_success = false;
             if (backend_ctx->comm_ctx) {
                 std::vector<ggml_tensor *> nodes;
@@ -2089,8 +2136,23 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 if (status != GGML_STATUS_SUCCESS) {
                     return status;
                 }
+                fallback_count++;
+            }
+            if (trace_timing) {
+                ggml_backend_meta_synchronize(backend);
+                auto & bc0 = backend_ctx->backend_configs[0];
+                ggml_cgraph * subgraph0 = bc0.cgraphs[i].cgraph_main;
+                ggml_tensor * reduced0 = subgraph0->nodes[subgraph0->n_nodes - 1];
+                allreduce_count++;
+                allreduce_tensor_bytes += ggml_nbytes(reduced0);
+                allreduce_ms += std::chrono::duration<double, std::milli>(clock::now() - reduce_start).count();
             }
         }
+    }
+    if (trace_timing) {
+        GGML_LOG_INFO("meta timing graph: uid=%" PRIu64 " nodes=%d subgraphs=%zu main_ms=%.3f allreduce_ms=%.3f allreduces=%zu fallback=%zu logical_reduce_bytes=%zu\n",
+                cgraph->uid, cgraph->n_nodes, backend_ctx->n_subgraphs, main_compute_ms, allreduce_ms,
+                allreduce_count, fallback_count, allreduce_tensor_bytes);
     }
     return GGML_STATUS_SUCCESS;
 }

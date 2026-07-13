@@ -563,6 +563,30 @@ void llama_context::sched_release_inactive_pp() {
     LLAMA_LOG_DEBUG("%s: released inactive PP scheduler; it will be rebuilt before the next PP batch\n", __func__);
 }
 
+void llama_context::sched_cache_nextn_tg() {
+    if (!sched_cache_nextn_tg_enabled || !cparams.embeddings_nextn || (!sched_tg && !sched_is_tg)) {
+        return;
+    }
+
+    synchronize();
+
+    if (sched_is_tg) {
+        sched_tg_nextn_cache = std::move(sched);
+        gf_res_prev_tg_nextn_cache = std::move(gf_res_prev);
+
+        sched = std::move(sched_tg);
+        gf_res_prev = std::move(gf_res_prev_tg);
+    } else {
+        sched_tg_nextn_cache = std::move(sched_tg);
+        gf_res_prev_tg_nextn_cache = std::move(gf_res_prev_tg);
+    }
+
+    sched_tg_nextn_cache_masked = cparams.embeddings_nextn_masked;
+    sched_is_tg = false;
+
+    LLAMA_LOG_DEBUG("%s: retained warmed NextN TG scheduler\n", __func__);
+}
+
 void llama_context::sched_reserve() {
     if (!sched_need_reserve) {
         return;
@@ -621,7 +645,10 @@ void llama_context::sched_reserve() {
             // TODO: instead of the tensor names, use a map to keep track of which (FA) tensors belong to which layer
             GGML_ASSERT(strncmp(n->name, LLAMA_TENSOR_NAME_FATTN "-", prefix_len) == 0);
             const int il = std::stoi(n->name + prefix_len);
-            ggml_backend_dev_t device_kv = model.dev_layer(il);
+            ggml_backend_dev_t device_kv = memory ? memory->get_layer_device(il) : nullptr;
+            if (device_kv == nullptr) {
+                device_kv = model.dev_layer(il);
+            }
             if (device_fa != device_kv) {
                 LLAMA_LOG_WARN("%s: layer %d is assigned to device %s but the Flash Attention tensor "
                         "is assigned to device %s (usually due to missing support)\n",
@@ -809,6 +836,14 @@ void llama_context::sched_reserve() {
         gf_res_prev_tg.reset();
         sched_tg.reset();
         sched_is_tg = false;
+    } else if (sched_tg_nextn_cache &&
+            cparams.embeddings_nextn &&
+            sched_tg_nextn_cache_masked == cparams.embeddings_nextn_masked) {
+        sched_tg = std::move(sched_tg_nextn_cache);
+        gf_res_prev_tg = std::move(gf_res_prev_tg_nextn_cache);
+        sched_is_tg = false;
+
+        LLAMA_LOG_DEBUG("%s: restored warmed NextN TG scheduler\n", __func__);
     } else {
         const uint32_t n_seq_tokens_tg = std::max<uint32_t>(
                 1u,
@@ -1180,6 +1215,10 @@ void llama_context::set_embeddings_nextn(bool value, bool masked) {
         return;
     }
 
+    if (cparams.embeddings_nextn && !value) {
+        sched_cache_nextn_tg();
+    }
+
     cparams.embeddings_nextn        = value;
     cparams.embeddings_nextn_masked = masked;
 
@@ -1187,6 +1226,14 @@ void llama_context::set_embeddings_nextn(bool value, bool masked) {
     sched_need_reserve = true;
     if (gf_res_prev)    { gf_res_prev->reset(); }
     if (gf_res_prev_tg) { gf_res_prev_tg->reset(); }
+}
+
+void llama_context::set_nextn_tg_cache(bool enabled) {
+    sched_cache_nextn_tg_enabled = enabled;
+    if (!enabled) {
+        sched_tg_nextn_cache.reset();
+        gf_res_prev_tg_nextn_cache.reset();
+    }
 }
 
 float * llama_context::get_embeddings_layer_inp(uint32_t lid) {
@@ -2172,18 +2219,22 @@ int llama_context::decode(const llama_batch & batch_inp) {
     embd_seq.clear();
     output_swaps.clear();
 
-    uint32_t sched_pp_outputs = std::max<uint32_t>(1, n_outputs_all);
-    if (n_tokens_all > 1 && n_outputs_all == n_tokens_all) {
-        sched_pp_outputs = uint32_t(-1);
-    }
-    sched_reserve_pp_outputs =
-        (model.arch == LLM_ARCH_DFLASH || model.arch == LLM_ARCH_DFLASH_DRAFT) ?
-            uint32_t(-1) : sched_pp_outputs;
-    if (n_tokens_all > sched_tg_max_seq_tokens && sched_is_tg && !sched_tg) {
-        sched_need_reserve = true;
-    }
-    if (sched_reserved_pp_outputs != sched_reserve_pp_outputs) {
-        sched_need_reserve = true;
+    const bool uses_tg_scheduler =
+        (sched_tg || sched_is_tg) && n_tokens_all <= sched_tg_max_seq_tokens;
+    if (!uses_tg_scheduler) {
+        uint32_t sched_pp_outputs = std::max<uint32_t>(1, n_outputs_all);
+        if (n_tokens_all > 1 && n_outputs_all == n_tokens_all) {
+            sched_pp_outputs = uint32_t(-1);
+        }
+        sched_reserve_pp_outputs =
+            (model.arch == LLM_ARCH_DFLASH || model.arch == LLM_ARCH_DFLASH_DRAFT) ?
+                uint32_t(-1) : sched_pp_outputs;
+        if (n_tokens_all > sched_tg_max_seq_tokens && sched_is_tg && !sched_tg) {
+            sched_need_reserve = true;
+        }
+        if (sched_reserved_pp_outputs != sched_reserve_pp_outputs) {
+            sched_need_reserve = true;
+        }
     }
 
     sched_reserve();
@@ -2896,28 +2947,64 @@ private:
 class llama_io_write_buffer : public llama_io_write_i {
 public:
     llama_io_write_buffer(
-            uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
+            uint8_t * p, size_t len,
+            const std::vector<ggml_backend_ptr> & backends) : ptr(p), buf_size(len), backends(backends) {}
 
     ~llama_io_write_buffer() {
-#if 1
-        // TODO: add backend support to batch tensor_get? or some other way to speed this up
-        for (const auto & info : winfos) {
-            ggml_backend_tensor_get(info.tensor, info.ptr, info.offset, info.size);
-        }
-#else
-        // flush the writes asynchronously
-        // this helps on Macs, but on other devices - it does not. just an example
-        std::vector<std::future<void>> futures;
-        futures.reserve(winfos.size());
-        for (const auto & info : winfos) {
-            futures.push_back(std::async(std::launch::async, [info]() {
+        const char * batch_env = std::getenv("LLAMA_CHECKPOINT_BATCH_READ");
+        const bool use_batch = batch_env == nullptr || batch_env[0] == '\0' || std::strcmp(batch_env, "0") != 0;
+
+        if (!use_batch || winfos.size() < 2) {
+            for (const auto & info : winfos) {
                 ggml_backend_tensor_get(info.tensor, info.ptr, info.offset, info.size);
-            }));
+            }
+            return;
         }
-        for (auto & f : futures) {
-            f.wait();
+
+        struct backend_batch {
+            ggml_backend_t backend = nullptr;
+            std::vector<ggml_backend_tensor_get_entry> entries;
+        };
+        std::vector<backend_batch> batches;
+        std::vector<const write_info *> fallback;
+
+        for (const auto & info : winfos) {
+            ggml_backend_t owner = nullptr;
+            const ggml_backend_dev_t device = ggml_backend_buft_get_device(
+                    ggml_backend_buffer_get_type(info.tensor->buffer));
+            for (const auto & backend : backends) {
+                if (ggml_backend_get_device(backend.get()) == device) {
+                    owner = backend.get();
+                    break;
+                }
+            }
+
+            if (!owner) {
+                fallback.push_back(&info);
+                continue;
+            }
+
+            auto it = std::find_if(batches.begin(), batches.end(), [owner](const backend_batch & batch) {
+                return batch.backend == owner;
+            });
+            if (it == batches.end()) {
+                batches.push_back({ owner, {} });
+                it = std::prev(batches.end());
+            }
+            it->entries.push_back({ info.tensor, info.ptr, info.offset, info.size });
         }
-#endif
+
+        if (std::getenv("LLAMA_CHECKPOINT_TIMING")) {
+            LLAMA_LOG_INFO("checkpoint batch route: tensors=%zu backends=%zu fallback=%zu\n",
+                    winfos.size(), batches.size(), fallback.size());
+        }
+
+        for (const auto & batch : batches) {
+            ggml_backend_tensor_get_batch(batch.backend, batch.entries.data(), batch.entries.size());
+        }
+        for (const write_info * info : fallback) {
+            ggml_backend_tensor_get(info->tensor, info->ptr, info->offset, info->size);
+        }
     }
 
     void write(const void * src, size_t size) override {
@@ -2951,6 +3038,7 @@ private:
     uint8_t * ptr;
     size_t buf_size = 0;
     size_t size_written = 0;
+    const std::vector<ggml_backend_ptr> & backends;
 
     struct write_info {
         const ggml_tensor * tensor;
@@ -3074,7 +3162,7 @@ size_t llama_context::state_get_size() {
 }
 
 size_t llama_context::state_get_data(uint8_t * dst, size_t size) {
-    llama_io_write_buffer io(dst, size);
+    llama_io_write_buffer io(dst, size, backends);
     try {
         return state_write_data(io);
     } catch (const std::exception & err) {
@@ -3104,7 +3192,7 @@ size_t llama_context::state_seq_get_size(llama_seq_id seq_id, llama_state_seq_fl
 }
 
 size_t llama_context::state_seq_get_data(llama_seq_id seq_id, uint8_t * dst, size_t size, llama_state_seq_flags flags) {
-    llama_io_write_buffer io(dst, size);
+    llama_io_write_buffer io(dst, size, backends);
     try {
         return state_seq_write_data(io, seq_id, flags);
     } catch (const std::exception & err) {
@@ -3851,6 +3939,10 @@ float * llama_get_embeddings_ith(llama_context * ctx, int32_t i) {
 // Upstream-port: NextN embeddings API
 void llama_set_embeddings_nextn(llama_context * ctx, bool value, bool masked) {
     ctx->set_embeddings_nextn(value, masked);
+}
+
+void llama_set_nextn_tg_cache(llama_context * ctx, bool enabled) {
+    ctx->set_nextn_tg_cache(enabled);
 }
 
 float * llama_get_embeddings_nextn(llama_context * ctx) {

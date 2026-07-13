@@ -137,6 +137,13 @@ extern "C" {
 
         // (optional) sort/optimize the nodes in the graph
         void                      (*graph_optimize)    (ggml_backend_t backend, struct ggml_cgraph * cgraph);
+
+        // (optional) combine synchronous tensor reads into one backend transfer.
+        // Return false without side effects to request the generic fallback.
+        bool (*tensor_get_batch)(
+                ggml_backend_t backend,
+                const struct ggml_backend_tensor_get_entry * entries,
+                size_t n_entries);
     };
 
     struct ggml_backend {

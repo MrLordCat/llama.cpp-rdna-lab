@@ -34,56 +34,12 @@
 #include "ggml-cuda.h"
 #endif
 
-#ifdef GGML_USE_METAL
-#include "ggml-metal.h"
-#endif
-
-#ifdef GGML_USE_SYCL
-#include "ggml-sycl.h"
-#endif
-
 #ifdef GGML_USE_VULKAN
 #include "ggml-vulkan.h"
 #endif
 
-#ifdef GGML_USE_WEBGPU
-#include "ggml-webgpu.h"
-#endif
-
-#ifdef GGML_USE_ZDNN
-#include "ggml-zdnn.h"
-#endif
-
-#ifdef GGML_USE_OPENCL
-#include "ggml-opencl.h"
-#endif
-
-#ifdef GGML_USE_HEXAGON
-#include "ggml-hexagon.h"
-#endif
-
 #ifdef GGML_USE_BLAS
 #include "ggml-blas.h"
-#endif
-
-#ifdef GGML_USE_RPC
-#include "ggml-rpc.h"
-#endif
-
-#ifdef GGML_USE_VIRTGPU_FRONTEND
-#include "ggml-virtgpu.h"
-#endif
-
-#ifdef GGML_USE_CANN
-#include "ggml-cann.h"
-#endif
-
-#ifdef GGML_USE_ZENDNN
-#include "ggml-zendnn.h"
-#endif
-
-#ifdef GGML_USE_OPENVINO
-#include "ggml-openvino.h"
 #endif
 
 namespace fs = std::filesystem;
@@ -116,12 +72,6 @@ struct ggml_backend_registry {
 #ifdef GGML_USE_CUDA
         register_backend(ggml_backend_cuda_reg());
 #endif
-#ifdef GGML_USE_METAL
-        register_backend(ggml_backend_metal_reg());
-#endif
-#ifdef GGML_USE_SYCL
-        register_backend(ggml_backend_sycl_reg());
-#endif
 #ifdef GGML_USE_VULKAN
     // Add runtime disable check
     if (getenv("GGML_DISABLE_VULKAN") == nullptr) {
@@ -130,36 +80,8 @@ struct ggml_backend_registry {
         GGML_LOG_DEBUG("Vulkan backend disabled by GGML_DISABLE_VULKAN environment variable\n");
     }
 #endif
-#ifdef GGML_USE_WEBGPU
-        register_backend(ggml_backend_webgpu_reg());
-#endif
-#ifdef GGML_USE_ZDNN
-        register_backend(ggml_backend_zdnn_reg());
-#endif
-#ifdef GGML_USE_VIRTGPU_FRONTEND
-        register_backend(ggml_backend_virtgpu_reg());
-#endif
-
-#ifdef GGML_USE_OPENCL
-        register_backend(ggml_backend_opencl_reg());
-#endif
-#ifdef GGML_USE_ZENDNN
-        register_backend(ggml_backend_zendnn_reg());
-#endif
-#ifdef GGML_USE_HEXAGON
-        register_backend(ggml_backend_hexagon_reg());
-#endif
-#ifdef GGML_USE_CANN
-        register_backend(ggml_backend_cann_reg());
-#endif
 #ifdef GGML_USE_BLAS
         register_backend(ggml_backend_blas_reg());
-#endif
-#ifdef GGML_USE_RPC
-        register_backend(ggml_backend_rpc_reg());
-#endif
-#ifdef GGML_USE_OPENVINO
-        register_backend(ggml_backend_openvino_reg());
 #endif
 #ifdef GGML_USE_CPU
         register_backend(ggml_backend_cpu_reg());

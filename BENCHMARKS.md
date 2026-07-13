@@ -1,5 +1,33 @@
 # Benchmarks
 
+## D079-D080 Vulkan Q3_K_S 56k Prompt Baseline (2026-07-12)
+
+The active Q3 prompt-eval lane uses non-MTP `Qwen3.6-27B-Q3_K_S.gguf`,
+56,456 prompt tokens, `ctx=131072`, `b8192/ub1024`, q8/q8 KV, FlashAttention,
+`spec=none`, no warmup/reuse/prime, and thinking on. Equal dual layer split
+measured `1276.93 prompt tok/s`. Balancing the output-heavy Vulkan1 stage with
+`-dev Vulkan1,Vulkan0 -sm layer -ts 5,6` reached `1350.01 tok/s` on cold run 1
+(`+5.72%`); r3 mean was `1327.82`, with zero errors. This is the current P003
+baseline for the `2000 prompt tok/s` target.
+
+D079 perf evidence attributes 46.6% of parsed time to Q3_K matmul and 46.4% to
+q8/q8 FlashAttention. Vulkan tensor split is rejected for this program:
+`540.18` versus `1809.02 tok/s` on the small F16-KV control, with 127 generic
+fallback allreduces per ubatch and no native cross-device allreduce.
+
+## E280 Vulkan GPU1 Residency (2026-07-11)
+
+For the local dual-RX 9070 XT Vulkan server, use explicit
+`-dev Vulkan1,Vulkan0 -sm layer -ts 1,1` and GUI output placement on Vulkan1.
+`LLAMA_OUTPUT_DEVICE=Vulkan1` moved `1004 MiB` of accounted model memory away
+from display-attached GPU0 while retaining `1793.75 tok/s` prompt versus
+`1860.21 tok/s` in the r1 control. Literal `LLAMA_KV_DEVICE=Vulkan1` does put
+the full `4352 MiB` q8 KV cache on GPU1, but prompt fell to `814.82 tok/s`
+because layer split must transfer attention data across devices. All-KV remains
+an explicit residency option, not the performance default. A `54757`-token
+validation at `b8192/ub1024` completed at `1313.68 tok/s`; accounted memory was
+`Vulkan1 9604 MiB / Vulkan0 7972 MiB`.
+
 Главный локальный benchmark для этой ветки:
 
 ```powershell
@@ -69,6 +97,20 @@ decode tok/s. Это `1.33x` по decode при `3.3%` prompt tax. GUI autotune 
 `LLAMA_SPEC_SERVER_PHASE_TIMING=1` и по умолчанию ничего не логирует.
 Финальная пересборка без warmup-прототипа подтвердила MTP результат:
 `1399.85` prompt / `38.61` decode tok/s.
+
+## Vulkan recurrent checkpoint batching (2026-07-11)
+
+E279 добавил batch tensor-read callback для Vulkan state serialization. На
+повторно используемом 7k prefix и 15 новых prompt-токенах последовательный
+checkpoint занимал `33.362 ms`, а весь prompt `180.553 ms` (`83.08 tok/s`).
+Batch-маршрут сгруппировал 96 R/S reads как 50/46 по двум GPU: checkpoint
+`27.376 ms`, prompt `165.787 ms` (`90.48 tok/s`, `+8.9%`). Deterministic branch
+rollback дал идентичный текст. Откат: `LLAMA_CHECKPOINT_BATCH_READ=0`.
+
+Первоначальные `757-790 ms` на checkpoint внутри длинного первого prefill были
+не чистым transfer: первый read синхронизировал ещё не завершившийся
+1024-token prompt graph. Поэтому основной провал 39-40 token tail около 98k KV
+остаётся small-N long-KV FlashAttention задачей H63, а не checkpoint задачей.
 
 ## MTP single-request sanity (2026-07-07)
 

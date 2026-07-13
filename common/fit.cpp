@@ -311,7 +311,7 @@ static void common_params_fit_impl(
                         // linear interpolation between minimum and maximum context size:
                         cparams->n_ctx += (hp_nct - n_ctx_min) * (sum_used_target - sum_projected_used_min_ctx)
                             / (sum_projected_used - sum_projected_used_min_ctx);
-                        cparams->n_ctx = std::max(cparams->n_ctx - cparams->n_ctx % 256, n_ctx_min); // round down context for CUDA backend
+                        cparams->n_ctx = std::max(cparams->n_ctx - cparams->n_ctx % 256, n_ctx_min); // keep GPU context aligned
 
                         const int64_t bytes_per_ctx = (sum_projected_used - sum_projected_used_min_ctx) / (hp_nct - n_ctx_min);
                         const int64_t memory_reduction = (hp_nct - cparams->n_ctx) * bytes_per_ctx;

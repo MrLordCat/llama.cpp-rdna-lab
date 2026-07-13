@@ -5,11 +5,7 @@ from __future__ import annotations
 _KEY_TO_DISPLAY = {
     "rocm": "ROCm/HIP",
     "cpu": "CPU",
-    "cuda": "CUDA",
     "vulkan": "Vulkan",
-    "metal": "Metal",
-    "sycl": "SYCL",
-    "opencl": "OpenCL",
 }
 
 _DISPLAY_TO_KEY = {display: key for key, display in _KEY_TO_DISPLAY.items()}

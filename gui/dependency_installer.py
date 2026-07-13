@@ -294,10 +294,7 @@ class DependencyManager:
                 missing.append("GCC/Clang")
         
         # Backend-specific
-        if backend and backend.upper() == "CUDA":
-            if not self._check_cuda():
-                missing.append("CUDA Toolkit")
-        elif backend and backend.upper() == "VULKAN":
+        if backend and backend.upper() == "VULKAN":
             if not self._check_vulkan():
                 missing.append("Vulkan SDK")
         elif backend and backend.upper() == "ROCM":
@@ -387,44 +384,6 @@ class DependencyManager:
         
         return False
     
-    def _check_cuda(self) -> bool:
-        """Check for CUDA Toolkit (nvcc compiler)"""
-        # Method 1: Check nvcc in PATH
-        try:
-            result = subprocess.run(
-                ["nvcc", "--version"],
-                capture_output=True,
-                timeout=5
-            )
-            if result.returncode == 0:
-                return True
-        except:
-            pass
-        
-        # Method 2: Check CUDA_PATH environment variable
-        cuda_path = os.environ.get("CUDA_PATH")
-        if cuda_path:
-            nvcc_path = Path(cuda_path) / "bin" / "nvcc.exe"
-            if nvcc_path.exists():
-                return True
-        
-        # Method 3: Check standard CUDA installation paths
-        cuda_paths = [
-            Path("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA"),
-            Path("C:/CUDA"),
-        ]
-        
-        for base_path in cuda_paths:
-            if base_path.exists():
-                # Find latest version
-                versions = sorted([d for d in base_path.iterdir() if d.is_dir()], reverse=True)
-                for ver_path in versions:
-                    nvcc = ver_path / "bin" / "nvcc.exe"
-                    if nvcc.exists():
-                        return True
-        
-        return False
-            
     def _check_vulkan(self) -> bool:
         """Check for Vulkan"""
         vulkan_sdk = os.environ.get("VULKAN_SDK")

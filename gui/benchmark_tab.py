@@ -38,7 +38,7 @@ from PyQt6.QtWidgets import (
 
 from backend_names import backend_key_from_display, display_backend_from_key
 from bench_history import BenchHistoryMixin
-from bench_runner import BenchCommandThread
+from bench_runner import BenchCommandThread, console_python_executable
 from server_backend_panels import (
     ROCM_DEVICE_CHOICES,
     VULKAN_DEVICE_CHOICES,
@@ -1142,7 +1142,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         for key in keys:
             self.build_backend_combo.addItem(self._display_backend_from_key(key))
 
-        for legacy in ["ROCm/HIP", "CPU", "CUDA", "Vulkan", "Metal", "SYCL", "OpenCL"]:
+        for legacy in ["ROCm/HIP", "CPU", "Vulkan"]:
             if self.build_backend_combo.findText(legacy) < 0:
                 self.build_backend_combo.addItem(legacy)
 
@@ -1417,7 +1417,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         request_timeout = self._request_timeout_for_ctx(self.ctx_spin.value())
 
         command = [
-            sys.executable,
+            console_python_executable(),
             "scripts/agent_workload_bench.py",
             "--label",
             label,
@@ -1598,7 +1598,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         request_timeout = self._request_timeout_for_ctx(autotune_min_ctx)
 
         command = [
-            sys.executable,
+            console_python_executable(),
             "scripts/agent_workload_bench.py",
             "--autotune",
             "--label",
@@ -2235,14 +2235,16 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
 
     def _bench_help_output(self) -> str:
         script_path = self.project_root / "scripts" / "agent_workload_bench.py"
-        cache_key = f"{sys.executable}|{script_path}"
+        python_executable = console_python_executable()
+        cache_key = f"{python_executable}|{script_path}"
 
         if cache_key in self._bench_help_cache:
             return self._bench_help_cache[cache_key]
 
         try:
             result = subprocess.run(
-                [sys.executable, str(script_path), "--help"],
+                [python_executable, str(script_path), "--help"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=15,

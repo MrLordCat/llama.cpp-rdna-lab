@@ -41,10 +41,11 @@ ROCM_DEVICE_CHOICES = [
 ]
 
 VULKAN_DEVICE_CHOICES = [
-    ("All GPUs — layer split",                   None,              "layer", None),
-    ("Vulkan0 only — diagnostics",               "Vulkan0",         "none",  None),
-    ("Vulkan1 only — diagnostics",               "Vulkan1",         "none",  None),
-    ("Vulkan0,Vulkan1 — layer split (MTP)",      "Vulkan0,Vulkan1", "layer", "1,1"),
+    ("All GPUs — layer split (default order)",        None,              "layer", None),
+    ("Vulkan0 only — diagnostics",                    "Vulkan0",         "none",  None),
+    ("Vulkan1 only — diagnostics",                    "Vulkan1",         "none",  None),
+    ("Vulkan1,Vulkan0 — GPU1 primary (recommended)", "Vulkan1,Vulkan0", "layer", "1,1"),
+    ("Vulkan0,Vulkan1 — GPU0 primary (diagnostics)", "Vulkan0,Vulkan1", "layer", "1,1"),
 ]
 
 
@@ -76,6 +77,7 @@ class _RocmPanel(QWidget):
         self.device_combo = QComboBox()
         for choice in self.DEVICE_CHOICES:
             self.device_combo.addItem(choice[0])
+        self.device_combo.setCurrentIndex(3)
         self.device_combo.setToolTip(
             "Which GPUs the server uses.\n"
             "For large MTP runs, use ROCm1,ROCm0 layer split so weights/KV stay\n"
@@ -141,7 +143,7 @@ class _RocmPanel(QWidget):
         }
 
     def from_settings(self, data: dict) -> None:
-        idx = int(data.get("device_index", 0))
+        idx = int(data.get("device_index", 3))
         if 0 <= idx < self.device_combo.count():
             self.device_combo.setCurrentIndex(idx)
         self.peer_copy_check.setChecked(bool(data.get("peer_copy", False)))
@@ -164,13 +166,32 @@ class _VulkanPanel(QWidget):
         self.device_combo = QComboBox()
         for choice in self.DEVICE_CHOICES:
             self.device_combo.addItem(choice[0])
+        self.device_combo.setCurrentIndex(3)
         self.device_combo.setToolTip(
             "Which GPUs the server uses.\n"
-            "For large MTP runs, use the explicit dual-GPU layer split so\n"
-            "weights/KV stay on the two cards instead of spilling into RAM."
+            "For long-context dual-GPU runs, use Vulkan1,Vulkan0 so GPU1 is\n"
+            "the first scheduler/output device and absorbs the extra compute\n"
+            "buffers. KV remains colocated with its split model layers."
         )
         dev_row.addWidget(self.device_combo, 1)
         layout.addLayout(dev_row)
+
+        self.output_gpu1_check = QCheckBox("Place output tensors on Vulkan1")
+        self.output_gpu1_check.setChecked(True)
+        self.output_gpu1_check.setToolTip(
+            "Moves the large vocabulary/output tensor away from GPU0 while keeping\n"
+            "layer-local KV and fast attention. Recommended on a display-attached GPU0."
+        )
+        layout.addWidget(self.output_gpu1_check)
+
+        self.kv_gpu1_check = QCheckBox("Place all KV cache on Vulkan1 (experimental)")
+        self.kv_gpu1_check.setChecked(False)
+        self.kv_gpu1_check.setToolTip(
+            "Stores every attention K/V cache layer on physical GPU1 while model\n"
+            "weights remain layer-split. This prevents GPU0 KV growth, but adds\n"
+            "cross-GPU attention transfers and can substantially reduce speed."
+        )
+        layout.addWidget(self.kv_gpu1_check)
 
         self.large_matmul_check = QCheckBox("Force AMD large matmul path (GGML_VK_FORCE_AMD_LARGE_MATMUL=1)")
         self.large_matmul_check.setChecked(True)
@@ -209,6 +230,10 @@ class _VulkanPanel(QWidget):
         out: dict[str, str] = {}
         if self.large_matmul_check.isChecked():
             out["GGML_VK_FORCE_AMD_LARGE_MATMUL"] = "1"
+        if self.output_gpu1_check.isChecked():
+            out["LLAMA_OUTPUT_DEVICE"] = "Vulkan1"
+        if self.kv_gpu1_check.isChecked():
+            out["LLAMA_KV_DEVICE"] = "Vulkan1"
         if self.spec_window_spin.value() != 8192:  # 8192 is the built-in default
             out["LLAMA_SPEC_PREFILL_WINDOW"] = str(self.spec_window_spin.value())
         return out
@@ -216,14 +241,18 @@ class _VulkanPanel(QWidget):
     def to_settings(self) -> dict:
         return {
             "device_index": self.device_combo.currentIndex(),
+            "output_gpu1": self.output_gpu1_check.isChecked(),
+            "kv_gpu1": self.kv_gpu1_check.isChecked(),
             "large_matmul": self.large_matmul_check.isChecked(),
             "spec_window": self.spec_window_spin.value(),
         }
 
     def from_settings(self, data: dict) -> None:
-        idx = int(data.get("device_index", 0))
+        idx = int(data.get("device_index", 3))
         if 0 <= idx < self.device_combo.count():
             self.device_combo.setCurrentIndex(idx)
+        self.output_gpu1_check.setChecked(bool(data.get("output_gpu1", True)))
+        self.kv_gpu1_check.setChecked(bool(data.get("kv_gpu1", False)))
         self.large_matmul_check.setChecked(bool(data.get("large_matmul", True)))
         self.spec_window_spin.setValue(int(data.get("spec_window", 8192)))
 

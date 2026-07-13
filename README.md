@@ -1,190 +1,139 @@
 # llama.cpp-with-GUI
 
-Локальный форк `ggml-org/llama.cpp`, заточенный под Windows-машину владельца и AMD ROCm/Vulkan workflow. Главная цель форка: удобный PyQt6 GUI поверх `llama.cpp`, быстрые локальные сборки под конкретное железо, управление моделями GGUF и сохранение собственных настроек при догоне upstream.
+Локальный форк `ggml-org/llama.cpp` для Windows, двух AMD Radeon RX 9070 XT и
+agent-heavy работы с большими контекстами. В репозитории объединены `llama.cpp`,
+PyQt6 GUI, автотюн, MTP/DFlash и локальные оптимизации ROCm/Vulkan.
 
-Это не чистый upstream README. Оригинальная документация llama.cpp остаётся полезной как справочник по API и форматам, но корневая документация этого форка описывает именно локальную сборку `llama.cpp-with-GUI`.
+## Поддерживаемые бэкенды
 
-## Текущий фокус
+| Бэкенд | Назначение | Статус |
+| --- | --- | --- |
+| CPU | sanity, fallback, конвертация и тесты | поддерживается |
+| Vulkan | основной prompt-eval и универсальный AMD runtime | поддерживается |
+| ROCm/HIP | AMD runtime, MTP и kernel research | поддерживается |
 
-- PyQt6 GUI для запуска `llama-server`, CLI-инференса, скачивания моделей и сборки проекта.
-- Оптимизация под AMD Radeon RX 9070 XT через ROCm/HIP SDK 7.1, с Vulkan как fallback.
-- Реалистичная производительность Qwen3.6 в prompt-heavy режиме со стартовой точкой ниже `16k` (`ctx=12288` как текущий reference) и целевой метрикой `25-27 TPS` на этой стартовой точке.
-- TurboQuant KV/weight experiments: `tbq3_0`, `tbq4_0`, `tq3_0`.
-- Защита локальных GUI, документации и агентских инструкций от случайного перетирания при `upstream/master` merge.
-- Подготовка к MTP/Multi-Token Prediction, когда поддержка станет достаточно стабильной для форка.
+Нативные CUDA, Metal, SYCL, OpenCL, CANN и остальные upstream-бэкенды удалены.
+ROCm продолжает компилировать общий HIP/CUDA-compatible kernel layer из
+`ggml/src/ggml-cuda`; это внутренняя зависимость HIP, а не поддержка NVIDIA.
+Подробности: [Supported backends](docs/SUPPORTED_BACKENDS.md).
 
-## Performance Focus Update (2026-05-10)
-
-- Активные 128k прогоны временно остановлены.
-- Также остановлен старый `64k`-центричный lane как основной, потому что новый prompt-heavy benchmark показал раннюю деградацию уже ниже `16k`.
-- Новый базовый сценарий для всех performance claims: `scripts/agent_workload_bench.py` с `--real-context-mode repo-snapshot` и большим входящим prompt.
-- Текущая стартовая точка: `ctx=12288` (no-reuse, prompt-heavy) с фактическим уровнем около `9.24 TPS`.
-- Новая инженерная цель: поднять стартовую точку до `25-27 TPS` через изменения в кодовой базе llama.cpp/ggml (prefill/runtime path), а не только server args.
-
-## Статус спринтов (2026-05-07)
-
-Выполнены три практических спринта с контрольными checkpoint-бенчами и smoke-запуском GUI между этапами.
-
-- Sprint 1 (Launch Server): добавлены и сохранены через QSettings runtime-контролы `Parallel`, `HTTP Threads`, `Flash Attention`, `--no-warmup`, `-fit on/off`; для `--spec-type mtp` теперь принудительно ставится `--parallel 1`.
-- Sprint 2 (ROCm build path): в configure-path усилены ROCm флаги `GGML_HIP`, `GGML_HIP_MMQ_MFMA`, `GGML_HIP_NO_VMM`, `AMDGPU_TARGETS`; после configure добавлена валидация `CMakeCache.txt` с предупреждением в GUI при расхождениях.
-- Sprint 3 (GUI benchmark mode): во вкладку Build добавлена кнопка `Quick ROCm Bench`, которая запускает `scripts/agent_workload_bench.py` и пишет результаты в `build_logs/agent-workload/`.
-
-Контрольные quick-бенчи (одинаковый профиль) показали:
-
-- baseline: `14.72 TPS`
-- после Sprint 1: `13.00 TPS`
-- после Sprint 2: `13.01 TPS`
-- после Sprint 3: `13.02 TPS`
-
-Это короткий smoke-профиль, поэтому значения следует трактовать как контроль стабильности пайплайна, а не как финальный performance verdict.
-
-## Железо и окружение
-
-Слепок снят 2026-05-07 на рабочей машине:
-
-| Компонент | Значение |
-| --- | --- |
-| OS | Microsoft Windows 11 Pro, 64-bit, build 26200 |
-| Motherboard | Gigabyte B550 GAMING X V2 |
-| CPU | AMD Ryzen 7 5800X3D, 8 cores / 16 threads |
-| RAM | 64 GB DDR4 |
-| GPU | AMD Radeon RX 9070 XT |
-| GPU driver | 32.0.23033.1002 |
-| ROCm/HIP | `C:\Program Files\AMD\ROCm\7.1` |
-| Python | 3.13.4 |
-| CMake | 3.29.2 |
-| Git | 2.49.0.windows.1 |
-| Ninja | 1.13.0 |
-| Main disks | `C:` 1.5 TB, `D:` 1.0 TB |
-
-ROCm build target for RX 9070 XT / RDNA4 is expected to be `gfx1201`. With HIP SDK 7.1 the old `HSA_OVERRIDE_GFX_VERSION` workaround should not be needed.
-
-## Запуск GUI
+## Быстрый запуск
 
 ```powershell
 python run.py
 ```
 
-Альтернативы:
+Также доступны `run.bat` и `start-gui.bat`. GUI умеет:
+
+- собирать и выбирать CPU, Vulkan и ROCm builds;
+- запускать `llama-server` с сохранёнными параметрами;
+- настраивать dual-GPU layer split и output device;
+- запускать benchmark/autotune с live prompt progress;
+- выбирать MTP, DFlash и обычный decode;
+- подключать vision projector через `--mmproj`;
+- скачивать и учитывать локальные GGUF-модели.
+
+## Сборка
+
+CPU:
 
 ```powershell
-run.bat
-start-gui.bat
+cmake -S . -B build-cpu -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-cpu -j 4 --target llama-server
 ```
 
-`run.py` добавляет `gui/` в `PYTHONPATH`, проверяет Python-зависимости через `dependency_checker.py` и запускает модульный GUI через `gui/main_window.py`.
+Vulkan:
 
-## Возможности GUI
+```powershell
+cmake -S . -B build-vulkan -G Ninja -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-vulkan -j 4 --target llama-server
+```
 
-GUI находится в `gui/` и состоит из шести основных вкладок:
+ROCm/HIP SDK 7.1 для RDNA4:
 
-| Вкладка | Назначение |
+```powershell
+cmake -S . -B build-rocm -G Ninja `
+  -DGGML_HIP=ON `
+  -DAMDGPU_TARGETS=gfx1201 `
+  -DGGML_HIP_MMQ_MFMA=ON `
+  -DGGML_HIP_NO_VMM=ON `
+  -DGGML_OPENMP=OFF `
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build-rocm -j 4 --target llama-server
+```
+
+На Windows ROCm должен использовать clang из HIP SDK и Ninja. GUI выставляет
+этот toolchain автоматически. При этом host-link требует MSVC Build Tools с
+workload `Desktop development with C++` и Windows SDK: без них ROCm clang не
+найдёт `kernel32.lib`, `msvcrtd.lib` и остальные системные библиотеки.
+
+## Рабочий профиль
+
+Основная машина:
+
+- Windows 11;
+- AMD Ryzen 7 5800X3D, 64 GB RAM;
+- две Radeon RX 9070 XT 16 GB, `gfx1201`;
+- ROCm/HIP SDK 7.1;
+- Qwen3.6-27B Q3_K_S MTP как основная длинноконтекстная модель.
+
+Для dual Vulkan обычно используется `-dev Vulkan1,Vulkan0 -sm layer`; GPU1
+выбран первым, поскольку GPU0 обслуживает дисплей и системную нагрузку. Точный
+`-ts` нужно брать из актуального autotune, а не считать постоянным.
+
+## MTP
+
+MTP полностью интегрирован через upstream NextN pipeline. Для MTP-enabled GGUF:
+
+```text
+--spec-type draft-mtp --spec-draft-n-max 3
+```
+
+После Vulkan warm-cache и safe rows 5-8 split оптимизаций MTP в проверенных
+dual-GPU lane давал примерно `1.29-1.42x` к decode baseline. Это не ускорение
+prompt evaluation: длинный prefill всегда сравнивается отдельно с `spec=none`.
+`n_max=3` и `n_max=4` следует выбирать по acceptance и длине ответа.
+
+Подробные измерения находятся в [BENCHMARKS.md](BENCHMARKS.md) и
+`docs/research/major-topology/`.
+
+## Большой контекст
+
+Для prompt-heavy измерений используйте один и тот же backend, модель, KV,
+`ctx`, batch/ubatch, split, cache policy и фоновую нагрузку. Канонический runner:
+
+```powershell
+python scripts/agent_workload_bench.py --help
+```
+
+История GUI/autotune хранится в:
+
+- `build_logs/agent-workload/BENCH_RUNS.csv`;
+- `build_logs/agent-workload/BENCH_RECENT.md`;
+- `build_logs/agent-workload/BENCH_LANES.md`.
+
+## Vision
+
+Для Qwen3.6-27B включите Vision в Launch Server и выберите соответствующий
+`models/mmproj-F16.gguf`. Projector должен совпадать с архитектурой и embedding
+dimension текстовой модели. Для первичной проверки image-запроса используйте
+`Spec: None`, чтобы отделить vision pipeline от speculative decode.
+
+## Структура
+
+| Путь | Назначение |
 | --- | --- |
-| Launch Server | Запуск `llama-server`, выбор модели, backend/build, GPU layers, context, batch, `parallel`, `threads-http`, spec-type, KV cache, Extra Arguments |
-| Inference | Запуск `llama-cli` для одиночного prompt/inference |
-| Download Models | Поиск и скачивание GGUF с Hugging Face, сортировка и выбор файлов |
-| Build & Setup | Проверка зависимостей, CMake configure/build, выбор CPU/CUDA/Metal/Vulkan/SYCL/ROCm |
-| Installed Builds | Просмотр, переименование и удаление нескольких build-директорий |
-| System Info | Определение CPU/GPU/RAM и рекомендации backend |
+| `gui/` | PyQt6 приложение |
+| `src/`, `common/`, `include/` | llama runtime |
+| `ggml/src/ggml-cpu/` | CPU backend |
+| `ggml/src/ggml-vulkan/` | Vulkan backend и shaders |
+| `ggml/src/ggml-hip/` | ROCm build orchestration |
+| `ggml/src/ggml-cuda/` | внутренние HIP-compatible kernels |
+| `scripts/agent_workload_bench.py` | benchmark/autotune runner |
+| `docs/research/` | воспроизводимые performance-эксперименты |
 
-В GUI уже есть локальные улучшения: multimodal/vision controls с `--mmproj`, экспорт build log, ROCm-aware сборка, KV cache presets и модельные пресеты для Qwen, Llama, Mistral, DeepSeek, Phi и embedding-моделей.
+## Разработка
 
-## Рекомендуемая сборка для этой машины
-
-ROCm:
-
-```powershell
-cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build-rocm --config Release -j 4
-```
-
-Vulkan fallback:
-
-```powershell
-cmake -B build-vulkan -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build-vulkan --config Release -j
-```
-
-CPU sanity build:
-
-```powershell
-cmake -B build-cpu -DCMAKE_BUILD_TYPE=Release
-cmake --build build-cpu --config Release -j
-```
-
-ROCm на Windows должен использовать Ninja/clang из HIP SDK, а не Visual Studio generator.
-
-## MTP / Multi-Token Prediction
-
-MTP сейчас рассматривается как перспективный путь ускорения generation. На 2026-05-07 актуальная работа в upstream идёт в draft PR `ggml-org/llama.cpp#22673` (`llama + spec: MTP Support`). В текущем локальном дереве полноценного runtime MTP ещё нет: есть speculative decoding (`draft`, `eagle3`, `ngram-*`) и сохранение NextN/MTP tensor metadata, но `--spec-type mtp` локально пока не поддержан.
-
-Подробный план и ссылки вынесены в [MTP.md](MTP.md). Коротко: MTP имеет смысл тестировать только с MTP-enabled GGUF, например Qwen3.6 MTP variants, и только после подтягивания PR/commit, где `llama-server` знает `--spec-type mtp`.
-
-## TurboQuant и KV cache
-
-Форк содержит TurboQuant-интеграцию:
-
-| Тип | Назначение | Бэкенд |
-| --- | --- | --- |
-| `tbq3_0` | CPU-only TurboQuant 3-bit | CPU |
-| `tbq4_0` | CPU-only TurboQuant 4-bit | CPU |
-| `tq3_0` | GPU TurboQuant 3-bit / ~3.5 bpw | CUDA/HIP |
-
-GUI предупреждает, что TurboQuant KV-типы требуют flash attention. Для `tbq*` GUI форсирует CPU/no GPU offload, потому что эти варианты CPU-only.
-
-## Модели
-
-Локальные модели лежат в `models/`. Большие `.gguf` файлы не стоит коммитить. Для RX 9070 XT 16 GB практичные стартовые точки:
-
-- 7B-14B Q8/Q6/Q5 для скорости и качества.
-- 27B-35B Q4/IQ4 с `parallel=1`, flash attention и сжатым KV cache.
-- MoE модели с малым active parameter count, например Qwen3/Qwen3.6 A3B variants.
-- Для длинного контекста уменьшать `parallel`, KV cache переводить в `q8_0`, `q4_0` или экспериментальный `tq3_0`.
-
-## Правила синхронизации upstream
-
-Не делать слепой `git merge upstream/master`, если цель только догнать ядро llama.cpp. Этот форк защищает собственные файлы:
-
-- `.github/**`
-- `docs/**`
-- `README.md`
-- `AGENTS.md`
-- `CLAUDE.md`
-- `MTP.md`
-- `UPSTREAM_SYNC.md`
-- GUI-документацию `gui/README.md`, `gui/QUICKSTART.md`
-
-Процедура описана в [UPSTREAM_SYNC.md](UPSTREAM_SYNC.md). Идея простая: импортировать core/runtime изменения из upstream, но не забирать upstream Actions, upstream docs и upstream агентские инструкции.
-
-## Агентам
-
-Перед правками читать [AGENTS.md](AGENTS.md). Там указаны локальные приоритеты форка, защищённые пути и правило: не перетирать пользовательские GUI/ROCm/TurboQuant изменения ради чистоты upstream.
-
-## Локальный профиль и Qwen speed work
-
-- [PROJECT_PROFILE.md](PROJECT_PROFILE.md) — железо, окружение, модели, remotes и локальные defaults.
-- [QWEN_SPEED_RESEARCH.md](QWEN_SPEED_RESEARCH.md) — исследование MTP, speculative decoding, KV cache и ROCm/Vulkan tuning для Qwen.
-- [BENCHMARKS.md](BENCHMARKS.md) — короткий agent-workload benchmark для baseline/progression.
-- [MTP_IMPLEMENTATION_PLAN.md](MTP_IMPLEMENTATION_PLAN.md) — пошаговый план внедрения MTP.
-
-## Полезные файлы
-
-| Файл | Что это |
-| --- | --- |
-| `run.py` | Основной launcher GUI |
-| `gui/main_window.py` | Главное модульное PyQt6 окно |
-| `gui/server_tab.py` | Launch Server вкладка (runtime-параметры и запуск сервера) |
-| `gui/build_tab.py` | Build/Configure вкладка и quick benchmark |
-| `gui/build_manager.py` | CMake/ROCm/Vulkan orchestration |
-| `gui/hardware_detector.py` | Определение железа |
-| `gui/model_downloader.py` | Hugging Face модели |
-| `gui/model_presets.json` | Рекомендованные параметры моделей |
-| `BUILD_CHEATSHEET.txt` | Быстрая шпаргалка по сборке |
-| `MSVC_FIX.md` | Заметки по MSVC detection |
-| `PROJECT_PROFILE.md` | Персональный профиль форка |
-| `MTP.md` | Исследование и план внедрения MTP |
-| `MTP_IMPLEMENTATION_PLAN.md` | Детальный план работ по MTP |
-| `QWEN_SPEED_RESEARCH.md` | План ускорений Qwen |
-| `BENCHMARKS.md` | Как мерить baseline и прогресс |
-| `UPSTREAM_SYNC.md` | Как догонять upstream без импорта лишнего |
-| `AGENTS.md` | Инструкции для AI-агентов |
+Перед изменениями прочитайте [AGENTS.md](AGENTS.md). Политика переноса upstream:
+[UPSTREAM_SYNC.md](UPSTREAM_SYNC.md). Этот форк переносит нужные core/runtime
+изменения вручную и не возвращает удалённые бэкенды автоматически.

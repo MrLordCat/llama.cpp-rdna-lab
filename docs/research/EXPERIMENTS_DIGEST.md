@@ -1,6 +1,6 @@
 # Experiment Digest
 
-Updated: 2026-07-11.
+Updated: 2026-07-12.
 
 This is the compact historical base for performance work. `RESULTS_LOG.md` remains the detailed ledger; this file groups the evidence so agents can pick the next route without rereading every E/D note.
 
@@ -31,10 +31,12 @@ This is the compact historical base for performance work. `RESULTS_LOG.md` remai
 
 ## Compact Experiment Ledger
 
-Rows parsed from `docs/research/RESULTS_LOG.md`: 340.
+Rows parsed from `docs/research/RESULTS_LOG.md`: 345.
 
 | Date | ID | Short name | Delta | Decision | Artifacts |
 | --- | --- | --- | --- | --- | --- |
+| 2026-07-11 | E280 | Vulkan GPU1 primary/output residency | output route frees `1004 MiB` on GPU0 at `-3.6%` r1 prompt; all-KV is `-56.2%` | Keep GPU1-primary plus output relocation in GUI. Keep `LLAMA_KV_DEVICE=Vulkan1` explicit/off by default; reject literal all-KV and uneven layer split as performance defaults | docs/research/experiments/E280_vulkan_gpu1_primary_residency.md, build_logs/agent-workload/e280-vulkan-gpu1-output-smoke.server.log, build_logs/agent-workloa... |
+| 2026-07-11 | E279 | Vulkan batched recurrent checkpoint | transfer `-17.9%`, prompt wall `-8.2%`, prompt TPS `+8.9%`; deterministic rollback outp... | Keep batch callback with `LLAMA_CHECKPOINT_BATCH_READ=0` rollback. Correct earlier attribution: the main 98k collapse remains small-N long-KV attention, tracked by H63 | docs/research/experiments/E279_vulkan_batched_recurrent_checkpoint.md, build_logs/agent-workload/e279-incremental-*-r2.server.log, build_logs/agent-workload/... |
 | 2026-07-11 | E278 | Vulkan MTP long-KV first-graph diagnosis | MTP `1.33x` decode; aggregate `4.10 -> 4.12`; prompt `1449.41 -> 1401.10` | Keep autotune at 128 tokens and env-gated server phase trace. First verify is about 630 ms then 42-49 ms; ordinary/exact warmup did not survive long prefill and was reverted | docs/research/experiments/E278_vulkan_mtp_long_kv_round_phases.md, build_logs/agent-workload/e278-vulkan-49k-n3-server-phase-r1.*, build_logs/agent-workload/... |
 | 2026-07-11 | E277 | MTP deferred accepted-prefix catch-up | `+0.42%` (noise) with identical `81/136` acceptance | Reject and revert prototype. Keep `process` phase timing; it showed NextN read primarily synchronizes required target verify rather than exposing removable draft catch-up work | docs/research/experiments/E277_rocm_mtp_deferred_accept_catchup.md, build_logs/agent-workload/h60-rocm-n3-phase-process-r1.*, build_logs/agent-workload/e277-... |
 | 2026-07-11 | D078 | RDNA4 Q3_K small-N DP4A MMQ | `+18.14%` decode vs MTP control; `1.65x` decode vs spec none | Keep DP4A as the RDNA4 Q3_K default for N=2..4; N=5 remains opt-in. Long 56k-token prompt still gains `1.41x` decode (`19.02 -> 26.85`) but prefill dominates end-to-end | docs/research/major-topology/D078_P002_ROCM_MTP_SMALLN_DP4A_MMQ.md, build_logs/agent-workload/d078-rocm-n3-control-r3.*, build_logs/agent-workload/d078-rocm-... |
@@ -375,3 +377,9 @@ Rows parsed from `docs/research/RESULTS_LOG.md`: 340.
 | 2026-07-09 | E273 | Dual backend 130k big-prompt delta | Vulkan dual vs ROCm dual: aggregate `+35.6%`, prompt `+36.4%`, decode `+10.7%`, wall ti... | For no-MTP practical 130k big-prompt dual mode, Vulkan is currently faster; ROCm remains the MTP backend focus | `build_logs/agent-workload/rocm-dual-layer-130k-big-c152k-mt64-none-r1.*`, `build_logs/agent-workload/vulkan-dual-layer-130k-big-c152k-mt64-none-r2.*`, `docs... |
 | 2026-07-09 | E274 | Vulkan dual MTP NextN placement | long-prompt `+3.63%` aggregate, `+2.85%` prompt, `+24.53%` decode; smoke n2 `+19.0%` ag... | Keep Vulkan MTP defaults and recommend `--spec-draft-n-max 2`; n3 is stable but slower and n4 still crashes server process without driver drop | `build_logs/agent-workload/vulkan-dual-mtpgguf-130k-big-c152k-mt64-n2-auto-default512-r1.*`, `build_logs/agent-workload/vulkan-dual-mtpgguf-smoke-n2-autonext... |
 | 2026-07-11 | E275 | Exact MTP prefill boundary + ROCm multi-column verify route | short decode `+41.0%`, aggregate `+19.9%`; 49k prompt tax reduced to about `-3%`, decod... | Keep exact tail and RDNA4 Q3_K MMQ cutoff; recommend ROCm n4, Vulkan n2. Next 1.6x route is fused multi-column Q3_K verify, not scheduler toggles or deeper draft | `build_logs/agent-workload/e275-*`, `docs/research/experiments/E275_mtp_exact_prefill_window_boundary.md` |
+| 2026-07-12 | D079 | P003 Vulkan Q3 2000 target/evidence gate | diagnostic-only; tensor reaches 29.9% of layer | Reject tensor split before q8 KV; keep trace instrumentation and continue combined Q3_K+FA body/dataflow work | `build_logs/agent-workload/d079-*`, `docs/research/major-topology/D079_P003_VULKAN_Q3_2000_TARGET_GATE.md` |
+| 2026-07-12 | D080 | P003 Vulkan layer-stage balance | cold `+5.72%`, zero errors | Keep `5,6` as P003 baseline; stop ratio sweeps and continue source/topology work | `build_logs/agent-workload/d080-*`, `docs/research/major-topology/D080_P003_VULKAN_LAYER_STAGE_BALANCE.md` |
+| 2026-07-12 | D081 | P003 q8 FA two-query-tile design gate | no measured delta | Proceed only to env-gated compile/resource prototype; require <120 VGPR, <56 KiB LDS, zero scratch, then >=1.3x local short FA | `build_logs/agent-workload/d081-vulkan-q8fa-resource-smoke-r1.*`, `docs/research/major-topology/D081_P003_VULKAN_Q8_FA_TWO_QUERY_TILE_GATE.md` |
+| 2026-07-12 | D082 | P003 Vulkan Q3 BN512 12k gate | `950.35 tok/s`, route not selected | Reject and remove runtime prototype; retain static rejection record | `build_logs/agent-workload/d082-vulkan12k-bn512-resources-r1.*`, `docs/research/major-topology/D082_P003_VULKAN_Q3_BN512_12K_GATE.md` |
+| 2026-07-12 | D083 | P003 Vulkan Q3 NITER2 12k gate | `1131.21 tok/s`, `106 VGPR` | Reject and remove; second accumulator set loses occupancy | `build_logs/agent-workload/d083-vulkan12k-q3-niter2-resources-r1.*`, `docs/research/major-topology/D083_P003_VULKAN_Q3_NITER2_12K_GATE.md` |
+| 2026-07-13 | D084 | P003 native Vulkan tensor all-reduce | tensor about `540 -> 1032-1043 tok/s`; layer `1826.47` | Keep BF16 communicator opt-in; reject host-mediated tensor as default | `build_logs/agent-workload/p003-vulkan12k-tensor-*.{jsonl,server.log}`, `docs/research/major-topology/D084_P003_VULKAN_NATIVE_TENSOR_ALLREDUCE.md` |

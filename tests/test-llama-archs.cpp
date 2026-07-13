@@ -385,7 +385,7 @@ static bool arch_supported(const llm_arch arch) {
         return false; // Only half-implemented and to be removed in the future.
     }
     if (arch == LLM_ARCH_WAVTOKENIZER_DEC) {
-        return false; // FIXME CUDA backend crashes.
+        return false; // FIXME supported GPU backends crash.
     }
     if (arch == LLM_ARCH_GEMMA4) {
         return false; // FIXME @ngxson
@@ -409,13 +409,6 @@ static bool arch_supported(const llm_arch arch) {
     if (arch == LLM_ARCH_QWEN35_MTP || arch == LLM_ARCH_QWEN35MOE_MTP) {
         return false; // MTP-only arch; requires a sibling trunk model and cannot run standalone.
     }
-
-    // FIXME some models are segfaulting with WebGPU:
-#ifdef GGML_USE_WEBGPU
-    if (arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE || arch == LLM_ARCH_KIMI_LINEAR) {
-        return false;
-    }
-#endif // GGML_USE_WEBGPU
 
     return true;
 }

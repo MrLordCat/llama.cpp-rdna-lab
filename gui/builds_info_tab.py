@@ -374,14 +374,8 @@ class BuildsInfoTabWidget(QWidget):
 
             if "GGML_HIP=ON" in content:
                 return "ROCm/HIP"
-            elif "GGML_CUDA=ON" in content:
-                return "CUDA"
-            elif "GGML_METAL=ON" in content:
-                return "Metal"
             elif "GGML_VULKAN=ON" in content:
                 return "Vulkan"
-            elif "GGML_SYCL=ON" in content:
-                return "SYCL"
             else:
                 return "CPU"
         except:

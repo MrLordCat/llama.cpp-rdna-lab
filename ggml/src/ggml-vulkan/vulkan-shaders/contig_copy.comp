@@ -22,6 +22,8 @@ void main() {
 #if defined(DATA_D_BF16)
             float f = float(data_a[get_aoffset() + idx]);
             data_d[get_doffset() + idx] = D_TYPE(fp32_to_bf16(f));
+#elif defined(DATA_A_BF16)
+            data_d[get_doffset() + idx] = D_TYPE(bf16_to_fp32(data_a[get_aoffset() + idx]));
 #elif !defined(OPTIMIZATION_ERROR_WORKAROUND)
             data_d[get_doffset() + idx] = D_TYPE(data_a[get_aoffset() + idx]);
 #else
@@ -38,6 +40,8 @@ void main() {
 #if defined(DATA_D_BF16)
             float f = float(data_a[get_aoffset() + idx]);
             data_d[get_doffset() + idx] = D_TYPE(fp32_to_bf16(f));
+#elif defined(DATA_A_BF16)
+            data_d[get_doffset() + idx] = D_TYPE(bf16_to_fp32(data_a[get_aoffset() + idx]));
 #elif !defined(OPTIMIZATION_ERROR_WORKAROUND)
             data_d[get_doffset() + idx] = D_TYPE(data_a[get_aoffset() + idx]);
 #else

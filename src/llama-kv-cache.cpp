@@ -108,6 +108,25 @@ llama_kv_cache::llama_kv_cache(
         }
     }
 
+    ggml_backend_dev_t forced_kv_dev = nullptr;
+    const char * forced_kv_name = getenv("LLAMA_KV_DEVICE");
+    if (offload && forced_kv_name != nullptr && forced_kv_name[0] != '\0') {
+        for (const auto & candidate : model.devices) {
+            if (strcmp(ggml_backend_dev_name(candidate.dev), forced_kv_name) == 0) {
+                forced_kv_dev = candidate.dev;
+                break;
+            }
+        }
+
+        if (forced_kv_dev == nullptr) {
+            LLAMA_LOG_WARN("%s: LLAMA_KV_DEVICE=%s is not in the model device list; using layer-local KV placement\n",
+                    __func__, forced_kv_name);
+        } else {
+            LLAMA_LOG_INFO("%s: forcing all attention KV cache layers to device %s\n",
+                    __func__, ggml_backend_dev_name(forced_kv_dev));
+        }
+    }
+
     int vk_host_kv_layers = -1;
     if (const char * env = getenv("LLAMA_VK_KV_HOST_LAYERS")) {
         vk_host_kv_layers = atoi(env);
@@ -162,6 +181,10 @@ llama_kv_cache::llama_kv_cache(
         if (!vk_host_kv_direct_set) {
             vk_host_kv_direct = true;
         }
+    }
+    if (forced_kv_dev != nullptr && vk_host_kv_layers != 0) {
+        LLAMA_LOG_INFO("%s: disabling Vulkan host-KV placement because LLAMA_KV_DEVICE is active\n", __func__);
+        vk_host_kv_layers = 0;
     }
     if (vk_host_kv_layers < 0) {
         vk_host_kv_layers = 0;
@@ -280,7 +303,7 @@ llama_kv_cache::llama_kv_cache(
         ggml_backend_buffer_type_t buft_v = ggml_backend_cpu_buffer_type();
 
         if (offload) {
-            auto * dev = model.dev_layer(il);
+            auto * dev = forced_kv_dev != nullptr ? forced_kv_dev : model.dev_layer(il);
             buft_k = ggml_backend_dev_buffer_type(dev);
             buft_v = buft_k;
 
@@ -1222,6 +1245,21 @@ bool llama_kv_cache::get_can_shift() const {
         return false;
     }
     return true;
+}
+
+ggml_backend_dev_t llama_kv_cache::get_layer_device(int32_t il) const {
+    const auto it = map_layer_ids.find(il);
+    if (it == map_layer_ids.end()) {
+        return nullptr;
+    }
+
+    const auto & layer = layers.at(it->second);
+    ggml_tensor * tensor = layer.k != nullptr ? layer.k : layer.v;
+    if (tensor == nullptr || tensor->buffer == nullptr) {
+        return nullptr;
+    }
+
+    return ggml_backend_buft_get_device(ggml_backend_buffer_get_type(tensor->buffer));
 }
 
 uint32_t llama_kv_cache::get_size() const {

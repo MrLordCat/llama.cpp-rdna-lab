@@ -7,6 +7,21 @@ of normal E### benchmarking: use it to rank designs before editing backend code.
 
 | Field | Value |
 | --- | --- |
+| Program | P003 dual-Vulkan Q3_K_S 2000 tok/s long-prompt route |
+| Model | `models/Qwen3.6-27B-Q3_K_S.gguf` (non-MTP) |
+| Backend | Vulkan primary; ROCm is a later control only |
+| Lane | `ctx=131072,b=8192,ub=1024,q8_0/q8_0,FlashAttention,spec=none,real-context-chars=152000,max_tokens=16`, 56,456 measured prompt tokens |
+| Reuse/prime | off / off |
+| Thinking | on |
+| Current best | D080 `-ts 5,6`: cold run 1 `1350.01 prompt tok/s`, r3 mean `1327.82`; target `2000` requires `1.4815x` from the cold baseline |
+| Current trace | D079: Q3_K 46.6%, FA 46.4%, Q4_K 4.0%, GLU 1.8%; tensor split rejected at 540.18 vs 1809.02 small-layer control |
+| Primary risk | target needs a topology-level gain; do not reopen D029-D033 helper/layout-only Q3 probes |
+| Residency | startup reports 6,685 MiB free on Vulkan1 and 7,958 MiB free on Vulkan0; WDDM runtime observation remains mandatory |
+
+## Previous P002 Program
+
+| Field | Value |
+| --- | --- |
 | Program | P002 130k dense Qwen3.6 Vulkan/ROCm residency route |
 | Model | `models/Qwen3.6-27B-Q3_K_S.gguf` |
 | Backend | Vulkan and ROCm on RX 9070 XT / AMD proprietary driver + HIP SDK 7.1 |
@@ -48,7 +63,18 @@ Do not reopen these for the 130k program without a new mechanism and a design no
   Keep q8/q8 only as explicit stability/offline opt-in via
   `LLAMA_VK_KV_HOST_AUTO_Q8=1`.
 
-## Candidate Queue
+## P003 Candidate Queue
+
+| ID | Candidate | Status | Next required artifact |
+| --- | --- | --- | --- |
+| T11 | Same-lane Q3_K + FA wall decomposition | completed D079 | Q3_K 46.6%, FA 46.4%; neither route can close alone |
+| T12 | True Q3_K + long-KV FA body/dataflow route | active D081 | q8 FA two-query-tile compile/resource gate, then Q3_K body stack if FA reaches at least 1.8x local |
+| T13 | Vulkan tensor-parallel prefill rehabilitation | D084 opt-in infrastructure kept; rejected as default | native BF16 all-reduce raises tensor from about 540 to `1032-1043`, but remains far below layer `1826`; 127 required host-mediated collectives per ubatch |
+| T14 | Hybrid PP tensor / TG layer topology | design-only | prove phase-specific graph/device ownership can avoid duplicate model residency and preserve decode |
+| T15 | Reopened 12k Q3_K `BN512` route | rejected D082 | over-LDS route was not selected; `950.35 tok/s`; prototype removed |
+| T16 | Vulkan native tensor collective | completed D084 | keep BF16 communicator opt-in; require true peer/device-group primitive before reopening tensor as a target-closing route |
+
+## P002 Candidate Queue
 
 | ID | Candidate | Status | Next required artifact |
 | --- | --- | --- | --- |

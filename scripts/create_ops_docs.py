@@ -35,7 +35,7 @@ class DocsGenerator:
 
     def _parse_support_file(self, file_path: Path) -> None:
         try:
-            with open(file_path, "r", newline='') as f:
+            with open(file_path, "r", newline='', encoding="utf-8") as f:
                 reader = csv.DictReader(f)
 
                 for row in reader:
@@ -114,7 +114,7 @@ class DocsGenerator:
         lines.append("")
         lines.append("## How to add a backend to this table:")
         lines.append("")
-        lines.append("1. Run `test-backend-ops support --output csv` with your backend name and redirect output to a csv file in `docs/ops/` (e.g., `docs/ops/CUDA.csv`)")
+        lines.append("1. Run `test-backend-ops support --output csv` with your backend name and redirect output to a csv file in `docs/ops/` (for example, `docs/ops/Vulkan.csv`)")
         lines.append("2. Regenerate `/docs/ops.md` via `./scripts/create_ops_docs.py`")
         lines.append("")
         lines.append("Legend:")
@@ -177,7 +177,7 @@ class DocsGenerator:
         docs_dir.mkdir(exist_ok=True)
 
         ops_file = docs_dir / self.output_filename
-        with open(ops_file, "w") as f:
+        with open(ops_file, "w", encoding="utf-8") as f:
             f.write(markdown_content)
 
         self.logger.info(f"Generated: {ops_file}")

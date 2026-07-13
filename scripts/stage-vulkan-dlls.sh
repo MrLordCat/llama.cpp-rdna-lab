@@ -23,20 +23,27 @@ fi
 
 echo "Staging MinGW runtime DLLs for Vulkan build..."
 
-cp -u "$STRAWBERRY_BIN/libgcc_s_seh-1.dll" "$VULKAN_BIN/"
-cp -u "$STRAWBERRY_BIN/libstdc++-6.dll"    "$VULKAN_BIN/"
-cp -u "$STRAWBERRY_BIN/libwinpthread-1.dll" "$VULKAN_BIN/"
+# Keep each dependency family from the same Strawberry installation. In
+# particular, libcrypto needs zlib1__ and libgomp needs libdl; omitting either
+# makes Windows terminate llama-server with 0xC0000135 before startup logging.
+RUNTIME_DLLS=(
+    libgcc_s_seh-1.dll
+    libstdc++-6.dll
+    libwinpthread-1.dll
+    libgomp-1.dll
+    libdl.dll
+    libcrypto-3-x64__.dll
+    libssl-3-x64__.dll
+    zlib1__.dll
+)
 
-# Optional: OpenSSL DLLs (only needed if Vulkan links against them)
-if [ -f "$STRAWBERRY_BIN/libcrypto-3-x64__.dll" ]; then
-    cp -u "$STRAWBERRY_BIN/libcrypto-3-x64__.dll" "$VULKAN_BIN/"
-fi
-if [ -f "$STRAWBERRY_BIN/libssl-3-x64__.dll" ]; then
-    cp -u "$STRAWBERRY_BIN/libssl-3-x64__.dll" "$VULKAN_BIN/"
-fi
-if [ -f "$STRAWBERRY_BIN/libgomp-1.dll" ]; then
-    cp -u "$STRAWBERRY_BIN/libgomp-1.dll" "$VULKAN_BIN/"
-fi
+for dll in "${RUNTIME_DLLS[@]}"; do
+    if [ ! -f "$STRAWBERRY_BIN/$dll" ]; then
+        echo "ERROR: required runtime DLL not found: $STRAWBERRY_BIN/$dll"
+        exit 1
+    fi
+    cp -f "$STRAWBERRY_BIN/$dll" "$VULKAN_BIN/"
+done
 
 echo "Done. Skipped llama-server.exe --version to avoid touching GPU drivers after staging."
 echo "Set STAGE_VULKAN_VERIFY=1 to run the old post-stage version check manually."

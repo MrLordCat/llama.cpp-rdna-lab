@@ -575,7 +575,7 @@ class BuildManager:
         Построение команды конфигурирования CMake
         
         Args:
-            backend: Выбранный backend (CUDA, Metal, Vulkan, и т.д.)
+            backend: Выбранный backend (CPU, Vulkan или ROCm)
             additional_options: Дополнительные опции CMake
         """
         command = [self._get_tool_command("cmake"), "-B", str(self.build_dir)]
@@ -596,14 +596,8 @@ class BuildManager:
         if backend:
             backend_upper = backend.upper()
             
-            if backend_upper == "CUDA":
-                command.append("-DGGML_CUDA=ON")
-            elif backend_upper == "METAL":
-                command.append("-DGGML_METAL=ON")
-            elif backend_upper == "VULKAN":
+            if backend_upper == "VULKAN":
                 command.append("-DGGML_VULKAN=ON")
-            elif backend_upper == "SYCL":
-                command.append("-DGGML_SYCL=ON")
             elif backend_upper == "ROCM":
                 # Modern llama.cpp uses GGML_HIP instead of GGML_HIPBLAS
                 command.append("-DGGML_HIP=ON")
@@ -793,11 +787,6 @@ class BuildManager:
         import webbrowser
         webbrowser.open("https://vulkan.lunarg.com/sdk/home#windows")
 
-    def install_cuda_windows(self) -> None:
-        """Open CUDA Toolkit download page in browser (Windows)"""
-        import webbrowser
-        webbrowser.open("https://developer.nvidia.com/cuda-downloads")
-        
     def check_build_prerequisites(self, backend: Optional[str] = None) -> Dict[str, bool]:
         """
         Проверка наличия необходимых инструментов для сборки
@@ -813,9 +802,7 @@ class BuildManager:
         if backend:
             backend_upper = backend.upper()
             
-            if backend_upper == "CUDA":
-                checks["nvcc"] = self._check_tool("nvcc")
-            elif backend_upper == "VULKAN":
+            if backend_upper == "VULKAN":
                 checks["vulkan_sdk"] = self._check_vulkan_sdk()
             elif backend_upper == "ROCM":
                 checks["rocm"] = self._check_rocm()
@@ -943,16 +930,10 @@ class BuildManager:
                     cache_content = cmake_cache.read_text(errors='ignore')
                     
                     # Detect backend from CMake cache
-                    if "GGML_CUDA:BOOL=ON" in cache_content:
-                        info["backend"] = "CUDA (NVIDIA GPU)"
-                    elif "GGML_HIP:BOOL=ON" in cache_content or "GGML_ROCM:BOOL=ON" in cache_content:
+                    if "GGML_HIP:BOOL=ON" in cache_content or "GGML_ROCM:BOOL=ON" in cache_content:
                         info["backend"] = "ROCm (AMD GPU)"
-                    elif "GGML_METAL:BOOL=ON" in cache_content:
-                        info["backend"] = "Metal (macOS GPU)"
                     elif "GGML_VULKAN:BOOL=ON" in cache_content:
                         info["backend"] = "Vulkan"
-                    elif "GGML_SYCL:BOOL=ON" in cache_content:
-                        info["backend"] = "SYCL (Intel GPU)"
                     else:
                         info["backend"] = "CPU"
                     

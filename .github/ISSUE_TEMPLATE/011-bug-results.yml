@@ -42,7 +42,7 @@ body:
     attributes:
         label: GGML backends
         description: Which GGML backends do you know to be affected?
-        options: [AMX, BLAS, CANN, CPU, CUDA, Hexagon, HIP, Metal, Musa, OpenCL, OpenVINO, RPC, SYCL, VirtGPU, Vulkan, WebGPU, zDNN, ZenDNN]
+        options: [BLAS, CPU, HIP, Vulkan]
         multiple: true
     validations:
       required: true

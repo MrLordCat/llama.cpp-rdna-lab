@@ -9,6 +9,7 @@
 #include "build-info.h"
 #include "common.h"
 #include "llama.h"
+#include "../../src/llama-ext.h"
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
@@ -47,6 +48,65 @@ static bool server_spec_has_type(const common_params_speculative & spec, common_
     return std::find(spec.types.begin(), spec.types.end(), type) != spec.types.end();
 }
 
+static bool server_params_use_vulkan(const common_params & params) {
+    for (const auto device : params.devices) {
+        const char * name = ggml_backend_dev_name(device);
+        if (name != nullptr && std::strncmp(name, "Vulkan", 6) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool server_warmup_vulkan_mtp_verify_shapes(
+        llama_context * ctx, const llama_model * model, int32_t n_draft_max, bool uses_vulkan) {
+    const char * env = std::getenv("LLAMA_VK_MTP_VERIFY_WARMUP");
+    if (!uses_vulkan || n_draft_max <= 0 ||
+            (env != nullptr && std::strcmp(env, "0") == 0)) {
+        return true;
+    }
+
+    llama_set_nextn_tg_cache(ctx, true);
+
+    const int32_t max_width = std::min<int32_t>(n_draft_max + 1, llama_n_batch(ctx));
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+    llama_token token = llama_vocab_bos(vocab);
+    if (token == LLAMA_TOKEN_NULL) {
+        token = llama_vocab_eos(vocab);
+    }
+    if (token == LLAMA_TOKEN_NULL) {
+        token = 0;
+    }
+
+    SRV_INF("warming Vulkan MTP verify widths 1..%d (LLAMA_VK_MTP_VERIFY_WARMUP=0 to disable)\n", max_width);
+
+    llama_batch warm = llama_batch_init(max_width, 0, 1);
+    bool ok = true;
+    for (int32_t width = 1; width <= max_width; ++width) {
+        llama_memory_clear(llama_get_memory(ctx), true);
+        warm.n_tokens = width;
+        for (int32_t i = 0; i < width; ++i) {
+            warm.token[i] = token;
+            warm.pos[i] = i;
+            warm.n_seq_id[i] = 1;
+            warm.seq_id[i][0] = 0;
+            warm.logits[i] = 1;
+        }
+
+        if (llama_decode(ctx, warm) != 0) {
+            SRV_WRN("Vulkan MTP verify warmup failed at width=%d\n", width);
+            ok = false;
+            break;
+        }
+        llama_synchronize(ctx);
+    }
+
+    llama_memory_clear(llama_get_memory(ctx), true);
+    llama_perf_context_reset(ctx);
+    llama_batch_free(warm);
+    return ok;
+}
+
 static int32_t server_spec_prefill_window() {
     static const int32_t value = [] {
         const char * env = std::getenv("LLAMA_SPEC_PREFILL_WINDOW");
@@ -67,12 +127,25 @@ static void server_prompt_checkpoint_update_data(std::vector<uint8_t> & data, ll
         return;
     }
 
+    const bool trace = server_env_enabled("LLAMA_CHECKPOINT_TIMING");
+    const int64_t t_start = trace ? ggml_time_us() : 0;
     const size_t checkpoint_size = llama_state_seq_get_size_ext(ctx, id, flags);
+    const int64_t t_sized = trace ? ggml_time_us() : 0;
     data.resize(checkpoint_size);
+    const int64_t t_allocated = trace ? ggml_time_us() : 0;
 
     const size_t n = llama_state_seq_get_data_ext(ctx, data.data(), checkpoint_size, id, flags);
+    const int64_t t_finished = trace ? ggml_time_us() : 0;
     if (n != checkpoint_size) {
         GGML_ABORT("checkpoint size mismatch: expected %zu, got %zu\n", checkpoint_size, n);
+    }
+    if (trace) {
+        SRV_INF("checkpoint phase=save bytes=%zu size=%.3f alloc=%.3f transfer=%.3f total=%.3f ms\n",
+                checkpoint_size,
+                (t_sized - t_start) / 1000.0,
+                (t_allocated - t_sized) / 1000.0,
+                (t_finished - t_allocated) / 1000.0,
+                (t_finished - t_start) / 1000.0);
     }
 }
 
@@ -1012,6 +1085,12 @@ private:
 
         if (spec) {
             SRV_INF("%s", "speculative decoding context initialized\n");
+            if (server_spec_has_type(params_base.speculative, COMMON_SPECULATIVE_TYPE_DRAFT_MTP) &&
+                    !server_warmup_vulkan_mtp_verify_shapes(
+                    ctx, model, common_speculative_n_max(&params_base.speculative),
+                    server_params_use_vulkan(params_base))) {
+                return false;
+            }
         } else {
             spec_init.reset();
             ctx_dft = nullptr;

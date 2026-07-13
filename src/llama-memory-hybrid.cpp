@@ -126,6 +126,10 @@ bool llama_memory_hybrid::get_can_shift() const {
     return mem_attn->get_can_shift();
 }
 
+ggml_backend_dev_t llama_memory_hybrid::get_layer_device(int32_t il) const {
+    return mem_attn->get_layer_device(il);
+}
+
 void llama_memory_hybrid::clear(bool data) {
     mem_attn->clear(data);
     mem_recr->clear(data);

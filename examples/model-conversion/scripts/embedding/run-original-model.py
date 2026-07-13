@@ -45,14 +45,10 @@ def load_model_and_tokenizer(model_path, use_sentence_transformers=False, device
         device_map = {"": "cpu"}
         print("Forcing CPU usage")
     elif device == "auto":
-        # On Mac, "auto" device_map can cause issues with accelerate
-        # So we detect the best device manually
+        # PyTorch keeps the cuda device API for ROCm builds.
         if torch.cuda.is_available():
             device_map = {"": "cuda"}
-            print("Using CUDA")
-        elif torch.backends.mps.is_available():
-            device_map = {"": "mps"}
-            print("Using MPS (Apple Metal)")
+            print("Using PyTorch GPU accelerator")
         else:
             device_map = {"": "cpu"}
             print("Using CPU")

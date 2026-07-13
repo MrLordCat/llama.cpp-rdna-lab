@@ -93,6 +93,13 @@ struct llama_memory_i {
     // getters
     virtual bool get_can_shift() const = 0;
 
+    // Device that owns persistent memory for this layer, when applicable.
+    // Returning nullptr lets callers fall back to the model layer device.
+    virtual ggml_backend_dev_t get_layer_device(int32_t il) const {
+        GGML_UNUSED(il);
+        return nullptr;
+    }
+
     //
     // ops
     //

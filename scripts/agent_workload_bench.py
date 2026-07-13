@@ -815,6 +815,7 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
         cmd,
         cwd=ROOT,
         env=env,
+        stdin=subprocess.DEVNULL,
         stdout=log_file,
         stderr=subprocess.STDOUT,
         text=True,
@@ -2308,7 +2309,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-type-k", default="q4_0")
     parser.add_argument("--cache-type-v", default="q4_0")
     parser.add_argument("--flash-attn", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--no-warmup", action=argparse.BooleanOptionalAction, default=True)
+    warmup_group = parser.add_mutually_exclusive_group()
+    warmup_group.add_argument(
+        "--no-warmup",
+        dest="no_warmup",
+        action="store_true",
+        default=True,
+        help="disable llama-server startup warmup (default)",
+    )
+    warmup_group.add_argument(
+        "--warmup",
+        "--no-no-warmup",
+        dest="no_warmup",
+        action="store_false",
+        help="enable llama-server startup warmup (--no-no-warmup is a compatibility alias)",
+    )
     parser.add_argument("--disable-thinking", action=argparse.BooleanOptionalAction, default=False,
                         help="disable model thinking by forcing chat-template kwargs; default keeps thinking enabled")
 

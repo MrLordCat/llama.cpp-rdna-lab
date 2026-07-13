@@ -8,6 +8,7 @@ Provides thread implementations for:
 """
 
 import os
+import signal
 import subprocess
 from pathlib import Path
 from typing import Optional, Tuple
@@ -51,7 +52,8 @@ class ServerThread(QThread):
                 bufsize=1,
                 universal_newlines=True,
                 env=process_env,
-                preexec_fn=_preexec
+                preexec_fn=_preexec,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0,
             )
             
             server_started = False
@@ -71,11 +73,18 @@ class ServerThread(QThread):
             self.error_signal.emit(str(e))
             
     def stop(self):
-        """Stop the server thread"""
+        """Request graceful server shutdown without forcing GPU teardown."""
         self.user_stopped = True
-        if self.process:
-            self.process.terminate()
-            self.process.wait()
+        if not self.process or self.process.poll() is not None:
+            return
+
+        try:
+            if os.name == 'nt':
+                self.process.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                self.process.terminate()
+        except (OSError, ProcessLookupError) as exc:
+            self.output_ready.emit(f"[WARN] Graceful server stop failed: {exc}\n")
 
 
 class InferenceThread(QThread):

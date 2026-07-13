@@ -58,6 +58,8 @@ public:
 
     bool get_can_shift() const override;
 
+    ggml_backend_dev_t get_layer_device(int32_t il) const override;
+
     void clear(bool data) override;
 
     bool seq_rm  (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1) override;

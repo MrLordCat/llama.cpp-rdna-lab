@@ -279,6 +279,28 @@ void ggml_backend_tensor_get_async(ggml_backend_t backend, const struct ggml_ten
     }
 }
 
+void ggml_backend_tensor_get_batch(
+        ggml_backend_t backend,
+        const struct ggml_backend_tensor_get_entry * entries,
+        size_t n_entries) {
+    GGML_ASSERT(backend);
+    GGML_ASSERT(entries || n_entries == 0);
+
+    for (size_t i = 0; i < n_entries; ++i) {
+        GGML_ASSERT(entries[i].tensor);
+        GGML_ASSERT(entries[i].data || entries[i].size == 0);
+        GGML_ASSERT(entries[i].offset + entries[i].size <= ggml_nbytes(entries[i].tensor));
+    }
+
+    if (backend->iface.tensor_get_batch && backend->iface.tensor_get_batch(backend, entries, n_entries)) {
+        return;
+    }
+
+    for (size_t i = 0; i < n_entries; ++i) {
+        ggml_backend_tensor_get(entries[i].tensor, entries[i].data, entries[i].offset, entries[i].size);
+    }
+}
+
 void ggml_backend_tensor_set_2d_async(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size,
             size_t n_copies, size_t stride_tensor, size_t stride_data) {
     GGML_ASSERT(backend);
@@ -1640,7 +1662,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             input_cpy,
                             (const uint8_t *)input->data + expert_offset, expert_offset,
                             // copy a bit extra at the to ensure there are no NaNs in the padding of the last expert
-                            // this is necessary for MMQ in the CUDA backend
+                            // this is necessary for GPU MMQ kernels
                             expert_size_copy + padding_end);
                     };
 
@@ -1948,7 +1970,7 @@ void ggml_backend_sched_synchronize(ggml_backend_sched_t sched) {
     if (!sched->is_alloc) {
         // if the graph is not already allocated, always use copy 0 after a synchronization
         // this ensures that during generation the same copy is used every time,
-        // which avoids changes in the graph that could cause CUDA or other graphs to be disabled
+        // which avoids graph changes that could disable backend graph replay
         sched->next_copy = 0;
     }
 }

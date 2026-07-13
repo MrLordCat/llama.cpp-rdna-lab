@@ -112,14 +112,8 @@ class BuildVersionRegistry:
             content = cache.read_text(errors="ignore")
             if "GGML_HIP:BOOL=ON" in content or "GGML_ROCM:BOOL=ON" in content:
                 return "rocm"
-            if "GGML_CUDA:BOOL=ON" in content:
-                return "cuda"
             if "GGML_VULKAN:BOOL=ON" in content:
                 return "vulkan"
-            if "GGML_METAL:BOOL=ON" in content:
-                return "metal"
-            if "GGML_SYCL:BOOL=ON" in content:
-                return "sycl"
         except Exception:
             pass
         return "cpu"

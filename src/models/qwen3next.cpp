@@ -266,7 +266,7 @@ ggml_tensor * llama_model_qwen3next::graph::build_layer_attn(
                 Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
     cb(cur, "attn_pregate", il);
 
-    // TODO: CUDA is missing non-contiguous unary ops. when implemented: remove this cont
+    // TODO: remove this cont when every supported GPU backend handles non-contiguous unary ops
     gate = ggml_cont_2d(ctx0, gate, n_embd_head * n_head, n_tokens);
 
     gate = ggml_sigmoid(ctx0, gate);
@@ -411,7 +411,7 @@ ggml_tensor * llama_model_qwen3next::graph::build_layer_attn_linear(
                                    split_sizes_ba[0] * ggml_element_size(mixed_ba_reshaped));
     cb(a, "a", il);
 
-    // TODO: CUDA is missing non-contiguous unary ops. when implemented: remove this cont
+    // TODO: remove this cont when every supported GPU backend handles non-contiguous unary ops
     b = ggml_cont(ctx0, b);
 
     ggml_tensor * beta = ggml_sigmoid(ctx0, b);

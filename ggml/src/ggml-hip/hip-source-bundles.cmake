@@ -70,7 +70,7 @@ function(ggml_hip_collect_sources out_headers out_sources out_host_sources out_p
     list(APPEND _sources ${_sr})
 
     if (NOT _no_fa)
-        if (GGML_CUDA_FA_ALL_QUANTS)
+        if (GGML_HIP_FA_ALL_QUANTS)
             file(GLOB _sr "../ggml-cuda/template-instances/fattn-vec*.cu")
             list(APPEND _sources ${_sr})
         else()

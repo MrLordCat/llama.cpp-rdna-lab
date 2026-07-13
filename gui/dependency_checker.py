@@ -166,7 +166,7 @@ class DependencyChecker:
         """Get list of missing system tools for a backend
         
         Args:
-            backend: Backend type (e.g., 'rocm', 'cuda') or None for common tools
+            backend: Backend type (e.g., 'rocm', 'vulkan') or None for common tools
             
         Returns:
             List of (tool_name, description, install_hint)

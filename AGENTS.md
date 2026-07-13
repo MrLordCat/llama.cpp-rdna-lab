@@ -1,182 +1,154 @@
-# AGENTS.md
+# Agent Instructions
 
-Инструкции для AI-агентов, работающих в этом репозитории.
+## Project identity
 
-## Идентичность проекта
+This is `llama.cpp-with-GUI`, a local fork for Windows and two AMD Radeon RX
+9070 XT GPUs. It combines a PyQt6 GUI, long-context benchmark/autotune tooling,
+MTP/DFlash and local ggml performance work. Do not treat it as a clean upstream
+checkout.
 
-Это `llama.cpp-with-GUI`: форк `ggml-org/llama.cpp` с PyQt6 GUI, ROCm/Vulkan workflow под AMD Radeon RX 9070 XT и локальными TurboQuant экспериментами. Не относись к нему как к чистому upstream llama.cpp.
+## Supported backends
 
-## Локальное железо
+Only these backends are supported:
 
-- OS: Windows 11 Pro build 26200.
-- CPU: AMD Ryzen 7 5800X3D, 8 cores / 16 threads.
-- RAM: 64 GB.
-- GPU: AMD Radeon RX 9070 XT, target `gfx1201`.
-- Preferred GPU backend: ROCm/HIP SDK 7.1.
-- Fallback backend: Vulkan.
-- ROCm builds on Windows must use Ninja and ROCm clang/clang++, not Visual Studio generator.
-- Vulkan MinGW builds: after build, run `scripts/stage-vulkan-dlls.sh` to copy Strawberry GCC runtime DLLs next to `build-vulkan/bin/*.exe`. Git Bash puts incompatible `/mingw64/bin` DLLs first in `PATH`, causing `0xC0000139 STATUS_ENTRYPOINT_NOT_FOUND`. Fallback for old build tree: `export PATH=\"/c/Strawberry/c/bin:$PATH\"`. DLL staging is mandatory — never hand-edit PATH as a workaround. Important driver-safety rule: the staging script must not run `llama-server.exe --version` / `--help` or any other `llama-server` verification by default. On this dual-RX 9070 XT Windows system, a `bash scripts/stage-vulkan-dlls.sh` revision that ended by launching `llama-server.exe --version` was associated with a GPU driver drop. Treat post-stage executable probes as GPU-driver-touching operations; run them only on explicit user request and never while/near a benchmark.
+- CPU, including optional BLAS and CPU SIMD paths;
+- Vulkan;
+- ROCm/HIP.
 
-## Главные цели форка
+Do not restore CUDA, Metal, SYCL, OpenCL, CANN, MUSA, WebGPU, RPC or other
+removed backends during upstream work. `ggml/src/ggml-cuda` is retained only as
+the CUDA-compatible source layer compiled by `ggml-hip`; its native CUDA CMake
+entry point is intentionally removed. Read `docs/SUPPORTED_BACKENDS.md`.
 
-- Сохранять работоспособный GUI в `gui/`.
-- Не ломать ROCm/RDNA4 workflow.
-- Для performance work считать текущей практической целью ускорение dense `Qwen3.6-27B-Q3_K_S` на длинном контексте `ctx=131072` (~130k) с реальным большим prompt. Старый quick baseline `real-context-chars=24576`, `max_tokens=16`, Vulkan D012 `b512/ub256` = `2.0013 TPS` r3 был валидным route/config smoke на `~8k` prompt tokens, но не отражает практический `~57k-62k` prompt-token сценарий. Новый headline lane должен использовать большой prompt (`real-context-chars≈152000` или live-запросы около `60k` prompt tokens) и отдельно помечать power-limit state; если GPU power limit снижен, примерно `-10%` к baseline считать допустимым. D029-D033 закрывают activation-only/naive-streaming whole-FFN, старые all-Q3 storage/helper/Q8/tile семьи, compact Q3S layout-body, FA-only pivot и q3-octa/LOAD_VEC_A=8 repeat; следующий Vulkan route должен быть настоящим Q3_K compute body/compressed-dot route, не layout-only unpack simplification или wider per-invocation dequant. FA можно рассматривать только как stack-компонент после Q3 point/static evidence около `1.18-1.20x` local. ROCm quick baseline `b512/ub128` = `1.5200 TPS` r3 и ROCm временно paused после D013-D027 rejection fence. Сравнивать speed claims с тем же backend, shape, prompt-token scale, reuse/cache policy и power-limit state.
-- На `ctx=131072` учитывать, что 16 GB VRAM RX 9070 XT недостаточно для полностью локального VRAM-resident сценария: значимая часть KV/context/working set может уходить в system RAM. Считать residency/RAM-spill/PCIe эффект частью целевой задачи, а не шумом измерения.
-- Сохранять TurboQuant типы и GUI-интеграцию KV cache.
-- Догонять upstream по core/runtime, но не импортировать upstream docs/actions/instructions поверх локальных.
-- Готовить MTP поддержку только после проверки конкретного upstream PR/commit и совместимого MTP GGUF.
-- Для Qwen performance work сначала читать `PROJECT_PROFILE.md`, `docs/research/CONTEXT_130K_WORKFLOW.md`, `BENCHMARKS.md`, `MTP.md`, `MTP_IMPLEMENTATION_PLAN.md` и `QWEN_SPEED_RESEARCH.md`.
+## Local hardware
 
-## Защищённые файлы и директории
+- Windows 11, AMD Ryzen 7 5800X3D, 64 GB RAM.
+- Two AMD Radeon RX 9070 XT 16 GB, target `gfx1201`.
+- ROCm/HIP SDK 7.1.
+- Vulkan normally uses `Vulkan1,Vulkan0`, with GPU1 first because GPU0 handles
+  display/system load.
+- ROCm on Windows must use Ninja and ROCm clang, not the Visual Studio
+  generator.
 
-При синхронизации с upstream не импортировать без явного запроса пользователя:
+## Driver safety
 
-- `.github/**`
-- `docs/**`
-- `README.md`
-- `AGENTS.md`
-- `CLAUDE.md`
-- `MTP.md`
-- `MTP_IMPLEMENTATION_PLAN.md`
-- `PROJECT_PROFILE.md`
-- `QWEN_SPEED_RESEARCH.md`
-- `BENCHMARKS.md`
-- `UPSTREAM_SYNC.md`
-- `gui/README.md`
-- `gui/QUICKSTART.md`
-- `.gemini/**`
-- `.devops/**`
+This machine has experienced driver drops during discovery and process teardown.
+The following rules are mandatory:
 
-Если upstream меняет эти пути, сохраняй локальную версию и вручную переноси только реально нужную техническую информацию.
+- never call `hipMemGetInfo` or add a probe that calls it;
+- never run `bash scripts/stage-vulkan-dlls.sh`;
+- never use `llama-server --version` or `llama-server --help` as a build probe;
+- stop `llama-server` gracefully and wait for exit before considering a forceful
+  fallback;
+- do not hard-kill a GPU server during load, prompt evaluation or decode;
+- do not run hardware discovery commands while a benchmark is active;
+- do not start a benchmark when another `llama-server` is still listening.
 
-## Git hygiene
+Use process existence, file timestamps, CMake targets and HTTP readiness for
+validation without launching extra backend discovery paths.
 
-- Рабочее дерево может быть грязным. Не откатывай чужие изменения.
-- Перед правками смотри `git status --short --branch`.
-- Не используй `git reset --hard`, `git checkout -- <path>` или массовое удаление без прямого запроса пользователя.
-- Для ручных правок используй `apply_patch`.
-- Перед merge/cherry-pick проверь, какие локальные файлы уже изменены.
-- Не используй `cmd.exe`/`cmd` для длинных build/benchmark/run сценариев: в этом репозитории они склонны зависать. Предпочитай прямой запуск из `bash`/PowerShell через `run_in_terminal` и избегай лишней cmd-обвязки.
+## Worktree and editing
 
-## Upstream sync policy
+- The worktree may contain changes from another agent. Never revert changes you
+  did not make.
+- Check `git status --short --branch` before editing.
+- Use `apply_patch` for manual edits.
+- Never use `git reset --hard`, destructive checkout, or broad cleanup commands.
+- Keep local GUI, ROCm, Vulkan, benchmark and research changes during upstream
+  sync.
+- Avoid `cmd.exe` wrappers for long builds and benchmarks; use PowerShell or
+  direct executables.
 
-Основной документ: `UPSTREAM_SYNC.md`.
+Protected local paths:
 
-Короткая версия:
-
-1. Fetch upstream.
-2. Сначала оценить diff/stat и конфликтные зоны.
-3. Импортировать core llama.cpp изменения: `common/`, `src/`, `include/`, `ggml/`, `tools/`, `examples/`, `CMakeLists.txt`, scripts/converters по необходимости.
-4. Не импортировать upstream `.github`, `docs`, root README и agent instruction files.
-5. После merge проверить GUI launch path, ROCm configure/build path и server command generation.
-
-## MTP policy
-
-MTP означает Multi-Token Prediction. На 2026-05-07 upstream работа отслеживается через `ggml-org/llama.cpp#22673`, draft PR `llama + spec: MTP Support`.
-
-В текущем локальном дереве нет полноценного `--spec-type mtp`; есть speculative decoding без MTP (`draft`, `eagle3`, `ngram-*`) и NextN/MTP tensor metadata preservation. Не добавляй GUI-переключатель MTP как будто он уже работает. Допустимо:
-
-- документировать MTP;
-- добавлять guarded/experimental UI только если сервер реально поддерживает `--spec-type mtp`;
-- использовать Extra Arguments для ручного теста после подтягивания нужного PR;
-- предупреждать, что MTP требует MTP-enabled GGUF.
-
-## Проверки после изменений
-
-Минимум:
-
-```powershell
-python -m py_compile run.py gui\main_window.py gui\server_tab.py gui\benchmark_tab.py gui\build_tab.py gui\build_manager.py gui\dependency_checker.py gui\hardware_detector.py
-git diff --check
+```text
+.github/**
+docs/**
+README.md
+AGENTS.md
+BENCHMARKS.md
+MTP.md
+PROJECT_PROFILE.md
+QWEN_SPEED_RESEARCH.md
+UPSTREAM_SYNC.md
+gui/**
+scripts/agent_workload_bench.py
 ```
 
-Для build-path изменений:
+## Performance policy
+
+- The active prompt target is Qwen3.6-27B Q3_K_S on realistic long prompts;
+  `2000 prompt tok/s` is a research target, not a current claim.
+- MTP performance is measured against an adjacent `spec=none` decode baseline.
+- MTP is expected to accelerate decode, not prompt evaluation.
+- Compare only equal backend, model, context, batch/ubatch, KV, split, cache
+  policy, prompt scale and background load.
+- When a game or other GPU workload is active, record it and use an adjacent
+  baseline under the same load.
+- Use short runs for diagnosis and a long run only for final confirmation.
+- Keep cold-first and steady-session results separate.
+- Use `build_logs/agent-workload/BENCH_RUNS.csv`, `BENCH_RECENT.md` and
+  `BENCH_LANES.md` as canonical generated history.
+- Record accepted/rejected changes in `docs/research/` and do not leave a
+  rejected runtime experiment enabled by default.
+
+Before new performance work, read:
+
+- `BENCHMARKS.md`;
+- `docs/research/major-topology/README.md`;
+- `docs/research/decode-hotspots/C01_RESUME_PLAYBOOK.md` when present;
+- the latest relevant D### design note.
+
+## MTP status
+
+MTP is implemented through the upstream NextN extraction pipeline. Vulkan has
+local warm-cache and safe small-row dispatch optimizations. Verified dual-GPU
+Vulkan lanes currently show about `1.29-1.42x` decode speedup depending on lane,
+acceptance and load. Do not document `1.6-2x` as achieved until measured.
+
+For vision requests, validate with `Spec: None` first. MTP-enabled GGUF is
+required for `--spec-type draft-mtp`.
+
+## Minimum validation
+
+Python and GUI changes:
 
 ```powershell
-cmake -B build-cpu -DCMAKE_BUILD_TYPE=Release
-cmake --build build-cpu --config Release -j
+python -m compileall -q gui scripts run.py
 ```
 
-Для ROCm-path изменений проверять configure отдельно и не запускать долгую сборку без причины:
+CPU/build-system changes:
 
 ```powershell
-cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build-cpu -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-cpu -j 4 --target llama-server
 ```
 
-## Copilot On-Track Protocol (Performance R&D)
+Vulkan changes:
 
-Для всех kernel/perf-экспериментов придерживаться одного цикла:
+```powershell
+cmake -S . -B build-vulkan -G Ninja -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-vulkan -j 4 --target llama-server
+```
 
-1. Перед запуском бенчей очищать override-окружение (`HSA_OVERRIDE_GFX_VERSION`) и убеждаться, что нет фонового `llama-server`.
-2. Для быстрых итераций по prompt-heavy lane по умолчанию использовать `--runs 1`; до `3 runs` повышать только финальное подтверждение пограничных или реально promising дельт.
-3. Любой speed claim соотносить с текущей active lane `ctx=131072` в `scripts/agent_workload_bench.py --real-context-mode repo-snapshot`, cold-first (`--no-reuse --no-v2-prime-pass`) и с явно указанным backend (`Vulkan`/`ROCm`). Старые 12k/32k/64k/128k результаты считать историческими reference, а не текущим baseline.
-4. Для измерений «чистой» стартовой точки отключать reuse (`--cache-ram 0 --ctx-checkpoints 0`) и фиксировать этот факт в label.
-5. Если новая идея не бьёт baseline или даёт нестабильность, откатывать экспериментальные правки до чистого дерева.
-6. Если идея подтверждена, фиксировать одновременно: код + запись в `BENCHMARKS.md` + артефакты в `build_logs/agent-workload/`.
-7. Главный трек поиска ускорений: кодовые изменения в llama.cpp/ggml prefill/runtime path (`ggml/src`, `src`, `common`), а не только перебор server flags.
-8. Для benchmark-режима всегда держать thinking включённым (использовать `--no-disable-thinking`), чтобы результаты были сопоставимы между сессиями.
-9. Для research A/B сравнивать candidate только с текущим best из autotune/history при аналогичных параметрах; не запускать новый sweep как baseline, если best уже известен.
-10. Для cold-first speed claims не использовать v2 priming pass: `--v2-prime-pass` допустим только как явно помеченный steady-state probe, не как основной real-scenario результат.
-11. Для RDNA4/ROCm ubatch cliffs сначала проверять allocator/residency path: сравнить default ROCm compute vbuffer chunking против `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1`, и только потом менять GDN/FATTN/MMQ selectors или физический `ubatch`.
-12. Если full trace показывает одинаковые node counts и kernel routes, но GLU/RMS_NORM/ADD/SSM_CONV/MUL_MAT замедляются вместе, считать это memory/layout/residency сигналом; не закрывать задачу меньшим `ubatch` cap без native A/B.
-13. Для активного C01/perf трека вести две раздельные headline-метрики: `cold-first` и `repeated/steady session`; не смешивать их в один baseline.
-14. Для default/kernel claims сравнивать candidate только с cold-first baseline того же lane; speculative/session opt-in claims сравнивать только с repeated/steady baseline того же lane.
-15. В отчётах и документах явно помечать, какой baseline использован: `cold-first baseline` или `repeated/steady baseline`.
-16. Для новых benchmark-прогонов считать каноническими файлами истории `build_logs/agent-workload/BENCH_RUNS.csv`, `build_logs/agent-workload/BENCH_RECENT.md`, `build_logs/agent-workload/BENCH_LANES.md`; обновлять их через `scripts/agent_workload_bench.py`, а не создавать новые разрозненные history-файлы. Для 130k baseline обязательно сохранять diagnostics/server log, потому что startup/residency/RAM-spill сообщения являются частью результата.
-17. После E264 крупные Vulkan/ROCm Q3_K идеи сначала оформлять через `docs/research/MAJOR_TOPOLOGY_WORKFLOW.md` и `docs/research/major-topology/README.md`; обычный E###-цикл использовать только после design/scout gate.
+ROCm configure:
 
-Цель: избегать «шума» и держать только воспроизводимые ускорения в `master`.
+```powershell
+cmake -S . -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DGGML_HIP_NO_VMM=ON -DGGML_OPENMP=OFF -DCMAKE_BUILD_TYPE=Release
+```
 
-## Research Protocol (docs/research)
+Always finish with `git diff --check`. Do not run GPU server probes merely to
+print version/help output.
 
-Для всех новых гипотез после ngram/FlashAttention:
+## Upstream sync
 
-1. Перед кодовыми правками открыть `docs/research/HYPOTHESES.md` и выбрать гипотезу с ID.
-2. Создать заметку эксперимента в `docs/research/experiments/E###_*.md` по шаблону `docs/research/EXPERIMENT_TEMPLATE.md`.
-3. Сначала выполнить аналитический gate (дёшево):
-    - `python scripts/research/formula_sanity_checks.py`
-    - `python scripts/research/required_acceptance.py ...`
-    - `python scripts/research/speedup_model.py ...`
-4. В заметке явно помечать, где `projected` (модель), а где `measured` (реальный benchmark).
-5. Только после аналитического gate запускать microbench и затем lane benchmark.
-6. Любой результат фиксировать в `docs/research/RESULTS_LOG.md` с решением `keep/iterate/revert`.
-7. После обновления `RESULTS_LOG.md` запускать `python scripts/research/refresh_experiment_digest.py`, чтобы `docs/research/EXPERIMENTS_DIGEST.md` оставался компактной исторической базой.
-8. Новые утилиты для формул/проверок класть в `scripts/research/` и проверять `py_compile`.
-9. Для speculative-гипотез обязательно делать measured-vs-formula cross-check через:
-    - `python scripts/research/bench_pair_compare.py ...`
-    - `python scripts/research/spec_log_stats.py ...`
-    - `python scripts/research/spec_effective_acceptance.py ...`
-    - `python scripts/research/formula_vs_observed.py ...`
-    - `python scripts/research/spec_model_compare.py ...`
-    - `python scripts/research/spec_model_batch_compare.py ...`
-    - `python scripts/research/required_spec_overhead.py ...`
-10. В отчёте явно разделять:
-    - local acceptance (внутри сгенерированных draft токенов),
-    - coverage (доля шагов, где draft реально был),
-    - effective acceptance (coverage * local acceptance).
-11. Для runtime/prototype A/B сначала восстановить текущий best из autotune/history (ctx/batch/ubatch/KV/spec/extra/real-context size) и повторять именно его без `--v2-prime-pass`; prime-результаты можно хранить только отдельно как steady-state diagnostics.
-12. Для allocator/layout гипотез документировать negative control: например, `GGML_ROCM_COMPUTE_VBUFFER_SINGLE_CHUNK=1` должен возвращать старый slow pocket, иначе причинность не доказана.
+Follow `UPSTREAM_SYNC.md`. Inspect upstream commits, then manually port the
+smallest useful core/runtime portion. Reject backend reintroduction. Shared
+`ggml-cuda` kernel changes may be imported only when needed by HIP and verified
+with a ROCm build.
 
-Цель: делать исследования воспроизводимыми и понятными даже без глубокого матбэкграунда.
+## Pause/resume
 
-## Context Switch Protocol (Pause/Resume)
-
-Если performance-ветка временно ставится на паузу для другой задачи, перед переключением обязательно:
-
-1. Зафиксировать текущее состояние в `docs/research/decode-hotspots/C01_RESUME_PLAYBOOK.md`:
-    - active lane contract,
-    - current best/baseline,
-    - open hypotheses,
-    - next first command for resume.
-2. Обновить `docs/research/decode-hotspots/DECODE_TRACE_CHECKLIST.md`:
-    - что закрыто,
-    - что осталось в `next`.
-3. Сохранить все новые артефакты в `build_logs/agent-workload/` и сослаться на них в `BENCHMARKS.md`/`RESULTS_LOG.md`, если был measurement.
-4. Не оставлять временные runtime-правки как default без отдельного подтверждения; для спорных изменений оставлять env-gated knob.
-
-Возврат к performance-задаче после паузы:
-
-1. Сначала читать `docs/research/decode-hotspots/C01_RESUME_PLAYBOOK.md`.
-2. Затем проверить `docs/research/decode-hotspots/C01_mul_mat_forward.md` и `docs/research/decode-hotspots/DECODE_TRACE_CHECKLIST.md`.
-3. Повторить baseline/best A/B на той же lane перед новыми правками.
+Before pausing a performance branch, update the active resume playbook with the
+lane contract, current baseline, open hypothesis, artifacts and next command.
+On resume, repeat the adjacent baseline before drawing a new speed conclusion.

@@ -23,10 +23,7 @@ class ProjectManager:
     # Build directory names for different backends
     BUILD_DIRS = {
         "CPU": "build-cpu",
-        "CUDA": "build-cuda",
-        "Metal": "build-metal",
         "Vulkan": "build-vulkan",
-        "SYCL": "build-sycl",
         "ROCm": "build-rocm",
     }
     
@@ -316,16 +313,10 @@ class ProjectManager:
         if cmake_cache.exists():
             try:
                 content = cmake_cache.read_text(errors='ignore')
-                if "GGML_CUDA:BOOL=ON" in content:
-                    return "CUDA"
-                elif "GGML_HIP:BOOL=ON" in content or "GGML_ROCM:BOOL=ON" in content:
+                if "GGML_HIP:BOOL=ON" in content or "GGML_ROCM:BOOL=ON" in content:
                     return "ROCm"
-                elif "GGML_METAL:BOOL=ON" in content:
-                    return "Metal"
                 elif "GGML_VULKAN:BOOL=ON" in content:
                     return "Vulkan"
-                elif "GGML_SYCL:BOOL=ON" in content:
-                    return "SYCL"
             except:
                 pass
         return "CPU"

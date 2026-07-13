@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 
 from autotune_profiles import ACTIVE_PROMPT_PROFILE
+from bench_runner import background_process_options, console_python_executable
 from build_manager import BuildManager, ConfigureThread, BuildThread
 from model_capabilities import model_supports_mtp
 
@@ -52,11 +53,13 @@ class QuickBenchmarkThread(QThread):
             process = subprocess.Popen(
                 self.command,
                 cwd=self.working_dir,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
+                **background_process_options(self.command),
             )
             for line in process.stdout:
                 self.output.emit(line.rstrip())
@@ -111,7 +114,7 @@ class BuildTabWidget(QWidget):
         backend_row = QHBoxLayout()
         backend_row.addWidget(QLabel("Backend:"))
         self.backend_combo = QComboBox()
-        self.backend_combo.addItems(["CPU", "CUDA", "ROCm/HIP", "Metal", "Vulkan", "SYCL", "OpenCL"])
+        self.backend_combo.addItems(["CPU", "ROCm/HIP", "Vulkan"])
         self.backend_combo.currentTextChanged.connect(self.on_backend_changed)
         backend_row.addWidget(self.backend_combo)
         backend_row.addStretch()
@@ -333,13 +336,12 @@ class BuildTabWidget(QWidget):
                 self.build_dir = self.parent.get_build_dir_for_backend(backend)
             else:
                 self.build_dir = "build-rocm"
-        elif backend == "CUDA":
-            if hasattr(self.parent, "get_build_dir_for_backend"):
-                self.build_dir = self.parent.get_build_dir_for_backend(backend)
-            else:
-                self.build_dir = "build-cuda"
+        elif hasattr(self.parent, "get_build_dir_for_backend"):
+            self.build_dir = self.parent.get_build_dir_for_backend(backend)
+        elif backend == "Vulkan":
+            self.build_dir = "build-vulkan"
         else:
-            self.build_dir = "build"
+            self.build_dir = "build-cpu"
 
         self.build_dir_input.setText(self.build_dir)
 
@@ -353,11 +355,7 @@ class BuildTabWidget(QWidget):
         mapping = {
             "ROCm/HIP": "rocm",
             "CPU": "cpu",
-            "CUDA": "cuda",
             "Vulkan": "vulkan",
-            "Metal": "metal",
-            "SYCL": "sycl",
-            "OpenCL": "opencl",
         }
         return mapping.get(backend, backend.lower())
 
@@ -366,11 +364,7 @@ class BuildTabWidget(QWidget):
         mapping = {
             "rocm": "ROCm/HIP",
             "cpu": "CPU",
-            "cuda": "CUDA",
             "vulkan": "Vulkan",
-            "metal": "Metal",
-            "sycl": "SYCL",
-            "opencl": "OpenCL",
         }
         return mapping.get(key.lower(), key)
 
@@ -1047,7 +1041,7 @@ class BuildTabWidget(QWidget):
         model_path = model_files[0]
         profile = ACTIVE_PROMPT_PROFILE
         command = [
-            sys.executable,
+            console_python_executable(),
             "scripts/agent_workload_bench.py",
             "--label", "gui-quick-bench",
             "--tasks", profile.tasks,
@@ -1120,7 +1114,7 @@ class BuildTabWidget(QWidget):
         ubatch_values = range(profile.ubatch_min, profile.ubatch_max + 1, profile.ubatch_step)
 
         command = [
-            sys.executable,
+            console_python_executable(),
             "scripts/agent_workload_bench.py",
             "--autotune",
             "--label", f"gui-autotune-{resolved_model.stem}",
@@ -1358,12 +1352,8 @@ class BuildTabWidget(QWidget):
     def _get_backend_build_dir(backend: str) -> str:
         """Get build directory based on backend"""
         backend_map = {
-            "CPU": "build",
-            "CUDA": "build-cuda",
+            "CPU": "build-cpu",
             "ROCm/HIP": "build-rocm",
-            "Metal": "build-metal",
             "Vulkan": "build-vulkan",
-            "SYCL": "build-sycl",
-            "OpenCL": "build-opencl"
         }
-        return backend_map.get(backend, "build")
+        return backend_map.get(backend, "build-cpu")

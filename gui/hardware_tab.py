@@ -3,7 +3,7 @@ Hardware information tab for llama.cpp GUI
 
 Shows:
 - System hardware information (CPU, GPU, RAM)
-- Available backends (CUDA, ROCm, Vulkan, etc.)
+- Available CPU, ROCm and Vulkan backends
 - Backend recommendations
 - HIP SDK version information
 """

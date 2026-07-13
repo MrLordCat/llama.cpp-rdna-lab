@@ -11,24 +11,10 @@
             "CMAKE_INSTALL_RPATH": "$ORIGIN;$ORIGIN/.."
         }
     },
-    {
-        "name": "sycl-base",
-        "hidden": true,
-        "generator": "Ninja",
-        "binaryDir": "${sourceDir}/build-${presetName}",
-        "cacheVariables": {
-            "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-            "CMAKE_CXX_COMPILER": "icx",
-            "CMAKE_C_COMPILER": "cl",
-            "GGML_SYCL": "ON",
-            "CMAKE_INSTALL_RPATH": "$ORIGIN;$ORIGIN/.."
-        }
-    },
     { "name": "debug",    "hidden": true, "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
     { "name": "release",  "hidden": true, "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
     { "name": "reldbg",   "hidden": true, "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" } },
     { "name": "static",   "hidden": true, "cacheVariables": { "GGML_STATIC":      "ON" } },
-    { "name": "sycl_f16", "hidden": true, "cacheVariables": { "GGML_SYCL_F16":    "ON" } },
     { "name": "vulkan",   "hidden": true, "cacheVariables": { "GGML_VULKAN":      "ON" } },
 
     {
@@ -83,11 +69,6 @@
     { "name": "x64-windows-msvc-debug", "inherits": [ "base", "debug" ] },
     { "name": "x64-windows-msvc-release", "inherits": [ "base", "reldbg" ] },
     { "name": "x64-windows-msvc+static-release", "inherits": [ "base", "reldbg", "static" ] },
-
-    { "name": "x64-windows-sycl-debug", "inherits": [ "sycl-base", "debug" ] },
-    { "name": "x64-windows-sycl-debug-f16", "inherits": [ "sycl-base", "debug", "sycl_f16" ] },
-    { "name": "x64-windows-sycl-release", "inherits": [ "sycl-base", "release" ] },
-    { "name": "x64-windows-sycl-release-f16", "inherits": [ "sycl-base", "release", "sycl_f16" ] },
 
     { "name": "x64-windows-vulkan-debug", "inherits": [ "base", "vulkan", "debug" ] },
     { "name": "x64-windows-vulkan-release", "inherits": [ "base", "vulkan", "release" ] }

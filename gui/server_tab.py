@@ -971,7 +971,6 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             self.parent.project_root / "build-rocm",
             self.parent.project_root / "build-cpu",
             self.parent.project_root / "build",
-            self.parent.project_root / "build-cuda",
             self.parent.project_root / "build-vulkan",
         ]
         for candidate in candidates:
@@ -1084,7 +1083,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             self.server_build_backend_combo.addItem(self._display_backend_from_key(key))
 
         # Keep legacy backend quick-select options.
-        for legacy in ["ROCm/HIP", "CPU", "CUDA", "Vulkan", "Metal", "SYCL", "OpenCL"]:
+        for legacy in ["ROCm/HIP", "CPU", "Vulkan"]:
             if self.server_build_backend_combo.findText(legacy) < 0:
                 self.server_build_backend_combo.addItem(legacy)
 

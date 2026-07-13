@@ -1278,7 +1278,26 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     const bool no_output_offload       = getenv("LLAMA_NO_OUTPUT_OFFLOAD") != nullptr;
     const bool output_host_gpu_dev     = getenv("LLAMA_OUTPUT_HOST_GPU_DEV") != nullptr && !devices.empty();
     const bool output_not_device_local = no_output_offload || output_host_gpu_dev;
-    if (output_host_gpu_dev) {
+    ggml_backend_dev_t output_device_override = nullptr;
+    if (!no_output_offload && !output_host_gpu_dev) {
+        if (const char * output_device_name = getenv("LLAMA_OUTPUT_DEVICE")) {
+            for (const auto & candidate : devices) {
+                if (strcmp(ggml_backend_dev_name(candidate.dev), output_device_name) == 0) {
+                    output_device_override = candidate.dev;
+                    break;
+                }
+            }
+            if (output_device_override == nullptr && output_device_name[0] != '\0') {
+                LLAMA_LOG_WARN("%s: LLAMA_OUTPUT_DEVICE=%s is not in the model device list; using default output placement\n",
+                        __func__, output_device_name);
+            }
+        }
+    }
+    if (output_device_override != nullptr) {
+        pimpl->dev_output = { output_device_override, &pimpl->gpu_buft_list.at(output_device_override) };
+        LLAMA_LOG_INFO("%s: forcing output tensors to device %s\n",
+                __func__, ggml_backend_dev_name(output_device_override));
+    } else if (output_host_gpu_dev) {
         pimpl->dev_output = { devices.front().dev, &pimpl->cpu_buft_list };
     } else {
         pimpl->dev_output = no_output_offload ? llama_model::impl::layer_dev{cpu_dev, &pimpl->cpu_buft_list} : get_layer_buft_list(n_layer);

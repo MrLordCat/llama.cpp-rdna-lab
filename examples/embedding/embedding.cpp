@@ -321,7 +321,7 @@ int main(int argc, char ** argv) {
 
             for (int j = 0; j < n_embd_count; j++) {
                 for (uint32_t i = 0; i < n_cls_out; i++) {
-                    // NOTE: if you change this log - update the tests in ci/run.sh
+                    // Keep this log stable because downstream smoke tests parse it.
                     if (n_cls_out == 1) {
                         LOG("rerank score %d: %8.3f\n", j, emb[j * n_embd_out]);
                     } else {
