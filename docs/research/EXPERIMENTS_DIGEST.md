@@ -1,6 +1,6 @@
 # Experiment Digest
 
-Updated: 2026-07-12.
+Updated: 2026-07-14.
 
 This is the compact historical base for performance work. `RESULTS_LOG.md` remains the detailed ledger; this file groups the evidence so agents can pick the next route without rereading every E/D note.
 
@@ -35,6 +35,7 @@ Rows parsed from `docs/research/RESULTS_LOG.md`: 345.
 
 | Date | ID | Short name | Delta | Decision | Artifacts |
 | --- | --- | --- | --- | --- | --- |
+| 2026-07-14 | E282 | MTP device hidden-state handoff | LoL-active long-prompt A/B means: prompt `-1.09%`, decode `+31.83%`, aggregate `+3.36%` | Keep backend-resident NextN handoff and built-in recent window 256; retain host fallback via `LLAMA_MTP_DEVICE_HANDOFF=0` | `docs/research/experiments/E282_mtp_device_hidden_handoff.md`, `build_logs/agent-workload/e279-lol-vulkan32k-*`, `build_logs/agent-workload/e282-lol-vulkan32k-mtp-default256-n128.*` |
 | 2026-07-11 | E280 | Vulkan GPU1 primary/output residency | output route frees `1004 MiB` on GPU0 at `-3.6%` r1 prompt; all-KV is `-56.2%` | Keep GPU1-primary plus output relocation in GUI. Keep `LLAMA_KV_DEVICE=Vulkan1` explicit/off by default; reject literal all-KV and uneven layer split as performance defaults | docs/research/experiments/E280_vulkan_gpu1_primary_residency.md, build_logs/agent-workload/e280-vulkan-gpu1-output-smoke.server.log, build_logs/agent-workloa... |
 | 2026-07-11 | E279 | Vulkan batched recurrent checkpoint | transfer `-17.9%`, prompt wall `-8.2%`, prompt TPS `+8.9%`; deterministic rollback outp... | Keep batch callback with `LLAMA_CHECKPOINT_BATCH_READ=0` rollback. Correct earlier attribution: the main 98k collapse remains small-N long-KV attention, tracked by H63 | docs/research/experiments/E279_vulkan_batched_recurrent_checkpoint.md, build_logs/agent-workload/e279-incremental-*-r2.server.log, build_logs/agent-workload/... |
 | 2026-07-11 | E278 | Vulkan MTP long-KV first-graph diagnosis | MTP `1.33x` decode; aggregate `4.10 -> 4.12`; prompt `1449.41 -> 1401.10` | Keep autotune at 128 tokens and env-gated server phase trace. First verify is about 630 ms then 42-49 ms; ordinary/exact warmup did not survive long prefill and was reverted | docs/research/experiments/E278_vulkan_mtp_long_kv_round_phases.md, build_logs/agent-workload/e278-vulkan-49k-n3-server-phase-r1.*, build_logs/agent-workload/... |

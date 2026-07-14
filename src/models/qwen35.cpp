@@ -586,7 +586,7 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     int sections[4];
     std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
 
-    auto inp = std::make_unique<llm_graph_input_embd_h>(hparams.n_embd);
+    auto inp = std::make_unique<llm_graph_input_embd_h>(hparams.n_embd, sched);
 
     inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
     ggml_set_input(inp->tokens);
@@ -606,6 +606,17 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     inp->h = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd, n_tokens);
     ggml_set_input(inp->h);
     ggml_set_name(inp->h, "mtp_h_input");
+
+    // The hidden input is large during MTP prefill. Keep it on the backend of
+    // the consuming NextN layer so device handoff does not bounce through CPU.
+    const auto & dev_h = model.dev_layer(il);
+    for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+        ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
+        if (ggml_backend_get_device(backend) == dev_h) {
+            ggml_backend_sched_set_tensor_backend(sched, inp->h, backend);
+            break;
+        }
+    }
 
     ggml_tensor * h_input = inp->h;
 
@@ -704,6 +715,13 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     cur = build_norm(cur, head_norm_w, nullptr, LLM_NORM_RMS, -1);
 
     cb(cur, "h_nextn", -1);
+    for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+        ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
+        if (ggml_backend_get_device(backend) == dev_h) {
+            ggml_backend_sched_set_tensor_backend(sched, cur, backend);
+            break;
+        }
+    }
     res->t_h_nextn = cur;
 
     cur = ggml_get_rows(ctx0, cur, inp_out_ids);

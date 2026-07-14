@@ -1222,10 +1222,154 @@ void llama_context::set_embeddings_nextn(bool value, bool masked) {
     cparams.embeddings_nextn        = value;
     cparams.embeddings_nextn_masked = masked;
 
-    // the flags change graph topology (h_nextn emission / out_ids placement)
+    // The flags change graph topology (h_nextn emission / out_ids placement).
     sched_need_reserve = true;
     if (gf_res_prev)    { gf_res_prev->reset(); }
     if (gf_res_prev_tg) { gf_res_prev_tg->reset(); }
+}
+
+static ggml_tensor nextn_tensor_row_view(const ggml_tensor * tensor, uint32_t row, uint32_t n_rows) {
+    GGML_ASSERT(tensor != nullptr);
+    GGML_ASSERT((int64_t) row + n_rows <= tensor->ne[1]);
+
+    ggml_tensor view = *tensor;
+    view.ne[1] = n_rows;
+    view.ne[2] = 1;
+    view.ne[3] = 1;
+    view.nb[2] = view.nb[1] * n_rows;
+    view.nb[3] = view.nb[2];
+    view.data = (char *) tensor->data + (size_t) row * tensor->nb[1];
+    view.view_src = nullptr;
+    view.view_offs = 0;
+    return view;
+}
+
+void llama_context::set_embeddings_nextn_device(bool enabled) {
+    nextn_device_output.enabled = enabled;
+    nextn_device_output.capture_enabled = enabled;
+    if (!enabled) {
+        synchronize();
+        nextn_device_output = {};
+        nextn_device_input = {};
+    }
+}
+
+void llama_context::set_embeddings_nextn_device_capture(bool enabled) {
+    nextn_device_output.capture_enabled = nextn_device_output.enabled && enabled;
+}
+
+bool llama_context::ensure_nextn_device_output(ggml_backend_t backend, uint32_t n_rows) {
+    auto & state = nextn_device_output;
+    if (!state.enabled || backend == nullptr || n_rows == 0) {
+        return false;
+    }
+
+    if (state.tensor && state.backend == backend && state.rows_capacity >= n_rows) {
+        return true;
+    }
+
+    synchronize();
+    state.buffer.reset();
+    state.ctx.reset();
+    state.tensor = nullptr;
+    state.backend = nullptr;
+    state.rows_capacity = 0;
+    state.rows_valid = 0;
+
+    state.meta.resize(ggml_tensor_overhead() * 2);
+    ggml_init_params params = {
+        /*.mem_size   =*/ state.meta.size(),
+        /*.mem_buffer =*/ state.meta.data(),
+        /*.no_alloc   =*/ true,
+    };
+    state.ctx.reset(ggml_init(params));
+    if (!state.ctx) {
+        LLAMA_LOG_ERROR("%s: failed to allocate NextN device metadata\n", __func__);
+        return false;
+    }
+
+    state.tensor = ggml_new_tensor_2d(state.ctx.get(), GGML_TYPE_F32, model.hparams.n_embd_out(), n_rows);
+    ggml_set_name(state.tensor, "nextn_device_staging");
+    state.buffer.reset(ggml_backend_alloc_ctx_tensors(state.ctx.get(), backend));
+    if (!state.buffer) {
+        LLAMA_LOG_ERROR("%s: failed to allocate %.2f MiB of NextN device staging on %s\n",
+                __func__, ggml_nbytes(state.tensor) / (1024.0 * 1024.0), ggml_backend_name(backend));
+        state.tensor = nullptr;
+        state.ctx.reset();
+        return false;
+    }
+
+    state.backend = backend;
+    state.rows_capacity = n_rows;
+    if (getenv("LLAMA_MTP_DEVICE_HANDOFF_TRACE")) {
+        LLAMA_LOG_INFO("%s: allocated %.2f MiB, rows=%u, backend=%s\n",
+                __func__, ggml_nbytes(state.tensor) / (1024.0 * 1024.0), n_rows, ggml_backend_name(backend));
+    }
+    return true;
+}
+
+bool llama_context::store_nextn_device_output(
+        ggml_backend_t backend, const ggml_tensor * src, uint32_t first_row, uint32_t n_rows, uint32_t capacity) {
+    if (n_rows == 0) {
+        return true;
+    }
+    if (!ensure_nextn_device_output(backend, capacity)) {
+        return false;
+    }
+    if (first_row + n_rows > nextn_device_output.rows_capacity) {
+        LLAMA_LOG_ERROR("%s: NextN device range %u..%u exceeds capacity %u\n",
+                __func__, first_row, first_row + n_rows, nextn_device_output.rows_capacity);
+        return false;
+    }
+
+    auto dst = nextn_tensor_row_view(nextn_device_output.tensor, first_row, n_rows);
+    ggml_backend_tensor_copy_async(backend, nextn_device_output.backend, src, &dst);
+    nextn_device_output.rows_valid = std::max(nextn_device_output.rows_valid, first_row + n_rows);
+    return true;
+}
+
+bool llama_context::set_nextn_device_input(llama_context * src, uint32_t first_row, uint32_t n_rows) {
+    clear_nextn_device_input();
+    if (!src || !src->nextn_device_output.enabled || !src->nextn_device_output.tensor || n_rows == 0) {
+        return false;
+    }
+    if (first_row + n_rows > src->nextn_device_output.rows_valid) {
+        LLAMA_LOG_ERROR("%s: requested NextN rows %u..%u, only %u are valid\n",
+                __func__, first_row, first_row + n_rows, src->nextn_device_output.rows_valid);
+        return false;
+    }
+
+    // Separate llama_context instances own separate backend queues. Complete the
+    // producer queue once before the consumer enqueues its device-side copy.
+    if (src != this) {
+        src->synchronize();
+    }
+
+    nextn_device_input.tensor = src->nextn_device_output.tensor;
+    nextn_device_input.backend = src->nextn_device_output.backend;
+    nextn_device_input.first_row = first_row;
+    nextn_device_input.n_rows = n_rows;
+    return true;
+}
+
+void llama_context::clear_nextn_device_input() {
+    nextn_device_input = {};
+}
+
+bool llama_context::select_nextn_device_row(uint32_t row) {
+    auto & state = nextn_device_output;
+    if (!state.enabled || !state.tensor || row >= state.rows_valid) {
+        return false;
+    }
+    if (row == 0) {
+        return true;
+    }
+
+    auto src = nextn_tensor_row_view(state.tensor, row, 1);
+    auto dst = nextn_tensor_row_view(state.tensor, 0, 1);
+    ggml_backend_tensor_copy_async(state.backend, state.backend, &src, &dst);
+    state.rows_valid = std::max<uint32_t>(state.rows_valid, 1);
+    return true;
 }
 
 void llama_context::set_nextn_tg_cache(bool enabled) {
@@ -2295,11 +2439,31 @@ int llama_context::decode(const llama_batch & batch_inp) {
         return -2;
     };
 
+    const uint32_t nextn_device_capacity = 1 + (cparams.embeddings_nextn_masked ?
+            std::max<uint32_t>(1, n_outputs_all) : n_tokens_all);
+    if (nextn_device_output.enabled) {
+        // Row zero carries the selected hidden state across decode calls. Rows
+        // one and above are replaced by the current logical batch.
+        nextn_device_output.rows_valid = nextn_device_output.tensor ? 1 : 0;
+    }
+
     int64_t n_outputs_prev = 0;
     int64_t n_tokens_prev  = 0; // upstream-port: dense row offset for unmasked nextn extraction
 
     do {
-        const auto & ubatch = mctx->get_ubatch();
+        auto ubatch = mctx->get_ubatch();
+
+        if (nextn_device_input.tensor) {
+            if ((uint64_t) n_tokens_prev + ubatch.n_tokens > nextn_device_input.n_rows) {
+                LLAMA_LOG_ERROR("%s: NextN device input has %u rows, need at least %llu\n",
+                        __func__, nextn_device_input.n_rows,
+                        (unsigned long long) n_tokens_prev + ubatch.n_tokens);
+                return -3;
+            }
+            ubatch.embd_device = nextn_device_input.tensor;
+            ubatch.embd_device_backend = nextn_device_input.backend;
+            ubatch.embd_device_row = nextn_device_input.first_row + (uint32_t) n_tokens_prev;
+        }
 
         // count the outputs in this ubatch
         {
@@ -2371,7 +2535,17 @@ int llama_context::decode(const llama_batch & batch_inp) {
             const int64_t n_rows = masked ? n_outputs      : (int64_t) ubatch.n_tokens;
             const int64_t offset = masked ? n_outputs_prev : n_tokens_prev;
 
-            if (embd_nextn.data && t_h_nextn && n_rows > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
+            if (nextn_device_output.enabled && nextn_device_output.capture_enabled &&
+                    t_h_nextn && n_rows > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
+                ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
+                GGML_ASSERT(backend_h != nullptr);
+
+                if (!store_nextn_device_output(backend_h, t_h_nextn,
+                            1 + (uint32_t) offset, (uint32_t) n_rows, nextn_device_capacity)) {
+                    LLAMA_LOG_ERROR("%s: failed to stage NextN output on the backend\n", __func__);
+                    return -3;
+                }
+            } else if (embd_nextn.data && t_h_nextn && n_rows > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
                 ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
                 GGML_ASSERT(backend_h != nullptr);
 
@@ -2567,7 +2741,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     // Upstream-port: NextN embeddings ride the same output buffer. Unmasked mode
     // stores one row per BATCH token (prompt prefill feeding of the draft head).
-    const bool has_embd_nextn = cparams.embeddings_nextn;
+    const bool has_embd_nextn = cparams.embeddings_nextn && !nextn_device_output.enabled;
     embd_nextn.size = has_embd_nextn ? (size_t) n_embd_out*n_outputs_max : 0;
     if (has_embd_nextn && !cparams.embeddings_nextn_masked) {
         embd_nextn.size = (size_t) n_embd_out * n_batch;
@@ -3955,6 +4129,27 @@ float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
     ctx->synchronize();
 
     return ctx->get_embeddings_nextn_ith(i);
+}
+
+void llama_set_embeddings_nextn_device(llama_context * ctx, bool enabled) {
+    ctx->set_embeddings_nextn_device(enabled);
+}
+
+void llama_set_embeddings_nextn_device_capture(llama_context * ctx, bool enabled) {
+    ctx->set_embeddings_nextn_device_capture(enabled);
+}
+
+bool llama_set_nextn_device_input(
+        llama_context * dst, llama_context * src, uint32_t first_row, uint32_t n_rows) {
+    return dst->set_nextn_device_input(src, first_row, n_rows);
+}
+
+void llama_clear_nextn_device_input(llama_context * ctx) {
+    ctx->clear_nextn_device_input();
+}
+
+bool llama_select_nextn_device_row(llama_context * ctx, uint32_t row) {
+    return ctx->select_nextn_device_row(row);
 }
 
 void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {

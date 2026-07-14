@@ -159,6 +159,23 @@ bool llm_graph_input_embd::can_reuse(const llm_graph_params & params) {
     return res;
 }
 
+static ggml_tensor tensor_row_view(const ggml_tensor * tensor, uint32_t row, uint32_t n_rows) {
+    GGML_ASSERT(tensor != nullptr);
+    GGML_ASSERT(tensor->ne[2] == 1 && tensor->ne[3] == 1);
+    GGML_ASSERT((int64_t) row + n_rows <= tensor->ne[1]);
+
+    ggml_tensor view = *tensor;
+    view.ne[1] = n_rows;
+    view.ne[2] = 1;
+    view.ne[3] = 1;
+    view.nb[2] = view.nb[1] * n_rows;
+    view.nb[3] = view.nb[2];
+    view.data = (char *) tensor->data + (size_t) row * tensor->nb[1];
+    view.view_src = nullptr;
+    view.view_offs = 0;
+    return view;
+}
+
 void llm_graph_input_embd_h::set_input(const llama_ubatch * ubatch) {
     const int64_t n_tokens = ubatch->n_tokens;
 
@@ -171,8 +188,27 @@ void llm_graph_input_embd_h::set_input(const llama_ubatch * ubatch) {
         ggml_backend_tensor_set(embd, ubatch->embd, 0, n_tokens*n_embd*ggml_element_size(embd));
     }
 
-    // For MTP batches the hidden state is currently carried in ubatch.embd.
-    if (ubatch->embd) {
+    if (ubatch->embd_device) {
+        GGML_ASSERT(sched != nullptr);
+        GGML_ASSERT(ubatch->embd_device_backend != nullptr);
+        GGML_ASSERT(n_embd == h->ne[0]);
+        GGML_ASSERT(n_tokens == h->ne[1]);
+        GGML_ASSERT(n_embd == ubatch->embd_device->ne[0]);
+
+        auto src = tensor_row_view(ubatch->embd_device, ubatch->embd_device_row, n_tokens);
+        ggml_backend_t backend_dst = ggml_backend_sched_get_tensor_backend(sched, h);
+        GGML_ASSERT(backend_dst != nullptr);
+        if (std::getenv("LLAMA_MTP_DEVICE_HANDOFF_TRACE")) {
+            static int trace_count = 0;
+            if (trace_count++ < 16) {
+                LLAMA_LOG_INFO("%s: rows=%lld first=%u src=%s dst=%s same_device=%d\n",
+                        __func__, (long long) n_tokens, ubatch->embd_device_row,
+                        ggml_backend_name(ubatch->embd_device_backend), ggml_backend_name(backend_dst),
+                        ggml_backend_get_device(ubatch->embd_device_backend) == ggml_backend_get_device(backend_dst));
+            }
+        }
+        ggml_backend_tensor_copy_async(ubatch->embd_device_backend, backend_dst, &src, h);
+    } else if (ubatch->embd) {
         GGML_ASSERT(n_embd == h->ne[0]);
 
         ggml_backend_tensor_set(h, ubatch->embd, 0, n_tokens*n_embd*ggml_element_size(h));
@@ -184,7 +220,8 @@ bool llm_graph_input_embd_h::can_reuse(const llm_graph_params & params) {
 
     res &= (!params.ubatch.token) || (tokens && tokens->ne[0] == params.ubatch.n_tokens);
     res &= (!params.ubatch.embd)  || (embd   && embd->ne[1]   == params.ubatch.n_tokens);
-    res &= (!params.ubatch.embd)  || (h      && h->ne[1]      == params.ubatch.n_tokens);
+    res &= (!params.ubatch.embd && !params.ubatch.embd_device) ||
+            (h && h->ne[1] == params.ubatch.n_tokens);
 
     return res;
 }

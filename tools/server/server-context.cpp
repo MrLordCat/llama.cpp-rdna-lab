@@ -110,7 +110,7 @@ static bool server_warmup_vulkan_mtp_verify_shapes(
 static int32_t server_spec_prefill_window() {
     static const int32_t value = [] {
         const char * env = std::getenv("LLAMA_SPEC_PREFILL_WINDOW");
-        return env ? std::max(0, std::atoi(env)) : 512;
+        return env ? std::max(0, std::atoi(env)) : 256;
     }();
 
     return value;

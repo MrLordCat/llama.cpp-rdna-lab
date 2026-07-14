@@ -78,6 +78,12 @@ struct llama_context {
     float * get_embeddings_nextn();
     float * get_embeddings_nextn_ith(int32_t i);
 
+    void set_embeddings_nextn_device(bool enabled);
+    void set_embeddings_nextn_device_capture(bool enabled);
+    bool set_nextn_device_input(llama_context * src, uint32_t first_row, uint32_t n_rows);
+    void clear_nextn_device_input();
+    bool select_nextn_device_row(uint32_t row);
+
     void    set_embeddings_layer_inp(uint32_t lid, bool enable);
     float * get_embeddings_layer_inp(uint32_t lid);
     void    set_nextn_layer_offset(int32_t offset);
@@ -281,6 +287,28 @@ private:
     // Upstream-port: NextN embeddings output ([n_outputs][n_embd] when masked,
     // [n_batch_tokens][n_embd] dense when unmasked)
     buffer_view<float> embd_nextn = {nullptr, 0};
+
+    struct nextn_device_output_state {
+        bool enabled = false;
+        bool capture_enabled = false;
+        std::vector<uint8_t> meta;
+        ggml_context_ptr ctx;
+        ggml_backend_buffer_ptr buffer;
+        ggml_tensor * tensor = nullptr;
+        ggml_backend_t backend = nullptr;
+        uint32_t rows_capacity = 0;
+        uint32_t rows_valid = 0;
+    } nextn_device_output;
+
+    struct nextn_device_input_state {
+        const ggml_tensor * tensor = nullptr;
+        ggml_backend_t backend = nullptr;
+        uint32_t first_row = 0;
+        uint32_t n_rows = 0;
+    } nextn_device_input;
+
+    bool ensure_nextn_device_output(ggml_backend_t backend, uint32_t n_rows);
+    bool store_nextn_device_output(ggml_backend_t backend, const ggml_tensor * src, uint32_t first_row, uint32_t n_rows, uint32_t capacity);
 
     // host buffers for output layer input embeddings, per layer
     // populated when cparams.embeddings_layer_inp[il] is true

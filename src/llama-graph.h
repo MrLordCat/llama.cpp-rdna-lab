@@ -125,7 +125,7 @@ public:
 // similar to llm_graph_input_embd but with an additional hidden-state input
 class llm_graph_input_embd_h : public llm_graph_input_i {
 public:
-    llm_graph_input_embd_h(int64_t n_embd) : n_embd(n_embd) {}
+    llm_graph_input_embd_h(int64_t n_embd, ggml_backend_sched_t sched) : n_embd(n_embd), sched(sched) {}
     virtual ~llm_graph_input_embd_h() = default;
 
     void set_input(const llama_ubatch * ubatch) override;
@@ -137,6 +137,7 @@ public:
     ggml_tensor * h      = nullptr; // F32 [n_embd, n_batch]
 
     const int64_t n_embd = 0;
+    ggml_backend_sched_t sched = nullptr;
 };
 
 class llm_graph_input_pos : public llm_graph_input_i {

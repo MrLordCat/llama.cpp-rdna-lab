@@ -103,6 +103,18 @@ LLAMA_API void llama_set_nextn_layer_offset(struct llama_context * ctx, int32_t 
 LLAMA_API float * llama_get_embeddings_nextn(struct llama_context * ctx);
 LLAMA_API float * llama_get_embeddings_nextn_ith(struct llama_context * ctx, int32_t i);
 
+// Keep NextN hidden states on their backend and bind a contiguous row range as
+// the hidden input of the next MTP decode. These are experimental staging APIs.
+LLAMA_API void llama_set_embeddings_nextn_device(struct llama_context * ctx, bool enabled);
+LLAMA_API void llama_set_embeddings_nextn_device_capture(struct llama_context * ctx, bool enabled);
+LLAMA_API bool llama_set_nextn_device_input(
+        struct llama_context * dst,
+        struct llama_context * src,
+        uint32_t first_row,
+        uint32_t n_rows);
+LLAMA_API void llama_clear_nextn_device_input(struct llama_context * ctx);
+LLAMA_API bool llama_select_nextn_device_row(struct llama_context * ctx, uint32_t row);
+
 // Set whether the context outputs the input embeddings of a specific layer
 LLAMA_API void llama_set_embeddings_layer_inp(struct llama_context * ctx, uint32_t lid, bool value);
 

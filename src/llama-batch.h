@@ -66,6 +66,13 @@ struct llama_ubatch {
 
     // the llama_ubatch pointers above point to this data if set. otherwise - point to external non-owning data
     std::shared_ptr<data_t> data;
+
+    // Optional backend-resident embedding input. This is used by MTP to pass
+    // target hidden states to the draft graph without a GPU -> host -> GPU
+    // round trip. The source rows are contiguous and aligned with this ubatch.
+    const ggml_tensor * embd_device         = nullptr;
+    ggml_backend_t      embd_device_backend = nullptr;
+    uint32_t            embd_device_row     = 0;
 };
 
 // a helper for sanitizing, fulfilling and splitting a batch
