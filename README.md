@@ -53,9 +53,11 @@ NVIDIA hardware. See [Supported Backends](docs/SUPPORTED_BACKENDS.md).
 - Vision projector: `mmproj-F16.gguf`
 
 The two GPUs are normally used with layer split, not tensor split. GPU1 is the
-preferred primary/output device because GPU0 also drives the desktop. Exact
-PCIe topology, driver version, background GPU load, KV type, and model residency
-can materially change the numbers below.
+preferred output device because GPU0 also drives the desktop. Device order is
+backend- and workload-sensitive even with two identical cards; the reason and
+the measured orders are documented below. Exact PCIe topology, driver version,
+background GPU load, KV type, and model residency can materially change the
+numbers below.
 
 ## Current Performance
 
@@ -65,51 +67,46 @@ All headline rows use the Qwen3.6-27B Q3_K_S MTP-enabled GGUF, FlashAttention,
 one server slot, cold prompt processing, no prompt-cache reuse, and no prime
 pass. Prompt and decode TPS come from server timings; aggregate TPS includes the
 whole request wall time. Compare `none` and `MTP` only inside the same backend
-and lane because prompt/output lengths differ between Vulkan and ROCm.
+and lane because prompt/output lengths differ between Vulkan and ROCm. The
+table was rerun after rebuilding both backends, with no foreground GPU workload
+active.
 
 ### Short Prompt Lanes
 
 | Backend | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Notes |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| Vulkan | `none` | 7,842 / 128 | **1770.64** | 38.03 | **16.34** | `ctx=12288`, `b8192/ub1024`, q8/q8 KV |
-| Vulkan | MTP n3 | 7,842 / 128 | 1647.97 | **41.64** | 16.23 | GPU-resident NextN path; explicit 512-token prefill window |
-| ROCm | `none`, r3 mean | 7,188 / 256 | **1694.82** | 25.02 | 17.61 | `ctx=12288`, `b8192/ub1024`, q8/q8 KV |
-| ROCm | MTP n3, r3 mean | 7,188 / 256 | 1547.21 | **41.25** | **23.45** | RDNA4 Q3_K small-N DP4A route |
+| Vulkan | `none`, r3 mean | 7,842 / 128 | **1783.49** | 38.17 | 16.42 | `Vulkan0,Vulkan1`, `ctx=12288`, q8/q8 KV |
+| Vulkan | MTP n3, r3 mean | 7,842 / 128 | 1724.73 | **51.82** | **17.99** | 60.05% acceptance; backend-resident NextN |
+| ROCm | `none`, r3 mean | 7,729 / 256 | **1706.57** | 25.74 | 17.61 | `ROCm1,ROCm0`, `ctx=12288`, q8/q8 KV |
+| ROCm | MTP n3, r3 mean | 7,729 / 256 | 1656.53 | **34.95** | **21.26** | 44.65% acceptance; backend-resident NextN |
 
-ROCm MTP reaches about `1.65x` its same-build decode baseline in this lane.
-Vulkan remains the stronger prompt-eval route. A generation-only Vulkan smoke
-with no injected repository prompt has reached `70.76` decode tok/s, but it is
-not used as a prompt-heavy headline.
+In this lane, Vulkan MTP changes prompt/decode/aggregate throughput by
+`-3.29% / +35.78% / +9.55%`. ROCm MTP changes them by
+`-2.93% / +35.76% / +20.71%`.
 
 ### Long Prompt Lanes
 
 | Backend | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Notes |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| Vulkan | `none`, two-run mean | 29,540 / 128 | **1420.11** | 29.04 | 5.06 | `ctx=49152`, `b8192/ub1024`, q8/q8 KV |
-| Vulkan | MTP n3, two-run mean | 29,540 / 128 | 1404.66 | **38.28** | **5.23** | Built-in 256-token prefill window |
-| ROCm | `none` | 56,305 / 128 | **1088.67** | 19.02 | **2.1859** | `ctx=131072`, `b8192/ub1024`, q8/q8 KV |
-| ROCm | MTP n3 | 56,305 / 128 | 1045.62 | **26.85** | 2.1799 | 68.55% acceptance |
+| Vulkan | `none`, r2 mean | 29,540 / 128 | 1536.99 | 34.49 | 5.56 | `Vulkan0,Vulkan1`, `ctx=49152`, q8/q8 KV |
+| Vulkan | MTP n3, r2 mean | 29,540 / 128 | **1557.06** | **42.82** | **5.81** | 48.70% acceptance; 256-token prefill window |
+| ROCm | `none` | 43,125 / 128 | **1183.46** | 20.95 | 3.00 | `ROCm1,ROCm0`, `ctx=131072`, q8/q8 KV |
+| ROCm | MTP n3 | 43,125 / 128 | 1174.33 | **28.83** | **3.10** | 48.39% acceptance; 256-token prefill window |
 
-The Vulkan long-prompt pair was bracketed and measured while League of Legends
-was active. Against the mean of the two neighboring controls, the final
-GPU-resident MTP path changes prompt eval by `-1.09%`, decode by `+31.83%`, and
-aggregate throughput by `+3.36%`. Both MTP repeats produced the same `76/151`
-accepted/generated count.
+In the long lanes, Vulkan MTP changes prompt/decode/aggregate throughput by
+`+1.31% / +24.15% / +4.45%`. ROCm MTP changes them by
+`-0.77% / +37.61% / +3.36%`. The prefill tax is therefore within the current
+acceptance target, while generation remains materially faster. Longer generated
+answers benefit more because prompt evaluation dominates these 128-token runs.
 
-The ROCm 56k lane shows the long-context tradeoff clearly: MTP improves decode
-by `1.41x`, but a roughly 4% prompt tax cancels the wall-time benefit for a
-128-token response. Longer generated answers benefit more; prompt-dominated
-requests should still compare against `spec=none`.
-
-For a pure Vulkan Q3 prompt-eval target at 56,456 prompt tokens, the current
-balanced layer-split reference is `1327.82` prompt tok/s as an r3 mean, with a
-best cold run of `1350.01`. The active research target remains 2000 prompt
-tok/s. Q4_K_M and UD-Q4_K_XL are supported, but the 27B Q4 long-context working
-set currently enters WDDM shared memory on this 2x16 GB system; Q3_K_S remains
-the practical performance model.
+Q4_K_M and UD-Q4_K_XL are supported, but the 27B Q4 long-context working set
+currently enters WDDM shared memory on this 2x16 GB system; Q3_K_S remains the
+practical performance model. The active Q3 prompt-evaluation research target is
+2000 prompt tok/s.
 
 Evidence:
 
+- [E283: clean README revalidation](docs/research/experiments/E283_clean_readme_revalidation.md)
 - [E282: MTP device hidden-state handoff](docs/research/experiments/E282_mtp_device_hidden_handoff.md)
 - [D078: ROCm RDNA4 small-N DP4A MTP](docs/research/major-topology/D078_P002_ROCM_MTP_SMALLN_DP4A_MMQ.md)
 - [D080: Vulkan layer-stage balance](docs/research/major-topology/D080_P003_VULKAN_LAYER_STAGE_BALANCE.md)
@@ -157,15 +154,45 @@ Model files are not part of the source tree history. Put local GGUF files in
 
 ## Build Requirements
 
-- Python 3 and the packages in `gui/requirements-gui.txt`
-- CMake and Ninja
-- MSVC Build Tools with **Desktop development with C++** and a Windows SDK
-- Vulkan SDK for Vulkan builds
-- AMD ROCm/HIP SDK 7.1 for ROCm builds
-- OpenSSL development files for HTTPS-enabled builds
+The reference builds are Windows x64 builds. A clean machine needs:
 
-The GUI can configure the local Windows toolchains automatically. Manual builds
-are shown below.
+- Git and 64-bit Python 3.11 or newer with `pip`;
+- CMake 3.14 or newer and Ninja (tested with CMake 3.29 and Ninja 1.12);
+- Visual Studio Build Tools 2022 with **Desktop development with C++**, the
+  MSVC v143 toolset, and a Windows 10 or 11 SDK;
+- the current AMD display driver, including the Vulkan runtime;
+- LunarG Vulkan SDK with `glslc` for Vulkan builds;
+- AMD ROCm/HIP SDK 7.1 for Windows for ROCm builds;
+- Strawberry Perl for Windows ROCm configuration and the reference MinGW
+  Vulkan toolchain;
+- OpenSSL development files. HTTPS is enabled by default; use
+  `-DLLAMA_OPENSSL=OFF` only when HTTPS/model downloads are not required.
+
+The tested Vulkan build uses the GCC 13.2 MinGW-w64 toolchain bundled with
+Strawberry Perl. A MinGW executable also needs `libgcc_s_seh-1.dll`,
+`libstdc++-6.dll`, and `libwinpthread-1.dll` either beside the executable or on
+`PATH`. The GUI launch environment handles the configured toolchain; for a
+manual launch, put `C:\Strawberry\c\bin` before other MinGW installations on
+`PATH` to avoid loading incompatible runtime DLLs.
+
+The tested ROCm build uses `clang.exe` and `clang++.exe` from HIP SDK 7.1, not
+MSVC as the compiler, but still links against MSVC v143 and Windows SDK host
+libraries. Strawberry Perl is also required. A full HIP compilation is memory
+intensive; 64 GB RAM and `-j 4` are recommended for this fork. Allow roughly
+30 GB of free disk space for source, two build trees, and one local model.
+
+Install the Python side and verify the native tools before opening the GUI:
+
+```powershell
+python -m pip install --upgrade pip
+python -m pip install -r gui/requirements-gui.txt
+cmake --version
+ninja --version
+glslc --version
+```
+
+The GUI's **Build & Setup** tab checks the configured dependencies and creates
+backend-specific build directories. Manual equivalents are shown below.
 
 ### CPU
 
@@ -177,8 +204,13 @@ cmake --build build-cpu -j 4 --target llama-server
 ### Vulkan
 
 ```powershell
+$env:VULKAN_SDK = "C:\VulkanSDK\<version>"
+$env:PATH = "$env:VULKAN_SDK\Bin;C:\Strawberry\c\bin;$env:PATH"
+
 cmake -S . -B build-vulkan -G Ninja `
   -DGGML_VULKAN=ON `
+  -DCMAKE_C_COMPILER=C:\Strawberry\c\bin\gcc.exe `
+  -DCMAKE_CXX_COMPILER=C:\Strawberry\c\bin\g++.exe `
   -DCMAKE_BUILD_TYPE=Release
 cmake --build build-vulkan -j 4 --target llama-server
 ```
@@ -186,12 +218,19 @@ cmake --build build-vulkan -j 4 --target llama-server
 ### ROCm/HIP on Windows RDNA4
 
 ```powershell
+$env:HIP_PATH = "C:\Program Files\AMD\ROCm\7.1"
+$env:ROCM_PATH = $env:HIP_PATH
+$env:CMAKE_PREFIX_PATH = "$env:HIP_PATH\lib\cmake"
+$env:PATH = "$env:HIP_PATH\bin;C:\Strawberry\perl\bin;C:\Strawberry\c\bin;$env:PATH"
+
 cmake -S . -B build-rocm -G Ninja `
   -DGGML_HIP=ON `
   -DAMDGPU_TARGETS=gfx1201 `
   -DGGML_HIP_MMQ_MFMA=ON `
   -DGGML_HIP_NO_VMM=ON `
   -DGGML_OPENMP=OFF `
+  -DCMAKE_C_COMPILER="$env:HIP_PATH\bin\clang.exe" `
+  -DCMAKE_CXX_COMPILER="$env:HIP_PATH\bin\clang++.exe" `
   -DCMAKE_BUILD_TYPE=Release
 cmake --build build-rocm -j 4 --target llama-server
 ```
@@ -204,7 +243,8 @@ incomplete Build Tools environment. See the full [Build Guide](docs/build.md).
 
 ### Vulkan Dual GPU
 
-Use GPU1 as the primary/output device on the reference desktop:
+Use GPU1 as the output device, but keep the measured MTP device order shown
+below:
 
 ```powershell
 $env:LLAMA_OUTPUT_DEVICE = "Vulkan1"
@@ -214,13 +254,12 @@ build-vulkan\bin\llama-server.exe `
   -m models\Qwen3.6-27B-Q3_K_S_mtp.gguf `
   -c 131072 -b 8192 -ub 1024 -ngl 999 `
   --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on `
-  -dev Vulkan1,Vulkan0 -sm layer -ts 1,1 `
+  -dev Vulkan0,Vulkan1 -sm layer -ts 1,1 `
   --spec-type none
 ```
 
-Use current autotune evidence for the final layer ratio. `-ts 5,6` is the
-measured 56k prompt-eval profile, while equal split is the conservative general
-default. For MTP, replace the final line with:
+Equal split is the current conservative general default; use autotune for a
+specific context and residency target. For MTP, replace the final line with:
 
 ```powershell
 --spec-type draft-mtp --spec-draft-n-max 3
@@ -245,6 +284,23 @@ Direct HIP peer copy remains disabled by default on Windows/RDNA4. The safe
 host-staged split route is used instead. Do not enable
 `GGML_ROCM_ENABLE_PEER_COPY=1` as a production default without a fresh
 correctness and driver-stability validation.
+
+### Why GPU Order Matters
+
+`-sm layer` is pipeline/layer placement, not symmetric tensor parallelism. The
+first and second entries do not receive identical work: token embeddings,
+repeating-layer ranges, recurrent state, output tensors, MTP NextN staging, and
+scheduler copy boundaries are placed according to graph ownership and device
+order. `LLAMA_OUTPUT_DEVICE` changes output placement but does not make the
+rest of that topology symmetric.
+
+Consequently, swapping two identical GPUs can change both transfer direction
+and which device owns a synchronization-heavy graph boundary. On this machine,
+`Vulkan0,Vulkan1` with `LLAMA_OUTPUT_DEVICE=Vulkan1` preserves MTP prefill
+throughput; the reversed order was nearly equivalent for `spec=none` but much
+slower during MTP prefill. ROCm's measured general order remains
+`ROCm1,ROCm0`. A mature tensor-parallel implementation would reduce this
+asymmetry, but the current supported production mode is layer split.
 
 ## MTP Behavior
 
