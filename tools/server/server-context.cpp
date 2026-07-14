@@ -50,6 +50,9 @@ static bool server_spec_has_type(const common_params_speculative & spec, common_
 
 static bool server_params_use_vulkan(const common_params & params) {
     for (const auto device : params.devices) {
+        if (device == nullptr) {
+            continue;
+        }
         const char * name = ggml_backend_dev_name(device);
         if (name != nullptr && std::strncmp(name, "Vulkan", 6) == 0) {
             return true;
