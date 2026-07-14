@@ -108,14 +108,39 @@ ggml_add_backend_library(ggml-hip
 # treats as __host__ __device__ in HIP mode. Later HIP headers redeclare them
 # as __device__, causing overload errors + __host__ calls from device.
 #
-# Fix: add older MSVC 14.44 (VS 2022 Build Tools) include dirs BEFORE the
-# auto-detected MSVC 14.51 dirs, so clang uses the compatible cmath.
-# Also skip the conflicting HIP-side declare headers.
-set(GGML_HIP_MSVC_LEGACY_DIR "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207")
-if (EXISTS "${GGML_HIP_MSVC_LEGACY_DIR}/include/cmath")
-    target_include_directories(ggml-hip BEFORE PRIVATE "${GGML_HIP_MSVC_LEGACY_DIR}/include")
-    target_include_directories(ggml-hip BEFORE PRIVATE "${GGML_HIP_MSVC_LEGACY_DIR}/atlmfc/include")
-    message(STATUS "HIP: using MSVC 14.44 headers for device compatibility")
+# Fix: add compatible MSVC 14.44 include dirs BEFORE the auto-detected newer
+# MSVC dirs, so clang uses a cmath version accepted by the Windows HIP SDK.
+# Search all Visual Studio editions because clean installs need not use the
+# historical VS 2022 Build Tools path.
+set(GGML_HIP_MSVC_COMPAT_DIR "" CACHE PATH "MSVC 14.44 toolset used by the Windows HIP compiler")
+set(_ggml_hip_msvc_compat_candidates "")
+if (GGML_HIP_MSVC_COMPAT_DIR)
+    list(APPEND _ggml_hip_msvc_compat_candidates "${GGML_HIP_MSVC_COMPAT_DIR}")
+endif()
+
+file(GLOB _ggml_hip_msvc_compat_globs LIST_DIRECTORIES true
+    "C:/Program Files/Microsoft Visual Studio/*/*/VC/Tools/MSVC/14.44.*"
+    "C:/Program Files (x86)/Microsoft Visual Studio/*/*/VC/Tools/MSVC/14.44.*")
+list(APPEND _ggml_hip_msvc_compat_candidates ${_ggml_hip_msvc_compat_globs})
+list(REMOVE_DUPLICATES _ggml_hip_msvc_compat_candidates)
+list(SORT _ggml_hip_msvc_compat_candidates COMPARE NATURAL ORDER DESCENDING)
+
+set(_ggml_hip_msvc_compat_resolved "")
+foreach(_candidate IN LISTS _ggml_hip_msvc_compat_candidates)
+    if (EXISTS "${_candidate}/include/cmath")
+        set(_ggml_hip_msvc_compat_resolved "${_candidate}")
+        break()
+    endif()
+endforeach()
+
+if (_ggml_hip_msvc_compat_resolved)
+    target_include_directories(ggml-hip BEFORE PRIVATE "${_ggml_hip_msvc_compat_resolved}/include")
+    if (EXISTS "${_ggml_hip_msvc_compat_resolved}/atlmfc/include")
+        target_include_directories(ggml-hip BEFORE PRIVATE "${_ggml_hip_msvc_compat_resolved}/atlmfc/include")
+    endif()
+    message(STATUS "HIP: using compatible MSVC headers from ${_ggml_hip_msvc_compat_resolved}")
+elseif (WIN32)
+    message(WARNING "HIP: MSVC 14.44 headers were not found; set GGML_HIP_MSVC_COMPAT_DIR if the HIP compiler rejects the active MSVC cmath")
 endif()
 
 if (GGML_HOST_SOURCES_ROCM)

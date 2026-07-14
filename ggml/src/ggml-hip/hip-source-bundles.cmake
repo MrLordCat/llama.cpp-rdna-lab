@@ -41,6 +41,8 @@ function(ggml_hip_collect_sources out_headers out_sources out_host_sources out_p
     endif()
 
     file(GLOB _headers "../ggml-cuda/*.cuh")
+    file(GLOB _runtime_modules "../ggml-cuda/runtime/*.inc")
+    list(APPEND _headers ${_runtime_modules})
     list(APPEND _headers "../../include/ggml-cuda.h")
 
     file(GLOB _sources "../ggml-cuda/*.cu")
