@@ -2,6 +2,9 @@
 
 Date: 2026-07-14
 
+> The short lanes remain current. The unequal Vulkan/ROCm long rows below were
+> superseded by the matched E284 49K-context lane.
+
 ## Goal
 
 Rebuild both production backends and replace the README headline numbers with

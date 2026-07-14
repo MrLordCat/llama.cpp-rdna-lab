@@ -7,6 +7,10 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-07-14 11:15:18 | cold-first | rocm | e284-readme-long49ctx-rocm-mtp-n3-dev10-r2 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 4.5733 | 1337.2250 | 32.2400 | 0 |
+| 2026-07-14 11:13:50 | cold-first | rocm | e284-readme-long49ctx-rocm-none-dev10-r2 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 4.3035 | 1338.1000 | 22.2950 | 0 |
+| 2026-07-14 11:12:20 | cold-first | vulkan | e284-readme-long49ctx-vulkan-mtp-n3-dev01-r2 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 5.2899 | 1519.9800 | 41.9650 | 0 |
+| 2026-07-14 11:11:03 | cold-first | vulkan | e284-readme-long49ctx-vulkan-none-dev01-r2 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 5.0245 | 1488.4700 | 32.8900 | 0 |
 | 2026-07-14 10:54:40 | cold-first | rocm | e283-clean-rocm-long-mtp-n3-dev10-r1-fixed | Qwen3.6-27B-Q3_K_S_mtp.gguf | 131072 | 8192/1024 | q8_0/q8_0 | mtp | 3.1014 | 1174.3300 | 28.8300 | 0 |
 | 2026-07-14 10:53:35 | cold-first | rocm | e283-clean-rocm-long-none-dev10-r1-fixed | Qwen3.6-27B-Q3_K_S_mtp.gguf | 131072 | 8192/1024 | q8_0/q8_0 | none | 3.0006 | 1183.4600 | 20.9500 | 0 |
 | 2026-07-14 10:52:25 | cold-first | rocm | e283-clean-rocm-short-mtp-n3-dev10-r3-fixed | Qwen3.6-27B-Q3_K_S_mtp.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 21.2573 | 1656.5267 | 34.9500 | 0 |
@@ -83,7 +87,3 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-07-13 10:52:26 | cold-first | - | p003-vulkan12k-lol-mtp-n3-reuse-debug-runs2 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 1.3588 | 1368.6050 | 18.1650 | 0 |
 | 2026-07-13 10:48:55 | cold-first | - | p003-vulkan12k-lol-mtp-n3-keep-sched-runs2 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 1.3314 | 1337.2800 | 18.3550 | 0 |
 | 2026-07-13 10:47:41 | cold-first | - | p003-vulkan12k-lol-mtp-n3-ubatch-runs2 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 1.2921 | 1322.2400 | 14.5600 | 0 |
-| 2026-07-13 10:45:00 | cold-first | - | p003-vulkan12k-lol-mtp-n3-pipeline-trace | Qwen3.6-27B-Q3_K_S_mtp.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 1.3060 | 1343.7600 | 13.8100 | 0 |
-| 2026-07-13 10:43:26 | cold-first | - | p003-vulkan48k-lol-mtp-n3-phase-runs2 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 1.6578 | 1112.9900 | 20.6550 | 0 |
-| 2026-07-13 10:41:15 | cold-first | - | p003-vulkan48k-lol-none-control-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 1.9362 | 1267.4400 | 26.7000 | 0 |
-| 2026-07-13 10:40:21 | cold-first | - | p003-vulkan48k-lol-mtp-n3-phase-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 1.8682 | 1306.5900 | 14.2100 | 0 |

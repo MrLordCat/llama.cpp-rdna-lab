@@ -67,9 +67,31 @@ All headline rows use the Qwen3.6-27B Q3_K_S MTP-enabled GGUF, FlashAttention,
 one server slot, cold prompt processing, no prompt-cache reuse, and no prime
 pass. Prompt and decode TPS come from server timings; aggregate TPS includes the
 whole request wall time. Compare `none` and `MTP` only inside the same backend
-and lane because prompt/output lengths differ between Vulkan and ROCm. The
-table was rerun after rebuilding both backends, with no foreground GPU workload
-active.
+and lane. The table was rerun after rebuilding both backends, with no foreground
+GPU workload active.
+
+### Benchmark Launch Parameters
+
+| Lane | Context | Actual prompt | Output | Batch / UBatch | KV | Repeats |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| Vulkan short | 12,288 | 7,842 | 128 | 8192 / 1024 | q8_0 / q8_0 | 3 |
+| ROCm short | 12,288 | 7,729 | 256 | 8192 / 1024 | q8_0 / q8_0 | 3 |
+| Matched long, both backends | 49,152 | 31,997 | 128 | 8192 / 1024 | q8_0 / q8_0 | 2 |
+
+Every row also uses `-np 1 -ngl 999 --flash-attn on --no-warmup -fit off`, seed
+42, temperature 0.2, top-p 0.9, `--cache-ram 0`, `--ctx-checkpoints 0`, and no
+prompt reuse.
+The matched long lane requests 147,456 repository-snapshot characters; the
+runner's 0.88 safe-fill policy caps this to 106,800 characters, producing the
+same 31,997-token prompt on both backends. The GUI name now says
+`Long ctx 49K - ~32K actual prompt` because 49,152 is the context capacity, not
+the measured prompt length.
+
+Vulkan uses `-dev Vulkan0,Vulkan1 -sm layer -ts 1,1`,
+`LLAMA_OUTPUT_DEVICE=Vulkan1`, and `GGML_VK_FORCE_AMD_LARGE_MATMUL=1`. ROCm uses
+`-dev ROCm1,ROCm0 -sm layer -ts 1,1` with direct peer copy disabled. MTP rows
+add `--spec-type draft-mtp --spec-draft-n-max 3`; the prefill window is the
+server default of 256 tokens.
 
 ### Short Prompt Lanes
 
@@ -88,14 +110,14 @@ In this lane, Vulkan MTP changes prompt/decode/aggregate throughput by
 
 | Backend | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Notes |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| Vulkan | `none`, r2 mean | 29,540 / 128 | 1536.99 | 34.49 | 5.56 | `Vulkan0,Vulkan1`, `ctx=49152`, q8/q8 KV |
-| Vulkan | MTP n3, r2 mean | 29,540 / 128 | **1557.06** | **42.82** | **5.81** | 48.70% acceptance; 256-token prefill window |
-| ROCm | `none` | 43,125 / 128 | **1183.46** | 20.95 | 3.00 | `ROCm1,ROCm0`, `ctx=131072`, q8/q8 KV |
-| ROCm | MTP n3 | 43,125 / 128 | 1174.33 | **28.83** | **3.10** | 48.39% acceptance; 256-token prefill window |
+| Vulkan | `none`, r2 mean | 31,997 / 128 | 1488.47 | 32.89 | 5.02 | `ctx=49152`, `b8192/ub1024`, q8/q8 KV |
+| Vulkan | MTP n3, r2 mean | 31,997 / 128 | **1519.98** | **41.97** | **5.29** | 48.70% acceptance; 256-token prefill window |
+| ROCm | `none`, r2 mean | 31,997 / 128 | **1338.10** | 22.30 | 4.30 | `ctx=49152`, `b8192/ub1024`, q8/q8 KV |
+| ROCm | MTP n3, r2 mean | 31,997 / 128 | 1337.23 | **32.24** | **4.57** | 50.33% acceptance; 256-token prefill window |
 
 In the long lanes, Vulkan MTP changes prompt/decode/aggregate throughput by
-`+1.31% / +24.15% / +4.45%`. ROCm MTP changes them by
-`-0.77% / +37.61% / +3.36%`. The prefill tax is therefore within the current
+`+2.12% / +27.59% / +5.28%`. ROCm MTP changes them by
+`-0.07% / +44.61% / +6.27%`. The prefill tax is therefore within the current
 acceptance target, while generation remains materially faster. Longer generated
 answers benefit more because prompt evaluation dominates these 128-token runs.
 
@@ -106,6 +128,7 @@ practical performance model. The active Q3 prompt-evaluation research target is
 
 Evidence:
 
+- [E284: matched 49K-context README lane](docs/research/experiments/E284_matched_49k_context_readme_lane.md)
 - [E283: clean README revalidation](docs/research/experiments/E283_clean_readme_revalidation.md)
 - [E282: MTP device hidden-state handoff](docs/research/experiments/E282_mtp_device_hidden_handoff.md)
 - [D078: ROCm RDNA4 small-N DP4A MTP](docs/research/major-topology/D078_P002_ROCM_MTP_SMALLN_DP4A_MMQ.md)
