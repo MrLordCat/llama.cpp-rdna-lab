@@ -39,7 +39,7 @@ def apply_modern_theme(app) -> None:
             background: #1b1f25;
             border: 1px solid #343b45;
             border-radius: 6px;
-            margin-top: 12px;
+            margin-top: 14px;
             padding: 10px;
         }
         QGroupBox::title {
@@ -49,6 +49,7 @@ def apply_modern_theme(app) -> None:
             background: #1b1f25;
             color: #7bd8c5;
             font-weight: 600;
+            font-size: 10.5pt;
         }
         QLabel, QCheckBox, QRadioButton {
             background: transparent;
@@ -88,6 +89,45 @@ def apply_modern_theme(app) -> None:
             color: #77808c;
             background: #1d2229;
             border-color: #303741;
+        }
+        QPushButton[chip="true"] {
+            background: #1c2127;
+            color: #aeb6c0;
+            border: 1px solid #3c4652;
+            border-radius: 12px;
+            padding: 3px 12px;
+            font-size: 9pt;
+        }
+        QPushButton[chip="true"]:hover {
+            border-color: #5bc8b6;
+            color: #e8ebef;
+            background: #232a31;
+        }
+        QPushButton[chip="true"]:checked {
+            background: #1d4f4a;
+            border-color: #4fd1bd;
+            color: #dffaf4;
+            font-weight: 600;
+        }
+        QPushButton[chip="true"]:disabled {
+            color: #6a7280;
+            background: #1a1e24;
+            border-color: #2b323b;
+        }
+        QPushButton[chip="true"]:checked:disabled {
+            background: #24403c;
+            border-color: #3f5a55;
+            color: #8faea6;
+        }
+        QToolButton[sectionHeader="true"] {
+            background: transparent;
+            border: none;
+            color: #7bd8c5;
+            font-weight: 600;
+            padding: 3px 4px;
+        }
+        QToolButton[sectionHeader="true"]:hover {
+            color: #a8ecdf;
         }
         QCheckBox {
             spacing: 7px;

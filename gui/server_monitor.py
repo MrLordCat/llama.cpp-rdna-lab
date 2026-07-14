@@ -43,11 +43,14 @@ _GPU_COUNTER_PS = (
     "if ($u) { $u[-1].CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue.ToString($ci) } }"
 )
 
-# dedicated VRAM size per display adapter (bytes), from the driver registry keys
+# dedicated VRAM size (bytes) + adapter name per display adapter, from the
+# driver registry keys; one "bytes|name" line per adapter
 _GPU_TOTALS_PS = (
     "Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\"
     "{4d36e968-e325-11ce-bfc1-08002be10318}\\0*' -Name 'HardwareInformation.qwMemorySize' "
-    "-ErrorAction SilentlyContinue | ForEach-Object { $_.'HardwareInformation.qwMemorySize' }"
+    "-ErrorAction SilentlyContinue | ForEach-Object { "
+    "$desc = (Get-ItemProperty $_.PSPath -Name DriverDesc -ErrorAction SilentlyContinue).DriverDesc; "
+    "$_.'HardwareInformation.qwMemorySize'.ToString() + '|' + $desc }"
 )
 
 # adapters are identified by their full LUID; phys_N alone collides across cards
@@ -68,20 +71,29 @@ def _run_powershell(script: str, timeout: float) -> str:
     return result.stdout
 
 
-def _query_gpu_totals(timeout: float = 8.0) -> list[float]:
-    """Total dedicated VRAM in GB per adapter, best effort."""
+def _query_gpu_totals(timeout: float = 8.0) -> tuple[list[float], list[str]]:
+    """Total dedicated VRAM in GB and adapter name per adapter, best effort."""
     if os.name != "nt":
-        return []
+        return [], []
     try:
         output = _run_powershell(_GPU_TOTALS_PS, timeout)
     except Exception:
-        return []
-    totals = []
+        return [], []
+    totals: list[float] = []
+    names: list[str] = []
     for line in output.splitlines():
-        line = line.strip()
-        if line.isdigit() and int(line) > 0:
-            totals.append(int(line) / (1024 ** 3))
-    return totals
+        size_text, _, name = line.strip().partition("|")
+        if size_text.isdigit() and int(size_text) > 0:
+            totals.append(int(size_text) / (1024 ** 3))
+            names.append(name.strip())
+    return totals, names
+
+
+def _short_gpu_name(name: str) -> str:
+    """'AMD Radeon RX 9070 XT' -> 'RX 9070 XT' — fits the monitor row label."""
+    for noise in ("AMD ", "NVIDIA ", "Intel(R) ", "Radeon(TM) ", "Radeon ", "GeForce ", "Graphics "):
+        name = name.replace(noise, "")
+    return name.strip()
 
 
 def _query_gpu_counters(timeout: float = 12.0) -> list[dict]:
@@ -164,6 +176,7 @@ class ServerMonitorThread(QThread):
         self._ctx_tokens: int = 0
         self._prev_totals: tuple[float, float, float] | None = None  # (t, prompt, decode)
         self._gpu_totals: list[float] | None = None
+        self._gpu_names: list[str] = []
 
     def set_server(self, base_url: str, api_key: str = "", pid: int | None = None, ctx_tokens: int = 0) -> None:
         self._api_key = api_key
@@ -231,10 +244,16 @@ class ServerMonitorThread(QThread):
 
     def run(self):
         if self._gpu_totals is None:
-            self._gpu_totals = _query_gpu_totals()
+            self._gpu_totals, self._gpu_names = _query_gpu_totals()
 
         while not self.isInterruptionRequested():
-            stats: dict = {"server": None, "gpus": [], "system": {}, "gpu_totals": self._gpu_totals}
+            stats: dict = {
+                "server": None,
+                "gpus": [],
+                "system": {},
+                "gpu_totals": self._gpu_totals,
+                "gpu_names": self._gpu_names,
+            }
 
             if psutil is not None:
                 try:
@@ -307,13 +326,26 @@ class _GpuRow(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        name = QLabel(f"GPU{index}")
-        name.setFixedWidth(38)
-        layout.addWidget(name)
+        self.name_label = QLabel(f"GPU{index}")
+        self.name_label.setFixedWidth(92)
+        layout.addWidget(self.name_label)
         self.util_bar = _make_bar()
+        self.util_bar.setToolTip("GPU load (all engines)")
         layout.addWidget(self.util_bar, 2)
         self.vram_bar = _make_bar()
+        self.vram_bar.setToolTip("Dedicated VRAM used / total")
         layout.addWidget(self.vram_bar, 3)
+        self._named = False
+
+    def set_name(self, index: int, full_name: str) -> None:
+        if self._named or not full_name:
+            return
+        short = _short_gpu_name(full_name)
+        if len(short) > 13:
+            short = short[:12] + "…"
+        self.name_label.setText(short or f"GPU{index}")
+        self.name_label.setToolTip(f"GPU{index}: {full_name}")
+        self._named = True
 
 
 class ServerMonitorPanel(QGroupBox):
@@ -359,7 +391,7 @@ class ServerMonitorPanel(QGroupBox):
         bottom = QHBoxLayout()
         bottom.setSpacing(6)
         ram_name = QLabel("RAM")
-        ram_name.setFixedWidth(38)
+        ram_name.setFixedWidth(92)
         bottom.addWidget(ram_name)
         self.ram_bar = _make_bar()
         bottom.addWidget(self.ram_bar, 3)
@@ -410,8 +442,11 @@ class ServerMonitorPanel(QGroupBox):
                 _set_bar(self.ctx_bar, 0, f"peak {tokens_peak} tok" if tokens_peak else "—")
 
         gpu_totals = stats.get("gpu_totals") or []
+        gpu_names = stats.get("gpu_names") or []
         for gpu in stats.get("gpus") or []:
             row = self._gpu_row(gpu["index"])
+            if gpu_names:
+                row.set_name(gpu["index"], gpu_names[min(gpu["index"], len(gpu_names) - 1)])
             util = gpu.get("util_pct", 0.0)
             _set_bar(row.util_bar, util, f"{util:.0f}%")
             used = gpu.get("vram_gb", 0.0)

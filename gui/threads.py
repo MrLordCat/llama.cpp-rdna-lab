@@ -15,6 +15,8 @@ from typing import Optional, Tuple
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from proc_utils import run_hidden
+
 
 class ServerThread(QThread):
     """Thread for running llama-server in background"""
@@ -138,7 +140,7 @@ class UpdateForkThread(QThread):
 
     def _run_git(self, args: list) -> Tuple[int, str, str]:
         """Run a git command and return (returncode, stdout, stderr)"""
-        result = subprocess.run(
+        result = run_hidden(
             ["git"] + args,
             cwd=self.repo_path,
             capture_output=True, text=True, timeout=120

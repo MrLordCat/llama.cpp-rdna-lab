@@ -16,6 +16,7 @@ from autotune_profiles import ACTIVE_PROMPT_PROFILE
 from bench_runner import background_process_options, console_python_executable
 from build_manager import BuildManager, ConfigureThread, BuildThread
 from model_capabilities import model_supports_mtp
+from proc_utils import run_hidden
 
 try:
     from dependency_installer import (
@@ -588,15 +589,16 @@ class BuildTabWidget(QWidget):
 
         try:
             if (source_dir / ".git").exists():
-                subprocess.run(["git", "-C", str(source_dir), "fetch", "origin"], check=True, timeout=180)
+                run_hidden(["git", "-C", str(source_dir), "fetch", "origin"], check=True, timeout=180, capture_output=True)
             else:
-                subprocess.run(
+                run_hidden(
                     ["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/llama.cpp.git", str(source_dir)],
                     check=True,
                     timeout=600,
+                    capture_output=True,
                 )
 
-            subprocess.run(["git", "-C", str(source_dir), "checkout", source_ref], check=True, timeout=120)
+            run_hidden(["git", "-C", str(source_dir), "checkout", source_ref], check=True, timeout=120, capture_output=True)
 
             registry = getattr(self.parent, "build_registry", None)
             if registry is not None:
@@ -1222,7 +1224,7 @@ class BuildTabWidget(QWidget):
     @staticmethod
     def _server_help_output(server_bin: Path) -> str:
         try:
-            result = subprocess.run(
+            result = run_hidden(
                 [str(server_bin), "--help"],
                 capture_output=True,
                 text=True,

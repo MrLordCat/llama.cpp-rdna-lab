@@ -10,6 +10,8 @@ Provides utilities for:
 import os
 import re
 import subprocess
+
+from proc_utils import run_hidden
 import platform
 from pathlib import Path
 from typing import Optional, List, Dict
@@ -245,7 +247,7 @@ class ProjectManager:
         
         if info["version"] == "unknown":
             try:
-                result = subprocess.run(
+                result = run_hidden(
                     ["git", "rev-parse", "--short", "HEAD"],
                     capture_output=True, text=True, cwd=self.project_root, timeout=5
                 )

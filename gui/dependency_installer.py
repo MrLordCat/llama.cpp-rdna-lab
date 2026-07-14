@@ -4,6 +4,8 @@ Dependency installer module - automatically downloads and installs required tool
 
 import os
 import subprocess
+
+from proc_utils import run_hidden
 import platform
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
@@ -97,7 +99,7 @@ class DependencyInstallThread(QThread):
             
             if shutil.which("winget"):
                 self.status_update.emit("Installing CMake via winget...")
-                result = subprocess.run(
+                result = run_hidden(
                     ["winget", "install", "-e", "--id", "Kitware.CMake", "-h"],
                     capture_output=True,
                     timeout=300
@@ -116,7 +118,7 @@ class DependencyInstallThread(QThread):
             self.status_update.emit("Installing Git via winget...")
             
             if shutil.which("winget"):
-                result = subprocess.run(
+                result = run_hidden(
                     ["winget", "install", "-e", "--id", "Git.Git", "-h"],
                     capture_output=True,
                     timeout=300
@@ -306,7 +308,7 @@ class DependencyManager:
     def _check_tool(self, tool: str) -> bool:
         """Check if tool is available"""
         try:
-            subprocess.run(
+            run_hidden(
                 [tool, "--version"],
                 capture_output=True,
                 timeout=3
@@ -319,7 +321,7 @@ class DependencyManager:
         """Check for MSVC Build Tools"""
         # Method 1: Check if cl.exe is in PATH
         try:
-            result = subprocess.run(
+            result = run_hidden(
                 ["where", "cl.exe"],
                 capture_output=True,
                 timeout=3,

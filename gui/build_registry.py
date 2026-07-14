@@ -6,6 +6,8 @@ import datetime as dt
 import hashlib
 import json
 import subprocess
+
+from proc_utils import run_hidden
 import csv
 from pathlib import Path
 from typing import Any
@@ -133,7 +135,7 @@ class BuildVersionRegistry:
 
     def _get_repo_short_ref(self) -> str:
         try:
-            result = subprocess.run(
+            result = run_hidden(
                 ["git", "rev-parse", "--short", "HEAD"],
                 cwd=self.project_root,
                 capture_output=True,

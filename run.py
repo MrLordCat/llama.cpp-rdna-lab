@@ -22,6 +22,12 @@ if platform.system() == "Linux":
 gui_dir = Path(__file__).parent / "gui"
 sys.path.insert(0, str(gui_dir))
 
+from proc_utils import suppress_windows_error_dialogs
+
+# child probes (llama-server --help etc.) inherit this; without it a build
+# with missing DLLs pops a modal system dialog and freezes the GUI
+suppress_windows_error_dialogs()
+
 from dependency_checker import init_dependencies
 
 def main():

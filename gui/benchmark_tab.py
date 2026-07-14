@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -23,6 +24,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -52,6 +54,21 @@ from bench_widgets import (
     create_scroll_panel,
 )
 from model_capabilities import model_supports_mtp
+from proc_utils import run_hidden
+from ui_widgets import FlowLayout, LogView, StatusPill, make_chip
+
+
+class _ServerHelpProbeThread(QThread):
+    """Warm the server --help cache off the GUI thread (loading a server
+    binary pulls in every backend DLL and can take seconds)."""
+
+    def __init__(self, tab, server_bin: Path):
+        super().__init__(tab)
+        self._tab = tab
+        self._server_bin = server_bin
+
+    def run(self):
+        self._tab._server_help_output(self._server_bin)
 
 
 class LlamaServerStopThread(QThread):
@@ -749,12 +766,15 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         batch_grid.setColumnStretch(6, 1)
         autotune_layout.addLayout(batch_grid)
 
-        kv_grid = QGridLayout()
-        kv_grid.setHorizontalSpacing(14)
-        kv_grid.setVerticalSpacing(4)
-        kv_grid.addWidget(QLabel("KV sweep:"), 0, 0)
-        self.autotune_kv_checks: dict[str, QCheckBox] = {}
-        for index, (kv_name, enabled, hint) in enumerate([
+        kv_row = QHBoxLayout()
+        kv_label = QLabel("KV sweep:")
+        kv_label.setFixedWidth(86)
+        kv_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        kv_row.addWidget(kv_label)
+        kv_chip_host = QWidget()
+        kv_flow = FlowLayout(kv_chip_host)
+        self.autotune_kv_checks: dict[str, QPushButton] = {}
+        for kv_name, enabled, hint in [
             ("q4_0", True, "Main KV cache for the current 130K target"),
             ("q8_0", False, "Higher-quality KV cache opt-in"),
             ("turbo4", False, "TurboKV 4-bit cache (128-block WHT, correctness path)"),
@@ -763,35 +783,34 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             ("f16", False, "FP16 KV (usually slower/heavier)"),
             ("bf16", False, "BF16 KV (usually slower/heavier)"),
             ("f32", False, "FP32 KV (debug/reference only)"),
-        ]):
-            checkbox = QCheckBox(kv_name)
-            checkbox.setChecked(enabled)
-            checkbox.setToolTip(hint)
-            self.autotune_kv_checks[kv_name] = checkbox
-            kv_grid.addWidget(checkbox, index // 2, (index % 2) + 1)
-        kv_grid.setColumnStretch(3, 1)
-        autotune_layout.addLayout(kv_grid)
+        ]:
+            chip = make_chip(kv_name, hint, enabled)
+            self.autotune_kv_checks[kv_name] = chip
+            kv_flow.addWidget(chip)
+        kv_row.addWidget(kv_chip_host, 1)
+        autotune_layout.addLayout(kv_row)
 
-        spec_grid = QGridLayout()
-        spec_grid.setHorizontalSpacing(14)
-        spec_grid.setVerticalSpacing(4)
-        spec_grid.addWidget(QLabel("Spec sweep:"), 0, 0)
-        self.autotune_spec_checks: dict[str, QCheckBox] = {}
-        for index, (mode, enabled, hint) in enumerate([
+        spec_row = QHBoxLayout()
+        spec_label = QLabel("Spec sweep:")
+        spec_label.setFixedWidth(86)
+        spec_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        spec_row.addWidget(spec_label)
+        spec_chip_host = QWidget()
+        spec_flow = FlowLayout(spec_chip_host)
+        self.autotune_spec_checks: dict[str, QPushButton] = {}
+        for mode, enabled, hint in [
             ("none", True, "Always keep plain decoding baseline in sweep"),
             ("ngram-mod", False, "Ngram speculative mode for explicit repeated/session probes"),
             ("draft", False, "Draft speculative mode when supported"),
             ("eagle3", False, "Eagle3 speculative mode when supported"),
             ("mtp", False, "MTP mode; requires server + MTP model support"),
             ("ngram-mtp", False, "Experimental ngram first, MTP fallback mode"),
-        ]):
-            checkbox = QCheckBox(mode)
-            checkbox.setChecked(enabled)
-            checkbox.setToolTip(hint)
-            self.autotune_spec_checks[mode] = checkbox
-            spec_grid.addWidget(checkbox, index // 2, (index % 2) + 1)
-        spec_grid.setColumnStretch(3, 1)
-        autotune_layout.addLayout(spec_grid)
+        ]:
+            chip = make_chip(mode, hint, enabled)
+            self.autotune_spec_checks[mode] = chip
+            spec_flow.addWidget(chip)
+        spec_row.addWidget(spec_chip_host, 1)
+        autotune_layout.addLayout(spec_row)
 
         mtp_draft_row = QHBoxLayout()
         mtp_draft_row.addWidget(QLabel("MTP draft N max:"))
@@ -808,10 +827,11 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         mtp_draft_row.addStretch()
         autotune_layout.addLayout(mtp_draft_row)
 
-        extra_grid = QGridLayout()
-        extra_grid.setHorizontalSpacing(14)
-        extra_grid.setVerticalSpacing(4)
-        extra_grid.addWidget(QLabel("Extra presets:"), 0, 0)
+        extra_row = QHBoxLayout()
+        extra_label = QLabel("Extra presets:")
+        extra_label.setFixedWidth(86)
+        extra_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        extra_row.addWidget(extra_label)
         self._autotune_extra_presets_map: dict[str, str] = {
             "base": "base",
             "ngram-balanced": (
@@ -822,19 +842,19 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             ),
             "ngram-wide": "ngram-wide::--spec-ngram-mod-n-min 64 --spec-ngram-mod-n-match 32 --spec-ngram-mod-n-max 96",
         }
-        self.autotune_extra_checks: dict[str, QCheckBox] = {}
-        for index, (key, enabled, hint) in enumerate([
+        extra_chip_host = QWidget()
+        extra_flow = FlowLayout(extra_chip_host)
+        self.autotune_extra_checks: dict[str, QPushButton] = {}
+        for key, enabled, hint in [
             ("base", True, "No extra server arguments"),
             ("ngram-balanced", False, "Measured ngram-mod profile: 12/16/32"),
             ("ngram-wide", False, "Wider ngram window for ngram-mod"),
-        ]):
-            checkbox = QCheckBox(key)
-            checkbox.setChecked(enabled)
-            checkbox.setToolTip(hint)
-            self.autotune_extra_checks[key] = checkbox
-            extra_grid.addWidget(checkbox, index // 2, (index % 2) + 1)
-        extra_grid.setColumnStretch(3, 1)
-        autotune_layout.addLayout(extra_grid)
+        ]:
+            chip = make_chip(key, hint, enabled)
+            self.autotune_extra_checks[key] = chip
+            extra_flow.addWidget(chip)
+        extra_row.addWidget(extra_chip_host, 1)
+        autotune_layout.addLayout(extra_row)
 
         custom_extra_row = QHBoxLayout()
         custom_extra_row.addWidget(QLabel("Custom extras:"))
@@ -985,14 +1005,16 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         shared_btn_row.addWidget(self.open_history_btn, 1)
         left_layout.addLayout(shared_btn_row)
 
-        self.status_label = QLabel("Ready")
-        left_layout.addWidget(self.status_label)
+        status_row = QHBoxLayout()
+        self.status_label = StatusPill("● Ready")
+        status_row.addWidget(self.status_label)
+        status_row.addStretch()
+        left_layout.addLayout(status_row)
         left_layout.addStretch(1)
 
         log_group = QGroupBox("Run Log")
         log_layout = QVBoxLayout()
-        self.log_output = QTextEdit()
-        self.log_output.setReadOnly(True)
+        self.log_output = LogView()
         self.log_output.setMinimumHeight(150)
         log_layout.addWidget(self.log_output)
         log_group.setLayout(log_layout)
@@ -1062,40 +1084,42 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         )
         presets_layout.addWidget(self.presets_table)
 
-        presets_actions = QGridLayout()
-        presets_actions.setHorizontalSpacing(8)
-        presets_actions.setVerticalSpacing(6)
+        presets_actions = QHBoxLayout()
+        presets_actions.setSpacing(8)
         self.apply_history_preset_btn = QPushButton("Apply Default")
-        self.apply_history_preset_btn.setToolTip("Apply the selected run as the default model preset")
+        self.apply_history_preset_btn.setToolTip(
+            "Apply the selected run as the default model preset (double-click a row does the same)"
+        )
         self.apply_history_preset_btn.clicked.connect(self.apply_selected_run_as_default_preset)
-        presets_actions.addWidget(self.apply_history_preset_btn, 0, 0)
-
-        self.delete_history_run_btn = QPushButton("Delete")
-        self.delete_history_run_btn.setToolTip("Delete the selected autotune run from history")
-        self.delete_history_run_btn.clicked.connect(self.delete_selected_preset)
-        presets_actions.addWidget(self.delete_history_run_btn, 0, 1)
+        presets_actions.addWidget(self.apply_history_preset_btn)
 
         self.refresh_history_btn = QPushButton("Refresh")
         self.refresh_history_btn.setToolTip("Refresh autotune run history")
         self.refresh_history_btn.clicked.connect(self.refresh_saved_presets_table)
-        presets_actions.addWidget(self.refresh_history_btn, 0, 2)
+        presets_actions.addWidget(self.refresh_history_btn)
 
-        self.open_history_log_btn = QPushButton("Open Log")
-        self.open_history_log_btn.setToolTip("Open the log for the selected run")
-        self.open_history_log_btn.clicked.connect(self.open_selected_history_log)
-        presets_actions.addWidget(self.open_history_log_btn, 1, 0)
-
-        self.copy_history_log_btn = QPushButton("Copy Log")
-        self.copy_history_log_btn.setToolTip("Copy the selected run log content")
-        self.copy_history_log_btn.clicked.connect(self.copy_selected_history_log_to_clipboard)
-        presets_actions.addWidget(self.copy_history_log_btn, 1, 1)
-
-        self.copy_history_row_btn = QPushButton("Copy Row")
-        self.copy_history_row_btn.setToolTip("Copy the selected run data")
-        self.copy_history_row_btn.clicked.connect(self.copy_selected_history_row_to_clipboard)
-        presets_actions.addWidget(self.copy_history_row_btn, 1, 2)
-
+        history_hint = QLabel("Right-click a row: open/copy log, copy row, delete")
+        history_hint.setStyleSheet("color: #7f8a97;")
+        presets_actions.addWidget(history_hint)
+        presets_actions.addStretch()
         presets_layout.addLayout(presets_actions)
+
+        # row-level operations live in the context menu; keep QAction refs so
+        # _set_running_state can disable them during a run
+        self.open_history_log_action = QAction("Open Log", self)
+        self.open_history_log_action.triggered.connect(self.open_selected_history_log)
+        self.copy_history_log_action = QAction("Copy Log", self)
+        self.copy_history_log_action.triggered.connect(self.copy_selected_history_log_to_clipboard)
+        self.copy_history_row_action = QAction("Copy Row", self)
+        self.copy_history_row_action.triggered.connect(self.copy_selected_history_row_to_clipboard)
+        self.delete_history_run_action = QAction("Delete Run", self)
+        self.delete_history_run_action.triggered.connect(self.delete_selected_preset)
+
+        self.presets_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.presets_table.customContextMenuRequested.connect(self._show_history_context_menu)
+        self.presets_table.itemDoubleClicked.connect(
+            lambda _item: self.apply_selected_run_as_default_preset()
+        )
 
         presets_group.setLayout(presets_layout)
         right_layout.addWidget(presets_group, 3)
@@ -2141,16 +2165,23 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         skipped_spec_values: list[str] = []
         has_runtime_context = False
 
+        probing_help = False
         preview_model = self._resolve_selected_model()
         preview_server, _ = self._resolve_selected_server()
         if preview_model is not None and preview_server is not None and selected_spec_values:
-            has_runtime_context = True
-            effective_spec_values = self._resolve_autotune_spec_values(
-                preview_server,
-                preview_model,
-                ",".join(selected_spec_values),
-            )
-            skipped_spec_values = [mode for mode in selected_spec_values if mode not in effective_spec_values]
+            # never run server --help on the GUI thread: use the cache when
+            # warm, otherwise probe in the background and refresh on finish
+            if self._server_help_cached(preview_server):
+                has_runtime_context = True
+                effective_spec_values = self._resolve_autotune_spec_values(
+                    preview_server,
+                    preview_model,
+                    ",".join(selected_spec_values),
+                )
+                skipped_spec_values = [mode for mode in selected_spec_values if mode not in effective_spec_values]
+            else:
+                probing_help = True
+                self._start_server_help_probe(preview_server)
 
         effective_spec_text = ",".join(effective_spec_values) if effective_spec_values else "-"
         extra_count = len(extra_presets)
@@ -2185,8 +2216,10 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             eta_text = f"~{max(1, int(round(total_min)))} min"
 
         self.autotune_mode_info.setText(
-            f"Lane: ctx={lane_ctx}, repo-snapshot chars={effective_chars}/{lane_chars} "
-            f"(~{prompt_tokens} prompt tokens), "
+            f"Lane: ctx={lane_ctx} · ~{prompt_tokens} prompt tok · quick:triage_diff · runs=1 · max_tokens=128"
+        )
+        self.autotune_mode_info.setToolTip(
+            f"repo-snapshot chars={effective_chars}/{lane_chars} (~{prompt_tokens} prompt tokens)\n"
             "tasks=quick:triage_diff, runs=1, max_tokens=128, no-reuse, no-prime, thinking on."
         )
         lane_short = self.AUTOTUNE_LANES[self.lane_combo.currentIndex()][0].split(" — ")[0]
@@ -2194,40 +2227,52 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             lane_short = f"Custom {lane_ctx}"
         self.run_autotune_btn.setText(f"🔁 Run Auto-tune — {lane_short}")
 
-        lines = [
+        detail_lines = [
             f"Batch values: {self._format_values_preview(batch_values)}",
             f"UBatch values: {self._format_values_preview(ubatch_values)}",
             f"KV modes: {kv_text}",
             f"Spec modes (selected): {spec_text}",
             f"Extra presets: {extra_preview or '-'}",
-            f"Estimated configs: {total_configs} (ctx=1 x kv x batch x ubatch x spec x extra)",
-            f"Estimated runtime: {eta_text} (rough, ~{int(per_config_sec)}s/config)",
+            "Configs = ctx=1 x kv x batch x ubatch x spec x extra",
         ]
-
         if has_runtime_context:
-            lines.insert(4, f"Spec modes (effective): {effective_spec_text}")
+            detail_lines.insert(4, f"Spec modes (effective): {effective_spec_text}")
             if skipped_spec_values:
-                lines.append(
+                detail_lines.append(
                     "Spec auto-skipped (unsupported by server/model): " + ",".join(skipped_spec_values)
                 )
         else:
-            lines.append("Spec effective set is resolved at run start (needs model + server).")
+            detail_lines.append("Spec effective set is resolved at run start (needs model + server).")
 
+        errors: list[str] = []
         if not kv_values:
-            lines.append("Selection error: choose at least one KV mode")
+            errors.append("choose at least one KV mode")
         if not selected_spec_values:
-            lines.append("Selection error: choose at least one Spec mode")
+            errors.append("choose at least one Spec mode")
         if not extra_presets:
-            lines.append("Selection error: choose at least one extra preset")
+            errors.append("choose at least one extra preset")
+        if not valid_ranges:
+            errors.append("check that min <= max and step > 0")
+
+        summary = (
+            f"Grid: {total_configs} configs · {eta_text} (~{int(per_config_sec)}s/config)   "
+            f"—  {len(batch_values)}b × {len(ubatch_values)}ub × kv {kv_text} × spec {effective_spec_text} × {extra_count} extra"
+        )
+        lines = [summary]
+        if probing_help:
+            lines.append("Spec support: probing server --help in background…")
+        if skipped_spec_values:
+            lines.append("Spec auto-skipped: " + ",".join(skipped_spec_values))
+        if errors:
+            lines.append("Fix selection: " + "; ".join(errors))
 
         if valid_ranges and valid_modes:
             self.autotune_grid_preview_label.setStyleSheet("color: #b0b0b0;")
         else:
             self.autotune_grid_preview_label.setStyleSheet("color: #ff6b6b;")
-            if not valid_ranges:
-                lines.append("Range error: check that min <= max and step > 0")
 
         self.autotune_grid_preview_label.setText("\n".join(lines))
+        self.autotune_grid_preview_label.setToolTip("\n".join(detail_lines))
 
     @staticmethod
     def _parse_csv_values(values: str) -> list[str]:
@@ -2242,7 +2287,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             return self._bench_help_cache[cache_key]
 
         try:
-            result = subprocess.run(
+            result = run_hidden(
                 [python_executable, str(script_path), "--help"],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
@@ -2266,17 +2311,33 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             normalized = f"--{normalized}"
         return normalized in self._bench_help_output()
 
-    def _server_help_output(self, server_bin: Path) -> str:
+    @staticmethod
+    def _server_help_cache_key(server_bin: Path) -> str:
         try:
-            cache_key = str(server_bin.resolve())
+            return str(server_bin.resolve())
         except Exception:
-            cache_key = str(server_bin)
+            return str(server_bin)
+
+    def _server_help_cached(self, server_bin: Path) -> bool:
+        return self._server_help_cache_key(server_bin) in self._server_help_cache
+
+    def _start_server_help_probe(self, server_bin: Path) -> None:
+        thread = getattr(self, "_help_probe_thread", None)
+        if thread is not None and thread.isRunning():
+            return
+        thread = _ServerHelpProbeThread(self, server_bin)
+        thread.finished.connect(self._update_autotune_grid_preview)
+        self._help_probe_thread = thread
+        thread.start()
+
+    def _server_help_output(self, server_bin: Path) -> str:
+        cache_key = self._server_help_cache_key(server_bin)
 
         if cache_key in self._server_help_cache:
             return self._server_help_cache[cache_key]
 
         try:
-            result = subprocess.run(
+            result = run_hidden(
                 [str(server_bin), "--help"],
                 capture_output=True,
                 text=True,
@@ -2388,7 +2449,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
                 if stopped_row is not None:
                     self.autotune_history_table.setItem(stopped_row, 11, QTableWidgetItem("stopped"))
                 self._autotune_active_run = None
-            self.status_label.setText("Benchmark stopped")
+            self.status_label.set_state("neutral", "Benchmark stopped")
             self.log_output.append("[INFO] Benchmark/autotune stopped by user")
             if self._current_mode == "autotune":
                 self.refresh_saved_presets_table()
@@ -2397,7 +2458,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             return
 
         if success:
-            self.status_label.setText("Benchmark completed")
+            self.status_label.set_state("ok", "Benchmark completed")
             if self._current_mode == "autotune":
                 self.refresh_saved_presets_table()
             if hasattr(self.parent, "refresh_build_registry"):
@@ -2421,23 +2482,43 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
                 self._autotune_active_run = None
             if self._current_mode == "autotune":
                 self.refresh_saved_presets_table()
-            self.status_label.setText("Benchmark failed")
+            self.status_label.set_state("error", "Benchmark failed")
             QMessageBox.warning(self, "Bench", "Benchmark/autotune failed. Check log output.")
 
         self.bench_thread = None
 
+    def _show_history_context_menu(self, pos):
+        if self.presets_table.rowCount() == 0:
+            return
+        index = self.presets_table.indexAt(pos)
+        if index.isValid():
+            self.presets_table.selectRow(index.row())
+        menu = QMenu(self.presets_table)
+        apply_action = menu.addAction("Apply Default")
+        apply_action.triggered.connect(self.apply_selected_run_as_default_preset)
+        apply_action.setEnabled(self.apply_history_preset_btn.isEnabled())
+        menu.addSeparator()
+        menu.addAction(self.open_history_log_action)
+        menu.addAction(self.copy_history_log_action)
+        menu.addAction(self.copy_history_row_action)
+        menu.addSeparator()
+        menu.addAction(self.delete_history_run_action)
+        menu.exec(self.presets_table.viewport().mapToGlobal(pos))
+
     def _set_running_state(self, running: bool):
+        if running:
+            self.status_label.set_state("busy")
         self.run_bench_btn.setEnabled(not running)
         self.run_autotune_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
         self.model_browse_btn.setEnabled(not running)
         self.model_refresh_btn.setEnabled(not running)
         self.apply_history_preset_btn.setEnabled(not running)
-        self.delete_history_run_btn.setEnabled(not running)
         self.refresh_history_btn.setEnabled(not running)
-        self.open_history_log_btn.setEnabled(not running)
-        self.copy_history_log_btn.setEnabled(not running)
-        self.copy_history_row_btn.setEnabled(not running)
+        self.open_history_log_action.setEnabled(not running)
+        self.copy_history_log_action.setEnabled(not running)
+        self.copy_history_row_action.setEnabled(not running)
+        self.delete_history_run_action.setEnabled(not running)
         self.at_batch_min_spin.setEnabled(not running)
         self.at_batch_max_spin.setEnabled(not running)
         self.at_batch_step_spin.setEnabled(not running)

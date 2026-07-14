@@ -10,6 +10,8 @@ from typing import Any, Dict, List
 
 import psutil
 
+from proc_utils import run_hidden
+
 
 class HardwareDetector:
     """Collect the hardware facts used by the GUI build recommendations."""
@@ -20,7 +22,7 @@ class HardwareDetector:
     @staticmethod
     def _run(command: List[str], timeout: int = 5) -> subprocess.CompletedProcess[str] | None:
         try:
-            return subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+            return run_hidden(command, capture_output=True, text=True, timeout=timeout, check=False)
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             return None
 

@@ -432,9 +432,9 @@ class BuildsInfoTabWidget(QWidget):
     def _get_git_commit(build_path: Path) -> str:
         """Get git commit hash from build"""
         try:
-            import subprocess
+            from proc_utils import run_hidden
 
-            result = subprocess.run(
+            result = run_hidden(
                 ["git", "rev-parse", "--short", "HEAD"],
                 cwd=build_path.parent,
                 capture_output=True,

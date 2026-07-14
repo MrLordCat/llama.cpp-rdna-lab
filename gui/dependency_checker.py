@@ -4,6 +4,8 @@ Dependency checker and installer for llama.cpp GUI
 
 import sys
 import subprocess
+
+from proc_utils import run_hidden
 import shutil
 from pathlib import Path
 from typing import List, Tuple, Optional
@@ -103,7 +105,7 @@ class DependencyChecker:
         """Return True if the executable responds to its check command."""
         try:
             check_cmd = [path] + tool_info["check_cmd"][1:]
-            result = subprocess.run(check_cmd, capture_output=True, timeout=5)
+            result = run_hidden(check_cmd, capture_output=True, timeout=5)
             return result.returncode == 0
         except:
             return False

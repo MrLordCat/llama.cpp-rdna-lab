@@ -3,8 +3,9 @@
 import json
 from pathlib import Path
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton, QLineEdit, QSpinBox,
-    QDoubleSpinBox, QComboBox, QCheckBox, QTextEdit, QFileDialog, QMessageBox, QScrollArea, QSplitter, QSizePolicy
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QLabel, QPushButton, QLineEdit,
+    QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox, QTextEdit, QFileDialog, QMessageBox, QScrollArea, QSplitter,
+    QSizePolicy
 )
 import os
 import re
@@ -17,6 +18,7 @@ from threads import ServerThread
 from server_backend_panels import BackendPanels
 from server_monitor import ServerMonitorPanel, ServerMonitorThread
 from server_presets import ServerPresetsMixin
+from ui_widgets import CollapsibleSection, LogView, StatusPill
 
 
 class ServerTabWidget(ServerPresetsMixin, QWidget):
@@ -61,6 +63,22 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             app.aboutToQuit.connect(self.monitor_thread.stop)
         self.monitor_thread.start()
 
+    @staticmethod
+    def _grid_pair(grid, row: int, pair: int, text: str, widget) -> None:
+        """Place a right-aligned label + uniformly sized field into a grid.
+
+        Pair N occupies columns 2N (label) and 2N+1 (field) so every group
+        using this helper gets the same visual rhythm.
+        """
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(label, row, pair * 2)
+        if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+            widget.setFixedWidth(96)
+        elif isinstance(widget, QComboBox):
+            widget.setMinimumWidth(110)
+        grid.addWidget(widget, row, pair * 2 + 1)
+
     def create_ui(self):
         """Create server tab UI with QSplitter layout"""
         layout = QVBoxLayout(self)
@@ -103,7 +121,9 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
 
         # Model list: label + combo + refresh on one row
         model_list_row = QHBoxLayout()
-        model_list_row.addWidget(QLabel("Available Models:"))
+        models_label = QLabel("Available Models:")
+        models_label.setFixedWidth(108)
+        model_list_row.addWidget(models_label)
         self.server_models_combo = QComboBox()
         self.server_models_combo.currentTextChanged.connect(self.on_server_model_selected)
         model_list_row.addWidget(self.server_models_combo, 1)
@@ -137,7 +157,9 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         # from gui/model_presets.json and is re-applied automatically when a
         # model is picked — the button is a manual re-apply.
         preset_layout = QHBoxLayout()
-        preset_layout.addWidget(QLabel("Quick preset:"))
+        preset_label = QLabel("Quick preset:")
+        preset_label.setFixedWidth(108)
+        preset_layout.addWidget(preset_label)
         self.server_preset_combo = QComboBox()
         self.server_preset_combo.addItems(["Default", "Fast", "Quality", "Balanced", "VRAM Limited", "CPU Fallback"])
         self.server_preset_combo.setToolTip("Generic starting points; applied immediately on selection")
@@ -158,91 +180,72 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         model_group.setLayout(model_layout)
         scroll_layout.addWidget(model_group)
 
-        # Server settings
+        # Server settings — one aligned grid: label/field pairs in fixed columns
         server_group = QGroupBox("Server Configuration")
-        server_layout = QVBoxLayout()
+        server_grid = QGridLayout()
+        server_grid.setHorizontalSpacing(10)
+        server_grid.setVerticalSpacing(8)
 
-        # Host and port
-        host_layout = QHBoxLayout()
-        host_layout.addWidget(QLabel("Host:"))
         self.server_host_input = QLineEdit()
         self.server_host_input.setText("0.0.0.0")
-        self.server_host_input.setMaximumWidth(120)
-        host_layout.addWidget(self.server_host_input)
+        self.server_host_input.setFixedWidth(110)
 
-        host_layout.addWidget(QLabel("Port:"))
         self.server_port_spinbox = QSpinBox()
         self.server_port_spinbox.setMinimum(1024)
         self.server_port_spinbox.setMaximum(65535)
         self.server_port_spinbox.setValue(8000)
-        self.server_port_spinbox.setMaximumWidth(80)
-        host_layout.addWidget(self.server_port_spinbox)
 
-        host_layout.addWidget(QLabel("Mode:"))
         self.server_mode_combo = QComboBox()
         self.server_mode_combo.addItems(["Inference", "Embedding"])
         self.server_mode_combo.setToolTip("Embedding starts the server with --embeddings (embedding endpoint only)")
-        host_layout.addWidget(self.server_mode_combo)
-        host_layout.addStretch()
-        server_layout.addLayout(host_layout)
 
-        build_layout = QHBoxLayout()
-        build_layout.addWidget(QLabel("Build Backend:"))
-        self.server_build_backend_combo = QComboBox()
-        self.server_build_backend_combo.currentTextChanged.connect(self._on_build_backend_changed)
-        build_layout.addWidget(self.server_build_backend_combo)
+        self.server_parallel_spinbox = QSpinBox()
+        self.server_parallel_spinbox.setMinimum(1)
+        self.server_parallel_spinbox.setMaximum(8)
+        self.server_parallel_spinbox.setValue(1)
 
-        build_layout.addWidget(QLabel("Build Version:"))
-        self.server_build_version_combo = QComboBox()
-        build_layout.addWidget(self.server_build_version_combo)
-        build_layout.addStretch()
-        server_layout.addLayout(build_layout)
-
-        # Thread settings
-        thread_layout = QHBoxLayout()
-        thread_layout.addWidget(QLabel("Threads:"))
         self.server_threads_spinbox = QSpinBox()
         self.server_threads_spinbox.setMinimum(1)
         self.server_threads_spinbox.setMaximum(64)
         self.server_threads_spinbox.setValue(8)
-        thread_layout.addWidget(self.server_threads_spinbox)
 
-        thread_layout.addWidget(QLabel("Batch:"))
         self.server_batch_spinbox = QSpinBox()
         self.server_batch_spinbox.setMinimum(32)
         self.server_batch_spinbox.setMaximum(8192)
         self.server_batch_spinbox.setValue(2048)
         self.server_batch_spinbox.setSingleStep(32)
-        thread_layout.addWidget(self.server_batch_spinbox)
 
-        thread_layout.addWidget(QLabel("UBatch:"))
         self.server_ubatch_spinbox = QSpinBox()
         self.server_ubatch_spinbox.setMinimum(32)
         self.server_ubatch_spinbox.setMaximum(8192)
         self.server_ubatch_spinbox.setValue(512)
         self.server_ubatch_spinbox.setSingleStep(32)
-        thread_layout.addWidget(self.server_ubatch_spinbox)
 
-        thread_layout.addWidget(QLabel("HTTP Threads:"))
         self.server_http_threads_spinbox = QSpinBox()
         self.server_http_threads_spinbox.setMinimum(1)
         self.server_http_threads_spinbox.setMaximum(64)
         self.server_http_threads_spinbox.setValue(max(1, (os.cpu_count() or 8) // 2))
-        thread_layout.addWidget(self.server_http_threads_spinbox)
-        thread_layout.addStretch()
-        server_layout.addLayout(thread_layout)
 
-        parallel_layout = QHBoxLayout()
-        parallel_layout.addWidget(QLabel("Parallel:"))
-        self.server_parallel_spinbox = QSpinBox()
-        self.server_parallel_spinbox.setMinimum(1)
-        self.server_parallel_spinbox.setMaximum(8)
-        self.server_parallel_spinbox.setValue(1)
-        parallel_layout.addWidget(self.server_parallel_spinbox)
-        parallel_layout.addStretch()
-        server_layout.addLayout(parallel_layout)
+        self.server_build_backend_combo = QComboBox()
+        self.server_build_backend_combo.currentTextChanged.connect(self._on_build_backend_changed)
+        self.server_build_version_combo = QComboBox()
 
-        server_group.setLayout(server_layout)
+        self._grid_pair(server_grid, 0, 0, "Host:", self.server_host_input)
+        self._grid_pair(server_grid, 0, 1, "Port:", self.server_port_spinbox)
+        self._grid_pair(server_grid, 0, 2, "Mode:", self.server_mode_combo)
+        self._grid_pair(server_grid, 0, 3, "Parallel:", self.server_parallel_spinbox)
+        self._grid_pair(server_grid, 1, 0, "Threads:", self.server_threads_spinbox)
+        self._grid_pair(server_grid, 1, 1, "Batch:", self.server_batch_spinbox)
+        self._grid_pair(server_grid, 1, 2, "UBatch:", self.server_ubatch_spinbox)
+        self._grid_pair(server_grid, 1, 3, "HTTP Threads:", self.server_http_threads_spinbox)
+        self._grid_pair(server_grid, 2, 0, "Backend:", self.server_build_backend_combo)
+        backend_version_label = QLabel("Version:")
+        backend_version_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        server_grid.addWidget(backend_version_label, 2, 2)
+        server_grid.addWidget(self.server_build_version_combo, 2, 3, 1, 5)
+        server_grid.setColumnStretch(8, 1)
+
+        server_group.setLayout(server_grid)
         scroll_layout.addWidget(server_group)
 
         # Backend-specific settings: sub-tabs per build backend (ROCm/Vulkan/CPU).
@@ -259,20 +262,21 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         backend_panels_group.setLayout(backend_panels_layout)
         scroll_layout.addWidget(backend_panels_group)
 
-        # Resources
-        resources_group = QGroupBox("Resources")
-        resources_layout = QVBoxLayout()
+        # Resources + Speculative Decoding share one row: params are narrow,
+        # so pairing groups uses the panel width instead of growing downward
+        res_spec_row = QHBoxLayout()
+        res_spec_row.setSpacing(8)
 
-        # GPU layers
-        gpu_layout = QHBoxLayout()
-        gpu_layout.addWidget(QLabel("GPU Layers:"))
+        resources_group = QGroupBox("Resources")
+        resources_grid = QGridLayout()
+        resources_grid.setHorizontalSpacing(10)
+        resources_grid.setVerticalSpacing(8)
+
         self.server_gpu_layers_spinbox = QSpinBox()
         self.server_gpu_layers_spinbox.setMinimum(0)
         self.server_gpu_layers_spinbox.setMaximum(999)
         self.server_gpu_layers_spinbox.setValue(99)
-        gpu_layout.addWidget(self.server_gpu_layers_spinbox)
 
-        gpu_layout.addWidget(QLabel("Context:"))
         self.server_context_spinbox = QSpinBox()
         self.server_context_spinbox.setMinimum(8192)
         self.server_context_spinbox.setMaximum(self.SERVER_CONTEXT_MAX)
@@ -282,13 +286,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             "Server context size in tokens. Qwen3.6 advertises 262144 tokens;\n"
             "larger values still require enough VRAM/RAM and may need quantized KV cache."
         )
-        gpu_layout.addWidget(self.server_context_spinbox)
-        gpu_layout.addStretch()
-        resources_layout.addLayout(gpu_layout)
 
-        # KV Cache
-        kv_layout = QHBoxLayout()
-        kv_layout.addWidget(QLabel("KV Cache Type:"))
         self.server_kv_type_combo = QComboBox()
         self.server_kv_type_combo.addItems([
             "f16", "bf16", "f32", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl",
@@ -304,12 +302,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             "tq3_0: TurboQuant GPU KV cache\n"
             "TurboQuant KV types force flash_attn=on."
         )
-        kv_layout.addWidget(self.server_kv_type_combo)
-        kv_layout.addStretch()
-        resources_layout.addLayout(kv_layout)
 
-        cache_layout = QHBoxLayout()
-        cache_layout.addWidget(QLabel("Prompt Cache MiB:"))
         self.server_prompt_cache_ram_spinbox = QSpinBox()
         self.server_prompt_cache_ram_spinbox.setRange(0, 65536)
         self.server_prompt_cache_ram_spinbox.setSingleStep(256)
@@ -317,18 +310,14 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_prompt_cache_ram_spinbox.setToolTip(
             "RAM budget for saved idle prompts. Zero disables the separate prompt cache; active-slot prefix reuse remains available."
         )
-        cache_layout.addWidget(self.server_prompt_cache_ram_spinbox)
 
-        cache_layout.addWidget(QLabel("Checkpoints:"))
         self.server_ctx_checkpoints_spinbox = QSpinBox()
         self.server_ctx_checkpoints_spinbox.setRange(0, 64)
         self.server_ctx_checkpoints_spinbox.setValue(4)
         self.server_ctx_checkpoints_spinbox.setToolTip(
             "Number of recurrent/SWA rollback checkpoints retained per slot. Qwen3.6 checkpoints are about 150 MiB each."
         )
-        cache_layout.addWidget(self.server_ctx_checkpoints_spinbox)
 
-        cache_layout.addWidget(QLabel("Interval:"))
         self.server_checkpoint_interval_spinbox = QSpinBox()
         self.server_checkpoint_interval_spinbox.setRange(-1, self.SERVER_CONTEXT_MAX)
         self.server_checkpoint_interval_spinbox.setSpecialValueText("Off")
@@ -337,29 +326,38 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_checkpoint_interval_spinbox.setToolTip(
             "Checkpoint interval during long prefill. Off still permits the required near-end rollback checkpoint."
         )
-        cache_layout.addWidget(self.server_checkpoint_interval_spinbox)
-        cache_layout.addStretch()
-        resources_layout.addLayout(cache_layout)
 
-        resources_group.setLayout(resources_layout)
-        scroll_layout.addWidget(resources_group)
+        self._grid_pair(resources_grid, 0, 0, "GPU Layers:", self.server_gpu_layers_spinbox)
+        self._grid_pair(resources_grid, 0, 1, "Context:", self.server_context_spinbox)
+        self._grid_pair(resources_grid, 1, 0, "KV Cache:", self.server_kv_type_combo)
+        self._grid_pair(resources_grid, 1, 1, "Prompt Cache MiB:", self.server_prompt_cache_ram_spinbox)
+        self._grid_pair(resources_grid, 2, 0, "Checkpoints:", self.server_ctx_checkpoints_spinbox)
+        self._grid_pair(resources_grid, 2, 1, "Interval:", self.server_checkpoint_interval_spinbox)
+        resources_grid.setColumnStretch(4, 1)
+        resources_grid.setRowStretch(3, 1)
+        resources_group.setLayout(resources_grid)
+        res_spec_row.addWidget(resources_group, 1)
 
-        # Speculative Decoding
+        # Speculative Decoding — separate sub-grids per parameter family so
+        # on_spec_type_changed can enable/disable them as before
         spec_group = QGroupBox("Speculative Decoding")
         spec_layout = QVBoxLayout()
+        spec_layout.setSpacing(8)
 
-        spec_type_layout = QHBoxLayout()
-        spec_type_layout.addWidget(QLabel("Type:"))
+        spec_type_grid = QGridLayout()
+        spec_type_grid.setHorizontalSpacing(10)
+        spec_type_grid.setColumnMinimumWidth(0, 84)
         self.server_spec_type_combo = QComboBox()
         self.server_spec_type_combo.addItems(["None", "draft", "ngram-mod", "mtp"])
         self.server_spec_type_combo.currentTextChanged.connect(self.on_spec_type_changed)
-        spec_type_layout.addWidget(self.server_spec_type_combo)
-        spec_type_layout.addStretch()
-        spec_layout.addLayout(spec_type_layout)
+        self._grid_pair(spec_type_grid, 0, 0, "Type:", self.server_spec_type_combo)
+        spec_type_grid.setColumnStretch(2, 1)
+        spec_layout.addLayout(spec_type_grid)
 
         # Speculative params (enabled only for mtp/draft types)
-        draft_layout = QHBoxLayout()
-        draft_layout.addWidget(QLabel("Draft Max N:"))
+        draft_grid = QGridLayout()
+        draft_grid.setHorizontalSpacing(10)
+        draft_grid.setColumnMinimumWidth(0, 84)
         self.server_spec_draft_n_max = QSpinBox()
         self.server_spec_draft_n_max.setMinimum(1)
         self.server_spec_draft_n_max.setMaximum(20)
@@ -368,77 +366,81 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             "--spec-draft-n-max: max draft tokens per verify step. "
             "2 is the safer default for long prompts; tune higher values manually."
         )
-        draft_layout.addWidget(self.server_spec_draft_n_max)
-        draft_layout.addStretch()
-        spec_layout.addLayout(draft_layout)
-        self.draft_layout_group = draft_layout
+        self._grid_pair(draft_grid, 0, 0, "Draft Max N:", self.server_spec_draft_n_max)
+        draft_grid.setColumnStretch(2, 1)
+        spec_layout.addLayout(draft_grid)
+        self.draft_layout_group = draft_grid
 
         # NGram parameters
-        ngram_layout = QHBoxLayout()
-        ngram_layout.addWidget(QLabel("NGram Min:"))
+        ngram_grid = QGridLayout()
+        ngram_grid.setHorizontalSpacing(10)
+        ngram_grid.setColumnMinimumWidth(0, 84)
         self.server_ngram_min = QSpinBox()
         self.server_ngram_min.setMinimum(1)
         self.server_ngram_min.setMaximum(512)
         self.server_ngram_min.setValue(self.NGRAM_MOD_N_MIN)
-        ngram_layout.addWidget(self.server_ngram_min)
 
-        ngram_layout.addWidget(QLabel("Match:"))
         self.server_ngram_match = QSpinBox()
         self.server_ngram_match.setMinimum(1)
         self.server_ngram_match.setMaximum(512)
         self.server_ngram_match.setValue(self.NGRAM_MOD_N_MATCH)
-        ngram_layout.addWidget(self.server_ngram_match)
 
-        ngram_layout.addWidget(QLabel("Max:"))
         self.server_ngram_max = QSpinBox()
         self.server_ngram_max.setMinimum(1)
         self.server_ngram_max.setMaximum(512)
         self.server_ngram_max.setValue(self.NGRAM_MOD_N_MAX)
-        ngram_layout.addWidget(self.server_ngram_max)
-        ngram_layout.addStretch()
-        spec_layout.addLayout(ngram_layout)
 
-        self.ngram_layout_group = ngram_layout
+        self._grid_pair(ngram_grid, 0, 0, "NGram Min:", self.server_ngram_min)
+        self._grid_pair(ngram_grid, 0, 1, "Match:", self.server_ngram_match)
+        self._grid_pair(ngram_grid, 0, 2, "Max:", self.server_ngram_max)
+        ngram_grid.setColumnStretch(6, 1)
+        spec_layout.addLayout(ngram_grid)
+
+        self.ngram_layout_group = ngram_grid
         self.ngram_layout_group.setEnabled(False)
 
+        spec_layout.addStretch(1)
         spec_group.setLayout(spec_layout)
-        scroll_layout.addWidget(spec_group)
+        res_spec_row.addWidget(spec_group, 1)
+        scroll_layout.addLayout(res_spec_row)
 
-        # Sampling
+        # Sampling + Performance Options share the next row
+        samp_perf_row = QHBoxLayout()
+        samp_perf_row.setSpacing(8)
+
         sampling_group = QGroupBox("Sampling Parameters")
-        sampling_layout = QVBoxLayout()
+        sampling_grid = QGridLayout()
+        sampling_grid.setHorizontalSpacing(10)
+        sampling_grid.setVerticalSpacing(8)
 
-        temp_layout = QHBoxLayout()
-        temp_layout.addWidget(QLabel("Temperature:"))
         self.server_temperature_spinbox = QDoubleSpinBox()
         self.server_temperature_spinbox.setMinimum(0.0)
         self.server_temperature_spinbox.setMaximum(2.0)
         self.server_temperature_spinbox.setValue(0.7)
         self.server_temperature_spinbox.setSingleStep(0.1)
-        temp_layout.addWidget(self.server_temperature_spinbox)
 
-        temp_layout.addWidget(QLabel("Top-P:"))
         self.server_top_p_spinbox = QDoubleSpinBox()
         self.server_top_p_spinbox.setMinimum(0.0)
         self.server_top_p_spinbox.setMaximum(1.0)
         self.server_top_p_spinbox.setValue(0.95)
         self.server_top_p_spinbox.setSingleStep(0.05)
-        temp_layout.addWidget(self.server_top_p_spinbox)
 
-        temp_layout.addWidget(QLabel("Top-K:"))
         self.server_top_k_spinbox = QSpinBox()
         self.server_top_k_spinbox.setMinimum(0)
         self.server_top_k_spinbox.setMaximum(500)
         self.server_top_k_spinbox.setValue(40)
-        temp_layout.addWidget(self.server_top_k_spinbox)
-        temp_layout.addStretch()
-        sampling_layout.addLayout(temp_layout)
 
-        sampling_group.setLayout(sampling_layout)
-        scroll_layout.addWidget(sampling_group)
+        self._grid_pair(sampling_grid, 0, 0, "Temperature:", self.server_temperature_spinbox)
+        self._grid_pair(sampling_grid, 0, 1, "Top-P:", self.server_top_p_spinbox)
+        self._grid_pair(sampling_grid, 1, 0, "Top-K:", self.server_top_k_spinbox)
+        sampling_grid.setColumnStretch(4, 1)
+        sampling_grid.setRowStretch(2, 1)
+        sampling_group.setLayout(sampling_grid)
+        samp_perf_row.addWidget(sampling_group, 1)
 
         perf_group = QGroupBox("Performance Options")
         perf_layout = QVBoxLayout()
+        perf_layout.setSpacing(6)
 
         self.server_flash_attn_check = QCheckBox("Enable Flash Attention")
         self.server_flash_attn_check.setChecked(True)
@@ -454,7 +456,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         perf_layout.addWidget(self.server_no_mmap_check)
 
         self.server_disable_thinking_check = QCheckBox(
-            "Disable thinking for benchmark-like throughput (--chat-template-kwargs)"
+            "Disable thinking for throughput (--chat-template-kwargs)"
         )
         self.server_disable_thinking_check.setChecked(False)
         perf_layout.addWidget(self.server_disable_thinking_check)
@@ -463,29 +465,37 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_auto_fit_check.setChecked(True)
         perf_layout.addWidget(self.server_auto_fit_check)
 
+        perf_layout.addStretch(1)
         perf_group.setLayout(perf_layout)
-        scroll_layout.addWidget(perf_group)
+        samp_perf_row.addWidget(perf_group, 1)
+        scroll_layout.addLayout(samp_perf_row)
 
-        # CORS and API key
-        cors_group = QGroupBox("Security & API")
+        # Security & API + Extra Arguments share the last row
+        sec_extra_row = QHBoxLayout()
+        sec_extra_row.setSpacing(8)
+
+        cors_group = QGroupBox("Security && API")
         cors_layout = QVBoxLayout()
+        cors_layout.setSpacing(8)
 
         self.server_cors_check = QCheckBox("Enable CORS")
         self.server_cors_check.setChecked(True)
         cors_layout.addWidget(self.server_cors_check)
 
         api_key_layout = QHBoxLayout()
-        api_key_layout.addWidget(QLabel("API Key:"))
+        api_key_label = QLabel("API Key:")
+        api_key_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        api_key_layout.addWidget(api_key_label)
         self.server_api_key_input = QLineEdit()
         self.server_api_key_input.setPlaceholderText("Leave empty for no key")
         self.server_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        api_key_layout.addWidget(self.server_api_key_input)
+        api_key_layout.addWidget(self.server_api_key_input, 1)
         cors_layout.addLayout(api_key_layout)
 
+        cors_layout.addStretch(1)
         cors_group.setLayout(cors_layout)
-        scroll_layout.addWidget(cors_group)
+        sec_extra_row.addWidget(cors_group, 1)
 
-        # Extra arguments
         extra_args_group = QGroupBox("Extra Arguments")
         extra_args_layout = QVBoxLayout()
 
@@ -495,7 +505,8 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         extra_args_layout.addWidget(self.server_extra_args)
 
         extra_args_group.setLayout(extra_args_layout)
-        scroll_layout.addWidget(extra_args_group)
+        sec_extra_row.addWidget(extra_args_group, 1)
+        scroll_layout.addLayout(sec_extra_row)
         scroll_layout.addStretch(1)
 
         scroll_area.setWidget(scroll_widget)
@@ -538,33 +549,37 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         buttons_layout.addStretch()
         right_layout.addLayout(buttons_layout)
 
-        # Status
-        self.server_status_label = QLabel("Status: Stopped")
-        self.server_status_label.setStyleSheet("font-weight: bold; color: red;")
-        right_layout.addWidget(self.server_status_label)
+        # Status pill
+        status_row = QHBoxLayout()
+        self.server_status_label = StatusPill("● Stopped")
+        status_row.addWidget(self.server_status_label)
+        status_row.addStretch()
+        right_layout.addLayout(status_row)
 
         # Live monitor: GPU/RAM load + server throughput from /metrics
         self.monitor_panel = ServerMonitorPanel()
         right_layout.addWidget(self.monitor_panel)
 
         # Live command preview: exactly what Start Server will run
-        preview_group = QGroupBox("Command Preview")
-        preview_layout = QVBoxLayout()
         self.server_cmd_preview = QTextEdit()
         self.server_cmd_preview.setReadOnly(True)
         self.server_cmd_preview.setMaximumHeight(190)
         self.server_cmd_preview.setStyleSheet("font-family: Consolas, 'Courier New', monospace; font-size: 11px;")
         self.server_cmd_preview.setToolTip("Full llama-server command with env overrides, updated as you change settings")
-        preview_layout.addWidget(self.server_cmd_preview)
-        preview_group.setLayout(preview_layout)
-        right_layout.addWidget(preview_group)
+        settings = self.parent.settings if hasattr(self.parent, "settings") else None
+        preview_section = CollapsibleSection(
+            "Command Preview",
+            self.server_cmd_preview,
+            settings=settings,
+            settings_key="server/command_preview_expanded",
+        )
+        right_layout.addWidget(preview_section)
 
         # Log output
         log_label = QLabel("Server Output Log:")
         right_layout.addWidget(log_label)
 
-        self.server_log = QTextEdit()
-        self.server_log.setReadOnly(True)
+        self.server_log = LogView()
         self.server_log.setMinimumHeight(220)
         self.server_log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         right_layout.addWidget(self.server_log, 1)
@@ -574,9 +589,10 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         splitter.addWidget(right_widget)
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        splitter.setSizes([600, 400])
+        # params benefit from width (paired groups); monitor/logs don't
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([950, 450])
 
         layout.addWidget(splitter, 1)
 
@@ -930,8 +946,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_start_btn.setEnabled(False)
         self.server_stop_btn.setEnabled(True)
         self.server_web_btn.setEnabled(False)
-        self.server_status_label.setText("Status: Starting...")
-        self.server_status_label.setStyleSheet("font-weight: bold; color: orange;")
+        self.server_status_label.set_state("busy", "Starting…")
 
         if self.parent.statusBar():
             self.parent.statusBar().showMessage("Starting server...")
@@ -1109,8 +1124,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
     def on_server_ready(self, url: str):
         """Handle server ready event"""
         self.server_web_btn.setEnabled(True)
-        self.server_status_label.setText(f"Status: Running ({url})")
-        self.server_status_label.setStyleSheet("font-weight: bold; color: green;")
+        self.server_status_label.set_state("ok", f"Running ({url})")
         if self.parent.statusBar():
             self.parent.statusBar().showMessage(f"Server running: {url}")
 
@@ -1131,12 +1145,10 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_stop_btn.setEnabled(False)
         self.server_web_btn.setEnabled(False)
         if exit_code == 0:
-            self.server_status_label.setText("Status: Stopped")
-            self.server_status_label.setStyleSheet("font-weight: bold; color: red;")
+            self.server_status_label.set_state("neutral", "Stopped")
             self.server_log.append("[INFO] Server stopped")
         else:
-            self.server_status_label.setText(f"Status: Crashed (exit {exit_code})")
-            self.server_status_label.setStyleSheet("font-weight: bold; color: red;")
+            self.server_status_label.set_state("error", f"Crashed (exit {exit_code})")
             self.server_log.append(f"[ERROR] Server crashed with exit code {exit_code}")
         if self.parent.statusBar():
             self.parent.statusBar().showMessage("Server stopped")
@@ -1156,19 +1168,17 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             )
 
         if "listening" in message.lower() or "started" in message.lower():
-            self.server_status_label.setText("Status: Running ✓")
-            self.server_status_label.setStyleSheet("font-weight: bold; color: green;")
+            self.server_status_label.set_state("ok", "Running ✓")
             if self.parent.statusBar():
                 self.parent.statusBar().showMessage("Server running on port " + str(self.server_port_spinbox.value()))
         elif "error" in message.lower():
-            self.server_status_label.setStyleSheet("font-weight: bold; color: red;")
+            self.server_status_label.set_state("error")
 
     def on_server_error(self, error: str):
         """Handle server error"""
         self.monitor_thread.clear_server()
         self.server_log.append(f"[ERROR] {error}")
-        self.server_status_label.setText("Status: Error ✗")
-        self.server_status_label.setStyleSheet("font-weight: bold; color: red;")
+        self.server_status_label.set_state("error", "Error ✗")
         self.server_start_btn.setEnabled(True)
         self.server_stop_btn.setEnabled(False)
         self.server_web_btn.setEnabled(False)
@@ -1182,8 +1192,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             self.server_thread.stop()
             self.server_stop_btn.setEnabled(False)
             self.server_web_btn.setEnabled(False)
-            self.server_status_label.setText("Status: Stopping")
-            self.server_status_label.setStyleSheet("font-weight: bold; color: #d7a72d;")
+            self.server_status_label.set_state("busy", "Stopping…")
             self.server_log.append("[INFO] Graceful server shutdown requested")
             if self.parent.statusBar():
                 self.parent.statusBar().showMessage("Stopping server gracefully")

@@ -4,6 +4,8 @@
 
 import os
 import subprocess
+
+from proc_utils import HIDDEN_CREATIONFLAGS, run_hidden
 import platform
 import shutil
 from pathlib import Path
@@ -40,7 +42,8 @@ class ConfigureThread(QThread):
                 cwd=self.working_dir,
                 bufsize=1,
                 universal_newlines=True,
-                env=process_env
+                env=process_env,
+                creationflags=HIDDEN_CREATIONFLAGS,
             )
             
             for line in process.stdout:
@@ -127,7 +130,8 @@ class BuildThread(QThread):
                     cwd=self.working_dir,
                     bufsize=1,
                     universal_newlines=True,
-                    env=process_env
+                    env=process_env,
+                    creationflags=HIDDEN_CREATIONFLAGS,
                 )
                 
                 for line in process.stdout:
@@ -208,7 +212,7 @@ class BuildManager:
         if self.os_type != "Windows":
             # On Linux, try rocminfo
             try:
-                result = subprocess.run(
+                result = run_hidden(
                     ["rocminfo"],
                     capture_output=True,
                     text=True,
@@ -252,7 +256,7 @@ class BuildManager:
             rocm_bin = hipinfo_exe.parent
             env["PATH"] = f"{rocm_bin};{env.get('PATH', '')}"
             
-            result = subprocess.run(
+            result = run_hidden(
                 [str(hipinfo_exe)],
                 capture_output=True,
                 text=True,
@@ -308,7 +312,7 @@ class BuildManager:
         try:
             # Run vcvarsall x64 and print all environment variables
             cmd = f'"{vcvarsall}" x64 && set'
-            result = subprocess.run(
+            result = run_hidden(
                 cmd,
                 shell=True,
                 capture_output=True,
@@ -511,7 +515,7 @@ class BuildManager:
             if not vswhere or not Path(vswhere).exists():
                 continue
             try:
-                result = subprocess.run(
+                result = run_hidden(
                     [
                         vswhere,
                         "-latest",
@@ -557,7 +561,7 @@ class BuildManager:
         """Проверка доступности генератора CMake"""
         try:
             cmake_cmd = self._get_tool_command("cmake")
-            result = subprocess.run(
+            result = run_hidden(
                 [cmake_cmd, "-G", generator, "--help"],
                 capture_output=True,
                 timeout=3
@@ -768,7 +772,7 @@ class BuildManager:
         
         # Проверка наличия winget
         try:
-            subprocess.run(["winget", "--version"], capture_output=True, timeout=3)
+            run_hidden(["winget", "--version"], capture_output=True, timeout=3)
             has_winget = True
         except:
             has_winget = False
@@ -823,7 +827,7 @@ class BuildManager:
         """Проверка наличия инструмента"""
         try:
             tool_cmd = self._get_tool_command(tool)
-            result = subprocess.run(
+            result = run_hidden(
                 [tool_cmd, "--version"],
                 capture_output=True,
                 timeout=3
@@ -844,7 +848,7 @@ class BuildManager:
         """Проверка наличия MSVC компилятора"""
         try:
             # Проверяем наличие cl.exe (компилятор MSVC)
-            result = subprocess.run(
+            result = run_hidden(
                 ["where", "cl.exe"],
                 capture_output=True,
                 timeout=3
@@ -873,7 +877,7 @@ class BuildManager:
                 return True
             # Check via vulkaninfo command
             try:
-                result = subprocess.run(["vulkaninfo", "--summary"], capture_output=True, timeout=5)
+                result = run_hidden(["vulkaninfo", "--summary"], capture_output=True, timeout=5)
                 return result.returncode == 0
             except:
                 pass
