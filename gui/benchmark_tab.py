@@ -280,8 +280,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
     # the selected ctx; Max 130K keeps the legacy short-prompt KV-stress semantics.
     AUTOTUNE_LANES = [
         ("Screen 12K — fast preset hunt",             12288,  24576),
-        ("Long 50K — long-prompt check",              49152,  147456),
-        ("Long 100K — long-prompt check",             98304,  294912),
+        ("Long ctx 49K — ~32K actual prompt",         49152,  147456),
+        ("Long ctx 98K — safety-capped prompt",       98304,  294912),
         ("Max 130K — KV stress (short prompt)",       131072, 24576),
         ("Custom",                                    0,      0),
     ]
@@ -383,6 +383,14 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             device_text = self.settings.value("benchmark/devices", "")
             if device_text:
                 idx = self.device_combo.findText(device_text)
+                if idx < 0:
+                    # Labels evolve as measured recommendations change. Restore
+                    # the actual device order from the stable prefix.
+                    device_prefix = str(device_text).split(" — ", 1)[0]
+                    for choice_idx in range(self.device_combo.count()):
+                        if self.device_combo.itemText(choice_idx).split(" — ", 1)[0] == device_prefix:
+                            idx = choice_idx
+                            break
                 if idx >= 0:
                     self.device_combo.setCurrentIndex(idx)
             self.scale_prompt_check.setChecked(
@@ -869,12 +877,12 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         custom_extra_row.addWidget(self.autotune_custom_extra_input)
         autotune_layout.addLayout(custom_extra_row)
 
-        self.autotune_device_sweep_check = QCheckBox("Sweep single vs dual GPU (adds device extra presets)")
+        self.autotune_device_sweep_check = QCheckBox("Sweep GPU order + single GPUs")
         self.autotune_device_sweep_check.setChecked(False)
         self.autotune_device_sweep_check.setToolTip(
-            "Cross-multiplies every extra preset with two device configurations\n"
-            "(dual layer-split and primary-GPU-only), so one run tells you which\n"
-            "placement wins. Overrides the Devices selection above."
+            "Cross-multiplies every extra preset with four device configurations:\n"
+            "both dual-GPU orders and each GPU by itself. This overrides the\n"
+            "Devices selection above and multiplies the autotune grid by four."
         )
         autotune_layout.addWidget(self.autotune_device_sweep_check)
 
@@ -1759,7 +1767,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             f"[INFO] Lane: ctx={lane_ctx}, prompt chars={lane_chars}, configs: {config_count}"
         )
         if self.autotune_device_sweep_check.isChecked() and self._device_sweep_presets():
-            self.log_output.append("[INFO] Device sweep: single vs dual GPU (per-config extra presets)")
+            self.log_output.append("[INFO] Device sweep: both dual orders plus both single GPUs")
         if bench_env:
             env_summary = ", ".join(f"{key}={value}" for key, value in sorted(bench_env.items()))
             self.log_output.append(f"[INFO] Env overrides: {env_summary}")
@@ -1990,17 +1998,21 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         return []
 
     def _device_sweep_presets(self) -> list[tuple[str, str]]:
-        """(name, server-args) pairs for the single-vs-dual autotune sweep."""
+        """(name, server-args) pairs for the explicit device-placement sweep."""
         backend_key = self._backend_key_from_display(self.build_backend_combo.currentText().strip()).lower()
         if backend_key == "rocm":
             return [
-                ("dual", "-dev ROCm1,ROCm0 -sm layer -ts 1,1"),
-                ("single", "-dev ROCm1 -sm none"),
+                ("dual-1-0", "-dev ROCm1,ROCm0 -sm layer -ts 1,1"),
+                ("dual-0-1", "-dev ROCm0,ROCm1 -sm layer -ts 1,1"),
+                ("single-1", "-dev ROCm1 -sm none"),
+                ("single-0", "-dev ROCm0 -sm none"),
             ]
         if backend_key == "vulkan":
             return [
-                ("dual", "-dev Vulkan1,Vulkan0 -sm layer -ts 1,1"),
-                ("single", "-dev Vulkan1 -sm none"),
+                ("dual-0-1", "-dev Vulkan0,Vulkan1 -sm layer -ts 1,1"),
+                ("dual-1-0", "-dev Vulkan1,Vulkan0 -sm layer -ts 1,1"),
+                ("single-1", "-dev Vulkan1 -sm none"),
+                ("single-0", "-dev Vulkan0 -sm none"),
             ]
         return []
 

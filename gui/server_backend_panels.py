@@ -37,15 +37,16 @@ ROCM_DEVICE_CHOICES = [
     ("All GPUs — layer split (default order)", None,          "layer", None),
     ("ROCm1 only — diagnostics",               "ROCm1",      "none",  None),
     ("ROCm0 only — diagnostics",               "ROCm0",      "none",  None),
-    ("ROCm1,ROCm0 — layer split (MTP)",         "ROCm1,ROCm0", "layer", "1,1"),
+    ("ROCm1,ROCm0 — layer split (recommended)", "ROCm1,ROCm0", "layer", "1,1"),
+    ("ROCm0,ROCm1 — layer split (reverse order)", "ROCm0,ROCm1", "layer", "1,1"),
 ]
 
 VULKAN_DEVICE_CHOICES = [
     ("All GPUs — layer split (default order)",        None,              "layer", None),
     ("Vulkan0 only — diagnostics",                    "Vulkan0",         "none",  None),
     ("Vulkan1 only — diagnostics",                    "Vulkan1",         "none",  None),
-    ("Vulkan1,Vulkan0 — GPU1 primary (recommended)", "Vulkan1,Vulkan0", "layer", "1,1"),
-    ("Vulkan0,Vulkan1 — GPU0 primary (diagnostics)", "Vulkan0,Vulkan1", "layer", "1,1"),
+    ("Vulkan1,Vulkan0 — layer split (reverse order)", "Vulkan1,Vulkan0", "layer", "1,1"),
+    ("Vulkan0,Vulkan1 — layer split (MTP recommended)", "Vulkan0,Vulkan1", "layer", "1,1"),
 ]
 
 
@@ -108,8 +109,8 @@ class _RocmPanel(QWidget):
         spec_row.addWidget(QLabel("Spec prefill window (tokens):"))
         self.spec_window_spin = QSpinBox()
         self.spec_window_spin.setRange(0, 131072)
-        self.spec_window_spin.setSingleStep(1024)
-        self.spec_window_spin.setValue(8192)
+        self.spec_window_spin.setSingleStep(256)
+        self.spec_window_spin.setValue(256)
         self.spec_window_spin.setToolTip(
             "LLAMA_SPEC_PREFILL_WINDOW: with MTP/DFlash on long prompts, only the\n"
             "last N prompt tokens feed the draft context (skips the expensive\n"
@@ -130,7 +131,7 @@ class _RocmPanel(QWidget):
             out["GGML_ROCM_ENABLE_PEER_COPY"] = "1"
         if self.hsa_override_check.isChecked():
             out["HSA_OVERRIDE_GFX_VERSION"] = "11.0.0"
-        if self.spec_window_spin.value() != 8192:  # 8192 is the built-in default
+        if self.spec_window_spin.value() != 256:  # 256 is the server default
             out["LLAMA_SPEC_PREFILL_WINDOW"] = str(self.spec_window_spin.value())
         return out
 
@@ -140,6 +141,7 @@ class _RocmPanel(QWidget):
             "peer_copy": self.peer_copy_check.isChecked(),
             "hsa_override": self.hsa_override_check.isChecked(),
             "spec_window": self.spec_window_spin.value(),
+            "spec_window_default_256": True,
         }
 
     def from_settings(self, data: dict) -> None:
@@ -148,7 +150,10 @@ class _RocmPanel(QWidget):
             self.device_combo.setCurrentIndex(idx)
         self.peer_copy_check.setChecked(bool(data.get("peer_copy", False)))
         self.hsa_override_check.setChecked(bool(data.get("hsa_override", False)))
-        self.spec_window_spin.setValue(int(data.get("spec_window", 8192)))
+        spec_window = int(data.get("spec_window", 256))
+        if spec_window == 8192 and not data.get("spec_window_default_256", False):
+            spec_window = 256
+        self.spec_window_spin.setValue(spec_window)
 
 
 class _VulkanPanel(QWidget):
@@ -166,12 +171,12 @@ class _VulkanPanel(QWidget):
         self.device_combo = QComboBox()
         for choice in self.DEVICE_CHOICES:
             self.device_combo.addItem(choice[0])
-        self.device_combo.setCurrentIndex(3)
+        self.device_combo.setCurrentIndex(4)
         self.device_combo.setToolTip(
             "Which GPUs the server uses.\n"
-            "For long-context dual-GPU runs, use Vulkan1,Vulkan0 so GPU1 is\n"
-            "the first scheduler/output device and absorbs the extra compute\n"
-            "buffers. KV remains colocated with its split model layers."
+            "For MTP runs, Vulkan0,Vulkan1 currently preserves prompt throughput\n"
+            "while output tensors remain on Vulkan1. The reverse order is kept\n"
+            "for explicit A/B tests. KV stays with its split model layers."
         )
         dev_row.addWidget(self.device_combo, 1)
         layout.addLayout(dev_row)
@@ -202,8 +207,8 @@ class _VulkanPanel(QWidget):
         spec_row.addWidget(QLabel("Spec prefill window (tokens):"))
         self.spec_window_spin = QSpinBox()
         self.spec_window_spin.setRange(0, 131072)
-        self.spec_window_spin.setSingleStep(1024)
-        self.spec_window_spin.setValue(8192)
+        self.spec_window_spin.setSingleStep(256)
+        self.spec_window_spin.setValue(256)
         self.spec_window_spin.setToolTip(
             "LLAMA_SPEC_PREFILL_WINDOW: with MTP/DFlash on long prompts, only the\n"
             "last N prompt tokens feed the draft context (skips the expensive\n"
@@ -234,7 +239,7 @@ class _VulkanPanel(QWidget):
             out["LLAMA_OUTPUT_DEVICE"] = "Vulkan1"
         if self.kv_gpu1_check.isChecked():
             out["LLAMA_KV_DEVICE"] = "Vulkan1"
-        if self.spec_window_spin.value() != 8192:  # 8192 is the built-in default
+        if self.spec_window_spin.value() != 256:  # 256 is the server default
             out["LLAMA_SPEC_PREFILL_WINDOW"] = str(self.spec_window_spin.value())
         return out
 
@@ -245,16 +250,23 @@ class _VulkanPanel(QWidget):
             "kv_gpu1": self.kv_gpu1_check.isChecked(),
             "large_matmul": self.large_matmul_check.isChecked(),
             "spec_window": self.spec_window_spin.value(),
+            "spec_window_default_256": True,
+            "device_order_v2": True,
         }
 
     def from_settings(self, data: dict) -> None:
-        idx = int(data.get("device_index", 3))
+        idx = int(data.get("device_index", 4))
+        if idx == 3 and not data.get("device_order_v2", False):
+            idx = 4
         if 0 <= idx < self.device_combo.count():
             self.device_combo.setCurrentIndex(idx)
         self.output_gpu1_check.setChecked(bool(data.get("output_gpu1", True)))
         self.kv_gpu1_check.setChecked(bool(data.get("kv_gpu1", False)))
         self.large_matmul_check.setChecked(bool(data.get("large_matmul", True)))
-        self.spec_window_spin.setValue(int(data.get("spec_window", 8192)))
+        spec_window = int(data.get("spec_window", 256))
+        if spec_window == 8192 and not data.get("spec_window_default_256", False):
+            spec_window = 256
+        self.spec_window_spin.setValue(spec_window)
 
 
 class _CpuPanel(QWidget):
