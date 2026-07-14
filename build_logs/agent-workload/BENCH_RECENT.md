@@ -3,10 +3,14 @@
 Автоматически обновляется `scripts/agent_workload_bench.py`.
 Содержит последние прогоны с метриками, полезными для быстрого сравнения.
 
-Limit: latest 80 rows from `BENCH_RUNS.csv`.
+Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-07-14 08:52:20 | autotune | rocm | gui-autotune-Qwen3.6-27B-Q3_K_S_mtp-20260714-084902 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | sweep/sweep | sweep/sweep | ngram-mtp | 4.4943 | 1315.31 | 31.46 | 0 |
+| 2026-07-14 08:48:27 | autotune | vulkan | gui-autotune-Qwen3.6-27B-Q3_K_S_mtp-20260714-084532 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | sweep/sweep | sweep/sweep | mtp | 5.1818 | 1486.50 | 41.59 | 0 |
+| 2026-07-13 21:23:52 | cold-first | vulkan | modular-vulkan-mtp-smoke | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | mtp | 55.7880 | 344.2300 | 70.7600 | 0 |
+| 2026-07-13 21:22:54 | cold-first | vulkan | modular-vulkan-none-smoke | Qwen3.6-27B-Q3_K_S_mtp.gguf | 4096 | 512/128 | q4_0/q4_0 | none | 33.1434 | 529.8900 | 40.2500 | 0 |
 | 2026-07-13 17:42:18 | autotune | rocm | gui-autotune-Qwen3.6-27B-Q3_K_S_mtp-20260713-174042 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | sweep/sweep | sweep/sweep | ngram-mtp | 3.6345 | 1238.79 | 32.55 | 0 |
 | 2026-07-13 17:40:20 | autotune | vulkan | gui-autotune-Qwen3.6-27B-Q3_K_S_mtp-20260713-173849 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | sweep/sweep | sweep/sweep | ngram-mtp | 4.1291 | 1394.62 | 40.11 | 0 |
 | 2026-07-13 17:19:00 | autotune | rocm | gui-autotune-Qwen3.6-27B-Q3_K_S_mtp-20260713-171732 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 12288 | sweep/sweep | sweep/sweep | mtp | 14.0256 | 1400.62 | 32.88 | 0 |
@@ -83,7 +87,3 @@ Limit: latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-07-12 22:31:47 | cold-first | - | d082-vulkan12k-bn512-resources-r1 | Qwen3.6-27B-Q3_K_S.gguf | 12288 | 1024/1024 | q8_0/q8_0 | none | 0.1278 | 950.3500 | - | 0 |
 | 2026-07-12 22:18:49 | cold-first | vulkan | p003-vulkan12k-q3quad-resources-r1 | Qwen3.6-27B-Q3_K_S.gguf | 12288 | 1024/1024 | q8_0/q8_0 | none | 0.2464 | 1840.5500 | - | 0 |
 | 2026-07-12 22:15:40 | cold-first | vulkan | p003-vulkan12k-perf-r1 | Qwen3.6-27B-Q3_K_S.gguf | 12288 | 1024/1024 | q8_0/q8_0 | none | 0.1411 | 1050.3300 | - | 0 |
-| 2026-07-12 22:14:44 | cold-first | vulkan | p003-vulkan12k-nonmtp-b1024-r1 | Qwen3.6-27B-Q3_K_S.gguf | 12288 | 1024/1024 | q8_0/q8_0 | none | 3.4021 | 1821.1300 | 26.2800 | 0 |
-| 2026-07-12 22:14:06 | cold-first | vulkan | p003-vulkan12k-nonmtp-b8192-r1 | Qwen3.6-27B-Q3_K_S.gguf | 12288 | 8192/1024 | q8_0/q8_0 | none | 3.3071 | 1754.9200 | 27.0500 | 0 |
-| 2026-07-12 22:09:34 | autotune | vulkan | gui-autotune-Qwen3.6-27B-Q3_K_S_mtp-20260712-220804 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 12288 | sweep/sweep | sweep/sweep | mtp | 15.6134 | 1525.07 | 38.09 | 0 |
-| 2026-07-12 20:12:29 | autotune | rocm | gui-autotune-Qwen3.6-27B-Q3_K_S_mtp-20260712-201020 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 12288 | sweep/sweep | sweep/sweep | mtp | 13.7357 | 1356.50 | 32.79 | 0 |

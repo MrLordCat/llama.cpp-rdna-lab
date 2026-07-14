@@ -39,6 +39,7 @@ CANONICAL_BENCH_RUNS_CSV = "BENCH_RUNS.csv"
 CANONICAL_BENCH_RECENT_MD = "BENCH_RECENT.md"
 CANONICAL_BENCH_LANES_MD = "BENCH_LANES.md"
 CANONICAL_RECENT_LIMIT = 80
+CANONICAL_HISTORY_START = "2026-07-01"
 PRIMARY_MAX_CTX = 131072
 PRIMARY_CTX_LABEL = "130k"
 
@@ -1781,6 +1782,12 @@ def _dedupe_history_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     return [deduped[key] for key in order]
 
 
+def _canonical_history_rows(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    normalized = [_normalize_history_row(row) for row in rows]
+    retained = [row for row in normalized if row.get("timestamp", "") >= CANONICAL_HISTORY_START]
+    return _dedupe_history_rows(retained)
+
+
 def _best_rows_by_lane(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
     best: dict[str, dict[str, str]] = {}
     for row in rows:
@@ -1796,7 +1803,7 @@ def _best_rows_by_lane(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
 
 
 def write_canonical_bench_files(out_dir: Path, rows: list[dict[str, str]]) -> None:
-    rows = _dedupe_history_rows([_normalize_history_row(row) for row in rows])
+    rows = _canonical_history_rows(rows)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     runs_csv = out_dir / CANONICAL_BENCH_RUNS_CSV
@@ -1813,7 +1820,7 @@ def write_canonical_bench_files(out_dir: Path, rows: list[dict[str, str]]) -> No
         "Автоматически обновляется `scripts/agent_workload_bench.py`.",
         "Содержит последние прогоны с метриками, полезными для быстрого сравнения.",
         "",
-        f"Limit: latest {CANONICAL_RECENT_LIMIT} rows from `{CANONICAL_BENCH_RUNS_CSV}`.",
+        f"Retention: `{CANONICAL_HISTORY_START}` and newer; latest {CANONICAL_RECENT_LIMIT} rows from `{CANONICAL_BENCH_RUNS_CSV}`.",
         "",
         "| Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |",
         "|---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|",
@@ -1860,7 +1867,7 @@ def refresh_canonical_history(out_dir: Path) -> int:
     rows: list[dict[str, str]] = []
     for path in candidates:
         rows.extend(_read_history_csv(path, out_dir=out_dir))
-    rows = _dedupe_history_rows(rows)
+    rows = _canonical_history_rows(rows)
     write_canonical_bench_files(out_dir, rows)
     return len(rows)
 

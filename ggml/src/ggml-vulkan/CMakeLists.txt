@@ -54,9 +54,29 @@ endfunction()
 if (Vulkan_FOUND)
     message(STATUS "Vulkan found")
 
+    set(GGML_VULKAN_RUNTIME_MODULES
+        runtime/vk_common.inc
+        runtime/vk_pipeline.inc
+        runtime/vk_shaders.inc
+        runtime/vk_device.inc
+        runtime/vk_transfer.inc
+        runtime/vk_dispatch.inc
+        runtime/vk_op_pipeline.inc
+        runtime/vk_ops.inc
+        runtime/vk_tests.inc
+        runtime/vk_graph.inc
+        runtime/vk_backend_buffers.inc
+        runtime/vk_backend_execution.inc
+        runtime/vk_backend_registry.inc
+        runtime/vk_device_helpers.inc
+        runtime/vk_checks.inc
+    )
+    set_source_files_properties(${GGML_VULKAN_RUNTIME_MODULES} PROPERTIES HEADER_FILE_ONLY TRUE)
+
     ggml_add_backend_library(ggml-vulkan
                              ggml-vulkan.cpp
                              ../../include/ggml-vulkan.h
+                             ${GGML_VULKAN_RUNTIME_MODULES}
                             )
 
     set(VULKAN_SHADER_GEN_CMAKE_ARGS "")

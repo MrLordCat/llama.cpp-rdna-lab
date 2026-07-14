@@ -112,6 +112,10 @@ python scripts/agent_workload_bench.py --help
 - `build_logs/agent-workload/BENCH_RECENT.md`;
 - `build_logs/agent-workload/BENCH_LANES.md`.
 
+В репозитории сохраняются только результаты от `2026-07-01` и новее. Сырые
+логи, временные сводки и более старые строки истории не являются частью
+поддерживаемой кодовой базы.
+
 ## Vision
 
 Для Qwen3.6-27B включите Vision в Launch Server и выберите соответствующий
@@ -127,6 +131,7 @@ dimension текстовой модели. Для первичной прове�
 | `src/`, `common/`, `include/` | llama runtime |
 | `ggml/src/ggml-cpu/` | CPU backend |
 | `ggml/src/ggml-vulkan/` | Vulkan backend и shaders |
+| `docs/vulkan/` | архитектура Vulkan runtime и правила изменений |
 | `ggml/src/ggml-hip/` | ROCm build orchestration |
 | `ggml/src/ggml-cuda/` | внутренние HIP-compatible kernels |
 | `scripts/agent_workload_bench.py` | benchmark/autotune runner |

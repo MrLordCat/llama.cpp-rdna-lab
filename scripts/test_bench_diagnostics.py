@@ -10,8 +10,10 @@ Usage:
 """
 from __future__ import annotations
 
+import csv
 import importlib.util
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,6 +102,24 @@ def test_baseline_decode_preserved(m) -> None:
     print(f"  OK  baseline decode preserved (mean={d['decode_eval_tps']['mean']})")
 
 
+def test_canonical_history_retention(m) -> None:
+    """Canonical refresh must not re-import benchmark rows older than July 2026."""
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        history = out_dir / "BENCH_HISTORY.csv"
+        with history.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=m.HISTORY_FIELDS)
+            writer.writeheader()
+            writer.writerow({"timestamp": "2026-06-30 23:59:59", "run_id": "old"})
+            writer.writerow({"timestamp": "2026-07-01 00:00:00", "run_id": "kept"})
+
+        count = m.refresh_canonical_history(out_dir)
+        rows = m._read_history_csv(out_dir / m.CANONICAL_BENCH_RUNS_CSV)
+        assert count == 1, f"expected one retained row, got {count}"
+        assert [row["run_id"] for row in rows] == ["kept"], rows
+        print("  OK  canonical history retention boundary enforced")
+
+
 def main() -> int:
     m = _load_module()
     tests = [
@@ -107,6 +127,7 @@ def main() -> int:
         test_mtp_acceptance_parsed,
         test_low_acceptance_hint,
         test_baseline_decode_preserved,
+        test_canonical_history_retention,
     ]
     failures = 0
     for t in tests:

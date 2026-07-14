@@ -89,6 +89,8 @@ scripts/agent_workload_bench.py
 - Keep cold-first and steady-session results separate.
 - Use `build_logs/agent-workload/BENCH_RUNS.csv`, `BENCH_RECENT.md` and
   `BENCH_LANES.md` as canonical generated history.
+- Keep only benchmark records and artifacts dated `2026-07-01` or newer. Raw
+  server logs, traces, screenshots and superseded aggregate files stay ignored.
 - Record accepted/rejected changes in `docs/research/` and do not leave a
   rejected runtime experiment enabled by default.
 

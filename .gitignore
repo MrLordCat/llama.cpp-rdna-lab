@@ -33,6 +33,7 @@
 /.vs/
 /.vscode/
 /nppBackup
+/.playwright-mcp/
 
 # Coverage
 
@@ -103,6 +104,11 @@
 /tools/server/webui/dist
 # we no longer use gz for index.html
 /tools/server/public/index.html.gz
+
+# Generated backend capability tables
+
+/docs/ops/*.csv
+/docs/ops.md
 
 # Python
 
