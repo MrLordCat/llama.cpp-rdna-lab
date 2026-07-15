@@ -7,6 +7,19 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-07-15 19:20:34 | cold-first | vulkan | e332-q4km-vulkan-dual-ctx131k-prompt59k-none-r1 | Qwen3.6-27B-Q4_K_M.gguf | 131072 | 8192/1024 | q8_0/q8_0 | none | 1.6412 | 1051.6700 | 23.0200 | 0 |
+| 2026-07-15 19:13:58 | cold-first | rocm | e332-q4km-rocm-dual-ctx131k-prompt59k-none-r1 | Qwen3.6-27B-Q4_K_M.gguf | 131072 | 8192/1024 | q8_0/q8_0 | none | 0.7219 | 447.5900 | 17.1900 | 0 |
+| 2026-07-15 19:10:20 | cold-first | vulkan | e332-q4km-vulkan-dual-long98k-none-r1 | Qwen3.6-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | none | 2.2941 | 1171.1700 | 24.1800 | 0 |
+| 2026-07-15 19:08:55 | cold-first | rocm | e332-q4km-rocm-dual-long98k-none-r1 | Qwen3.6-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | none | 2.7148 | 1466.2700 | 18.7700 | 0 |
+| 2026-07-15 19:07:43 | cold-first | vulkan | e332-q4km-vulkan-dual-short-mtp3-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 17.2630 | 1320.2100 | 50.5600 | 0 |
+| 2026-07-15 19:07:04 | cold-first | rocm | e332-q4km-rocm-dual-short-mtp3-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 25.4592 | 1545.5800 | 43.5600 | 0 |
+| 2026-07-15 19:06:14 | cold-first | vulkan | e332-q4km-vulkan-dual-long30k-mtp3-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 5.3198 | 1389.5900 | 47.2100 | 0 |
+| 2026-07-15 19:05:17 | cold-first | rocm | e332-q4km-rocm-dual-long30k-mtp3-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 6.0612 | 1656.0300 | 39.9000 | 0 |
+| 2026-07-15 19:04:32 | cold-first | vulkan | e332-q4km-vulkan-dual-long30k-none-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 5.0056 | 1432.1300 | 26.3600 | 0 |
+| 2026-07-15 19:03:35 | cold-first | vulkan | e332-q4km-vulkan-dual-short-none-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | none | 12.7262 | 1229.3100 | 26.5500 | 0 |
+| 2026-07-15 18:58:25 | cold-first | rocm | e332-q4km-rocm-dual-long30k-none-r2 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 5.4280 | 1714.6400 | 20.4100 | 0 |
+| 2026-07-15 18:55:52 | cold-first | rocm | e332-q4km-rocm-dual-long30k-none-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 5.4263 | 1716.6600 | 20.2800 | 0 |
+| 2026-07-15 18:54:26 | cold-first | rocm | e332-q4km-rocm-dual-short-none-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | none | 17.1391 | 1592.4500 | 23.5000 | 0 |
 | 2026-07-15 18:25:23 | cold-first | rocm | e331-bonsai-pq2-rocm10-long32k-ub1024-r1 | Ternary-Bonsai-27B-PQ2_0.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 6.0388 | 1819.1000 | 36.5900 | 0 |
 | 2026-07-15 18:24:37 | cold-first | rocm | e331-bonsai-pq2-rocm10-long32k-ub128-r1 | Ternary-Bonsai-27B-PQ2_0.gguf | 49152 | 8192/128 | q8_0/q8_0 | none | 3.8069 | 1067.9900 | 36.3500 | 0 |
 | 2026-07-15 18:14:50 | autotune | rocm | gui-autotune-Ternary-Bonsai-27B-PQ2_0-20260715-181422 | Ternary-Bonsai-27B-PQ2_0.gguf | 49152 | sweep/sweep | sweep/sweep | none | 6.1035 | 1872.47 | 33.97 | 0 |
@@ -31,10 +44,10 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-07-15 17:41:44 | cold-first | rocm | e322-bonsai-pq2-rocm1-short-none-r3-baseline | Ternary-Bonsai-27B-PQ2_0.gguf | 12288 | 8192/1024 | q8_0/q8_0 | none | 24.3919 | 1189.1967 | 50.3033 | 0 |
 | 2026-07-15 17:25:57 | cold-first | rocm | pq2-run1 | Ternary-Bonsai-27B-PQ2_0.gguf | 4096 | 512/256 | q4_0/q4_0 | none | 16.6424 | 324.4200 | 53.5000 | 0 |
 | 2026-07-15 17:22:07 | cold-first | rocm | pq2-single-smoke | Ternary-Bonsai-27B-PQ2_0.gguf | 4096 | 512/256 | q4_0/q4_0 | none | 16.1894 | 313.4000 | 52.8000 | 0 |
-| 2026-07-15 13:03:04 | cold-first | - | upstream-f955e394b-rocm-dual-long30k-mtp3-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 4.2726 | 1102.9200 | 41.5700 | 0 |
-| 2026-07-15 12:59:08 | cold-first | - | upstream-f955e394b-rocm-dual-long30k-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 4.4423 | 1285.4200 | 22.3000 | 0 |
-| 2026-07-15 12:56:41 | cold-first | - | upstream-f955e394b-vulkan-dual-long30k-mtp3-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 3.0751 | 861.4800 | 17.7700 | 0 |
-| 2026-07-15 12:55:20 | cold-first | - | upstream-f955e394b-vulkan-dual-long30k-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 3.3850 | 930.1100 | 21.5800 | 0 |
+| 2026-07-15 13:03:04 | cold-first | - | upstream-f955e394b-rocm-dual-long30k-mtp3-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 4.2726 | 1102.9200 | - | 0 |
+| 2026-07-15 12:59:08 | cold-first | - | upstream-f955e394b-rocm-dual-long30k-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 4.4423 | 1285.4200 | - | 0 |
+| 2026-07-15 12:56:41 | cold-first | - | upstream-f955e394b-vulkan-dual-long30k-mtp3-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 3.0751 | 861.4800 | - | 0 |
+| 2026-07-15 12:55:20 | cold-first | - | upstream-f955e394b-vulkan-dual-long30k-none-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 3.3850 | 930.1100 | - | 0 |
 | 2026-07-15 12:09:04 | autotune | vulkan | gui-autotune-Qwen3.6-27B-Q3_K_S_mtp-20260715-120826 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | sweep/sweep | sweep/sweep | mtp | 5.1664 | 1489.53 | 40.42 | 0 |
 | 2026-07-15 12:08:11 | autotune | rocm | gui-autotune-Qwen3.6-27B-Q3_K_S_mtp-20260715-120738 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | sweep/sweep | sweep/sweep | mtp | 5.9169 | 1747.52 | 39.90 | 0 |
 | 2026-07-15 11:19:09 | cold-first | rocm | e321-rocm-mtp-defaults-zero-rollback-smoke-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 16384 | 8192/1024 | q8_0/q8_0 | mtp | 2.2544 | 1761.8600 | 29.0000 | 0 |
@@ -74,16 +87,3 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-07-15 10:21:37 | cold-first | rocm | e317-rocm-dual-long30k-mtp3-kvonly-full-async-handoff-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 5.8502 | 1581.7400 | 40.8900 | 0 |
 | 2026-07-15 10:16:55 | cold-first | rocm | e316-rocm-dual-10k-none-ubtrace-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 16384 | 8192/1024 | q8_0/q8_0 | none | 1.4949 | 1124.4500 | 30.8000 | 0 |
 | 2026-07-15 10:14:40 | cold-first | rocm | e316-rocm-dual-10k-mtp3-kvonly-full-ubtrace-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 16384 | 8192/1024 | q8_0/q8_0 | mtp | 1.4551 | 1097.8300 | 28.6000 | 0 |
-| 2026-07-15 10:13:26 | cold-first | rocm | e316-rocm-dual-long30k-mtp3-kvonly-full-ctxub4096-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 5.2196 | 1396.1700 | 38.9100 | 0 |
-| 2026-07-15 10:12:13 | cold-first | rocm | e316-rocm-dual-long30k-mtp3-kvonly-full-ctxub2048-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 5.6181 | 1524.5200 | 38.4000 | 0 |
-| 2026-07-15 10:02:59 | cold-first | rocm | e316-rocm-dual-long30k-mtp3-kvonly-win8192-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 5.9710 | 1685.8800 | 33.3100 | 0 |
-| 2026-07-15 10:01:53 | cold-first | rocm | e316-rocm-dual-long30k-mtp3-kvonly-fullprefill-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 5.8295 | 1574.2000 | 41.0300 | 0 |
-| 2026-07-15 10:00:51 | cold-first | rocm | e316-rocm-dual-long30k-mtp3-kvonly-win256-correct-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 6.1447 | 1758.1700 | 32.3300 | 0 |
-| 2026-07-15 10:00:07 | cold-first | rocm | e316-rocm-kvonly-short-contract-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 14.1631 | 261.5200 | 33.3000 | 0 |
-| 2026-07-15 09:56:15 | cold-first | rocm | e316-rocm-kvonly-null-buffer-stack | Qwen3.6-27B-Q3_K_S_mtp.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 0.0000 | - | - | 1 |
-| 2026-07-15 09:54:28 | cold-first | rocm | e316-rocm-kvonly-short-outputmark-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 0.0000 | - | - | 1 |
-| 2026-07-15 09:52:48 | cold-first | rocm | e316-rocm-kvonly-checkpoint-diag-short | Qwen3.6-27B-Q3_K_S_mtp.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 0.0000 | - | - | 1 |
-| 2026-07-15 09:50:52 | cold-first | rocm | e316-rocm-dual-long30k-mtp3-kvonly-win256-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 0.0000 | - | - | 1 |
-| 2026-07-15 09:42:34 | cold-first | rocm | e315-rocm-dual-long30k-mtp3-token-trace-production-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 6.1460 | 1765.3400 | 31.8200 | 0 |
-| 2026-07-15 09:41:53 | cold-first | vulkan | e315-vulkan-dual-long30k-mtp3-token-trace-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 5.8053 | 1550.8200 | 43.9800 | 0 |
-| 2026-07-15 09:40:57 | cold-first | rocm | e315-rocm-dual-long30k-none-target-production-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 5.8474 | 1774.6000 | 24.8100 | 0 |
