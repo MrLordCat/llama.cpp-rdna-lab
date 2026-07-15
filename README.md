@@ -16,6 +16,40 @@ decode gain does not impose an unacceptable prefill cost.
 > for every upstream platform. Results and defaults are tuned for the reference
 > dual-RX 9070 XT machine described below.
 
+## At a Glance
+
+| Area | Current focus |
+| --- | --- |
+| Host platform | Windows 11 on AMD AM4 |
+| Accelerators | 2x Radeon RX 9070 XT 16 GB (`gfx1201`) |
+| Backends | ROCm/HIP, Vulkan, and CPU |
+| Primary model | Qwen3.6-27B Q3_K_S with MTP |
+| Experimental model | Ternary Bonsai 27B `PQ2_0` on CPU and ROCm |
+| Main objective | Maximum cold prompt evaluation without sacrificing useful decode speed |
+| Serving | OpenAI-compatible `llama-server` plus a PyQt6 desktop GUI |
+
+The fork is currently substantially faster than the measured stock upstream
+checkout on the same long-prompt contract. See
+[Fork vs Stock Upstream](#fork-vs-stock-upstream) for the exact matched runs.
+
+## Contents
+
+- [Project Goals](#project-goals)
+- [Supported Backends and Models](#supported-backends-and-models)
+- [Reference System](#reference-system)
+- [Current Performance](#current-performance)
+- [Fork vs Stock Upstream](#fork-vs-stock-upstream)
+- [Key Fork Features](#key-fork-features)
+- [Quick Start](#quick-start)
+- [Build Requirements](#build-requirements)
+- [Recommended Runtime Profiles](#recommended-runtime-profiles)
+- [MTP Behavior](#mtp-behavior)
+- [Vision](#vision)
+- [Benchmarking](#benchmarking)
+- [Repository Layout](#repository-layout)
+- [Development](#development)
+- [Upstream and License](#upstream-and-license)
+
 ## Project Goals
 
 - Maximize Qwen3.6 prompt-evaluation throughput for agent workloads.
@@ -29,7 +63,7 @@ decode gain does not impose an unacceptable prefill cost.
 Current non-goals include broad accelerator portability and native support for
 NVIDIA CUDA, Metal, SYCL, OpenCL, CANN, or other removed upstream backends.
 
-## Supported Backends
+## Supported Backends and Models
 
 | Backend | Role | Status |
 | --- | --- | --- |
@@ -40,6 +74,21 @@ NVIDIA CUDA, Metal, SYCL, OpenCL, CANN, or other removed upstream backends.
 ROCm still builds HIP-compatible kernels from `ggml/src/ggml-cuda`. That is an
 internal HIP implementation detail and does not mean that this fork supports
 NVIDIA hardware. See [Supported Backends](docs/SUPPORTED_BACKENDS.md).
+
+### Model and Format Matrix
+
+| Model / feature | CPU | ROCm/HIP | Vulkan | Notes |
+| --- | --- | --- | --- | --- |
+| Qwen3.6 GGUF, including Q3_K_S and Q4_K | Yes | Yes | Yes | Primary supported family |
+| Qwen3.6 NextN MTP | Yes | Yes | Yes | Requires an MTP-enabled GGUF |
+| Ternary Bonsai 27B `PQ2_0` | Yes | Yes | Not yet | Native loader, CPU kernels, and HIP MMQ/MMVQ path |
+| Qwen3.6 vision projector | Yes | Yes | Yes | Use a matching `mmproj-*.gguf` |
+| DFlash | Research | Research | Research | Not a recommended production profile |
+
+Q4_K_M and UD-Q4_K_XL load correctly, but their 27B long-context working sets
+can enter WDDM shared memory on this 2x16 GB machine. Q3_K_S is therefore the
+current practical Qwen performance target. `PQ2_0` is an experimental Prism
+format and should not be confused with conventional `Q2_0` quantization.
 
 ## Reference System
 
@@ -54,10 +103,11 @@ NVIDIA hardware. See [Supported Backends](docs/SUPPORTED_BACKENDS.md).
 
 The two GPUs are normally used with layer split, not tensor split. GPU1 is the
 preferred output device because GPU0 also drives the desktop. Device order is
-backend- and workload-sensitive even with two identical cards; the reason and
-the measured orders are documented below. Exact PCIe topology, driver version,
-background GPU load, KV type, and model residency can materially change the
-numbers below.
+backend- and workload-sensitive even with two identical cards, and the best
+Vulkan order is not identical for every lane. Exact routes are recorded with
+each benchmark instead of being presented as a universal default. PCIe
+topology, driver version, background GPU load, KV type, and model residency can
+materially change the numbers below.
 
 ## Current Performance
 
@@ -86,13 +136,29 @@ use temperature 0.0. The matched long lane injects 96,000 repository-snapshot
 characters and produces 29,563 prompt tokens. The extended ROCm lane requests
 147,456 characters and produces 41,114 prompt tokens.
 
-Vulkan uses `-dev Vulkan1,Vulkan0 -sm layer -ts 1,1`,
-`LLAMA_OUTPUT_DEVICE=Vulkan1`, and `GGML_VK_FORCE_AMD_LARGE_MATMUL=1`. ROCm uses
+Device routes are part of the benchmark contract. The short Vulkan lane uses
+`-dev Vulkan0,Vulkan1`; the matched long and stock-comparison lanes use
+`-dev Vulkan1,Vulkan0`. Both use `LLAMA_OUTPUT_DEVICE=Vulkan1`, layer split,
+equal tensor split, and `GGML_VK_FORCE_AMD_LARGE_MATMUL=1`. ROCm uses
 `-dev ROCm1,ROCm0 -sm layer -ts 1,1` with direct peer copy disabled. MTP rows
 add `--spec-type draft-mtp`; depth is 3 except for the ROCm short lane, where
 the measured best is `--spec-draft-n-max 4`. ROCm MTP uses KV-only sparse
 history by default: 4096 rows every 32768 prompt positions plus the latest 256
 rows. Vulkan uses the 256-token recent window and host hidden-state handoff.
+
+### Headline Fork Advantage
+
+This compact view uses the matched 29,563-token long lane. It is included here
+so the stock comparison is visible before the detailed backend tables; full
+methodology and acceptance data are in
+[Fork vs Stock Upstream](#fork-vs-stock-upstream).
+
+| Backend | Mode | Stock prompt / decode TPS | Fork prompt / decode TPS | Fork change |
+| --- | --- | ---: | ---: | ---: |
+| Vulkan | `none` | 930.11 / 21.58 | **1556.89 / 35.45** | **+67.39% / +64.27%** |
+| Vulkan | MTP n3 | 861.48 / 17.77 | **1508.01 / 45.20** | **+75.05% / +154.36%** |
+| ROCm | `none` | 1285.42 / 22.30 | **1787.94 / 25.21** | **+39.09% / +13.05%** |
+| ROCm | MTP n3 | 1102.92 / 41.57 | **1721.97 / 42.02** | **+56.13% / +1.08%** |
 
 ### Short Prompt Lanes
 
@@ -123,9 +189,9 @@ On the matched 29.5k lane, Vulkan MTP changes prompt/decode throughput by
 faster in prompt evaluation than Vulkan MTP on this lane, while Vulkan retains
 a 7.6% decode advantage.
 
-### Ternary Bonsai PQ2 ROCm Baseline
+### Ternary Bonsai PQ2 on ROCm
 
-This is the pre-optimization baseline for
+The first table preserves the pre-optimization functional baseline for
 `Ternary-Bonsai-27B-PQ2_0.gguf`. It uses the same ROCm benchmark contracts as
 the Qwen rows: FlashAttention, `b8192/ub1024`, q8/q8 KV, one slot, full GPU
 offload, cold prompts, no cache reuse, and `spec=none`. Single GPU means
@@ -151,7 +217,24 @@ For Bonsai, dual GPU raises prompt throughput by 56.3% on the short lane and
 the initial functional PQ2 HIP port before kernel optimization. Artifact labels
 start with `e322-bonsai-pq2-`.
 
-### Stock Upstream Comparison
+The current native PQ2 path includes a dedicated HIP MMQ/MMVQ implementation.
+A later controlled long-prompt run isolated `ubatch` from device placement:
+
+| Devices | Prompt / output | Batch / UBatch | Prompt TPS | Decode TPS | Aggregate TPS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `ROCm1,ROCm0` | 32,085 / 128 | 8192 / 128 | 1067.99 | 36.35 | 3.81 |
+| `ROCm1,ROCm0` | 32,085 / 128 | 8192 / 1024 | **1819.10** | **36.59** | **6.04** |
+
+Raising `ubatch` from 128 to 1024 improved prompt throughput by 70.33% without
+reducing decode. The server releases the inactive prompt-processing scheduler
+after prefill and uses a separate one-token generation graph, so a large
+prefill ubatch does not need a decode workaround. The earlier lower GUI decode
+result came from the old automatic `ROCm0,ROCm1` order. New GUI configurations
+now default to the measured `ROCm1,ROCm0` route while keeping every manual
+device order available. See
+[E331: Bonsai PQ2 ubatch/decode isolation](docs/research/experiments/E331_bonsai_pq2_ubatch_decode_isolation.md).
+
+### Fork vs Stock Upstream
 
 The same 29,563-token lane was also run against stock
 [`ggml-org/llama.cpp` commit `f955e394b`](https://github.com/ggml-org/llama.cpp/commit/f955e394b)
@@ -233,6 +316,7 @@ practical performance model. The active Q3 prompt-evaluation research target is
 
 Evidence:
 
+- [E331: Bonsai PQ2 ubatch/decode isolation](docs/research/experiments/E331_bonsai_pq2_ubatch_decode_isolation.md)
 - [E291: ROCm long-context Q3_K decode and memory](docs/research/experiments/E291_rocm_long_context_q3k_decode_and_memory.md)
 - [E292: ROCm packed padded-Q3_K dequant](docs/research/experiments/E292_rocm_q3k_packed_dequant_probe.md)
 - [E293: ROCm RDNA4 rocWMMA FlashAttention restore](docs/research/experiments/E293_rocm_rdna4_rocwmma_fattn_restore.md)
@@ -255,6 +339,8 @@ Evidence:
 - Upstream-style Qwen3.6 MTP pipeline with backend-resident NextN handoff.
 - ROCm KV-only sparse-history MTP with a bounded long-prompt prefill cost.
 - RDNA4 Q3_K prompt and small-N decode kernel specializations.
+- Native Prism `PQ2_0` GGUF loading, CPU support, and optimized HIP MMQ/MMVQ
+  kernels for Ternary Bonsai.
 - Vision support through a compatible `mmproj-*.gguf` projector.
 - Prompt checkpoints, cache controls, benchmark history, and diagnostic traces.
 - DFlash integration for research; it is not currently the recommended runtime
@@ -279,8 +365,11 @@ python run.py
 5. For an MTP-enabled GGUF, select MTP and use depth 3 as the current general
    Vulkan/ROCm starting point.
 6. For vision, enable the projector and select `models/mmproj-F16.gguf`.
-7. Use **Benchmark / Autotune** to validate batch, ubatch, KV, split, and spec
-   settings for the intended context length.
+7. In **Benchmark / Autotune**, use the recommended explicit device order for
+   reproducible dual-GPU tests. `Auto` remains useful for discovery, but it is
+   not a stable benchmark contract.
+8. Validate batch, ubatch, KV, split, and spec settings at the intended context
+   length. Short-prompt winners do not automatically remain best at 49K.
 
 Model files are not part of the source tree history. Put local GGUF files in
 `models/` or select them from another local directory.
@@ -379,8 +468,9 @@ rocWMMA SDK install is required for the command above.
 
 ### Vulkan Dual GPU
 
-Use GPU1 as the output device, but keep the measured MTP device order shown
-below:
+Use GPU1 as the output device. The profile below is the measured long-context
+route; the short headline lane instead uses `Vulkan0,Vulkan1`. Keep the chosen
+order fixed when comparing configurations:
 
 ```powershell
 $env:LLAMA_OUTPUT_DEVICE = "Vulkan1"
@@ -453,6 +543,26 @@ event-ordered device hidden-state handoff. Set
 `LLAMA_MTP_DEVICE_HANDOFF=0` to restore the host hidden-state path for a
 diagnostic comparison.
 
+### Ternary Bonsai PQ2 on ROCm
+
+Bonsai does not use Qwen NextN MTP. Its recommended dual-GPU starting profile
+uses the same explicit ROCm order and the large prefill ubatch validated in
+E331:
+
+```powershell
+build-rocm-full\bin\llama-server.exe `
+  -m models\Ternary-Bonsai-27B-PQ2_0.gguf `
+  -c 49152 -b 8192 -ub 1024 -ngl 999 `
+  --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on `
+  -dev ROCm1,ROCm0 -sm layer -ts 1,1 `
+  --spec-type none
+```
+
+The model also fits on one 16 GB GPU. Use `-dev ROCm1` for the single-GPU
+control. Dual GPU substantially raises prompt throughput, while single GPU can
+retain a modest decode advantage because it avoids the layer-boundary transfer.
+Vulkan does not yet implement the fork's `PQ2_0` kernels.
+
 ### Why GPU Order Matters
 
 `-sm layer` is pipeline/layer placement, not symmetric tensor parallelism. The
@@ -464,10 +574,9 @@ rest of that topology symmetric.
 
 Consequently, swapping two identical GPUs can change both transfer direction
 and which device owns a synchronization-heavy graph boundary. On this machine,
-`Vulkan1,Vulkan0` with `LLAMA_OUTPUT_DEVICE=Vulkan1` is the current measured
-profile; swapping the order changes transfer direction and can alter MTP
-prefill throughput. ROCm's measured general order remains
-`ROCm1,ROCm0`. A mature tensor-parallel implementation would reduce this
+Vulkan's short lane uses `Vulkan0,Vulkan1`, while the matched long lane uses
+`Vulkan1,Vulkan0`; both place output on Vulkan1. ROCm's measured general order
+is `ROCm1,ROCm0`. A mature tensor-parallel implementation would reduce this
 asymmetry, but the current supported production mode is layer split.
 
 ## MTP Behavior
@@ -524,7 +633,9 @@ Important history files:
 
 Performance work should use neighboring controls. Background GPU applications,
 driver power state, warm shader caches, prompt-cache reuse, or a different
-output length can otherwise create a false improvement.
+output length can otherwise create a false improvement. Record an explicit
+`-dev` route for every dual-GPU result; the GUI now defaults new ROCm and Vulkan
+benchmark configurations to the measured recommended order instead of `Auto`.
 
 ## Repository Layout
 
@@ -550,3 +661,11 @@ When reporting performance, include the model, backend, device order, split,
 context, actual prompt tokens, output tokens, batch/ubatch, KV types, speculative
 mode, cache policy, and background load. A faster isolated number is useful only
 when its lane and tradeoffs are visible.
+
+## Upstream and License
+
+The runtime is derived from [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp).
+Upstream changes are reviewed and ported selectively so they do not silently
+restore removed backends or invalidate AMD-specific behavior. This repository
+is distributed under the [MIT License](LICENSE); bundled third-party components
+retain their own notices and licenses.

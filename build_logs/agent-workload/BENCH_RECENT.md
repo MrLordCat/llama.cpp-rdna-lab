@@ -7,6 +7,8 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-07-15 18:25:23 | cold-first | rocm | e331-bonsai-pq2-rocm10-long32k-ub1024-r1 | Ternary-Bonsai-27B-PQ2_0.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 6.0388 | 1819.1000 | 36.5900 | 0 |
+| 2026-07-15 18:24:37 | cold-first | rocm | e331-bonsai-pq2-rocm10-long32k-ub128-r1 | Ternary-Bonsai-27B-PQ2_0.gguf | 49152 | 8192/128 | q8_0/q8_0 | none | 3.8069 | 1067.9900 | 36.3500 | 0 |
 | 2026-07-15 18:14:50 | autotune | rocm | gui-autotune-Ternary-Bonsai-27B-PQ2_0-20260715-181422 | Ternary-Bonsai-27B-PQ2_0.gguf | 49152 | sweep/sweep | sweep/sweep | none | 6.1035 | 1872.47 | 33.97 | 0 |
 | 2026-07-15 18:13:37 | cold-first | rocm | e330-rocm-dual-q3-12k-mtp-n4-256-r3-refresh | Qwen3.6-27B-Q3_K_S_mtp.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 26.1161 | 1794.1733 | 41.3867 | 0 |
 | 2026-07-15 18:12:45 | cold-first | rocm | e330-rocm-dual-q3-12k-none256-r3-refresh | Qwen3.6-27B-Q3_K_S_mtp.gguf | 12288 | 8192/1024 | q8_0/q8_0 | none | 20.0662 | 1850.1300 | 27.6733 | 0 |
@@ -85,5 +87,3 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-07-15 09:42:34 | cold-first | rocm | e315-rocm-dual-long30k-mtp3-token-trace-production-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 6.1460 | 1765.3400 | 31.8200 | 0 |
 | 2026-07-15 09:41:53 | cold-first | vulkan | e315-vulkan-dual-long30k-mtp3-token-trace-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 5.8053 | 1550.8200 | 43.9800 | 0 |
 | 2026-07-15 09:40:57 | cold-first | rocm | e315-rocm-dual-long30k-none-target-production-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 5.8474 | 1774.6000 | 24.8100 | 0 |
-| 2026-07-15 09:39:37 | cold-first | rocm | e315-rocm-dual-long30k-mtp3-token-trace-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 0.3068 | 1863.5000 | 13.3600 | 0 |
-| 2026-07-15 09:37:40 | cold-first | rocm | e315-rocm-dual-long30k-none-target-r1 | Qwen3.6-27B-Q3_K_S_mtp.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 0.5599 | 1887.5600 | 25.4100 | 0 |

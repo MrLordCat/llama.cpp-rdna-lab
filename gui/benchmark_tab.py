@@ -377,6 +377,18 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
                             break
                 if idx >= 0:
                     self.device_combo.setCurrentIndex(idx)
+
+            device_default_migration = "benchmark/device_default_recommended_migrated_v1"
+            if not self.settings.value(device_default_migration, False, type=bool):
+                backend_key = self._backend_key_from_display(
+                    self.build_backend_combo.currentText().strip()
+                ).lower()
+                if backend_key in {"rocm", "vulkan"} and (
+                    not device_text or str(device_text).lower().startswith("auto")
+                ):
+                    self.device_combo.setCurrentIndex(self._recommended_device_choice_index())
+                    self.settings.setValue("benchmark/devices", self.device_combo.currentText())
+                self.settings.setValue(device_default_migration, True)
             self.scale_prompt_check.setChecked(
                 self.settings.value("benchmark/scale_prompt", False, type=bool)
             )
@@ -1981,8 +1993,27 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         for display, _args in choices:
             self.device_combo.addItem(display)
         idx = self.device_combo.findText(previous)
-        self.device_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.device_combo.setCurrentIndex(idx if idx >= 0 else self._recommended_device_choice_index())
         self.device_combo.blockSignals(False)
+
+    def _recommended_device_choice_index(self) -> int:
+        backend_key = self._backend_key_from_display(
+            self.build_backend_combo.currentText().strip()
+        ).lower()
+        recommended_dev = {
+            "rocm": "ROCm1,ROCm0",
+            "vulkan": "Vulkan0,Vulkan1",
+        }.get(backend_key)
+        if recommended_dev is None:
+            return 0
+
+        for idx, (_display, args) in enumerate(self._device_choices):
+            if "-dev" not in args:
+                continue
+            dev_idx = args.index("-dev") + 1
+            if dev_idx < len(args) and args[dev_idx] == recommended_dev:
+                return idx
+        return 0
 
     def _selected_device_args(self) -> list[str]:
         idx = self.device_combo.currentIndex()
