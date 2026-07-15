@@ -93,6 +93,54 @@ static bool llama_env_bool(const char * name, bool fallback) {
     return true;
 }
 
+static bool llama_mtp_sparse_capture_pos(llama_pos pos, uint32_t n_tokens) {
+    const uint32_t window = llama_env_u32_clamped(
+            "LLAMA_SPEC_PREFILL_WINDOW", 256, 0, std::numeric_limits<uint32_t>::max());
+    if (window == 0 || n_tokens <= window) {
+        return true;
+    }
+
+    const uint32_t stride = llama_env_u32_clamped(
+            "LLAMA_SPEC_PREFILL_SPARSE_STRIDE",
+#if defined(GGML_USE_HIP)
+            32768,
+#else
+            0,
+#endif
+            0, std::numeric_limits<uint32_t>::max());
+    const uint32_t chunk = std::min(stride, llama_env_u32_clamped(
+            "LLAMA_SPEC_PREFILL_SPARSE_CHUNK",
+#if defined(GGML_USE_HIP)
+            4096,
+#else
+            0,
+#endif
+            0, std::numeric_limits<uint32_t>::max()));
+    return stride > 0 && chunk > 0 && pos >= 0 && (uint32_t) pos % stride < chunk;
+}
+
+static bool llama_mtp_sparse_capture_active(uint32_t n_tokens) {
+    const uint32_t window = llama_env_u32_clamped(
+            "LLAMA_SPEC_PREFILL_WINDOW", 256, 0, std::numeric_limits<uint32_t>::max());
+    const uint32_t stride = llama_env_u32_clamped(
+            "LLAMA_SPEC_PREFILL_SPARSE_STRIDE",
+#if defined(GGML_USE_HIP)
+            32768,
+#else
+            0,
+#endif
+            0, std::numeric_limits<uint32_t>::max());
+    const uint32_t chunk = llama_env_u32_clamped(
+            "LLAMA_SPEC_PREFILL_SPARSE_CHUNK",
+#if defined(GGML_USE_HIP)
+            4096,
+#else
+            0,
+#endif
+            0, std::numeric_limits<uint32_t>::max());
+    return window > 0 && n_tokens > window && stride > 0 && chunk > 0;
+}
+
 //
 // llama_context
 //
@@ -1251,6 +1299,41 @@ void llama_context::set_embeddings_nextn_device(bool enabled) {
         synchronize();
         nextn_device_output = {};
         nextn_device_input = {};
+    } else if (cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP &&
+            llama_env_bool("LLAMA_MTP_PREALLOC_DEVICE_STAGING",
+#if defined(GGML_USE_HIP)
+                    true
+#else
+                    false
+#endif
+            )) {
+        ggml_backend_t backend_output = nullptr;
+        for (const auto & backend : backends) {
+            if (ggml_backend_get_device(backend.get()) == model.dev_output()) {
+                backend_output = backend.get();
+                break;
+            }
+        }
+
+        if (backend_output) {
+            const uint32_t window = llama_env_u32_clamped(
+                    "LLAMA_SPEC_PREFILL_WINDOW", 256, 0, cparams.n_batch);
+            const uint32_t sparse_chunk = llama_env_u32_clamped(
+                    "LLAMA_SPEC_PREFILL_SPARSE_CHUNK",
+#if defined(GGML_USE_HIP)
+                    4096,
+#else
+                    0,
+#endif
+                    0, cparams.n_batch);
+            const uint32_t rows = 1 + (window == 0
+                    ? cparams.n_batch
+                    : std::max<uint32_t>(1, std::max(window, sparse_chunk)));
+            if (!ensure_nextn_device_output(backend_output, rows)) {
+                LLAMA_LOG_WARN("%s: failed to preallocate %u NextN staging rows; falling back to lazy allocation\n",
+                        __func__, rows);
+            }
+        }
     }
 }
 
@@ -1339,10 +1422,26 @@ bool llama_context::set_nextn_device_input(llama_context * src, uint32_t first_r
         return false;
     }
 
-    // Separate llama_context instances own separate backend queues. Complete the
-    // producer queue once before the consumer enqueues its device-side copy.
-    if (src != this) {
+    // Cross-backend async copies already record an event after the source-stream
+    // copy and make the destination stream wait on it. Avoid draining the whole
+    // target scheduler before every MTP prefill block when that path is enabled.
+    const bool async_handoff = llama_env_bool("LLAMA_MTP_ASYNC_DEVICE_HANDOFF",
+#if defined(GGML_USE_HIP)
+            true
+#else
+            false
+#endif
+    );
+    if (src != this && !async_handoff) {
         src->synchronize();
+    }
+
+    if (async_handoff && std::getenv("LLAMA_MTP_DEVICE_HANDOFF_TRACE")) {
+        static bool logged = false;
+        if (!logged) {
+            LLAMA_LOG_INFO("%s: asynchronous cross-context NextN handoff enabled\n", __func__);
+            logged = true;
+        }
     }
 
     nextn_device_input.tensor = src->nextn_device_output.tensor;
@@ -2441,7 +2540,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
     const uint32_t nextn_device_capacity = 1 + (cparams.embeddings_nextn_masked ?
             std::max<uint32_t>(1, n_outputs_all) : n_tokens_all);
-    if (nextn_device_output.enabled) {
+    if (nextn_device_output.enabled && nextn_device_output.capture_enabled) {
         // Row zero carries the selected hidden state across decode calls. Rows
         // one and above are replaced by the current logical batch.
         nextn_device_output.rows_valid = nextn_device_output.tensor ? 1 : 0;
@@ -2540,10 +2639,42 @@ int llama_context::decode(const llama_batch & batch_inp) {
                 ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
                 GGML_ASSERT(backend_h != nullptr);
 
-                if (!store_nextn_device_output(backend_h, t_h_nextn,
-                            1 + (uint32_t) offset, (uint32_t) n_rows, nextn_device_capacity)) {
-                    LLAMA_LOG_ERROR("%s: failed to stage NextN output on the backend\n", __func__);
-                    return -3;
+                uint32_t run_begin = 0;
+                while (run_begin < (uint32_t) n_rows) {
+                    while (run_begin < (uint32_t) n_rows &&
+                            !llama_mtp_sparse_capture_pos(ubatch.pos[run_begin], n_tokens_all)) {
+                        ++run_begin;
+                    }
+                    if (run_begin == (uint32_t) n_rows) {
+                        break;
+                    }
+
+                    uint32_t run_end = run_begin + 1;
+                    while (run_end < (uint32_t) n_rows &&
+                            llama_mtp_sparse_capture_pos(ubatch.pos[run_end], n_tokens_all)) {
+                        ++run_end;
+                    }
+
+                    auto src_rows = nextn_tensor_row_view(t_h_nextn, run_begin, run_end - run_begin);
+                    uint32_t capacity = nextn_device_capacity;
+                    if (llama_mtp_sparse_capture_active(n_tokens_all)) {
+                        // Reserve the complete packed range on the first microbatch.
+                        // Growing it later would replace the staging buffer and discard
+                        // rows captured by earlier microbatches of this logical batch.
+                        const llama_pos logical_pos0 = ubatch.pos[0] - (llama_pos) offset;
+                        capacity = 1;
+                        for (uint32_t i = 0; i < n_tokens_all; ++i) {
+                            if (llama_mtp_sparse_capture_pos(logical_pos0 + (llama_pos) i, n_tokens_all)) {
+                                capacity = 2 + i;
+                            }
+                        }
+                    }
+                    if (!store_nextn_device_output(backend_h, &src_rows,
+                                1 + (uint32_t) offset + run_begin, run_end - run_begin, capacity)) {
+                        LLAMA_LOG_ERROR("%s: failed to stage NextN output on the backend\n", __func__);
+                        return -3;
+                    }
+                    run_begin = run_end;
                 }
             } else if (embd_nextn.data && t_h_nextn && n_rows > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
                 ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);

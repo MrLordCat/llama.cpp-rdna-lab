@@ -2502,4 +2502,3 @@ static long long ggml_cuda_trace_tensor_buffer_offset(const ggml_tensor * tensor
 static unsigned long long ggml_cuda_trace_tensor_nbytes(const ggml_tensor * tensor) {
     return tensor == nullptr ? 0 : (unsigned long long) ggml_nbytes(tensor);
 }
-

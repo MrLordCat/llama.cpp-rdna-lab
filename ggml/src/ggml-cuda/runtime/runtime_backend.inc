@@ -124,7 +124,98 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
             return false;
 #else
             if (!ggml_cuda_peer_copy_enabled()) {
+#if defined(GGML_USE_HIP) && defined(_WIN32)
+                static const bool async_host_stage = [] {
+                    const bool enabled = ggml_cuda_env_opt_in_enabled("GGML_ROCM_ASYNC_CROSS_DEVICE_STAGE");
+                    if (enabled) {
+                        GGML_LOG_INFO("ROCm async cross-device host staging enabled\n");
+                    }
+                    return enabled;
+                }();
+                static const bool trace_async_host_stage =
+                    getenv("GGML_TRACE_ROCM_ASYNC_CROSS_DEVICE_STAGE") != nullptr;
+                if (!async_host_stage) {
+                    return false;
+                }
+
+                const size_t nbytes = ggml_nbytes(dst);
+                auto & slot = cuda_ctx_src->async_host_stage_slots[
+                    cuda_ctx_src->async_host_stage_cursor++ % ggml_backend_cuda_context::ASYNC_HOST_STAGE_SLOTS];
+
+                if (slot.pending) {
+                    ggml_cuda_set_device(slot.destination_device);
+                    CUDA_CHECK(cudaEventSynchronize(slot.destination_done));
+                    slot.pending = false;
+                }
+
+                const bool devices_changed = slot.source_device != cuda_ctx_src->device ||
+                    slot.destination_device != cuda_ctx_dst->device;
+                if (devices_changed) {
+                    if (slot.source_ready != nullptr) {
+                        ggml_cuda_set_device(slot.source_device);
+                        CUDA_CHECK(cudaEventDestroy(slot.source_ready));
+                        slot.source_ready = nullptr;
+                    }
+                    if (slot.destination_done != nullptr) {
+                        ggml_cuda_set_device(slot.destination_device);
+                        CUDA_CHECK(cudaEventDestroy(slot.destination_done));
+                        slot.destination_done = nullptr;
+                    }
+                    slot.source_device = cuda_ctx_src->device;
+                    slot.destination_device = cuda_ctx_dst->device;
+                }
+
+                if (slot.capacity < nbytes) {
+                    if (slot.host != nullptr) {
+                        CUDA_CHECK(cudaFreeHost(slot.host));
+                        slot.host = nullptr;
+                        slot.capacity = 0;
+                    }
+                    slot.host = ggml_cuda_host_malloc(nbytes);
+                    if (slot.host == nullptr) {
+                        return false;
+                    }
+                    slot.capacity = nbytes;
+                }
+
+                ggml_cuda_set_device(cuda_ctx_src->device);
+                if (slot.source_ready == nullptr) {
+                    CUDA_CHECK(cudaEventCreateWithFlags(&slot.source_ready, cudaEventDisableTiming));
+                }
+                CUDA_CHECK(cudaMemcpyAsync(slot.host, src->data, nbytes, cudaMemcpyDeviceToHost, cuda_ctx_src->stream()));
+                CUDA_CHECK(cudaEventRecord(slot.source_ready, cuda_ctx_src->stream()));
+
+                ggml_cuda_set_device(cuda_ctx_dst->device);
+                if (slot.destination_done == nullptr) {
+                    CUDA_CHECK(cudaEventCreateWithFlags(&slot.destination_done, cudaEventDisableTiming));
+                }
+                cudaError_t async_status = cudaStreamWaitEvent(cuda_ctx_dst->stream(), slot.source_ready, 0);
+                if (async_status == cudaSuccess) {
+                    async_status = cudaMemcpyAsync(
+                        dst->data, slot.host, nbytes, cudaMemcpyHostToDevice, cuda_ctx_dst->stream());
+                }
+                if (async_status != cudaSuccess) {
+                    GGML_LOG_WARN(
+                        "ROCm async cross-device host staging unavailable for %d -> %d: %s; using synchronous fallback\n",
+                        cuda_ctx_src->device, cuda_ctx_dst->device, cudaGetErrorString(async_status));
+                    (void) cudaGetLastError();
+                    ggml_cuda_set_device(cuda_ctx_src->device);
+                    CUDA_CHECK(cudaEventSynchronize(slot.source_ready));
+                    return false;
+                }
+                CUDA_CHECK(cudaEventRecord(slot.destination_done, cuda_ctx_dst->stream()));
+                slot.pending = true;
+
+                if (trace_async_host_stage) {
+                    GGML_LOG_INFO(
+                        "GGML_TRACE_ROCM_ASYNC_CROSS_DEVICE_STAGE: src=%d dst=%d tensor=%s bytes=%zu slot=%zu\n",
+                        cuda_ctx_src->device, cuda_ctx_dst->device, src->name, nbytes,
+                        (cuda_ctx_src->async_host_stage_cursor - 1) % ggml_backend_cuda_context::ASYNC_HOST_STAGE_SLOTS);
+                }
+                return true;
+#else
                 return false;
+#endif
             }
             CUDA_CHECK(cudaMemcpyPeerAsync(dst->data, cuda_ctx_dst->device, src->data, cuda_ctx_src->device, ggml_nbytes(dst), cuda_ctx_src->stream()));
 #endif // GGML_CUDA_NO_PEER_COPY
@@ -154,4 +245,3 @@ static void ggml_backend_cuda_synchronize(ggml_backend_t backend) {
 
     GGML_UNUSED(backend);
 }
-

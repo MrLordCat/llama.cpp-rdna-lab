@@ -1464,7 +1464,18 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
 static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
 
+    static const bool trace_graph_host_timing = getenv("GGML_TRACE_CUDA_GRAPH_HOST_TIMING") != nullptr;
+    const int64_t t_start_us = trace_graph_host_timing ? ggml_time_us() : 0;
+    int64_t t_device_us = t_start_us;
+    int64_t t_key_us = t_start_us;
+    int64_t t_enabled_us = t_start_us;
+    int64_t t_compat_us = t_start_us;
+    int64_t t_props_us = t_start_us;
+
     ggml_cuda_set_device(cuda_ctx->device);
+    if (trace_graph_host_timing) {
+        t_device_us = ggml_time_us();
+    }
 
     bool use_cuda_graph             = false;
     bool cuda_graph_update_required = false;
@@ -1478,6 +1489,9 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 
 #ifdef USE_CUDA_GRAPH
     graph_key = ggml_cuda_graph_get_key(cgraph);
+    if (trace_graph_host_timing) {
+        t_key_us = ggml_time_us();
+    }
 
 #if defined(GGML_USE_HIP)
     if (ggml_cuda_graph_is_dflash_graph(cgraph)) {
@@ -1492,6 +1506,9 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 #endif
 
     ggml_cuda_graph_set_enabled(cuda_ctx, graph_key);
+    if (trace_graph_host_timing) {
+        t_enabled_us = ggml_time_us();
+    }
 
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
     graph_enabled = !cuda_ctx->cuda_graphs_runtime_disabled && graph->is_enabled();
@@ -1499,8 +1516,14 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     instance_before = graph->instance != nullptr;
     if (graph_enabled) {
         graph_compatible = ggml_cuda_graph_check_compability(cgraph);
+        if (trace_graph_host_timing) {
+            t_compat_us = ggml_time_us();
+        }
         if (graph_compatible) {
             properties_changed = ggml_cuda_graph_update_required(cuda_ctx, cgraph);
+            if (trace_graph_host_timing) {
+                t_props_us = ggml_time_us();
+            }
 
             if (!graph->warmup_complete) {
                 // Warmup: need at least 2 calls with no property change on the 2nd call
@@ -1556,6 +1579,21 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     }
 
     ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
+
+    if (trace_graph_host_timing) {
+        const int64_t t_end_us = ggml_time_us();
+        GGML_LOG_INFO(
+            "GGML_TRACE_CUDA_GRAPH_HOST_TIMING: dev=%d nodes=%d uid=%zu use=%d update=%d device_ms=%.3f key_ms=%.3f enabled_ms=%.3f compat_ms=%.3f props_ms=%.3f eval_ms=%.3f total_ms=%.3f\n",
+            cuda_ctx->device, cgraph->n_nodes, (size_t) cgraph->uid,
+            use_cuda_graph ? 1 : 0, cuda_graph_update_required ? 1 : 0,
+            (t_device_us - t_start_us) / 1000.0,
+            (t_key_us - t_device_us) / 1000.0,
+            (t_enabled_us - t_key_us) / 1000.0,
+            (t_compat_us - t_enabled_us) / 1000.0,
+            (t_props_us - t_compat_us) / 1000.0,
+            (t_end_us - t_props_us) / 1000.0,
+            (t_end_us - t_start_us) / 1000.0);
+    }
 
     return GGML_STATUS_SUCCESS;
 }
@@ -1865,6 +1903,7 @@ static const ggml_backend_i ggml_backend_cuda_interface = {
     /* .event_record            = */ ggml_backend_cuda_event_record,
     /* .event_wait              = */ ggml_backend_cuda_event_wait,
     /* .graph_optimize          = */ ggml_backend_cuda_graph_optimize,
+    /* .tensor_get_batch        = */ NULL,
 };
 
 static ggml_guid_t ggml_backend_cuda_guid() {
@@ -1937,4 +1976,3 @@ void ggml_backend_cuda_unregister_host_buffer(void * buffer) {
         (void)cudaGetLastError();
     }
 }
-

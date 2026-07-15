@@ -33,8 +33,8 @@ NVIDIA CUDA, Metal, SYCL, OpenCL, CANN, or other removed upstream backends.
 
 | Backend | Role | Status |
 | --- | --- | --- |
-| Vulkan | Primary prompt-eval and general AMD runtime | Supported and preferred for prompt-heavy work |
-| ROCm/HIP | MTP, RDNA4 kernel research, and AMD runtime comparison | Supported |
+| ROCm/HIP | Primary prompt-eval, long-context MTP, and RDNA4 runtime | Supported and preferred for prompt-heavy MTP work |
+| Vulkan | General AMD runtime and backend comparison | Supported; competitive for decode-heavy work |
 | CPU | Fallback, conversion, sanity checks, and tests | Supported |
 
 ROCm still builds HIP-compatible kernels from `ggml/src/ggml-cuda`. That is an
@@ -61,7 +61,7 @@ numbers below.
 
 ## Current Performance
 
-Snapshot date: **2026-07-14**.
+Snapshot date: **2026-07-15**.
 
 All headline rows use the Qwen3.6-27B Q3_K_S MTP-enabled GGUF, FlashAttention,
 one server slot, cold prompt processing, no prompt-cache reuse, and no prime
@@ -76,22 +76,23 @@ GPU workload active.
 | --- | ---: | ---: | ---: | ---: | --- | ---: |
 | Vulkan short | 12,288 | 7,842 | 128 | 8192 / 1024 | q8_0 / q8_0 | 3 |
 | ROCm short | 12,288 | 7,729 | 256 | 8192 / 1024 | q8_0 / q8_0 | 3 |
-| Matched long, both backends | 49,152 | 31,997 | 128 | 8192 / 1024 | q8_0 / q8_0 | 2 |
+| Matched long, both backends | 49,152 | 29,563 | 128 | 8192 / 1024 | q8_0 / q8_0 | 1 |
+| ROCm extended long | 65,536 | 41,114 | 128 | 8192 / 1024 | q8_0 / q8_0 | 1 |
 
 Every row also uses `-np 1 -ngl 999 --flash-attn on --no-warmup -fit off`, seed
-42, temperature 0.2, top-p 0.9, `--cache-ram 0`, `--ctx-checkpoints 0`, and no
-prompt reuse.
-The matched long lane requests 147,456 repository-snapshot characters; the
-runner's 0.88 safe-fill policy caps this to 106,800 characters, producing the
-same 31,997-token prompt on both backends. The GUI name now says
-`Long ctx 49K - ~32K actual prompt` because 49,152 is the context capacity, not
-the measured prompt length.
+42, top-p 0.9, `--cache-ram 0`, `--ctx-checkpoints 0`, and no prompt reuse. The
+short archived lanes use temperature 0.2; the current deterministic long lanes
+use temperature 0.0. The matched long lane injects 96,000 repository-snapshot
+characters and produces 29,563 prompt tokens. The extended ROCm lane requests
+147,456 characters and produces 41,114 prompt tokens.
 
-Vulkan uses `-dev Vulkan0,Vulkan1 -sm layer -ts 1,1`,
+Vulkan uses `-dev Vulkan1,Vulkan0 -sm layer -ts 1,1`,
 `LLAMA_OUTPUT_DEVICE=Vulkan1`, and `GGML_VK_FORCE_AMD_LARGE_MATMUL=1`. ROCm uses
 `-dev ROCm1,ROCm0 -sm layer -ts 1,1` with direct peer copy disabled. MTP rows
-add `--spec-type draft-mtp --spec-draft-n-max 3`; the prefill window is the
-server default of 256 tokens.
+add `--spec-type draft-mtp`; depth is 3 except for the ROCm short lane, where
+the measured best is `--spec-draft-n-max 4`. ROCm MTP uses KV-only sparse
+history by default: 4096 rows every 32768 prompt positions plus the latest 256
+rows. Vulkan uses the 256-token recent window and host hidden-state handoff.
 
 ### Short Prompt Lanes
 
@@ -99,27 +100,66 @@ server default of 256 tokens.
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | Vulkan | `none`, r3 mean | 7,842 / 128 | **1783.49** | 38.17 | 16.42 | `Vulkan0,Vulkan1`, `ctx=12288`, q8/q8 KV |
 | Vulkan | MTP n3, r3 mean | 7,842 / 128 | 1724.73 | **51.82** | **17.99** | 60.05% acceptance; backend-resident NextN |
-| ROCm | `none`, r3 mean | 7,729 / 256 | **1706.57** | 25.74 | 17.61 | `ROCm1,ROCm0`, `ctx=12288`, q8/q8 KV |
-| ROCm | MTP n3, r3 mean | 7,729 / 256 | 1656.53 | **34.95** | **21.26** | 44.65% acceptance; backend-resident NextN |
+| ROCm | `none`, r3 mean | 7,729 / 256 | **1725.85** | 28.66 | 19.01 | `ROCm1,ROCm0`, `ctx=12288`, q8/q8 KV |
+| ROCm | MTP n4, r3 mean | 7,729 / 256 | 1685.56 | **42.78** | **24.09** | 63.76% acceptance; backend-resident NextN |
 
 In this lane, Vulkan MTP changes prompt/decode/aggregate throughput by
 `-3.29% / +35.78% / +9.55%`. ROCm MTP changes them by
-`-2.93% / +35.76% / +20.71%`.
+`-2.33% / +49.26% / +26.73%`.
 
 ### Long Prompt Lanes
 
 | Backend | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Notes |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| Vulkan | `none`, r2 mean | 31,997 / 128 | 1488.47 | 32.89 | 5.02 | `ctx=49152`, `b8192/ub1024`, q8/q8 KV |
-| Vulkan | MTP n3, r2 mean | 31,997 / 128 | **1519.98** | **41.97** | **5.29** | 48.70% acceptance; 256-token prefill window |
-| ROCm | `none`, r2 mean | 31,997 / 128 | **1338.10** | 22.30 | 4.30 | `ctx=49152`, `b8192/ub1024`, q8/q8 KV |
-| ROCm | MTP n3, r2 mean | 31,997 / 128 | 1337.23 | **32.24** | **4.57** | 50.33% acceptance; 256-token prefill window |
+| Vulkan | `none` | 29,563 / 128 | 1556.89 | 35.45 | 5.65 | `ctx=49152`, `b8192/ub1024`, q8/q8 KV |
+| Vulkan | MTP n3 | 29,563 / 128 | 1508.01 | **45.20** | 5.69 | 52.38% acceptance; backend-specific host handoff |
+| ROCm | `none` | 29,563 / 128 | **1787.94** | 25.21 | 5.91 | `ctx=49152`, `b8192/ub1024`, q8/q8 KV |
+| ROCm | MTP n3 | 29,563 / 128 | 1721.97 | 42.02 | **6.31** | 75.86% acceptance; sparse KV-only history |
 
-In the long lanes, Vulkan MTP changes prompt/decode/aggregate throughput by
-`+2.12% / +27.59% / +5.28%`. ROCm MTP changes them by
-`-0.07% / +44.61% / +6.27%`. The prefill tax is therefore within the current
-acceptance target, while generation remains materially faster. Longer generated
-answers benefit more because prompt evaluation dominates these 128-token runs.
+On the matched 29.5k lane, Vulkan MTP changes prompt/decode throughput by
+`-3.14% / +27.50%`. ROCm MTP changes prompt/decode/aggregate throughput by
+`-3.69% / +66.68% / +6.77%`. ROCm MTP is 10.9% faster in aggregate and 14.2%
+faster in prompt evaluation than Vulkan MTP on this lane, while Vulkan retains
+a 7.6% decode advantage.
+
+### Extended ROCm Long Prompt
+
+| Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `none` | 41,114 / 128 | **1670.27** | 25.34 | 4.30 | - |
+| MTP n3 | 41,114 / 128 | 1597.23 | **35.92** | **4.36** | 68.55% |
+
+At 41.1k tokens, sparse-history MTP costs 4.4% prompt throughput and gains
+41.7% decode throughput. Full-history MTP reaches 74.36% acceptance and 37.54
+decode tok/s, but loses 10.9% prompt throughput, so it is not the default for
+agent workloads. Longer generated answers benefit more because prompt
+evaluation dominates these 128-token runs.
+
+After these fixed-lane tables were recorded, E292 promoted a packed HIP Q3_K
+staging kernel. Matched A/B runs improved ROCm prompt evaluation by
+`+0.72%` to `+1.52%` across 7.8k-30.1k-token prompts. The table values remain
+unchanged because the repository snapshot, and therefore exact prompt token
+count, had changed by the time E292 was measured. Set
+`GGML_CUDA_Q3K_PADDED_DEQUANT_PACKED=0` to restore the previous staging kernel.
+
+E293 then restored the rocWMMA FlashAttention path that was disabled in fresh
+ROCm build caches. On the full production profile, a matched 11,561-token r3
+lane improved prompt/decode/aggregate throughput from
+`1713.61 / 28.02 / 2.1696` to `1930.26 / 30.71 / 2.4403 tok/s`. On a matched
+30,075-token lane, prompt evaluation improved `1369.24 -> 1761.34 tok/s`
+(`+28.64%`) and server evaluation time fell `22.54 -> 17.65 s`; decode was
+neutral within single-run noise. At `ctx=131072`, a matched 53,523-token prompt
+improved `1091.68 -> 1557.94 tok/s` (`+42.71%`) and wall time fell
+`49.85 -> 35.16 s`. Fresh HIP builds now enable rocWMMA by default and
+discover the bundled headers automatically. Configure with
+`-DGGML_HIP_ROCWMMA_FATTN=OFF` for the generic-tile rollback.
+
+E315 adds ROCm KV-only sparse MTP history and event-ordered backend handoff.
+The long-prompt acceptance improvement is not a ROCm numerical workaround:
+matched target-prefix traces showed equal backend acceptance when both paths
+received the same history. The new policy retains selected long-range KV blocks
+without evaluating the entire draft layer over the prompt. It raises acceptance
+to 75.86% at 29.5k and 68.55% at 41.1k while keeping prompt loss below 4.5%.
 
 Q4_K_M and UD-Q4_K_XL are supported, but the 27B Q4 long-context working set
 currently enters WDDM shared memory on this 2x16 GB system; Q3_K_S remains the
@@ -128,6 +168,11 @@ practical performance model. The active Q3 prompt-evaluation research target is
 
 Evidence:
 
+- [E291: ROCm long-context Q3_K decode and memory](docs/research/experiments/E291_rocm_long_context_q3k_decode_and_memory.md)
+- [E292: ROCm packed padded-Q3_K dequant](docs/research/experiments/E292_rocm_q3k_packed_dequant_probe.md)
+- [E293: ROCm RDNA4 rocWMMA FlashAttention restore](docs/research/experiments/E293_rocm_rdna4_rocwmma_fattn_restore.md)
+- [E315: ROCm long-context MTP sparse history](docs/research/experiments/E315_rocm_long_context_mtp_sparse_history.md)
+- [E289: ROCm Q3_K packed subtract](docs/research/experiments/E289_rocm_q3k_packed_sub4.md)
 - [E284: matched 49K-context README lane](docs/research/experiments/E284_matched_49k_context_readme_lane.md)
 - [E283: clean README revalidation](docs/research/experiments/E283_clean_readme_revalidation.md)
 - [E282: MTP device hidden-state handoff](docs/research/experiments/E282_mtp_device_hidden_handoff.md)
@@ -143,7 +188,7 @@ Evidence:
 - OpenAI-compatible `llama-server` for local applications and coding agents.
 - Dual-GPU layer placement and explicit output-device controls.
 - Upstream-style Qwen3.6 MTP pipeline with backend-resident NextN handoff.
-- Long-prompt MTP recent-window processing; built-in window is 256 tokens.
+- ROCm KV-only sparse-history MTP with a bounded long-prompt prefill cost.
 - RDNA4 Q3_K prompt and small-N decode kernel specializations.
 - Vision support through a compatible `mmproj-*.gguf` projector.
 - Prompt checkpoints, cache controls, benchmark history, and diagnostic traces.
@@ -250,6 +295,7 @@ cmake -S . -B build-rocm -G Ninja `
   -DGGML_HIP=ON `
   -DAMDGPU_TARGETS=gfx1201 `
   -DGGML_HIP_MMQ_MFMA=ON `
+  -DGGML_HIP_ROCWMMA_FATTN=ON `
   -DGGML_HIP_NO_VMM=ON `
   -DGGML_OPENMP=OFF `
   -DCMAKE_C_COMPILER="$env:HIP_PATH\bin\clang.exe" `
@@ -261,6 +307,8 @@ cmake --build build-rocm -j 4 --target llama-server
 ROCm uses clang from the HIP SDK but still needs the Windows SDK and MSVC host
 libraries. Missing `kernel32.lib`, `msvcrtd.lib`, or similar files indicates an
 incomplete Build Tools environment. See the full [Build Guide](docs/build.md).
+The fork includes rocWMMA 7.1 headers under `third_party/rocwmma`; no separate
+rocWMMA SDK install is required for the command above.
 
 ## Recommended Runtime Profiles
 
@@ -277,7 +325,7 @@ build-vulkan\bin\llama-server.exe `
   -m models\Qwen3.6-27B-Q3_K_S_mtp.gguf `
   -c 131072 -b 8192 -ub 1024 -ngl 999 `
   --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on `
-  -dev Vulkan0,Vulkan1 -sm layer -ts 1,1 `
+  -dev Vulkan1,Vulkan0 -sm layer -ts 1,1 `
   --spec-type none
 ```
 
@@ -308,6 +356,38 @@ host-staged split route is used instead. Do not enable
 `GGML_ROCM_ENABLE_PEER_COPY=1` as a production default without a fresh
 correctness and driver-stability validation.
 
+For prompt-heavy dual-GPU testing, the event-chained host-staging prototype is
+available without enabling peer access:
+
+```powershell
+$env:GGML_ROCM_ASYNC_CROSS_DEVICE_STAGE = "1"
+```
+
+It improved the matched 30K prompt lane by about 2.7% and left mean decode
+within noise. It remains opt-in pending larger-context driver validation. With
+the reference ROCm order, leave `LLAMA_OUTPUT_DEVICE` unset: forcing output to
+`ROCm1` adds a return transfer after the ROCm0 layers and severely reduces
+long-prompt evaluation throughput.
+
+The production long-context MTP profile needs no additional environment
+variables:
+
+```powershell
+build-rocm-full\bin\llama-server.exe `
+  -m models\Qwen3.6-27B-Q3_K_S_mtp.gguf `
+  -c 65536 -b 8192 -ub 1024 -ngl 999 `
+  --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on `
+  -dev ROCm1,ROCm0 -sm layer -ts 1,1 `
+  --spec-type draft-mtp --spec-draft-n-max 3
+```
+
+ROCm builds default to a 4096-row sparse anchor every 32768 prompt positions,
+the latest 256 rows, KV-only draft prefill, staging preallocation, and
+event-ordered device hidden-state handoff. Set
+`LLAMA_SPEC_PREFILL_SPARSE_CHUNK=0` to disable the sparse anchors or
+`LLAMA_MTP_DEVICE_HANDOFF=0` to restore the host hidden-state path for a
+diagnostic comparison.
+
 ### Why GPU Order Matters
 
 `-sm layer` is pipeline/layer placement, not symmetric tensor parallelism. The
@@ -319,18 +399,20 @@ rest of that topology symmetric.
 
 Consequently, swapping two identical GPUs can change both transfer direction
 and which device owns a synchronization-heavy graph boundary. On this machine,
-`Vulkan0,Vulkan1` with `LLAMA_OUTPUT_DEVICE=Vulkan1` preserves MTP prefill
-throughput; the reversed order was nearly equivalent for `spec=none` but much
-slower during MTP prefill. ROCm's measured general order remains
+`Vulkan1,Vulkan0` with `LLAMA_OUTPUT_DEVICE=Vulkan1` is the current measured
+profile; swapping the order changes transfer direction and can alter MTP
+prefill throughput. ROCm's measured general order remains
 `ROCm1,ROCm0`. A mature tensor-parallel implementation would reduce this
 asymmetry, but the current supported production mode is layer split.
 
 ## MTP Behavior
 
 MTP accelerates token generation; it does not make the target model's prompt
-prefill free. This fork limits draft-context prefill to the recent prompt tail
-and keeps NextN hidden states on their backend, avoiding the previous
-GPU-to-RAM-to-GPU round trip.
+prefill free. ROCm uses selected long-range KV blocks plus the recent prompt
+tail and keeps NextN hidden states on their backend, avoiding a complete draft
+prefill and the previous GPU-to-RAM-to-GPU round trip. Vulkan uses a host
+handoff by default because keeping unmasked NextN output resident over the
+whole Vulkan prompt was substantially slower.
 
 Practical rules:
 

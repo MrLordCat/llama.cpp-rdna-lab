@@ -1,5 +1,9 @@
 #include "models.h"
+#include "llama-kv-cache.h"
 #include "llama-memory-recurrent.h"
+
+#include <cstdlib>
+#include <cstring>
 
 void llama_model_qwen35::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,       hparams.f_norm_rms_eps);
@@ -622,9 +626,8 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
 
     res->add_input(std::move(inp));
 
-    ggml_tensor * inp_pos     = build_inp_pos();
-    ggml_tensor * inp_out_ids = build_inp_out_ids();
-    auto * inp_attn           = build_attn_inp_kv();
+    ggml_tensor * inp_pos = build_inp_pos();
+    auto * inp_attn       = build_attn_inp_kv();
 
     ggml_tensor * h_norm = build_norm(h_input, layer.nextn.hnorm, nullptr, LLM_NORM_RMS, il);
     cb(h_norm, "mtp_hnorm", il);
@@ -671,10 +674,33 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
     cb(Vcur, "mtp_Vcur", il);
 
-    Qcur = ggml_rope_multi(ctx0, Qcur, inp_pos, nullptr,
+    Kcur = ggml_rope_multi(ctx0, Kcur, inp_pos, nullptr,
             n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
             ext_factor, attn_factor, beta_fast, beta_slow);
-    Kcur = ggml_rope_multi(ctx0, Kcur, inp_pos, nullptr,
+
+    // MTP process() batches only populate the draft layer's KV cache. They do
+    // not request logits or consume the layer output, so the attention body,
+    // output projection, FFN, final norm and LM head are dead work.
+    static const bool kv_only_process = [] {
+        const char * value = std::getenv("LLAMA_MTP_KV_ONLY_PROCESS");
+        if (value != nullptr && value[0] != '\0') {
+            return std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0 &&
+                   std::strcmp(value, "off") != 0 && std::strcmp(value, "no") != 0;
+        }
+#if defined(GGML_USE_HIP)
+        return true;
+#else
+        return false;
+#endif
+    }();
+    if (kv_only_process && n_outputs == 0) {
+        build_attn_kv_store(inp_attn, Kcur, Vcur, il);
+        res->t_embd = h_input;
+        ggml_build_forward_expand(gf, h_input);
+        return;
+    }
+
+    Qcur = ggml_rope_multi(ctx0, Qcur, inp_pos, nullptr,
             n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
             ext_factor, attn_factor, beta_fast, beta_slow);
 
@@ -724,6 +750,7 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     }
     res->t_h_nextn = cur;
 
+    ggml_tensor * inp_out_ids = build_inp_out_ids();
     cur = ggml_get_rows(ctx0, cur, inp_out_ids);
     cb(cur, "mtp_shared_head_norm", -1);
 

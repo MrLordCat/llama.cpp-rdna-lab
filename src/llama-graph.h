@@ -948,6 +948,12 @@ struct llm_graph_context {
 
     llm_graph_input_attn_kv * build_attn_inp_kv() const;
 
+    void build_attn_kv_store(
+            llm_graph_input_attn_kv * inp,
+            ggml_tensor * k_cur,
+            ggml_tensor * v_cur,
+            int il) const;
+
     ggml_tensor * build_attn(
             llm_graph_input_attn_kv * inp,
             ggml_tensor * wo,

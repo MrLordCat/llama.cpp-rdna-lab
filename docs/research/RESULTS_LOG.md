@@ -1,9 +1,96 @@
 # Results Log
 
+## 2026-07-15 - E314 ROCm IMROPE normalization fusion
+
+- Confirmed that Qwen3.6 uses interleaved MRoPE (`mode=40`), which is outside
+  the existing Vulkan normal/NeoX fusion route.
+- A correctness-matching HIP `RMS_NORM + MUL + IMROPE` prototype reduced
+  decode `32.33 -> 29.81 tok/s` (`-7.8%`) on the dual short lane.
+- Rejected and removed the prototype; continue MTP work at the acceptance and
+  long-prompt state level.
+
+- Details: `docs/research/experiments/E314_rocm_imrope_rms_mul_fusion.md`
+
+## 2026-07-14 - E313 ROCm event-chained host staging
+
+- Added an opt-in pinned-host ring that queues source D2H, a cross-device
+  event wait, destination H2D, and the second HIP graph without a host barrier.
+- Dual 30K baseline r2 prompt improved `1767.23 -> 1813.96 tok/s` (`+2.65%`),
+  decode was neutral within run variance, and aggregate improved `+1.88%`.
+- MTP n3 prompt improved `1740.24 -> 1772.67 tok/s`; decode and 44.44%
+  acceptance were unchanged.
+- Keep `GGML_ROCM_ASYNC_CROSS_DEVICE_STAGE=1` opt-in pending larger-context and
+  repeated-session stability coverage.
+
+- Details: `docs/research/experiments/E313_rocm_async_cross_device_stage.md`
+
+## 2026-07-14 - E312 ROCm output topology correction
+
+- Found that forcing ROCm output to the first device added a second PCIe
+  boundary to the layer pipeline.
+- Removing `LLAMA_OUTPUT_DEVICE=ROCm1` raised 30K prompt evaluation
+  `1024.06 -> 1770.25 tok/s` while keeping both GPUs active.
+- Equal `ROCm1,ROCm0` layer split remains the production balance; nearby split
+  and reversed-order sweeps traded too much prompt or decode.
+
+- Details: `docs/research/experiments/E312_rocm_dual_output_topology.md`
+
+## 2026-07-14 - E311 ROCm Q3_K Vulkan-style VK16
+
+- Added an opt-in one-wave Q3_K N=1 kernel with 36/60 VGPR direct/fused.
+- Short dual decode improved `29.82 -> 30.76-30.92 tok/s`, but the gain did not
+  survive the correct 30K output topology.
+- Keep the route off by default; remove the rejected x4, two-row, shuffle, and
+  unroll variants.
+
+- Details: `docs/research/experiments/E311_rocm_q3k_vulkan_vk16.md`
+
+## 2026-07-14 - E293 ROCm RDNA4 rocWMMA FlashAttention restore
+
+- Found that fresh production ROCm caches had
+  `GGML_HIP_ROCWMMA_FATTN=OFF`; Qwen3.6 D256 prefill therefore fell through
+  to the generic tile kernel.
+- Enabled rocWMMA by default, added automatic bundled-header discovery, and
+  made the GUI ROCm build option default-on.
+- Full-build trace confirmed 192 D256 rocWMMA launches with 16 columns per
+  block for the 11.6k prompt.
+- Matched 11.6k r3 prompt/decode/aggregate improved
+  `1713.61/28.02/2.1696 -> 1930.26/30.71/2.4403 tok/s`.
+- Matched 30.1k prompt improved `1369.24 -> 1761.34 tok/s` (`+28.64%`),
+  with server evaluation time reduced `22535.10 -> 17652.29 ms`.
+- Matched `ctx=131072` 53.5k prompt improved
+  `1091.68 -> 1557.94 tok/s` (`+42.71%`), with server evaluation time reduced
+  `49745.56 -> 35067.14 ms` and decode neutral.
+- Qwen-shaped D256/GQA6/q8_0 FlashAttention correctness passed `1/1`; focused
+  Q3_K `MUL_MAT` remained `11/11`.
+- Build-time rollback: `-DGGML_HIP_ROCWMMA_FATTN=OFF`.
+
+- Details: `docs/research/experiments/E293_rocm_rdna4_rocwmma_fattn_restore.md`
+
+## 2026-07-14 - E292 ROCm packed padded-Q3_K dequant
+
+- Replaced four scalar Q3_K lane reconstruction chains in HIP prompt staging
+  with a packed, byte-borrow-safe implementation.
+- gfx1201 kernel size fell `1216 -> 800` bytes, instructions `210 -> 142`,
+  global loads `14 -> 10`, and VGPRs `15 -> 12`, without spills.
+- Synchronized Q3_K conversion improved `8.14%`; clean prompt eval improved
+  `0.72-1.52%` from 7.8k through 30.1k prompts.
+- Enabled by default for HIP with
+  `GGML_CUDA_Q3K_PADDED_DEQUANT_PACKED=0` as rollback. CUDA is unchanged.
+- Decode route tracing confirmed the staging kernel is not used by the MMVQ
+  decode path.
+
+- Details: `docs/research/experiments/E292_rocm_q3k_packed_dequant_probe.md`
+
 Compact ledger of completed experiments.
 
 | Date | ID | Short Name | Baseline TPS | Candidate TPS | Delta | Decision | Artifacts |
 | --- | --- | --- | ---: | ---: | ---: | --- | --- |
+| 2026-07-14 | E313 | ROCm event-chained host staging | dual 30K sync r2 `1767.23` prompt / `26.77` decode / `5.855` aggregate; MTP `1740.24/29.49/5.90` | async r2 `1813.96/26.65/5.965`; MTP `1772.67/29.48/5.99` | baseline prompt `+2.65%`, aggregate `+1.88%`, decode `-0.45%`; MTP prompt `+1.86%`, aggregate `+1.53%`, decode neutral | Keep opt-in pending larger-context and repeated-session driver validation | `build_logs/agent-workload/e313-*`, `docs/research/experiments/E313_rocm_async_cross_device_stage.md` |
+| 2026-07-14 | E312 | ROCm dual output topology | forced first-device output `1024.06` prompt / `26.48` decode | monotonic last-device output `1770.25/26.72` | prompt `+72.9%`, decode `+0.9%` | Use dual `ROCm1,ROCm0`, equal layer split, and no ROCm output override | `build_logs/agent-workload/e312-*`, `docs/research/experiments/E312_rocm_dual_output_topology.md` |
+| 2026-07-14 | E311 | ROCm Q3_K Vulkan-style VK16 | short dual decode `29.82`; correct 30K `26.72` | short `30.76-30.92`; correct 30K `26.34` | short `+3.15-3.69%`; no long gain | Keep off-by-default short-decode research gate | `build_logs/agent-workload/e311-*`, `docs/research/experiments/E311_rocm_q3k_vulkan_vk16.md` |
+| 2026-07-14 | E293 | ROCm RDNA4 rocWMMA FlashAttention restore | full tile: 11.6k r3 `1713.61` prompt / `28.02` decode; 30.1k `1369.24`; 53.5k `1091.68/22.30/0.3210` | full rocWMMA: 11.6k `1930.26/30.71`; 30.1k `1761.34`; 53.5k `1557.94/22.47/0.4551` | prompt `+12.64%` at 11.6k, `+28.64%` at 30.1k, `+42.71%` at 53.5k; 53.5k server time `-29.51%` | Enable rocWMMA and bundled-header discovery by default; retain CMake OFF rollback | `build_logs/agent-workload/e293-*`, `docs/research/experiments/E293_rocm_rdna4_rocwmma_fattn_restore.md` |
+| 2026-07-14 | E292 | ROCm packed padded-Q3_K dequant | scalar staging conversion `820.041 ms`; 7.9k r3 prompt `1739.80` | packed conversion `753.251 ms`; 7.9k r3 prompt `1766.33` | conversion `-8.14%`; prompt `+0.72%` to `+1.52%` over 7.8k-30.1k | Keep packed HIP staging default with runtime scalar rollback | `build_logs/agent-workload/e292-*`, `docs/research/experiments/E292_rocm_q3k_packed_dequant_probe.md` |
 | 2026-07-14 | E282 | MTP device hidden-state handoff | LoL-active bracketed `none` mean: `1420.11` prompt / `29.04` decode / `5.06` aggregate TPS | mean of two device-handoff window-256 runs: `1404.66` prompt / `38.28` decode / `5.23` aggregate TPS, identical `50.33%` acceptance | prompt `-1.09%`, decode `+31.83%`, aggregate `+3.36%` | Keep backend-resident NextN handoff and make 256 the built-in recent-window default; keep `LLAMA_MTP_DEVICE_HANDOFF=0` rollback | `docs/research/experiments/E282_mtp_device_hidden_handoff.md`, `build_logs/agent-workload/e279-lol-vulkan32k-*`, `build_logs/agent-workload/e282-lol-vulkan32k-mtp-default256-n128.*` |
 | 2026-07-11 | E280 | Vulkan GPU1 primary/output residency | GPU1-primary equal layer split: prompt `1860.21 tok/s`, accounted `Vulkan1 7915 / Vulkan0 8586 MiB` | `LLAMA_OUTPUT_DEVICE=Vulkan1`: prompt `1793.75 tok/s`, accounted `Vulkan1 8920 / Vulkan0 7582 MiB`; all-KV diagnostic: `814.82 tok/s`, `Vulkan1 KV 4352 MiB`, `Vulkan0 6347 MiB` total | output route frees `1004 MiB` on GPU0 at `-3.6%` r1 prompt; all-KV is `-56.2%` | Keep GPU1-primary plus output relocation in GUI. Keep `LLAMA_KV_DEVICE=Vulkan1` explicit/off by default; reject literal all-KV and uneven layer split as performance defaults | docs/research/experiments/E280_vulkan_gpu1_primary_residency.md, build_logs/agent-workload/e280-vulkan-gpu1-output-smoke.server.log, build_logs/agent-workload/e280-vulkan-all-kv-gpu1-smoke.server.log |
 | 2026-07-11 | E279 | Vulkan batched recurrent checkpoint | reused 7k prefix + 15-token tail: sequential transfer `33.362 ms`, prompt `180.553 ms` / `83.08 tok/s` | batched 50/46 tensor reads: transfer `27.376 ms`, prompt `165.787 ms` / `90.48 tok/s` | transfer `-17.9%`, prompt wall `-8.2%`, prompt TPS `+8.9%`; deterministic rollback output identical | Keep batch callback with `LLAMA_CHECKPOINT_BATCH_READ=0` rollback. Correct earlier attribution: the main 98k collapse remains small-N long-KV attention, tracked by H63 | docs/research/experiments/E279_vulkan_batched_recurrent_checkpoint.md, build_logs/agent-workload/e279-incremental-*-r2.server.log, build_logs/agent-workload/e279-rollback-*-r1.server.log |
@@ -357,3 +444,11 @@ Compact ledger of completed experiments.
 | 2026-07-12 | D082 | P003 Vulkan Q3 BN512 12k gate | layer control `1821.13 prompt tok/s` | candidate `950.35`; over-LDS hot route not selected | rejected | Remove runtime prototype and keep static rejection record | `build_logs/agent-workload/d082-vulkan12k-bn512-resources-r1.*`, `docs/research/major-topology/D082_P003_VULKAN_Q3_BN512_12K_GATE.md` |
 | 2026-07-12 | D083 | P003 Vulkan Q3 NITER2 12k gate | layer control `1821.13 prompt tok/s`, Q3 route `82 VGPR` | candidate `1131.21`, `106 VGPR`, zero scratch | rejected | Remove second-accumulator prototype; occupancy loss dominates reuse | `build_logs/agent-workload/d083-vulkan12k-q3-niter2-resources-r1.*`, `docs/research/major-topology/D083_P003_VULKAN_Q3_NITER2_12K_GATE.md` |
 | 2026-07-13 | D084 | Native Vulkan tensor all-reduce | original tensor about `540 prompt tok/s`; layer `1826.47` | native FP32 `809.03`; BF16 `1032-1043`; coherent 16-token output | BF16 about `1.9x` original tensor, still `43%` below layer | Keep opt-in communicator; true peer/device-group collective required before reopening as default | `build_logs/agent-workload/p003-vulkan12k-tensor-*.{jsonl,server.log}`, `docs/research/major-topology/D084_P003_VULKAN_NATIVE_TENSOR_ALLREDUCE.md` |
+| 2026-07-14 | E285 | ROCm/Vulkan kernel and VRAM-accounting gap | ROCm dual `1573.92` prompt / `25.92` decode; ROCm1 single `1048.28` / `29.64` | Vulkan dual `1732.36` / `36.31`; direct-F32 HIP probes regressed decode to `18.73/6.02` | Vulkan dual `+10.1%` prompt / `+40.1%` decode; PCI-exact mapping separates both identical GPUs | Keep PCI-exact WDDM mapping; reject direct-F32 prototype; continue prompt on Q3_K staging/rocBLAS; E289 follows the decode route | `build_logs/agent-workload/e285-*`, `docs/research/experiments/E285_rocm_vulkan_kernel_and_memory_gap.md` |
+| 2026-07-14 | E286 | Windows HIP infinity-safe fast math | off: cold/warm prompt `1574.31/1796.66`, decode `26.09` | on: cold/warm prompt `1589.01/1810.74`, decode `26.72` | `+0.93%/+0.78%` prompt, `+2.42%` decode; short single-GPU lane neutral | Keep `GGML_HIP_FAST_MATH=ON`; Windows source-level application fixes upstream's `COMPILE_LANGUAGE:HIP` gap; continue Q3_K/rocBLAS route work | `build_logs/agent-workload/e286-*`, `docs/research/experiments/E286_rocm_windows_fast_math.md` |
+| 2026-07-14 | E287 | ROCm src1 reuse and warmup | E286 warm prompt median `1807.17`, decode `26.72` | src1 reuse `1820.32/26.53`, about `+34 MiB/GPU`; normal warmup `1802.69/26.78` | src1 warm prompt `+0.73%`, decode slightly lower; normal warmup neutral | Keep src1 reuse opt-in; current warmup does not exercise the wide Q3_K-to-F16 rocBLAS route | `build_logs/agent-workload/e287-*`, `docs/research/experiments/E287_rocm_src1_reuse_and_warmup.md` |
+| 2026-07-14 | E288 | Fresh upstream RDNA4 MMQ probe | local single `749.74/32.84` short and `1048.28/29.64` long prompt/decode | upstream `ec0dbef81`: `508.22/31.88` short and `924.67/29.34` long | upstream `-32.2%/-2.9%` short, `-11.8%/-1.0%` long | Do not port the full upstream MMQ refactor; evaluate isolated changes only with local A/B | `build_logs/agent-workload/e288-*`, `docs/research/experiments/E288_upstream_rdna4_mmq_probe.md` |
+| 2026-07-14 | E289 | ROCm Q3_K packed subtract | single default `29.43` aggregate / `31.58` decode; dual n4 control `19.01` / `28.66` | packed subtract single `34.14/37.10`; dual MTP n4 `24.09/42.78`, acceptance `63.76%` | single `+16.0%` aggregate / `+17.5%` decode; MTP `+26.7%/+49.3%`, prompt `-2.3%` | Keep packed biased byte subtraction; `4096/4096` equivalence and focused Q3_K backend tests `11/11` pass | `build_logs/agent-workload/e289-*`, `docs/research/experiments/E289_rocm_q3k_packed_sub4.md` |
+| 2026-07-14 | E290 | ROCm Q3_K cuBLAS row pipeline | E289 control cold/warm prompt `1598.66/1824.11` | active 6144-row pipeline `937.29/1017.36`, about `+364 MiB/GPU` runtime memory | warm prompt about `-44%`; decode effectively unchanged | Reject; chunking destroys large-GEMM efficiency and adds per-op synchronization | `build_logs/agent-workload/e290-*`, `docs/research/experiments/E290_rocm_q3k_cublas_pipeline_gate.md` |
+| 2026-07-14 | E291 | ROCm long-context Q3_K decode and memory | E284 none `1338.10` prompt / `22.30` decode | packed none `1355.81/26.44`; MTP n3 `1343.57/32.34`, acceptance `48.70%` | none decode `+18.6%`; MTP vs current none `+22.3%` decode with `-0.9%` prompt | Keep packed fix; use n3 on this 31,997-prompt lane; budget roughly `0.4-1.0 GiB/GPU` extra HIP runtime state | `build_logs/agent-workload/e291-*`, `docs/research/experiments/E291_rocm_long_context_q3k_decode_and_memory.md` |
+| 2026-07-15 | E315 | ROCm long-context MTP sparse history | 30k none `1787.94/25.21`; 41k none `1670.27/25.34` prompt/decode | sparse n3 `1721.97/42.02`, acceptance `75.86%` at 30k; `1597.23/35.92`, acceptance `68.55%` at 41k | prompt `-3.7%/-4.4%`; decode `+66.7%/+41.7%`; full history rejected at `-10.9%` prompt | Keep HIP KV-only sparse history (`4096/32768` plus recent 256), async device handoff, deferred prefill and staging preallocation; Vulkan defaults to host handoff | `build_logs/agent-workload/e318-*`, `build_logs/agent-workload/e319-*`, `build_logs/agent-workload/e320-*`, `build_logs/agent-workload/e321-*`, `docs/research/experiments/E315_rocm_long_context_mtp_sparse_history.md` |

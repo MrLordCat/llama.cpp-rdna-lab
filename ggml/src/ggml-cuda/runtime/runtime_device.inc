@@ -28,6 +28,16 @@ int ggml_cuda_get_device() {
     return id;
 }
 
+static bool ggml_cuda_env_opt_in_enabled(const char * name) {
+    const char * value = getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return false;
+    }
+
+    return strcmp(value, "0") != 0 && strcmp(value, "false") != 0 &&
+           strcmp(value, "off") != 0 && strcmp(value, "no") != 0;
+}
+
 static bool ggml_cuda_peer_copy_enabled() {
 #ifdef GGML_CUDA_NO_PEER_COPY
     return false;
@@ -40,7 +50,7 @@ static bool ggml_cuda_peer_copy_enabled() {
 #if defined(GGML_USE_HIP) && defined(_WIN32)
     // HIP peer copies on Windows/RDNA4 can silently corrupt cross-device tensors.
     // Use the existing host-staged fallback unless explicitly opted in for testing.
-    return getenv("GGML_ROCM_ENABLE_PEER_COPY") != nullptr;
+    return ggml_cuda_env_opt_in_enabled("GGML_ROCM_ENABLE_PEER_COPY");
 #else
     return true;
 #endif
@@ -139,6 +149,57 @@ static bool ggml_cuda_get_wddm_global_dedicated_usage(const LUID & luid, uint64_
     return true;
 }
 
+static bool ggml_cuda_get_dxgi_adapter_address(const LUID & luid, D3DKMT_ADAPTERADDRESS * address) {
+    D3DKMT_OPENADAPTERFROMLUID open = {};
+    open.AdapterLuid = luid;
+    if (D3DKMTOpenAdapterFromLuid(&open) < 0) {
+        return false;
+    }
+
+    D3DKMT_ADAPTERADDRESS candidate = {};
+    D3DKMT_QUERYADAPTERINFO query = {};
+    query.hAdapter = open.hAdapter;
+    query.Type = KMTQAITYPE_ADAPTERADDRESS;
+    query.pPrivateDriverData = &candidate;
+    query.PrivateDriverDataSize = sizeof(candidate);
+    const NTSTATUS query_status = D3DKMTQueryAdapterInfo(&query);
+
+    D3DKMT_CLOSEADAPTER close = {};
+    close.hAdapter = open.hAdapter;
+    (void) D3DKMTCloseAdapter(&close);
+
+    if (query_status < 0) {
+        return false;
+    }
+    *address = candidate;
+    return true;
+}
+
+static bool ggml_cuda_get_pci_address(int device, D3DKMT_ADAPTERADDRESS * address, std::string * text) {
+    char pci_bus_id[32] = {};
+    const cudaError_t error = cudaDeviceGetPCIBusId(pci_bus_id, sizeof(pci_bus_id), device);
+    if (error != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+
+    unsigned int domain = 0;
+    unsigned int bus = 0;
+    unsigned int device_number = 0;
+    unsigned int function = 0;
+    if (sscanf(pci_bus_id, "%x:%x:%x.%x", &domain, &bus, &device_number, &function) != 4) {
+        return false;
+    }
+
+    address->BusNumber = bus;
+    address->DeviceNumber = device_number;
+    address->FunctionNumber = function;
+    if (text != nullptr) {
+        *text = pci_bus_id;
+    }
+    return true;
+}
+
 static bool ggml_cuda_get_wddm_budget_memory(int device, size_t * free, size_t * total) {
     if (std::getenv("GGML_CUDA_NO_WDDM_BUDGET") != nullptr) {
         return false;
@@ -157,10 +218,15 @@ static bool ggml_cuda_get_wddm_budget_memory(int device, size_t * free, size_t *
     }
 
     const std::string cuda_name = ggml_cuda_ascii_lower(prop.name);
+    D3DKMT_ADAPTERADDRESS cuda_address = {};
+    std::string cuda_pci_bus_id;
+    const bool has_cuda_address = ggml_cuda_get_pci_address(device, &cuda_address, &cuda_pci_bus_id);
     IDXGIAdapter1 * best_adapter = nullptr;
     DXGI_QUERY_VIDEO_MEMORY_INFO best_info = {};
     LUID best_luid = {};
+    D3DKMT_ADAPTERADDRESS best_address = {};
     SIZE_T best_dedicated = 0;
+    bool best_pci_match = false;
     bool best_name_match = false;
 
     for (UINT i = 0;; ++i) {
@@ -196,9 +262,17 @@ static bool ggml_cuda_get_wddm_budget_memory(int device, size_t * free, size_t *
         const std::string dxgi_name = ggml_cuda_ascii_lower(ggml_cuda_wstr_to_utf8(desc.Description));
         const bool name_match = !cuda_name.empty() && !dxgi_name.empty() &&
             (dxgi_name.find(cuda_name) != std::string::npos || cuda_name.find(dxgi_name) != std::string::npos);
+        D3DKMT_ADAPTERADDRESS dxgi_address = {};
+        const bool has_dxgi_address = ggml_cuda_get_dxgi_adapter_address(desc.AdapterLuid, &dxgi_address);
+        const bool pci_match = has_cuda_address && has_dxgi_address &&
+            cuda_address.BusNumber == dxgi_address.BusNumber &&
+            cuda_address.DeviceNumber == dxgi_address.DeviceNumber &&
+            cuda_address.FunctionNumber == dxgi_address.FunctionNumber;
         const bool replace = best_adapter == nullptr ||
-            (name_match && !best_name_match) ||
-            (name_match == best_name_match && desc.DedicatedVideoMemory > best_dedicated);
+            (pci_match && !best_pci_match) ||
+            (pci_match == best_pci_match && name_match && !best_name_match) ||
+            (pci_match == best_pci_match && name_match == best_name_match &&
+                desc.DedicatedVideoMemory > best_dedicated);
 
         if (replace) {
             if (best_adapter != nullptr) {
@@ -207,7 +281,9 @@ static bool ggml_cuda_get_wddm_budget_memory(int device, size_t * free, size_t *
             best_adapter = adapter;
             best_info = info;
             best_luid = desc.AdapterLuid;
+            best_address = dxgi_address;
             best_dedicated = desc.DedicatedVideoMemory;
+            best_pci_match = pci_match;
             best_name_match = name_match;
         } else {
             adapter->Release();
@@ -235,8 +311,13 @@ static bool ggml_cuda_get_wddm_budget_memory(int device, size_t * free, size_t *
 
     if (std::getenv("GGML_TRACE_CUDA_WDDM_BUDGET") != nullptr) {
         GGML_LOG_INFO(
-            "GGML_TRACE_CUDA_WDDM_BUDGET: device=%d cuda_name=%s luid_high=0x%08lx luid_low=0x%08lx budget=%zu process_usage=%zu global_dedicated_usage=%zu has_global_usage=%d use_global_usage=%d available=%zu available_process=%zu available_global=%zu name_match=%d\n",
+            "GGML_TRACE_CUDA_WDDM_BUDGET: device=%d cuda_name=%s cuda_pci=%s dxgi_pci=%u:%u.%u pci_match=%d luid_high=0x%08lx luid_low=0x%08lx budget=%zu process_usage=%zu global_dedicated_usage=%zu has_global_usage=%d use_global_usage=%d available=%zu available_process=%zu available_global=%zu name_match=%d\n",
             device, prop.name,
+            cuda_pci_bus_id.empty() ? "unknown" : cuda_pci_bus_id.c_str(),
+            best_address.BusNumber,
+            best_address.DeviceNumber,
+            best_address.FunctionNumber,
+            best_pci_match ? 1 : 0,
             (unsigned long) best_luid.HighPart,
             (unsigned long) best_luid.LowPart,
             (size_t) best_info.Budget,
@@ -737,4 +818,3 @@ std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(i
 static std::mutex ggml_cuda_lock;
 static std::condition_variable ggml_cuda_lock_cv;
 static std::atomic<int> ggml_cuda_lock_counter;
-

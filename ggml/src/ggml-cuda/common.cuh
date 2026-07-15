@@ -1369,10 +1369,24 @@ struct ggml_cuda_stream_context {
     }
 };
 
+struct ggml_cuda_async_host_stage_slot {
+    void * host = nullptr;
+    size_t capacity = 0;
+    cudaEvent_t source_ready = nullptr;
+    cudaEvent_t destination_done = nullptr;
+    int source_device = -1;
+    int destination_device = -1;
+    bool pending = false;
+};
+
 struct ggml_backend_cuda_context {
     int device;
     std::string name;
     cudaEvent_t copy_event = nullptr;
+
+    static constexpr size_t ASYNC_HOST_STAGE_SLOTS = 8;
+    std::array<ggml_cuda_async_host_stage_slot, ASYNC_HOST_STAGE_SLOTS> async_host_stage_slots;
+    size_t async_host_stage_cursor = 0;
 
     cudaStream_t streams[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = { { nullptr } };
     cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES] = {nullptr};

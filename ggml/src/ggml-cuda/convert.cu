@@ -2,6 +2,7 @@
 #include "dequantize.cuh"
 
 #include <cstdint>
+#include <cstdlib>
 
 #define CUDA_Q8_0_NE_ALIGN 2048
 
@@ -239,6 +240,48 @@ static __global__ void dequantize_block_q3_K_padded(const void * __restrict__ vx
     for (int l = l0; l < l0+4; ++l) y[l] = dl * ((int8_t)((q[l] >> shift) & 3) - ((hm[l] & m) ? 0 : 4));
 }
 
+#if defined(GGML_USE_HIP)
+static __device__ __forceinline__ uint32_t q3_K_decode_packed4(
+        const uint32_t q4, const uint32_t hm4, const int shift, const int high_bit) {
+    const uint32_t low = (q4 >> shift) & 0x03030303u;
+    const uint32_t present = (hm4 >> high_bit) & 0x01010101u;
+
+    // Bias each byte before subtracting 4 so a negative lane cannot borrow from its neighbor.
+    const uint32_t biased = low | (present << 2);
+    return ((biased ^ 0x80808080u) - 0x04040404u) ^ 0x80808080u;
+}
+
+static __global__ void dequantize_block_q3_K_padded_packed(
+        const void * __restrict__ vx, half * __restrict__ yy) {
+    const int64_t i = blockIdx.x;
+    const block_q3_K_padded * x = (const block_q3_K_padded *) vx;
+
+    const int r = threadIdx.x/4;
+    const int tid = r/2;
+    const int is0 = r%2;
+    const int l0 = 16*is0 + 4*(threadIdx.x%4);
+    const int n = tid/4;
+    const int j = tid - 4*n;
+    const int is = 8*n + 2*j + is0;
+
+    const int8_t us = is <  4 ? (x[i].scales[is-0] & 0xF) | (((x[i].scales[is+8] >> 0) & 3) << 4) :
+                      is <  8 ? (x[i].scales[is-0] & 0xF) | (((x[i].scales[is+4] >> 2) & 3) << 4) :
+                      is < 12 ? (x[i].scales[is-8] >>  4) | (((x[i].scales[is+0] >> 4) & 3) << 4) :
+                                (x[i].scales[is-8] >>  4) | (((x[i].scales[is-4] >> 6) & 3) << 4);
+    const float dl = float(x[i].d) * (us - 32);
+
+    const uint32_t q4 = *(const uint32_t *) (x[i].qs + 32*n + l0);
+    const uint32_t hm4 = *(const uint32_t *) (x[i].hmask + l0);
+    const uint32_t values = q3_K_decode_packed4(q4, hm4, 2*j, 4*n + j);
+
+    half * y = yy + i*QK_K + 128*n + 32*j + l0;
+    y[0] = dl * (int8_t) ( values        & 0xff);
+    y[1] = dl * (int8_t) ((values >>  8) & 0xff);
+    y[2] = dl * (int8_t) ((values >> 16) & 0xff);
+    y[3] = dl * (int8_t) ((values >> 24) & 0xff);
+}
+#endif
+
 void ggml_cuda_q3_K_pack_to_padded(const void * x, void * y, int64_t k, cudaStream_t stream) {
     GGML_ASSERT(k % QK_K == 0);
     const int nb = k / QK_K;
@@ -248,6 +291,16 @@ void ggml_cuda_q3_K_pack_to_padded(const void * x, void * y, int64_t k, cudaStre
 void ggml_cuda_q3_K_padded_to_fp16(const void * x, half * y, int64_t k, cudaStream_t stream) {
     GGML_ASSERT(k % QK_K == 0);
     const int nb = k / QK_K;
+#if defined(GGML_USE_HIP)
+    static const bool use_packed = [] {
+        const char * env = std::getenv("GGML_CUDA_Q3K_PADDED_DEQUANT_PACKED");
+        return env == nullptr || std::atoi(env) != 0;
+    }();
+    if (use_packed) {
+        dequantize_block_q3_K_padded_packed<<<nb, 64, 0, stream>>>(x, y);
+        return;
+    }
+#endif
     dequantize_block_q3_K_padded<<<nb, 64, 0, stream>>>(x, y);
 }
 

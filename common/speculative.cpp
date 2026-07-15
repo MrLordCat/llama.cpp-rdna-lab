@@ -73,6 +73,66 @@ static bool common_speculative_model_arch_is(const llama_model * model, const ch
     return std::strcmp(buf, arch) == 0;
 }
 
+static bool common_speculative_env_enabled(const char * name, bool fallback) {
+    const char * value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return fallback;
+    }
+
+    return std::strcmp(value, "0") != 0 &&
+           std::strcmp(value, "false") != 0 &&
+           std::strcmp(value, "off") != 0 &&
+           std::strcmp(value, "no") != 0;
+}
+
+#if defined(GGML_USE_HIP)
+static constexpr int32_t COMMON_MTP_SPARSE_STRIDE_DEFAULT = 32768;
+static constexpr int32_t COMMON_MTP_SPARSE_CHUNK_DEFAULT  = 4096;
+static constexpr bool    COMMON_MTP_DEFER_SPARSE_DEFAULT  = true;
+#else
+static constexpr int32_t COMMON_MTP_SPARSE_STRIDE_DEFAULT = 0;
+static constexpr int32_t COMMON_MTP_SPARSE_CHUNK_DEFAULT  = 0;
+static constexpr bool    COMMON_MTP_DEFER_SPARSE_DEFAULT  = false;
+#endif
+
+static bool common_mtp_sparse_capture_pos(llama_pos pos, int32_t n_tokens) {
+    const int32_t window = [] {
+        const char * env = std::getenv("LLAMA_SPEC_PREFILL_WINDOW");
+        return env ? std::max(0, std::atoi(env)) : 256;
+    }();
+    if (window == 0 || n_tokens <= window) {
+        return true;
+    }
+
+    const int32_t stride = [] {
+        const char * env = std::getenv("LLAMA_SPEC_PREFILL_SPARSE_STRIDE");
+        return env ? std::max(0, std::atoi(env)) : COMMON_MTP_SPARSE_STRIDE_DEFAULT;
+    }();
+    const int32_t chunk = std::min(stride, [] {
+        const char * env = std::getenv("LLAMA_SPEC_PREFILL_SPARSE_CHUNK");
+        return env ? std::max(0, std::atoi(env)) : COMMON_MTP_SPARSE_CHUNK_DEFAULT;
+    }());
+
+    return stride > 0 && chunk > 0 && pos >= 0 && pos % stride < chunk;
+}
+
+static bool common_mtp_sparse_capture_active(int32_t n_tokens) {
+    const int32_t window = [] {
+        const char * env = std::getenv("LLAMA_SPEC_PREFILL_WINDOW");
+        return env ? std::max(0, std::atoi(env)) : 256;
+    }();
+    const int32_t stride = [] {
+        const char * env = std::getenv("LLAMA_SPEC_PREFILL_SPARSE_STRIDE");
+        return env ? std::max(0, std::atoi(env)) : COMMON_MTP_SPARSE_STRIDE_DEFAULT;
+    }();
+    const int32_t chunk = [] {
+        const char * env = std::getenv("LLAMA_SPEC_PREFILL_SPARSE_CHUNK");
+        return env ? std::max(0, std::atoi(env)) : COMMON_MTP_SPARSE_CHUNK_DEFAULT;
+    }();
+
+    return window > 0 && n_tokens > window && stride > 0 && chunk > 0;
+}
+
 struct common_speculative_config {
     common_speculative_type type;
     common_params_speculative params;
@@ -1393,6 +1453,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     std::vector<std::vector<float>> chain_h;
     bool process_enabled = true;
     bool device_handoff = false;
+    bool deferred_sparse_prefill = false;
+    uint32_t deferred_device_first_row = 0;
 
     common_speculative_impl_draft_mtp(const common_params_speculative & params, uint32_t n_seq)
         : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_MTP, n_seq)
@@ -1456,8 +1518,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         chain_heads   = n_mtp_layers > 1 && !is_mem_shared;
 
         const char * device_handoff_env = std::getenv("LLAMA_MTP_DEVICE_HANDOFF");
+#if defined(GGML_USE_HIP)
+        const bool device_handoff_default = true;
+#else
+        const bool device_handoff_default = false;
+#endif
         device_handoff = n_seq == 1 && !chain_heads && !is_mem_shared &&
-                (!device_handoff_env || std::strcmp(device_handoff_env, "0") != 0);
+                (device_handoff_env ? std::strcmp(device_handoff_env, "0") != 0 : device_handoff_default);
         if (device_handoff) {
             llama_set_embeddings_nextn_device(ctx_tgt, true);
             llama_set_embeddings_nextn_device(ctx_dft, true);
@@ -1531,6 +1598,16 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         }
 
         auto * ctx_dft = this->params.ctx_dft;
+
+        if (deferred_sparse_prefill) {
+            const int32_t rc = decode_hidden_batch(
+                    ctx_dft, this->params.ctx_tgt, deferred_device_first_row);
+            deferred_sparse_prefill = false;
+            if (rc != 0) {
+                SPC_ERR("failed to flush deferred sparse MTP prefill rc=%d\n", (int) rc);
+            }
+        }
+
         const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx_dft), seq_id);
 
         if (pos_max < N - 1 && !is_mem_shared) {
@@ -1545,6 +1622,15 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     void set_process_enabled(bool enabled) override {
         if (process_enabled == enabled) {
             return;
+        }
+
+        if (enabled && deferred_sparse_prefill) {
+            const int32_t rc = decode_hidden_batch(
+                    this->params.ctx_dft, this->params.ctx_tgt, deferred_device_first_row);
+            deferred_sparse_prefill = false;
+            if (rc != 0) {
+                SPC_ERR("failed to flush deferred sparse MTP prefill rc=%d\n", (int) rc);
+            }
         }
 
         process_enabled = enabled;
@@ -1588,6 +1674,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         }
 
         const int32_t n_tokens = batch_in.n_tokens;
+        std::vector<int32_t> selected_beg(n_seq, -1);
+        std::vector<int32_t> selected_end(n_seq, -1);
 
         // remember the frist and last batch index for each sequence
         std::fill(i_batch_beg.begin(), i_batch_beg.end(), -1);
@@ -1631,6 +1719,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 }
 
                 const llama_pos cur_pos = batch_in.pos[k];
+                if (!common_mtp_sparse_capture_pos(cur_pos, n_tokens)) {
+                    continue;
+                }
+                selected_end[seq_id] = k;
+                if (selected_beg[seq_id] < 0) {
+                    selected_beg[seq_id] = k;
+                }
+
                 const float * h_prev = nullptr;
                 int32_t device_row = -1;
 
@@ -1688,7 +1784,16 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             }
 
             bool ok = true;
-            if (batch.n_tokens > 0) {
+            const bool defer_sparse = device_handoff && !chain_heads &&
+                    common_speculative_env_enabled(
+                            "LLAMA_MTP_DEFER_SPARSE_PREFILL", COMMON_MTP_DEFER_SPARSE_DEFAULT) &&
+                    common_mtp_sparse_capture_active(n_tokens) && batch.n_tokens > 0 && batch.n_tokens < n_tokens;
+            if (defer_sparse) {
+                deferred_sparse_prefill = true;
+                deferred_device_first_row = (uint32_t) std::max(0, device_first_row);
+                SPC_TRC("deferred sparse MTP prefill: rows=%d source_row=%u\n",
+                        batch.n_tokens, deferred_device_first_row);
+            } else if (batch.n_tokens > 0) {
                 for (int head = 0; head < n_mtp_layers; ++head) {
                     if (chain_heads) {
                         // ref: https://github.com/ggml-org/llama.cpp/pull/24340/changes#r3413498544
@@ -1724,7 +1829,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 continue;
             }
 
-            const int32_t n_rows = i_batch_end[seq_id] - i_batch_beg[seq_id] + 1;
+            const int32_t batch_beg = selected_beg[seq_id] >= 0 ? selected_beg[seq_id] : i_batch_beg[seq_id];
+            const int32_t batch_end = selected_end[seq_id] >= 0 ? selected_end[seq_id] : i_batch_end[seq_id];
+            const int32_t n_rows = batch_end - batch_beg + 1;
             verify_h_rows[seq_id] = n_rows;
             if (!device_handoff) {
                 verify_h[seq_id].resize((size_t) n_rows * n_embd);
@@ -1733,7 +1840,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             verify_device_rows[seq_id].resize(device_handoff ? n_rows : 0);
 
             for (int32_t i = 0; i < n_rows; ++i) {
-                const int32_t i_batch = i_batch_beg[seq_id] + i;
+                const int32_t i_batch = batch_beg + i;
                 if (device_handoff) {
                     verify_device_rows[seq_id][i] = 1 + i_batch;
                 } else {

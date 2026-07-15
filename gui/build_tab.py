@@ -220,7 +220,8 @@ class BuildTabWidget(QWidget):
         self.rocm_hip_graphs_check.setVisible(False)
         cmake_layout.addWidget(self.rocm_hip_graphs_check)
 
-        self.rocm_rocwmma_fattn_check = QCheckBox("ROCm: Enable rocWMMA FlashAttention (experimental)")
+        self.rocm_rocwmma_fattn_check = QCheckBox("ROCm: Enable rocWMMA FlashAttention")
+        self.rocm_rocwmma_fattn_check.setChecked(True)
         self.rocm_rocwmma_fattn_check.setVisible(False)
         cmake_layout.addWidget(self.rocm_rocwmma_fattn_check)
 
@@ -391,7 +392,7 @@ class BuildTabWidget(QWidget):
         if rocm_targets:
             self.rocm_amdgpu_input.setText(rocm_targets)
         self.rocm_hip_graphs_check.setChecked(bool(toolchain.get("rocm_hip_graphs", False)))
-        self.rocm_rocwmma_fattn_check.setChecked(bool(toolchain.get("rocm_rocwmma_fattn", False)))
+        self.rocm_rocwmma_fattn_check.setChecked(bool(toolchain.get("rocm_rocwmma_fattn", True)))
 
         custom_flags = toolchain.get("custom_cmake_flags", [])
         if isinstance(custom_flags, list) and custom_flags:

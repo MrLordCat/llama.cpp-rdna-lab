@@ -119,6 +119,43 @@ static int32_t server_spec_prefill_window() {
     return value;
 }
 
+static int32_t server_spec_prefill_sparse_stride() {
+    static const int32_t value = [] {
+        const char * env = std::getenv("LLAMA_SPEC_PREFILL_SPARSE_STRIDE");
+#if defined(GGML_USE_HIP)
+        return env ? std::max(0, std::atoi(env)) : 32768;
+#else
+        return env ? std::max(0, std::atoi(env)) : 0;
+#endif
+    }();
+
+    return value;
+}
+
+static int32_t server_spec_prefill_sparse_chunk() {
+    static const int32_t value = [] {
+        const char * env = std::getenv("LLAMA_SPEC_PREFILL_SPARSE_CHUNK");
+#if defined(GGML_USE_HIP)
+        return env ? std::max(0, std::atoi(env)) : 4096;
+#else
+        return env ? std::max(0, std::atoi(env)) : 0;
+#endif
+    }();
+
+    return value;
+}
+
+static bool server_spec_prefill_capture_pos(int32_t pos, int32_t n_prompt_tokens) {
+    const int32_t window = server_spec_prefill_window();
+    if (window == 0 || pos >= std::max(0, n_prompt_tokens - window)) {
+        return true;
+    }
+
+    const int32_t stride = server_spec_prefill_sparse_stride();
+    const int32_t chunk  = std::min(server_spec_prefill_sparse_chunk(), stride);
+    return stride > 0 && chunk > 0 && pos >= 0 && pos % stride < chunk;
+}
+
 static void server_prompt_checkpoint_update_pos(server_prompt_checkpoint & ckpt, int64_t n_tokens, llama_pos pos_min, llama_pos pos_max) {
     ckpt.pos_min  = pos_min;
     ckpt.pos_max  = pos_max;
@@ -2859,11 +2896,16 @@ private:
                         // boundary. Otherwise a 512-token window can enable NextN for the
                         // entire final prompt batch (6206 rows in the 48k trace).
                         if (spec && common_speculative_need_embd_nextn(spec.get())) {
-                            const int32_t prefill_window = server_spec_prefill_window();
-                            const int32_t tail_start = std::max(0, slot.task->n_tokens() - prefill_window);
+                            const int32_t pos = slot.prompt.n_tokens();
                             const bool slot_has_tokens_in_batch = batch.n_tokens > n_tokens_prev;
+                            const int32_t tail_start = std::max(
+                                    0, slot.task->n_tokens() - server_spec_prefill_window());
 
-                            if (prefill_window > 0 && slot_has_tokens_in_batch && slot.prompt.n_tokens() == tail_start) {
+                            // Sparse history is filtered inside the already-formed logical
+                            // batch. Only split at the recent-tail boundary; extra server
+                            // decode calls drain pipeline parallelism and cost more than the
+                            // sparse capture saves.
+                            if (server_spec_prefill_window() > 0 && slot_has_tokens_in_batch && pos == tail_start) {
                                 break;
                             }
                         }
@@ -3028,26 +3070,27 @@ private:
             };
 
             if (spec && common_speculative_need_embd_nextn(spec.get())) {
-                const int32_t spec_prefill_window = server_spec_prefill_window();
-
                 bool process_enabled = true;
-                if (spec_prefill_window > 0) {
+                if (server_spec_prefill_window() > 0) {
                     process_enabled = false;
                     for (auto & slot : slots) {
                         if (!slot.is_processing() || !slot.can_speculate() || slot.task == nullptr) {
                             continue;
                         }
 
-                        if (slot.state == SLOT_STATE_PROCESSING_PROMPT) {
-                            // slot.prompt already includes the batch being decoded here, so
-                            // remaining counts prompt tokens still outside the current batch.
-                            const int32_t remaining = slot.task->n_tokens() - slot.prompt.n_tokens();
-                            if (remaining < spec_prefill_window) {
+                        if (slot.state != SLOT_STATE_PROCESSING_PROMPT) {
+                            process_enabled = true;
+                            break;
+                        }
+
+                        for (int32_t k = 0; k < batch_view.n_tokens; ++k) {
+                            if (batch_view.n_seq_id[k] == 1 && batch_view.seq_id[k][0] == slot.id &&
+                                    server_spec_prefill_capture_pos(batch_view.pos[k], slot.task->n_tokens())) {
                                 process_enabled = true;
                                 break;
                             }
-                        } else {
-                            process_enabled = true;
+                        }
+                        if (process_enabled) {
                             break;
                         }
                     }

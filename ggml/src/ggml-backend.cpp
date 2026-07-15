@@ -1,13 +1,5 @@
 // Note: porting this file to C++ is a work in progress
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#ifndef NOMINMAX
-#   define NOMINMAX
-#endif
-#include <windows.h>
-#endif
-
 #include "ggml-backend.h"
 #include "ggml-backend-impl.h"
 #include "ggml-alloc.h"
@@ -1564,8 +1556,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     GGML_ASSERT(sched);
     struct ggml_backend_sched_split * splits = sched->splits;
 
-    const bool trace_split_timing = getenv("GGML_SCHED_SPLIT_TIMING") != nullptr;
-    const bool trace_split_sync   = trace_split_timing && getenv("GGML_SCHED_SPLIT_TIMING_SYNC") != nullptr;
+    static const bool trace_split_timing = getenv("GGML_SCHED_SPLIT_TIMING") != nullptr;
+    static const bool trace_split_sync   = trace_split_timing && getenv("GGML_SCHED_SPLIT_TIMING_SYNC") != nullptr;
 
     ggml_tensor * prev_ids_tensor = nullptr;
     std::vector<int32_t> ids;
@@ -1587,6 +1579,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, split->inputs[input_id]);
             struct ggml_tensor * input = split->inputs[input_id];
             struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, sched->cur_copy);
+
+            if (trace_split_timing) {
+                GGML_LOG_INFO(
+                    "%s: split input split=%d input=%d/%d name=%s bytes=%zu src=%s dst=%s flags=%d usage=%d\n",
+                    __func__, split_id + 1, input_id + 1, split->n_inputs, input->name,
+                    ggml_nbytes(input), ggml_backend_name(input_backend), ggml_backend_name(split_backend),
+                    input->flags, (int) ggml_backend_buffer_get_usage(input->buffer));
+            }
 
             if (input->flags & GGML_TENSOR_FLAG_INPUT) {
                 // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done

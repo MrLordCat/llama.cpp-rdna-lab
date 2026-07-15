@@ -144,6 +144,7 @@ extern "C" {
                 ggml_backend_t backend,
                 const struct ggml_backend_tensor_get_entry * entries,
                 size_t n_entries);
+
     };
 
     struct ggml_backend {

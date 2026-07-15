@@ -621,6 +621,7 @@ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sample
     GGML_ASSERT(idxs.size() == draft.size() + 1 && "idxs.size() must be draft.size() + 1");
 
     const bool trace_verify_timing = std::getenv("LLAMA_SPEC_VERIFY_TIMING") != nullptr;
+    const bool trace_spec_tokens   = std::getenv("LLAMA_SPEC_TOKEN_TRACE") != nullptr;
     const int64_t t_start_us = trace_verify_timing ? ggml_time_us() : 0;
     int64_t t_sample_us = 0;
     int64_t t_accept_us = 0;
@@ -670,6 +671,24 @@ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sample
         LOG_INF("%s: spec verify timing draft=%zu accepted_plus_sample=%zu rows=%zu sample=%.3f accept=%.3f total=%.3f ms\n",
                 __func__, draft.size(), result.size(), idxs.size(),
                 t_sample_us / 1000.0, t_accept_us / 1000.0, t_total_us / 1000.0);
+    }
+
+    if (trace_spec_tokens) {
+        const auto format_tokens = [](const llama_tokens & tokens) {
+            std::string text = "[";
+            for (size_t j = 0; j < tokens.size(); ++j) {
+                if (j > 0) {
+                    text += ',';
+                }
+                text += std::to_string(tokens[j]);
+            }
+            text += ']';
+            return text;
+        };
+
+        const size_t n_accepted = result.empty() ? 0 : std::min(draft.size(), result.size() - 1);
+        LOG_INF("%s: spec token trace draft=%s target=%s accepted=%zu/%zu\n",
+                __func__, format_tokens(draft).c_str(), format_tokens(result).c_str(), n_accepted, draft.size());
     }
 
     return result;

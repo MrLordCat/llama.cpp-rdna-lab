@@ -2441,6 +2441,24 @@ llm_graph_input_attn_kv * llm_graph_context::build_attn_inp_kv() const {
     return (llm_graph_input_attn_kv *) res->add_input(std::move(inp));
 }
 
+void llm_graph_context::build_attn_kv_store(
+        llm_graph_input_attn_kv * inp,
+        ggml_tensor * k_cur,
+        ggml_tensor * v_cur,
+        int il) const {
+    if (inp->self_k_rot) {
+        k_cur = ggml_mul_mat_aux(ctx0, k_cur, inp->self_k_rot);
+    }
+    if (inp->self_v_rot) {
+        v_cur = ggml_mul_mat_aux(ctx0, v_cur, inp->self_v_rot);
+    }
+
+    ggml_build_forward_expand(gf, k_cur);
+    ggml_build_forward_expand(gf, v_cur);
+    ggml_build_forward_expand(gf, inp->mctx->cpy_k(ctx0, k_cur, inp->get_k_idxs(), il));
+    ggml_build_forward_expand(gf, inp->mctx->cpy_v(ctx0, v_cur, inp->get_v_idxs(), il));
+}
+
 ggml_tensor * llm_graph_context::build_attn(
         llm_graph_input_attn_kv * inp,
         ggml_tensor * wo,

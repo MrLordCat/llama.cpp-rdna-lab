@@ -199,7 +199,7 @@ option(GGML_HIP_FA_ALL_QUANTS               "ggml: compile all HIP FlashAttentio
 option(GGML_HIP_GRAPHS                      "ggml: use HIP graph"                              ON)
 option(GGML_HIP_RCCL                        "ggml: use ROCm Collective Comm. Library"         OFF)
 option(GGML_HIP_NO_VMM                      "ggml: do not try to use HIP VMM"                 ON)
-option(GGML_HIP_ROCWMMA_FATTN               "ggml: enable rocWMMA for FlashAttention"         OFF)
+option(GGML_HIP_ROCWMMA_FATTN               "ggml: enable rocWMMA for FlashAttention"         ON)
 set   (GGML_HIP_ROCWMMA_INCLUDE_DIR "" CACHE PATH
                                             "ggml: path containing rocwmma headers (folder that contains rocwmma/)")
 option(GGML_HIP_QWEN_FA_REDUCED             "ggml: reduced HIP FlashAttention template set for local Qwen/RDNA4 experiments" OFF)
@@ -207,6 +207,7 @@ set   (GGML_HIP_EXPERIMENT_PROFILE "default" CACHE STRING
                                             "ggml: HIP experimental source profile (default, qwen-fa-reduced, mmvq-focused)")
 set_property(CACHE GGML_HIP_EXPERIMENT_PROFILE PROPERTY STRINGS "default;qwen-fa-reduced;mmvq-focused;mmvq-isolated")
 option(GGML_HIP_MMQ_MFMA                    "ggml: enable MFMA MMA for CDNA in MMQ"           ON)
+option(GGML_HIP_FAST_MATH                   "ggml: enable HIP fast math without finite-only assumptions" ON)
 option(GGML_HIP_EXPORT_METRICS              "ggml: enable kernel perf metrics output"         OFF)
 option(GGML_VULKAN                          "ggml: use Vulkan"                                OFF)
 option(GGML_VULKAN_CHECK_RESULTS            "ggml: run Vulkan op checks"                      OFF)

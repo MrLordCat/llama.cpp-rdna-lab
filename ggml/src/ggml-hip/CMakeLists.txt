@@ -156,6 +156,14 @@ if (GGML_HIP_ROCWMMA_FATTN)
     endif()
     list(APPEND _rocwmma_candidates "${ROCM_PATH}/include")
 
+    # The Windows HIP SDK does not currently ship rocWMMA headers. Prefer an
+    # explicit path or SDK copy, then use the versioned copy bundled by this
+    # fork so fresh ROCm builds retain the fast RDNA3/RDNA4 FA path.
+    file(GLOB _rocwmma_vendored_candidates
+        "${CMAKE_SOURCE_DIR}/third_party/rocwmma/*/library/include")
+    list(SORT _rocwmma_vendored_candidates ORDER DESCENDING)
+    list(APPEND _rocwmma_candidates ${_rocwmma_vendored_candidates})
+
     foreach(_candidate IN LISTS _rocwmma_candidates)
         if (EXISTS "${_candidate}/rocwmma/rocwmma.hpp" AND EXISTS "${_candidate}/rocwmma/rocwmma-version.hpp")
             set(GGML_HIP_ROCWMMA_ENABLED ON)
@@ -237,6 +245,22 @@ else()
     set_source_files_properties(${GGML_SOURCES_ROCM} PROPERTIES LANGUAGE HIP)
 endif()
 
+if (GGML_HIP_FAST_MATH)
+    # Match upstream HIP fast math while retaining infinities used by attention masks.
+    set(_ggml_hip_fast_math_options
+        -funsafe-math-optimizations
+        -ffast-math
+        -fno-finite-math-only)
+    if (CXX_IS_HIPCC)
+        # Windows HIP sources are compiled as CXX, so COMPILE_LANGUAGE:HIP does not match.
+        set_property(SOURCE ${GGML_SOURCES_ROCM} APPEND PROPERTY
+            COMPILE_OPTIONS ${_ggml_hip_fast_math_options})
+    else()
+        target_compile_options(ggml-hip PRIVATE
+            "$<$<COMPILE_LANGUAGE:HIP>:${_ggml_hip_fast_math_options}>")
+    endif()
+endif()
+
 if (GGML_STATIC)
     message(FATAL_ERROR "Static linking not supported for HIP/ROCm")
 endif()
@@ -248,5 +272,5 @@ endif()
 target_link_libraries(ggml-hip PRIVATE ggml-base hip::host roc::rocblas roc::hipblas)
 
 if (WIN32)
-    target_link_libraries(ggml-hip PRIVATE dxgi pdh)
+    target_link_libraries(ggml-hip PRIVATE dxgi gdi32 pdh)
 endif()

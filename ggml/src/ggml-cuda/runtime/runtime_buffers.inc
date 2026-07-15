@@ -5,6 +5,23 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
     if (copy_event != nullptr) {
         CUDA_CHECK(cudaEventDestroy(copy_event));
     }
+    for (auto & slot : async_host_stage_slots) {
+        if (slot.pending && slot.destination_done != nullptr) {
+            ggml_cuda_set_device(slot.destination_device);
+            CUDA_CHECK(cudaEventSynchronize(slot.destination_done));
+        }
+        if (slot.source_ready != nullptr) {
+            ggml_cuda_set_device(slot.source_device);
+            CUDA_CHECK(cudaEventDestroy(slot.source_ready));
+        }
+        if (slot.destination_done != nullptr) {
+            ggml_cuda_set_device(slot.destination_device);
+            CUDA_CHECK(cudaEventDestroy(slot.destination_done));
+        }
+        if (slot.host != nullptr) {
+            CUDA_CHECK(cudaFreeHost(slot.host));
+        }
+    }
     for (int i = 0; i < GGML_CUDA_MAX_DEVICES; ++i) {
         for (int j = 0; j < GGML_CUDA_MAX_STREAMS; ++j) {
             if (streams[i][j] != nullptr) {
@@ -31,6 +48,47 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
         }
     }
 }
+
+static void * ggml_cuda_host_malloc(size_t size);
+
+struct ggml_cuda_host_stage_buffer {
+    void * pinned = nullptr;
+    size_t capacity = 0;
+    std::vector<uint8_t> fallback;
+
+    ~ggml_cuda_host_stage_buffer() {
+        if (pinned != nullptr) {
+            (void) cudaFreeHost(pinned);
+        }
+    }
+
+    void * reserve(size_t size) {
+        if (pinned != nullptr && capacity >= size) {
+            return pinned;
+        }
+
+        void * next = ggml_cuda_host_malloc(size);
+        if (next != nullptr) {
+            if (pinned != nullptr) {
+                (void) cudaFreeHost(pinned);
+            }
+            pinned = next;
+            capacity = size;
+            fallback.clear();
+            fallback.shrink_to_fit();
+            return pinned;
+        }
+
+        try {
+            if (fallback.size() < size) {
+                fallback.resize(size);
+            }
+        } catch (...) {
+            return nullptr;
+        }
+        return fallback.data();
+    }
+};
 
 static bool ggml_backend_buft_is_cuda_split(ggml_backend_buffer_type_t buft);
 static size_t ggml_cuda_q3k_padded_storage_alloc_size(const ggml_tensor * tensor);
@@ -404,19 +462,31 @@ static bool ggml_backend_cuda_buffer_cpy_tensor(ggml_backend_buffer_t buffer, co
 #else
             if (!ggml_cuda_peer_copy_enabled()) {
                 const size_t nbytes = ggml_nbytes(src);
-                static thread_local std::vector<uint8_t> host_stage;
-                try {
-                    if (host_stage.size() < nbytes) {
-                        host_stage.resize(nbytes);
-                    }
-                } catch (...) {
+                const bool trace_host_stage = getenv("GGML_TRACE_CUDA_HOST_STAGE") != nullptr;
+                const int64_t t_start_us = trace_host_stage ? ggml_time_us() : 0;
+                static thread_local ggml_cuda_host_stage_buffer host_stage;
+                void * host_data = host_stage.reserve(nbytes);
+                if (host_data == nullptr) {
                     return false;
                 }
 
                 ggml_cuda_set_device(src_ctx->device);
-                CUDA_CHECK(cudaMemcpy(host_stage.data(), src->data, nbytes, cudaMemcpyDeviceToHost));
+                CUDA_CHECK(cudaMemcpy(host_data, src->data, nbytes, cudaMemcpyDeviceToHost));
+                const int64_t t_d2h_us = trace_host_stage ? ggml_time_us() : 0;
                 ggml_cuda_set_device(dst_ctx->device);
-                CUDA_CHECK(cudaMemcpyAsync(dst->data, host_stage.data(), nbytes, cudaMemcpyHostToDevice, cudaStreamPerThread));
+                CUDA_CHECK(cudaMemcpyAsync(dst->data, host_data, nbytes, cudaMemcpyHostToDevice, cudaStreamPerThread));
+                const int64_t t_h2d_enqueue_us = trace_host_stage ? ggml_time_us() : 0;
+
+                if (trace_host_stage) {
+                    CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+                    GGML_LOG_INFO(
+                        "GGML_TRACE_CUDA_HOST_STAGE: src=%d dst=%d tensor=%s bytes=%zu d2h_ms=%.3f h2d_enqueue_ms=%.3f h2d_sync_ms=%.3f total_ms=%.3f\n",
+                        src_ctx->device, dst_ctx->device, src->name, nbytes,
+                        (t_d2h_us - t_start_us) / 1000.0,
+                        (t_h2d_enqueue_us - t_d2h_us) / 1000.0,
+                        (ggml_time_us() - t_h2d_enqueue_us) / 1000.0,
+                        (ggml_time_us() - t_start_us) / 1000.0);
+                }
             } else {
                 CUDA_CHECK(cudaMemcpyPeerAsync(dst->data, dst_ctx->device, src->data, src_ctx->device, ggml_nbytes(src), cudaStreamPerThread));
             }
@@ -1094,4 +1164,3 @@ ggml_backend_buffer_type_t ggml_backend_cuda_host_buffer_type() {
 //static bool ggml_backend_buffer_is_cuda_host(ggml_backend_buffer_t buffer) {
 //    return buffer->buft->iface.get_name == ggml_backend_cuda_host_buffer_type_name;
 //}
-

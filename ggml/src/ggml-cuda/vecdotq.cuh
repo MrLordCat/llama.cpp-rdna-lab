@@ -443,6 +443,13 @@ static __device__ __forceinline__ float vec_dot_q2_K_q8_1_impl_mmq(
 #define VDR_Q3_K_Q8_1_MMVQ 1
 #define VDR_Q3_K_Q8_1_MMQ  2
 
+static __device__ __forceinline__ int vec_dot_q3_K_sub4_packed(const int vl, const int vh) {
+    // vh uses 4 for the lanes that need subtracting. Flip that bit and use
+    // biased packed subtraction so no borrow crosses an int8 lane.
+    const uint32_t vals = uint32_t(vl) | (uint32_t(vh) ^ 0x04040404u);
+    return int(((vals ^ 0x80808080u) - 0x04040404u) ^ 0x80808080u);
+}
+
 // contiguous v/x values
 static __device__ __forceinline__ float vec_dot_q3_K_q8_1_impl_mmvq(
     const int & vl, const int & vh, const int * __restrict__ u, const uint8_t * __restrict__ scales,
@@ -468,7 +475,7 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1_impl_mmvq(
 
         const int vih = ((vh >> i) << 2) & 0x04040404;
 
-        const int vi = __vsubss4(vil, vih);
+        const int vi = vec_dot_q3_K_sub4_packed(vil, vih);
 
         sumf += d8[i] * (ggml_cuda_dp4a(vi, u[i], 0) * sc); // SIMD dot product
     }
@@ -527,13 +534,13 @@ static __device__ __forceinline__ void vec_dot_q3_K_q8_1_pair_streaming(
         const int sc_x = vec_dot_q3_K_scale_at(bq3_x->scales, scale_offset, i);
         const int vil_x = (vl_x >> (2*i)) & 0x03030303;
         const int vih_x = ((vh_x >> i) << 2) & 0x04040404;
-        const int vi_x = __vsubss4(vil_x, vih_x);
+        const int vi_x = vec_dot_q3_K_sub4_packed(vil_x, vih_x);
         sumf_x += d8_i * (ggml_cuda_dp4a(vi_x, u_i, 0) * sc_x);
 
         const int sc_g = vec_dot_q3_K_scale_at(bq3_g->scales, scale_offset, i);
         const int vil_g = (vl_g >> (2*i)) & 0x03030303;
         const int vih_g = ((vh_g >> i) << 2) & 0x04040404;
-        const int vi_g = __vsubss4(vil_g, vih_g);
+        const int vi_g = vec_dot_q3_K_sub4_packed(vil_g, vih_g);
         sumf_g += d8_i * (ggml_cuda_dp4a(vi_g, u_i, 0) * sc_g);
     }
 
@@ -573,13 +580,13 @@ static __device__ __forceinline__ void vec_dot_q3_K_padded_q8_1_pair_streaming(
         const int sc_x = vec_dot_q3_K_scale_at(bq3_x->scales, scale_offset, i);
         const int vil_x = (vl_x >> (2*i)) & 0x03030303;
         const int vih_x = ((vh_x >> i) << 2) & 0x04040404;
-        const int vi_x = __vsubss4(vil_x, vih_x);
+        const int vi_x = vec_dot_q3_K_sub4_packed(vil_x, vih_x);
         sumf_x += d8_i * (ggml_cuda_dp4a(vi_x, u_i, 0) * sc_x);
 
         const int sc_g = vec_dot_q3_K_scale_at(bq3_g->scales, scale_offset, i);
         const int vil_g = (vl_g >> (2*i)) & 0x03030303;
         const int vih_g = ((vh_g >> i) << 2) & 0x04040404;
-        const int vi_g = __vsubss4(vil_g, vih_g);
+        const int vi_g = vec_dot_q3_K_sub4_packed(vil_g, vih_g);
         sumf_g += d8_i * (ggml_cuda_dp4a(vi_g, u_i, 0) * sc_g);
     }
 

@@ -95,6 +95,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <winternl.h>
+#include <d3dkmthk.h>
 #include <dxgi1_4.h>
 #include <pdh.h>
 #include <pdhmsg.h>

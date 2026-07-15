@@ -7,6 +7,16 @@ This is `llama.cpp-with-GUI`, a local fork for Windows and two AMD Radeon RX
 MTP/DFlash and local ggml performance work. Do not treat it as a clean upstream
 checkout.
 
+The canonical repository root on this machine is:
+
+```text
+D:\GitHub\llama.cpp-with-GUI
+```
+
+Do not use or infer the retired `C:\Users\Chris\Documents\GitHub\llama.cpp-with-GUI`
+path. Models, builds, logs, scripts and GUI launches are all resolved from the
+`D:` repository unless a command explicitly names another checkout.
+
 ## Supported backends
 
 Only these backends are supported:
@@ -27,6 +37,13 @@ entry point is intentionally removed. Read `docs/SUPPORTED_BACKENDS.md`.
 - ROCm/HIP SDK 7.1.
 - Vulkan normally uses `Vulkan1,Vulkan0`, with GPU1 first because GPU0 handles
   display/system load.
+- ROCm production and long-context benchmarks use both GPUs as
+  `-dev ROCm1,ROCm0 -sm layer`; single-GPU runs are valid only for isolated
+  kernel diagnosis because the long-prompt lane can spill into shared RAM.
+- Do not set `LLAMA_OUTPUT_DEVICE=ROCm1` for that ROCm order. The default output
+  placement on the last device (`ROCm0`) keeps the layer pipeline monotonic;
+  forcing output back to `ROCm1` adds a second cross-device boundary and can
+  nearly halve long-prompt evaluation throughput.
 - ROCm on Windows must use Ninja and ROCm clang, not the Visual Studio
   generator.
 
@@ -35,7 +52,10 @@ entry point is intentionally removed. Read `docs/SUPPORTED_BACKENDS.md`.
 This machine has experienced driver drops during discovery and process teardown.
 The following rules are mandatory:
 
-- never call `hipMemGetInfo` or add a probe that calls it;
+- call `hipMemGetInfo` only while no GPU server, model load, benchmark or other
+  HIP/Vulkan discovery is active; an idle direct probe passed on both GPUs
+  after the clean Windows installation on 2026-07-14, but concurrent use
+  remains unvalidated;
 - never run `bash scripts/stage-vulkan-dlls.sh`;
 - never use `llama-server --version` or `llama-server --help` as a build probe;
 - stop `llama-server` gracefully and wait for exit before considering a forceful
