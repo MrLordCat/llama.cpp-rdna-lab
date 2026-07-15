@@ -15,6 +15,7 @@ from typing import Optional, Tuple
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from bench_runner import send_windows_console_break, windows_hidden_console_options
 from proc_utils import run_hidden
 
 
@@ -55,7 +56,7 @@ class ServerThread(QThread):
                 universal_newlines=True,
                 env=process_env,
                 preexec_fn=_preexec,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0,
+                **windows_hidden_console_options(),
             )
             
             server_started = False
@@ -82,10 +83,13 @@ class ServerThread(QThread):
 
         try:
             if os.name == 'nt':
-                self.process.send_signal(signal.CTRL_BREAK_EVENT)
+                # A GUI process may not own a console. Attach a short-lived
+                # helper to the server's isolated console so CTRL_BREAK reaches
+                # the server's normal cleanup handler reliably.
+                send_windows_console_break(self.process.pid)
             else:
                 self.process.terminate()
-        except (OSError, ProcessLookupError) as exc:
+        except Exception as exc:
             self.output_ready.emit(f"[WARN] Graceful server stop failed: {exc}\n")
 
 

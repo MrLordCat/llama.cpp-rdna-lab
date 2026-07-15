@@ -102,6 +102,28 @@ def test_baseline_decode_preserved(m) -> None:
     print(f"  OK  baseline decode preserved (mean={d['decode_eval_tps']['mean']})")
 
 
+def test_prefixed_upstream_timings(m) -> None:
+    """Timestamp-prefixed upstream server timings retain decode and acceptance."""
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "upstream.server.log"
+        log.write_text(
+            "0.38 I slot print_timing: prompt eval time = 26804.37 ms / 29563 tokens "
+            "( 0.91 ms per token, 1102.92 tokens per second)\n"
+            "0.39 I slot print_timing:        eval time = 3079.32 ms / 128 tokens "
+            "(24.06 ms per token, 41.57 tokens per second)\n"
+            "0.39 I slot print_timing: draft acceptance = 0.78070 "
+            "(89 accepted / 114 generated), mean len = 3.34\n",
+            encoding="utf-8",
+        )
+
+        d = m.parse_server_log_diagnostics(log)
+        assert d["prompt_eval_tps"]["mean"] == 1102.92, d
+        assert d["decode_eval_tps"]["mean"] == 41.57, d
+        assert d["mtp_acc_tokens"] == 89, d
+        assert d["mtp_gen_tokens"] == 114, d
+        print("  OK  timestamp-prefixed upstream timings parsed")
+
+
 def test_canonical_history_retention(m) -> None:
     """Canonical refresh must not re-import benchmark rows older than July 2026."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -127,6 +149,7 @@ def main() -> int:
         test_mtp_acceptance_parsed,
         test_low_acceptance_hint,
         test_baseline_decode_preserved,
+        test_prefixed_upstream_timings,
         test_canonical_history_retention,
     ]
     failures = 0

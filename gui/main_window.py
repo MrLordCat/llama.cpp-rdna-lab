@@ -6,7 +6,7 @@ import sys
 
 from PyQt6.QtWidgets import QMainWindow, QTabWidget, QWidget, QVBoxLayout, QMessageBox
 from PyQt6.QtGui import QIcon
-from PyQt6.QtCore import QSettings, QSize
+from PyQt6.QtCore import QSettings, QSize, QTimer
 
 # Import utility modules
 from project_utils import ProjectManager
@@ -33,6 +33,7 @@ class LlamaCppGUI(QMainWindow):
     
     def __init__(self):
         super().__init__()
+        self._shutdown_requested = False
         self.setWindowTitle("llama.cpp GUI - AMD Radeon RX 9070 XT Edition")
         self.setGeometry(100, 100, 1400, 900)
         
@@ -180,14 +181,34 @@ class LlamaCppGUI(QMainWindow):
     
     def closeEvent(self, event):
         """Handle window close"""
-        # Stop any running servers/inference
-        if hasattr(self.server_tab, "server_thread") and self.server_tab.server_thread:
-            if self.server_tab.server_thread.isRunning():
-                self.server_tab.stop_server()
-        
-        if hasattr(self.inference_tab, "inference_thread") and self.inference_tab.inference_thread:
-            if self.inference_tab.inference_thread.isRunning():
-                self.inference_tab.stop_inference()
+        server_thread = getattr(self.server_tab, "server_thread", None)
+        bench_thread = getattr(self.benchmark_tab, "bench_thread", None)
+        inference_thread = getattr(self.inference_tab, "inference_thread", None)
+
+        active_threads = [
+            thread
+            for thread in (server_thread, bench_thread, inference_thread)
+            if thread is not None and thread.isRunning()
+        ]
+        if active_threads:
+            event.ignore()
+            if not self._shutdown_requested:
+                self._shutdown_requested = True
+                if server_thread is not None and server_thread.isRunning():
+                    self.server_tab.stop_server()
+                if bench_thread is not None and bench_thread.isRunning():
+                    self.benchmark_tab.log_output.append(
+                        "[INFO] GUI close requested; stopping benchmark/autotune gracefully..."
+                    )
+                    bench_thread.request_stop()
+                if inference_thread is not None and inference_thread.isRunning():
+                    self.inference_tab.stop_inference()
+                if self.statusBar():
+                    self.statusBar().showMessage("Waiting for llama processes to stop gracefully")
+            QTimer.singleShot(250, self.close)
+            return
+
+        self._shutdown_requested = False
         
         # Save window geometry and settings
         self.save_geometry()

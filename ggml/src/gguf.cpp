@@ -18,6 +18,18 @@
 #define GGUF_MAX_STRING_LENGTH  (1024*1024*1024)
 #define GGUF_MAX_ARRAY_ELEMENTS (1024*1024*1024)
 
+// PQ2_0 was published with an experimental sparse GGUF tensor type id. Keep
+// ggml's internal type table contiguous and translate only at the file boundary.
+static constexpr int32_t GGUF_TENSOR_TYPE_PQ2_0 = 142;
+
+static enum ggml_type gguf_tensor_type_from_disk(int32_t type) {
+    return type == GGUF_TENSOR_TYPE_PQ2_0 ? GGML_TYPE_PQ2_0 : (enum ggml_type) type;
+}
+
+static int32_t gguf_tensor_type_to_disk(enum ggml_type type) {
+    return type == GGML_TYPE_PQ2_0 ? GGUF_TENSOR_TYPE_PQ2_0 : (int32_t) type;
+}
+
 #ifdef _WIN32
 #    define gguf_ftell _ftelli64
 #    define gguf_fseek _fseeki64
@@ -646,12 +658,14 @@ struct gguf_context * gguf_init_from_file_ptr(FILE * file, struct gguf_init_para
 
         // tensor type
         {
-            ok = ok && gr.read(info.t.type);
+            int32_t disk_type = -1;
+            ok = ok && gr.read(disk_type);
+            info.t.type = gguf_tensor_type_from_disk(disk_type);
 
             // check that tensor type is within defined range
             if (info.t.type < 0 || info.t.type >= GGML_TYPE_COUNT) {
-                GGML_LOG_ERROR("%s: tensor '%s' has invalid ggml type %d. should be in [0, %d)\n",
-                    __func__, info.t.name, info.t.type, GGML_TYPE_COUNT);
+                GGML_LOG_ERROR("%s: tensor '%s' has invalid ggml type %d (disk type %d). should be in [0, %d)\n",
+                    __func__, info.t.name, info.t.type, disk_type, GGML_TYPE_COUNT);
                 ok = false;
                 break;
             }
@@ -1374,7 +1388,7 @@ struct gguf_writer_base {
         for (uint32_t j = 0; j < n_dims; ++j) {
             write(info.t.ne[j]);
         }
-        write(info.t.type);
+        write(gguf_tensor_type_to_disk(info.t.type));
         write(info.offset);
     }
 

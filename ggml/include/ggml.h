@@ -435,7 +435,8 @@ extern "C" {
                 GGML_TYPE_TKV2_0  = 45, // TurboKV 2-bit (128-block, WHT)
                 GGML_TYPE_TKV3_0  = 46, // TurboKV 3-bit (128-block, WHT)
                 GGML_TYPE_TKV4_0  = 47, // TurboKV 4-bit (128-block, WHT)
-                GGML_TYPE_COUNT   = 48,
+        GGML_TYPE_PQ2_0   = 48, // Prism packed 2-bit, 128-value blocks (GGUF type 142)
+                GGML_TYPE_COUNT   = 49,
     };
 
     // precision
@@ -475,6 +476,7 @@ extern "C" {
         GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
         GGML_FTYPE_MOSTLY_TBQ3_0  = 28, // except 1d tensors
         GGML_FTYPE_MOSTLY_TBQ4_0  = 29, // except 1d tensors
+        GGML_FTYPE_MOSTLY_PQ2_0   = 141, // Prism packed 2-bit, except 1d tensors
     };
 
     // available tensor operations:

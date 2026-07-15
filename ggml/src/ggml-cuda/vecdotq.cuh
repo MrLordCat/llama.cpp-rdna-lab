@@ -109,6 +109,18 @@ static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
 #define VDR_Q1_0_Q8_1_MMVQ 1  // Process one 32-element chunk at a time for parallelism
 #define VDR_Q1_0_Q8_1_MMQ  4  // Q1_0 has 128 bits (4 ints) per block
 
+#define VDR_PQ2_0_Q8_1_MMVQ 1
+#define VDR_PQ2_0_Q8_1_MMQ  4
+
+static __device__ __forceinline__ int pq2_expand_u2x4(const uint32_t q) {
+    return (q & 0x03u) | ((q & 0x0cu) << 6) | ((q & 0x30u) << 12) | ((q & 0xc0u) << 18);
+}
+
+static __device__ __forceinline__ int pq2_expand_s2x4(const uint32_t q) {
+    const uint32_t expanded = pq2_expand_u2x4(q);
+    return (expanded + 0x7f7f7f7fu) ^ 0x80808080u;
+}
+
 #define VDR_Q4_0_Q8_1_MMVQ 2
 #define VDR_Q4_0_Q8_1_MMQ  4
 
@@ -977,6 +989,31 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1(
     }
 
     return vec_dot_q3_K_q8_1_impl_mmvq(vl, vh, u, bq3_K->scales, scale_offset, d, d8);
+}
+
+static __device__ __forceinline__ float vec_dot_pq2_0_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_pq2_0 * bq2 = (const block_pq2_0 *) vbq + kbx;
+    const block_q8_1 * bq8 = bq8_1 + iqs;
+    const int offset = 8 * iqs;
+    const int v0 = bq2->qs[offset + 0] | (bq2->qs[offset + 1] << 8) |
+                   (bq2->qs[offset + 2] << 16) | (bq2->qs[offset + 3] << 24);
+    const int v1 = bq2->qs[offset + 4] | (bq2->qs[offset + 5] << 8) |
+                   (bq2->qs[offset + 6] << 16) | (bq2->qs[offset + 7] << 24);
+
+    int sumi = 0;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        sumi = ggml_cuda_dp4a(pq2_expand_u2x4(v0 >> (8*j)), get_int_b4(bq8->qs, j), sumi);
+    }
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        sumi = ggml_cuda_dp4a(pq2_expand_u2x4(v1 >> (8*j)), get_int_b4(bq8->qs, 4 + j), sumi);
+    }
+
+    const float2 ds8 = __half22float2(bq8->ds);
+    return ((float) bq2->d) * (sumi * ds8.x - ds8.y);
 }
 
 static __device__ __forceinline__ float vec_dot_q3_K_padded_q8_1(

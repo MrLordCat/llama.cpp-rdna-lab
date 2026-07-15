@@ -25,6 +25,20 @@ def console_python_executable() -> str:
     return str(executable)
 
 
+def windows_hidden_console_options() -> dict[str, object]:
+    """Start a Windows console process in its own hidden, signalable console."""
+    if os.name != "nt":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP,
+        "startupinfo": startupinfo,
+    }
+
+
 def background_process_options(command: list[str]) -> dict[str, object]:
     """Create a hidden console for console-Python children started by the GUI."""
     if os.name != "nt":
@@ -32,19 +46,13 @@ def background_process_options(command: list[str]) -> dict[str, object]:
 
     executable_name = Path(command[0]).name.lower() if command else ""
     if executable_name in {"python.exe", "python3.exe"}:
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
-        return {
-            "creationflags": subprocess.CREATE_NEW_CONSOLE,
-            "startupinfo": startupinfo,
-        }
+        return windows_hidden_console_options()
 
     return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
 
 
 def send_windows_console_break(pid: int) -> None:
-    """Send CTRL_BREAK from a helper attached to the target's hidden console."""
+    """Attach a helper to an isolated console and broadcast CTRL_BREAK there."""
     helper = (
         "import ctypes,sys,time;"
         "k=ctypes.WinDLL('kernel32',use_last_error=True);"
@@ -52,7 +60,7 @@ def send_windows_console_break(pid: int) -> None:
         "ok=k.AttachConsole(int(sys.argv[1]));"
         "ok or (_ for _ in ()).throw(OSError(ctypes.get_last_error(),'AttachConsole'));"
         "k.SetConsoleCtrlHandler(None,True);"
-        "ok=k.GenerateConsoleCtrlEvent(1,0);"
+        "ok=k.GenerateConsoleCtrlEvent(1,int(sys.argv[1]));"
         "ok or (_ for _ in ()).throw(OSError(ctypes.get_last_error(),'GenerateConsoleCtrlEvent'));"
         "time.sleep(0.25)"
     )

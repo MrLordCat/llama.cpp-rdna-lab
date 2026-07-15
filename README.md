@@ -63,25 +63,25 @@ numbers below.
 
 Snapshot date: **2026-07-15**.
 
-All headline rows use the Qwen3.6-27B Q3_K_S MTP-enabled GGUF, FlashAttention,
-one server slot, cold prompt processing, no prompt-cache reuse, and no prime
-pass. Prompt and decode TPS come from server timings; aggregate TPS includes the
-whole request wall time. Compare `none` and `MTP` only inside the same backend
-and lane. The table was rerun after rebuilding both backends, with no foreground
-GPU workload active.
+Unless a table explicitly names Bonsai, headline rows use the Qwen3.6-27B
+Q3_K_S MTP-enabled GGUF, FlashAttention, one server slot, cold prompt
+processing, no prompt-cache reuse, and no prime pass. Prompt and decode TPS
+come from server timings; aggregate TPS includes the whole request wall time.
+Compare `none` and `MTP` only inside the same backend and lane. The table was
+rerun after rebuilding both backends, with no foreground GPU workload active.
 
 ### Benchmark Launch Parameters
 
 | Lane | Context | Actual prompt | Output | Batch / UBatch | KV | Repeats |
 | --- | ---: | ---: | ---: | ---: | --- | ---: |
 | Vulkan short | 12,288 | 7,842 | 128 | 8192 / 1024 | q8_0 / q8_0 | 3 |
-| ROCm short | 12,288 | 7,729 | 256 | 8192 / 1024 | q8_0 / q8_0 | 3 |
+| ROCm short | 12,288 | 6,393 | 256 | 8192 / 1024 | q8_0 / q8_0 | 3 |
 | Matched long, both backends | 49,152 | 29,563 | 128 | 8192 / 1024 | q8_0 / q8_0 | 1 |
 | ROCm extended long | 65,536 | 41,114 | 128 | 8192 / 1024 | q8_0 / q8_0 | 1 |
 
 Every row also uses `-np 1 -ngl 999 --flash-attn on --no-warmup -fit off`, seed
 42, top-p 0.9, `--cache-ram 0`, `--ctx-checkpoints 0`, and no prompt reuse. The
-short archived lanes use temperature 0.2; the current deterministic long lanes
+short lanes use temperature 0.2; the deterministic long lanes
 use temperature 0.0. The matched long lane injects 96,000 repository-snapshot
 characters and produces 29,563 prompt tokens. The extended ROCm lane requests
 147,456 characters and produces 41,114 prompt tokens.
@@ -100,12 +100,13 @@ rows. Vulkan uses the 256-token recent window and host hidden-state handoff.
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | Vulkan | `none`, r3 mean | 7,842 / 128 | **1783.49** | 38.17 | 16.42 | `Vulkan0,Vulkan1`, `ctx=12288`, q8/q8 KV |
 | Vulkan | MTP n3, r3 mean | 7,842 / 128 | 1724.73 | **51.82** | **17.99** | 60.05% acceptance; backend-resident NextN |
-| ROCm | `none`, r3 mean | 7,729 / 256 | **1725.85** | 28.66 | 19.01 | `ROCm1,ROCm0`, `ctx=12288`, q8/q8 KV |
-| ROCm | MTP n4, r3 mean | 7,729 / 256 | 1685.56 | **42.78** | **24.09** | 63.76% acceptance; backend-resident NextN |
+| ROCm | `none`, r3 mean | 6,393 / 256 | **1850.13** | 27.67 | 20.07 | `ROCm1,ROCm0`, `ctx=12288`, q8/q8 KV |
+| ROCm | MTP n4, r3 mean | 6,393 / 256 | 1794.17 | **41.39** | **26.12** | 59.27% acceptance; backend-resident NextN |
 
 In this lane, Vulkan MTP changes prompt/decode/aggregate throughput by
 `-3.29% / +35.78% / +9.55%`. ROCm MTP changes them by
-`-2.33% / +49.26% / +26.73%`.
+`-3.02% / +49.58% / +30.14%`. The refreshed ROCm artifacts start with
+`e330-rocm-dual-q3-12k-`.
 
 ### Long Prompt Lanes
 
@@ -121,6 +122,70 @@ On the matched 29.5k lane, Vulkan MTP changes prompt/decode throughput by
 `-3.69% / +66.68% / +6.77%`. ROCm MTP is 10.9% faster in aggregate and 14.2%
 faster in prompt evaluation than Vulkan MTP on this lane, while Vulkan retains
 a 7.6% decode advantage.
+
+### Ternary Bonsai PQ2 ROCm Baseline
+
+This is the pre-optimization baseline for
+`Ternary-Bonsai-27B-PQ2_0.gguf`. It uses the same ROCm benchmark contracts as
+the Qwen rows: FlashAttention, `b8192/ub1024`, q8/q8 KV, one slot, full GPU
+offload, cold prompts, no cache reuse, and `spec=none`. Single GPU means
+`ROCm1`; dual GPU means `ROCm1,ROCm0 -sm layer -ts 1,1`.
+
+| Model | GPUs | Lane | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| Qwen3.6-27B Q3_K_S | dual | short, r3 mean | 6,393 / 256 | 1850.13 | 27.67 | 20.07 |
+| Bonsai-27B PQ2 | single | short, r3 mean | 6,393 / 256 | 1189.20 | **50.30** | 24.39 |
+| Bonsai-27B PQ2 | dual | short, r3 mean | 6,393 / 256 | **1858.69** | 45.40 | **28.06** |
+| Qwen3.6-27B Q3_K_S | dual | matched long | 29,563 / 128 | **1787.94** | 25.21 | 5.91 |
+| Bonsai-27B PQ2 | single | matched long | 29,561 / 128 | 1046.07 | **41.55** | 4.08 |
+| Bonsai-27B PQ2 | dual | matched long | 29,561 / 128 | 1779.50 | 37.72 | **6.38** |
+
+The long rows are directly comparable: both inject the same 96,000-character
+repository snapshot and differ by only two tokenizer tokens. The refreshed
+short Qwen and Bonsai rows are also directly comparable: both consume the same
+current 18,851-character snapshot and produce 6,393 prompt tokens.
+
+For Bonsai, dual GPU raises prompt throughput by 56.3% on the short lane and
+70.1% on the matched long lane. The layer boundary reduces decode by 9.7% and
+9.2%, respectively, but dual remains faster in aggregate. These rows preserve
+the initial functional PQ2 HIP port before kernel optimization. Artifact labels
+start with `e322-bonsai-pq2-`.
+
+### Stock Upstream Comparison
+
+The same 29,563-token lane was also run against stock
+[`ggml-org/llama.cpp` commit `f955e394b`](https://github.com/ggml-org/llama.cpp/commit/f955e394b)
+from a neighboring clean checkout. The model, generated prompt, output length,
+sampling, context, batch/ubatch, KV types, device order, layer split, and server
+cache settings match the fork rows above.
+
+| Implementation | Backend | Mode | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| Stock `f955e394b` | Vulkan | `none` | 930.11 | 21.58 | 3.38 | - |
+| Stock `f955e394b` | Vulkan | MTP n3 | 861.48 | 17.77 | 3.08 | 71.67% |
+| This fork | Vulkan | `none` | **1556.89** | **35.45** | **5.65** | - |
+| This fork | Vulkan | MTP n3 | **1508.01** | **45.20** | **5.69** | 52.38% |
+| Stock `f955e394b` | ROCm | `none` | 1285.42 | 22.30 | 4.44 | - |
+| Stock `f955e394b` | ROCm | MTP n3 | 1102.92 | 41.57 | 4.27 | 78.07% |
+| This fork | ROCm | `none` | **1787.94** | **25.21** | **5.91** | - |
+| This fork | ROCm | MTP n3 | **1721.97** | **42.02** | **6.31** | 75.86% |
+
+Against stock, the fork improves Vulkan `none` prompt/decode throughput by
+`+67.39% / +64.27%` and Vulkan MTP by `+75.05% / +154.36%`. The ROCm gains are
+`+39.09% / +13.05%` for `none` and `+56.13% / +1.08%` for MTP. Stock ROCm MTP
+already has strong acceptance and decode, but reduces prompt throughput by
+14.2%; the fork's sparse KV-only history keeps nearly the same decode rate
+while recovering most of that prompt cost and raising aggregate throughput by
+47.78% over stock ROCm MTP.
+
+The stock Vulkan build used GCC 13.2 and Vulkan SDK 1.4.350. The stock ROCm
+build used HIP SDK 7.1/Clang 21, `gfx1201`, MFMA, no HIP VMM, upstream's default
+generic FlashAttention path, and direct peer copy disabled for this Windows
+dual-GPU system. A build-only MSVC 14.44 header selection was required because
+HIP SDK 7.1 is incompatible with the installed MSVC 14.51 `<cmath>`; no stock
+model, graph, kernel, scheduler, or speculative-decoding source was changed.
+The stock tree does not implement the fork-specific `LLAMA_OUTPUT_DEVICE` or
+`GGML_VK_FORCE_AMD_LARGE_MATMUL` controls.
 
 ### Extended ROCm Long Prompt
 

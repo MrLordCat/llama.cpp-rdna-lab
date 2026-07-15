@@ -86,6 +86,16 @@ VULKAN_Q3_STATS_ENV = {
     "GGML_VK_PIPELINE_STATS": "matmul_q3_k",
 }
 
+
+def install_graceful_stop_handlers() -> None:
+    """Turn console stop events into stack unwinding so server cleanup runs."""
+    def handle_stop(_signum: int, _frame: Any) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, handle_stop)
+    if os.name == "nt" and hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, handle_stop)
+
 HISTORY_FIELDS = [
     "timestamp",
     "run_id",
@@ -644,9 +654,8 @@ def terminate_process(proc: subprocess.Popen[str]) -> bool:
     soft_timeout = float(os.environ.get("LLAMA_BENCH_SOFT_STOP_TIMEOUT", "180"))
     try:
         if os.name == "nt":
-            # The server is launched in its own process group. On Windows,
-            # CTRL_BREAK_EVENT is the reliable targeted console event for that
-            # shape; local server.cpp handles it as a graceful shutdown signal.
+            # The server is a CREATE_NEW_PROCESS_GROUP child. CTRL_BREAK is
+            # targetable to that group and server.cpp handles it gracefully.
             proc.send_signal(signal.CTRL_BREAK_EVENT)
         else:
             proc.terminate()
@@ -1110,7 +1119,8 @@ def parse_server_log_diagnostics(server_log: Path) -> dict[str, Any]:
         text,
     )
     eval_matches = re.findall(
-        r"\n\s*eval time =\s*([0-9.]+) ms /\s*(\d+) tokens \([^)]*,\s*([0-9.]+) tokens per second\)",
+        r"(?m)^(?![^\n]*prompt eval time)[^\n]*\beval time =\s*([0-9.]+) ms /\s*(\d+) tokens "
+        r"\([^)]*,\s*([0-9.]+) tokens per second\)",
         text,
     )
     total_matches = re.findall(r"total time =\s*([0-9.]+) ms /\s*(\d+) tokens", text)
@@ -1126,11 +1136,11 @@ def parse_server_log_diagnostics(server_log: Path) -> dict[str, Any]:
     mtp_acc_tokens = sum(int(x) for x in re.findall(r"#acc tokens =\s*(\d+)", text))
 
     # Upstream-style speculative stats print one compact line per request:
-    #   draft acceptance rate = 0.57895 ( 209 accepted / 361 generated)
+    #   draft acceptance [rate] = 0.57895 ( 209 accepted / 361 generated)
     # Keep this separate from the older "#gen/#acc tokens" format to avoid
     # double-counting logs that may contain both in the future.
     draft_accept_matches = re.findall(
-        r"draft acceptance rate =\s*([0-9.]+)\s*\(\s*(\d+)\s+accepted\s*/\s*(\d+)\s+generated\)",
+        r"draft acceptance(?: rate)? =\s*([0-9.]+)\s*\(\s*(\d+)\s+accepted\s*/\s*(\d+)\s+generated\)",
         text,
     )
     if draft_accept_matches and mtp_gen_tokens == 0 and mtp_acc_tokens == 0:
@@ -2572,6 +2582,7 @@ def run_suite(args: argparse.Namespace, tasks: list[dict[str, str]]) -> list[dic
 
 
 def main() -> int:
+    install_graceful_stop_handlers()
     args = parse_args()
     if args.ctx_size > PRIMARY_MAX_CTX and not args.allow_ctx_above_16k:
         print(
@@ -3258,4 +3269,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("Benchmark stop requested; graceful server cleanup completed.", flush=True)
+        raise SystemExit(130)

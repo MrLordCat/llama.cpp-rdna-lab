@@ -40,7 +40,7 @@ from PyQt6.QtWidgets import (
 
 from backend_names import backend_key_from_display, display_backend_from_key
 from bench_history import BenchHistoryMixin
-from bench_runner import BenchCommandThread, console_python_executable
+from bench_runner import BenchCommandThread, console_python_executable, send_windows_console_break
 from server_backend_panels import (
     ROCM_DEVICE_CHOICES,
     VULKAN_DEVICE_CHOICES,
@@ -149,27 +149,11 @@ class LlamaServerStopThread(QThread):
 
     @staticmethod
     def _send_windows_ctrl_break(pid: int) -> tuple[bool, str]:
-        import ctypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        ctrl_break_event = 1
-
-        kernel32.FreeConsole()
-        if not kernel32.AttachConsole(pid):
-            return False, f"AttachConsole failed: winerr={ctypes.get_last_error()}"
-
         try:
-            kernel32.SetConsoleCtrlHandler(None, True)
-            ctypes.set_last_error(0)
-            ok = bool(kernel32.GenerateConsoleCtrlEvent(ctrl_break_event, pid))
-            err = ctypes.get_last_error()
-            time.sleep(0.5)
-            if ok:
-                return True, "CTRL_BREAK sent"
-            return False, f"GenerateConsoleCtrlEvent failed: winerr={err}"
-        finally:
-            kernel32.SetConsoleCtrlHandler(None, False)
-            kernel32.FreeConsole()
+            send_windows_console_break(pid)
+            return True, "CTRL_BREAK sent"
+        except Exception as exc:
+            return False, str(exc)
 
     @staticmethod
     def _request_soft_terminate(pid: int) -> tuple[bool, str]:
@@ -1432,6 +1416,13 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         label = f"gui-bench-{model.stem}-{stamp}"
         spec_mode = self.spec_combo.currentText()
+        spec_fallback_note = ""
+        if spec_mode in {"mtp", "ngram-mtp"} and not model_supports_mtp(model):
+            spec_fallback_note = (
+                f"Selected spec mode '{spec_mode}' is incompatible with {model.name}; "
+                "using 'none'."
+            )
+            spec_mode = "none"
         server_extra = self._active_lane_base_server_extra(self.ctx_spin.value())
         device_args = self._selected_device_args()
         if device_args:
@@ -1520,6 +1511,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.log_output.clear()
         self.log_output.append(f"[INFO] Starting benchmark for {model.name}")
         self.log_output.append(f"[INFO] Build ID: {build_id or '-'}")
+        if spec_fallback_note:
+            self.log_output.append(f"[WARN] {spec_fallback_note}")
         if bench_env:
             env_summary = ", ".join(f"{key}={value}" for key, value in sorted(bench_env.items()))
             self.log_output.append(f"[INFO] Env overrides: {env_summary}")
@@ -2388,7 +2381,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         if requested and requested not in {"auto", "all"}:
             ordered: list[str] = []
             seen: set[str] = set()
-            for value in self._parse_csv_values(requested):
+            requested_values = self._parse_csv_values(requested)
+            for value in requested_values:
                 if allowed_modes and value not in allowed_modes:
                     continue
                 if not is_mode_model_compatible(value):
@@ -2396,6 +2390,21 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
                 if value not in seen:
                     seen.add(value)
                     ordered.append(value)
+
+            # A model switch should not leave autotune with an empty grid just
+            # because the previous MTP-capable model had only MTP selected.
+            # Keep malformed/unsupported selections invalid, but degrade an
+            # explicitly selected MTP-only set to the universal baseline mode.
+            requested_mtp_only = bool(requested_values) and all(
+                value in {"mtp", "ngram-mtp"} for value in requested_values
+            )
+            if (
+                not ordered
+                and not mtp_compatible
+                and requested_mtp_only
+                and (not allowed_modes or "none" in allowed_modes)
+            ):
+                return ["none"]
             return ordered
 
         if not spec_type_modes:

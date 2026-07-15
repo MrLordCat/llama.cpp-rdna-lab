@@ -31,6 +31,7 @@ void ggml_cuda_mmvq_switch_type(
 
 #define GGML_CUDA_MMVQ_TYPE_LIST(X) \
     X(GGML_TYPE_Q1_0) \
+    X(GGML_TYPE_PQ2_0) \
     X(GGML_TYPE_Q4_0) \
     X(GGML_TYPE_Q4_1) \
     X(GGML_TYPE_Q5_0) \

@@ -22,6 +22,7 @@ constexpr float MAX_QUANTIZATION_REFERENCE_ERROR = 0.0001f;
 constexpr float MAX_QUANTIZATION_TOTAL_ERROR = 0.002f;
 constexpr float MAX_QUANTIZATION_TOTAL_ERROR_BINARY = 0.025f;
 constexpr float MAX_QUANTIZATION_TOTAL_ERROR_TERNARY = 0.01f;
+constexpr float MAX_QUANTIZATION_TOTAL_ERROR_PQ2_0 = 0.01f;
 constexpr float MAX_QUANTIZATION_TOTAL_ERROR_2BITS = 0.0075f;
 constexpr float MAX_QUANTIZATION_TOTAL_ERROR_3BITS = 0.0040f;
 constexpr float MAX_QUANTIZATION_TOTAL_ERROR_3BITS_XXS = 0.0050f;
@@ -32,6 +33,7 @@ constexpr float MAX_DOT_PRODUCT_ERROR_LOWBIT = 0.04f;
 constexpr float MAX_DOT_PRODUCT_ERROR_FP4 = 0.03f;
 constexpr float MAX_DOT_PRODUCT_ERROR_BINARY = 0.40f;
 constexpr float MAX_DOT_PRODUCT_ERROR_TERNARY = 0.15f;
+constexpr float MAX_DOT_PRODUCT_ERROR_PQ2_0 = 0.15f;
 constexpr float MAX_DOT_PRODUCT_ERROR_TBQ3 = 0.05f;
 
 static const char* RESULT_STR[] = {"ok", "FAILED"};
@@ -145,6 +147,7 @@ static bool test_tbq3_norm_scaling() {
 
 int main(int argc, char * argv[]) {
     bool verbose = false;
+    std::string type_filter;
     const size_t test_size = 32 * 128;
 
     std::string arg;
@@ -153,6 +156,8 @@ int main(int argc, char * argv[]) {
 
         if (arg == "-v") {
             verbose = true;
+        } else if (arg == "-t" && i + 1 < argc) {
+            type_filter = argv[++i];
         } else {
             fprintf(stderr, "error: unknown argument: %s\n", arg.c_str());
             return 1;
@@ -193,6 +198,10 @@ int main(int argc, char * argv[]) {
         const auto * qfns = ggml_get_type_traits(type);
         const auto * qfns_cpu = ggml_get_type_traits_cpu(type);
 
+        if (!type_filter.empty() && type_filter != ggml_type_name(type)) {
+            continue;
+        }
+
         // deprecated - skip
         if (qfns->blck_size == 0) {
             continue;
@@ -207,6 +216,7 @@ int main(int argc, char * argv[]) {
             const float total_error = total_quantization_error(qfns, qfns_cpu, test_size, test_data.data());
             const float max_quantization_error =
                 type == GGML_TYPE_Q1_0    ? MAX_QUANTIZATION_TOTAL_ERROR_BINARY :
+                type == GGML_TYPE_PQ2_0   ? MAX_QUANTIZATION_TOTAL_ERROR_PQ2_0 :
                 type == GGML_TYPE_TQ1_0   ? MAX_QUANTIZATION_TOTAL_ERROR_TERNARY :
                 type == GGML_TYPE_TQ2_0   ? MAX_QUANTIZATION_TOTAL_ERROR_TERNARY :
                 type == GGML_TYPE_Q2_K    ? MAX_QUANTIZATION_TOTAL_ERROR_2BITS :
@@ -236,6 +246,8 @@ int main(int argc, char * argv[]) {
                                           ? MAX_DOT_PRODUCT_ERROR_LOWBIT
                                           : type == GGML_TYPE_Q1_0
                                           ? MAX_DOT_PRODUCT_ERROR_BINARY
+                                          : type == GGML_TYPE_PQ2_0
+                                          ? MAX_DOT_PRODUCT_ERROR_PQ2_0
                                           : type == GGML_TYPE_TQ1_0 || type == GGML_TYPE_TQ2_0
                                           ? MAX_DOT_PRODUCT_ERROR_TERNARY
                                           : type == GGML_TYPE_TBQ3_0
