@@ -322,6 +322,11 @@ static void ggml_cuda_q3k_copy_padded_storage_to_host(
 
 // cuda buffer
 
+static bool ggml_cuda_buffer_alloc_trace_enabled() {
+    static const bool enabled = getenv("GGML_TRACE_CUDA_BUFFER_ALLOC") != nullptr;
+    return enabled;
+}
+
 struct ggml_backend_cuda_buffer_context {
     int device;
     void * dev_ptr = nullptr;
@@ -339,6 +344,11 @@ struct ggml_backend_cuda_buffer_context {
 
 static void ggml_backend_cuda_buffer_free_buffer(ggml_backend_buffer_t buffer) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
+    if (ggml_cuda_buffer_alloc_trace_enabled()) {
+        GGML_LOG_INFO(
+            "GGML_CUDA_BUFFER_FREE: device=%d size_mib=%.2f ptr=%p\n",
+            ctx->device, buffer->size / 1024.0 / 1024.0, ctx->dev_ptr);
+    }
     delete ctx;
 }
 
@@ -552,6 +562,12 @@ static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer(ggml_bac
         return nullptr;
     }
 
+    if (ggml_cuda_buffer_alloc_trace_enabled()) {
+        GGML_LOG_INFO(
+            "GGML_CUDA_BUFFER_ALLOC: device=%d size_mib=%.2f ptr=%p\n",
+            buft_ctx->device, size / 1024.0 / 1024.0, dev_ptr);
+    }
+
     ggml_backend_cuda_buffer_context * ctx = new ggml_backend_cuda_buffer_context(buft_ctx->device, dev_ptr);
 
     return ggml_backend_buffer_init(buft, ggml_backend_cuda_buffer_interface, ctx, size);
@@ -568,7 +584,11 @@ static size_t ggml_backend_cuda_buffer_type_get_alloc_size(ggml_backend_buffer_t
         return ggml_cuda_q3k_padded_storage_alloc_size(tensor);
     }
 
-    size_t size = ggml_nbytes(tensor);
+    ggml_backend_cuda_buffer_type_context * buft_ctx = (ggml_backend_cuda_buffer_type_context *) buft->context;
+
+    size_t size = tensor->op == GGML_OP_FLASH_ATTN_EXT
+        ? ggml_cuda_flash_attn_ext_get_alloc_size(buft_ctx->device, tensor)
+        : ggml_nbytes(tensor);
     int64_t ne0 = tensor->ne[0];
 
     if (ggml_is_quantized(tensor->type)) {
@@ -579,8 +599,6 @@ static size_t ggml_backend_cuda_buffer_type_get_alloc_size(ggml_backend_buffer_t
     }
 
     return size;
-
-    GGML_UNUSED(buft);
 }
 
 static const ggml_backend_buffer_type_i ggml_backend_cuda_buffer_type_interface = {

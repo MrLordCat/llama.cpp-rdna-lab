@@ -1810,6 +1810,33 @@ ggml_backend_sched_t ggml_backend_sched_new(
 
     sched->n_backends = n_backends;
     sched->n_copies = parallel ? GGML_SCHED_MAX_COPIES : 1;
+    if (parallel) {
+        bool has_rocm_backend = false;
+        for (int i = 0; i < n_backends; ++i) {
+            const char * device_name = ggml_backend_dev_name(ggml_backend_get_device(backends[i]));
+            if (device_name != NULL && strncmp(device_name, "ROCm", 4) == 0) {
+                has_rocm_backend = true;
+                break;
+            }
+        }
+        if (has_rocm_backend && sched->n_copies > 1) {
+            sched->n_copies = 1;
+            GGML_LOG_INFO("ROCm pipeline parallel scheduler copies defaulted to %d\n", sched->n_copies);
+        }
+
+        const char * copies_env = getenv("GGML_SCHED_PIPELINE_COPIES");
+        if (copies_env != NULL) {
+            const int requested = atoi(copies_env);
+            if (requested >= 1 && requested <= GGML_SCHED_MAX_COPIES) {
+                sched->n_copies = requested;
+                GGML_LOG_INFO("pipeline parallel scheduler copies set to %d by GGML_SCHED_PIPELINE_COPIES\n",
+                        sched->n_copies);
+            } else {
+                GGML_LOG_WARN("ignoring invalid GGML_SCHED_PIPELINE_COPIES=%s (expected 1..%d)\n",
+                        copies_env, GGML_SCHED_MAX_COPIES);
+            }
+        }
+    }
 
     // initialize hash table
     // FIXME: needs to be size*2 to account for leafs (do it in graph_split instead)

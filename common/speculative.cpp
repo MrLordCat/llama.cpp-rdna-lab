@@ -1620,10 +1620,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     }
 
     void set_process_enabled(bool enabled) override {
-        if (process_enabled == enabled) {
-            return;
-        }
-
+        // A sparse block may stay deferred while capture is disabled, but it
+        // must be consumed before the next capture overwrites target staging.
+        // This also covers adjacent active batches where the gate stays true.
         if (enabled && deferred_sparse_prefill) {
             const int32_t rc = decode_hidden_batch(
                     this->params.ctx_dft, this->params.ctx_tgt, deferred_device_first_row);
@@ -1631,6 +1630,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             if (rc != 0) {
                 SPC_ERR("failed to flush deferred sparse MTP prefill rc=%d\n", (int) rc);
             }
+        }
+
+        if (process_enabled == enabled) {
+            return;
         }
 
         process_enabled = enabled;
@@ -1779,7 +1782,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     if (first_added_pos[seq_id] < 0) {
                         continue;
                     }
-                    llama_memory_seq_rm(mem_dft, seq_id, first_added_pos[seq_id], -1);
+                    if (!llama_memory_seq_rm(mem_dft, seq_id, first_added_pos[seq_id], -1)) {
+                        SPC_ERR("failed to trim MTP prefill memory for sequence %d at position %d\n",
+                                (int) seq_id, (int) first_added_pos[seq_id]);
+                        return false;
+                    }
                 }
             }
 
@@ -1801,7 +1808,15 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                             if (first_added_pos[seq_id] < 0) {
                                 continue;
                             }
-                            llama_memory_seq_rm(mem_dft, seq_id, first_added_pos[seq_id], -1);
+                            if (!llama_memory_seq_rm(mem_dft, seq_id, first_added_pos[seq_id], -1)) {
+                                SPC_ERR("failed to trim chained MTP prefill memory for sequence %d at position %d\n",
+                                        (int) seq_id, (int) first_added_pos[seq_id]);
+                                ok = false;
+                                break;
+                            }
+                        }
+                        if (!ok) {
+                            break;
                         }
                         llama_set_nextn_layer_offset(ctx_dft, head);
                     }

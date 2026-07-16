@@ -38,7 +38,8 @@ static int ggml_cuda_wmma_fattn_forced_cols_per_block() {
 }
 
 // D == head size, VKQ_stride == num VKQ rows calculated in parallel:
-template<int D, int ncols, int nwarps, int VKQ_stride, typename KQ_acc_t, bool use_logit_softcap>
+template<int D, int ncols, int nwarps, int VKQ_stride, typename KQ_acc_t,
+    bool use_logit_softcap, bool q8_v_direct = false, bool write_meta_single = false>
 __launch_bounds__(nwarps*ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void flash_attn_ext_f16(
         const char * __restrict__ Q,
@@ -108,13 +109,15 @@ static __global__ void flash_attn_ext_f16(
     const int gqa_ratio = ne02 / ne12; // With grouped query attention there are > 1 Q matrices per K, V matrix.
     const float * Q_f    = (const float *) (Q    + nb03* sequence         + nb02* head              + nb01*ic0);
     const half  * K_h    = (const half  *) (K    + nb13* sequence         + nb12*(head / gqa_ratio));
-    const half  * V_h    = (const half  *) (V    + nb13* sequence         + nb12*(head / gqa_ratio)); // K and V have same shape
+    const half  * V_h    = (const half  *) (V    + nb23* sequence         + nb22*(head / gqa_ratio));
+    const block_q8_0 * V_q8 = (const block_q8_0 *) (V + nb23*sequence + nb22*(head / gqa_ratio));
     const half  * maskh  = (const half  *) (mask + nb33*(sequence % ne33)                           + nb31*ic0);
     const half2 * mask2  = (const half2 *)  maskh;
     const float * sinksf = (const float *) sinks;
 
     const int stride_Q  = nb01 / sizeof(float);
     const int stride_KV = nb11 / sizeof(half);
+    const int stride_V_q8 = nb21 / sizeof(block_q8_0);
 
     const float slopef = get_alibi_slope(max_bias, head, n_head_log2, m0, m1);
     const half  slopeh = __float2half(slopef);
@@ -125,9 +128,15 @@ static __global__ void flash_attn_ext_f16(
     frag_b Q_b[D/16][ncols/frag_n];
 
     // A single buffer for temporarily holding tiles of KQ and VKQ parts:
+    constexpr int q8_v_tile_rows = 32;
     constexpr int mem_KQ = ncols*kqs_padded*kqar;
     constexpr int mem_VKQ_parts = VKQ_ratio*ncols*D_padded;
-    __shared__ half KQ[mem_KQ >= mem_VKQ_parts ? mem_KQ : mem_VKQ_parts];
+    constexpr int mem_V_q8 = q8_v_direct ? q8_v_tile_rows*D : 1;
+    constexpr int mem_KQ_base = mem_KQ >= mem_VKQ_parts ? mem_KQ : mem_VKQ_parts;
+    constexpr int mem_KQ_or_V = mem_KQ_base >= mem_V_q8 ? mem_KQ_base : mem_V_q8;
+    __shared__ half KQ_or_V[mem_KQ_or_V];
+    half * KQ = KQ_or_V;
+    half * V_q8_f16 = KQ_or_V;
     float * KQ_f = (float *) KQ;
     half2 * KQ2 = (half2 *) KQ;
 
@@ -151,15 +160,19 @@ static __global__ void flash_attn_ext_f16(
 
     __shared__ half VKQ[ncols*D_padded]; // Accumulator for final VKQ slice.
     half2 * VKQ2 = (half2 *) VKQ;
+    static_assert(!q8_v_direct || (D == 256 && (ncols == 16 || ncols == 32) && nwarps == 4),
+        "RDNA4 direct Q8 V WMMA is specialized for D=256, ncols=16/32, nwarps=4");
 
 #if defined(GGML_USE_HIP) && HIP_VERSION >= 60500000
     const _Float16 * K_h_f16  = reinterpret_cast<const _Float16 *>(K_h);
     const _Float16 * V_h_f16  = reinterpret_cast<const _Float16 *>(V_h);
+    _Float16       * V_q8_f16_wmma = reinterpret_cast<_Float16 *>(V_q8_f16);
     _Float16       * KQ_f16   = reinterpret_cast<_Float16 *>(KQ);
     _Float16       * VKQ_f16  = reinterpret_cast<_Float16 *>(VKQ);
 #else
     const half * K_h_f16  = K_h;
     const half * V_h_f16  = V_h;
+    half       * V_q8_f16_wmma = V_q8_f16;
     half       * KQ_f16   = KQ;
     half       * VKQ_f16  = VKQ;
 #endif
@@ -218,7 +231,10 @@ static __global__ void flash_attn_ext_f16(
 #pragma unroll
             for (int k_KQ_0 = 0; k_KQ_0 < D; k_KQ_0 += 16) {
                 frag_a_K K_a;
-                wmma::load_matrix_sync(K_a, K_h_f16 + int64_t(k_VKQ_0 + i_KQ_0 + frag_m*threadIdx.y)*stride_KV + k_KQ_0, stride_KV);
+                wmma::load_matrix_sync(
+                    K_a,
+                    K_h_f16 + int64_t(k_VKQ_0 + i_KQ_0 + frag_m * threadIdx.y) * stride_KV + k_KQ_0,
+                    stride_KV);
 #pragma unroll
                 for (int j = 0; j < ncols/frag_n; ++j) {
                     wmma::mma_sync(KQ_c[j], K_a, Q_b[k_KQ_0/16][j], KQ_c[j]);
@@ -309,7 +325,9 @@ static __global__ void flash_attn_ext_f16(
                 for (int k0 = 0; k0 < FATTN_KQ_STRIDE/2; k0 += warp_size) {
                     const int k = k0 + threadIdx.x;
 
-                    KQ2_tmp[k0/warp_size] += mask && ic0 + j < int(ne01.z) ? slope2*mask2[(j*ne11 + k_VKQ_0)/2 + k] : make_half2(0.0f, 0.0f);
+                    KQ2_tmp[k0/warp_size] += mask && ic0 + j < int(ne01.z) ?
+                        slope2*mask2[(j*(nb31/sizeof(half)) + k_VKQ_0)/2 + k] :
+                        make_half2(0.0f, 0.0f);
                     KQ_max_new = ggml_cuda_hmax2(KQ_max_new, KQ2_tmp[k0/warp_size]);
                 }
                 KQ_max_new = __half2half2(warp_reduce_max<warp_size>(ggml_cuda_hmax(__low2half(KQ_max_new), __high2half(KQ_max_new))));
@@ -360,16 +378,66 @@ static __global__ void flash_attn_ext_f16(
             for (int j = 0; j < ncols/frag_n; ++j) {
                 wmma::fill_fragment(VKQ_c[i_VKQ_0/VKQ_stride][j], static_cast<half>(0.0f));
             }
+        }
+
+        if constexpr (q8_v_direct) {
+            static_assert(VKQ_ratio == 1, "direct Q8 V WMMA expects one V accumulator group");
+            constexpr int blocks_per_row = D / QK8_0;
+            constexpr int thread_count = nwarps * warp_size;
+            const int tid = threadIdx.y * warp_size + threadIdx.x;
+            __syncthreads();
+#pragma unroll
+            for (int k_base = 0; k_base < FATTN_KQ_STRIDE; k_base += q8_v_tile_rows) {
+                for (int item = tid; item < q8_v_tile_rows * blocks_per_row; item += thread_count) {
+                    const int row = item / blocks_per_row;
+                    const int ib = item % blocks_per_row;
+                    const block_q8_0 * src = V_q8 +
+                        int64_t(k_VKQ_0 + k_base + row) * stride_V_q8;
+                    half * dst = V_q8_f16 + row * D + ib * QK8_0;
+                    dequantize_V_q8_0<half, QK8_0 / 2>(src, dst, ib * QK8_0);
+                    dequantize_V_q8_0<half, QK8_0 / 2>(
+                        src, dst + QK8_0 / 2, ib * QK8_0 + QK8_0 / 2);
+                }
+                __syncthreads();
 
 #pragma unroll
-            for (int k0 = 0; k0 < FATTN_KQ_STRIDE; k0 += VKQ_ratio*16) {
-                const int k = k0 + (threadIdx.y % VKQ_ratio)*16;
-
-                frag_a_V v_a;
-                wmma::load_matrix_sync(v_a, V_h_f16 + int64_t(k_VKQ_0 + k)*stride_KV + i_VKQ_0 + frag_m*(threadIdx.y/VKQ_ratio), stride_KV);
+                for (int i_VKQ_0 = 0; i_VKQ_0 < D; i_VKQ_0 += VKQ_stride) {
 #pragma unroll
-                for (int j = 0; j < ncols/frag_n; ++j) {
-                    wmma::mma_sync(VKQ_c[i_VKQ_0/VKQ_stride][j], v_a, KQ_b[k0/(VKQ_ratio*16)][j], VKQ_c[i_VKQ_0/VKQ_stride][j]);
+                    for (int k0 = 0; k0 < q8_v_tile_rows; k0 += 16) {
+                        frag_a_V v_a;
+                        wmma::load_matrix_sync(
+                            v_a,
+                            V_q8_f16_wmma + int64_t(k0) * D +
+                                i_VKQ_0 + frag_m * threadIdx.y,
+                            D);
+#pragma unroll
+                        for (int j = 0; j < ncols/frag_n; ++j) {
+                            wmma::mma_sync(
+                                VKQ_c[i_VKQ_0/VKQ_stride][j], v_a,
+                                KQ_b[(k_base + k0)/16][j],
+                                VKQ_c[i_VKQ_0/VKQ_stride][j]);
+                        }
+                    }
+                }
+                __syncthreads();
+            }
+        } else {
+#pragma unroll
+            for (int i_VKQ_0 = 0; i_VKQ_0 < D; i_VKQ_0 += VKQ_stride) {
+#pragma unroll
+                for (int k0 = 0; k0 < FATTN_KQ_STRIDE; k0 += VKQ_ratio*16) {
+                    const int k = k0 + (threadIdx.y % VKQ_ratio)*16;
+
+                    frag_a_V v_a;
+                    wmma::load_matrix_sync(
+                        v_a,
+                        V_h_f16 + int64_t(k_VKQ_0 + k) * stride_KV +
+                            i_VKQ_0 + frag_m * (threadIdx.y / VKQ_ratio),
+                        stride_KV);
+#pragma unroll
+                    for (int j = 0; j < ncols/frag_n; ++j) {
+                        wmma::mma_sync(VKQ_c[i_VKQ_0/VKQ_stride][j], v_a, KQ_b[k0/(VKQ_ratio*16)][j], VKQ_c[i_VKQ_0/VKQ_stride][j]);
+                    }
                 }
             }
         }
@@ -496,7 +564,7 @@ static __global__ void flash_attn_ext_f16(
             dst[j_dst_unrolled*D + i] = dst_val;
         }
 
-        if (gridDim.y == 1 || threadIdx.x != 0) {
+        if ((gridDim.y == 1 && !write_meta_single) || threadIdx.x != 0) {
             continue;
         }
 
@@ -547,6 +615,173 @@ static_assert(get_VKQ_stride( 80, 1, 16) ==  16, "Test failed.");
 static_assert(get_VKQ_stride( 80, 2, 16) ==  16, "Test failed.");
 static_assert(get_VKQ_stride( 80, 4, 16) ==  16, "Test failed.");
 
+template <int D>
+__launch_bounds__(D, 1)
+static __global__ void flash_attn_combine_chunk(
+        const float * __restrict__ partial,
+        const float2 * __restrict__ partial_meta,
+        float * __restrict__ accum,
+        float2 * __restrict__ accum_meta,
+        const bool first_chunk) {
+    const int row = blockIdx.x;
+    const int i = threadIdx.x;
+
+    const float2 next_meta = partial_meta[row];
+    if (first_chunk) {
+        accum[row*D + i] = next_meta.y > 0.0f ? partial[row*D + i] : 0.0f;
+        if (i == 0) {
+            accum_meta[row] = next_meta;
+        }
+        return;
+    }
+
+    const float2 prev_meta = accum_meta[row];
+    if (next_meta.y <= 0.0f) {
+        return;
+    }
+    if (prev_meta.y <= 0.0f) {
+        accum[row*D + i] = partial[row*D + i];
+        if (i == 0) {
+            accum_meta[row] = next_meta;
+        }
+        return;
+    }
+
+    const float max_new = fmaxf(prev_meta.x, next_meta.x);
+    const float prev_weight = prev_meta.y * expf(prev_meta.x - max_new);
+    const float next_weight = next_meta.y * expf(next_meta.x - max_new);
+    const float sum_new = prev_weight + next_weight;
+
+    accum[row*D + i] =
+        (prev_weight * accum[row*D + i] + next_weight * partial[row*D + i]) / sum_new;
+    if (i == 0) {
+        accum_meta[row] = make_float2(max_new, sum_new);
+    }
+}
+
+template <int D, int ncols>
+static void launch_fattn_chunked_q8_wmma(
+        ggml_backend_cuda_context & ctx, ggml_tensor * dst, fattn_kernel_t fattn_kernel) {
+    constexpr int nwarps = 4;
+
+    const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+    const ggml_tensor * mask = dst->src[3];
+    const ggml_tensor * sinks = dst->src[4];
+
+    GGML_ASSERT(Q->type == GGML_TYPE_F32);
+    GGML_ASSERT(K->type == GGML_TYPE_Q8_0);
+    GGML_ASSERT(V->type == GGML_TYPE_Q8_0);
+    GGML_ASSERT(Q->ne[0] == D && V->ne[0] == D);
+    GGML_ASSERT(K->ne[1] == V->ne[1]);
+    GGML_ASSERT(K->ne[2] == V->ne[2]);
+    GGML_ASSERT(K->ne[3] == V->ne[3]);
+
+    const ggml_cuda_flash_attn_ext_chunked_extra_data extra =
+        ggml_cuda_flash_attn_ext_get_chunked_extra_data(dst);
+    half * K_f16 = reinterpret_cast<half *>(extra.K);
+    half * V_f16 = reinterpret_cast<half *>(extra.V);
+    float * partial = reinterpret_cast<float *>(extra.partial);
+    float2 * partial_meta = reinterpret_cast<float2 *>(extra.partial_meta);
+    float2 * accum_meta = reinterpret_cast<float2 *>(extra.accum_meta);
+
+    cudaStream_t stream = ctx.stream();
+    ggml_cuda_pool_alloc<int> KV_max(ctx.pool());
+
+    const int ntiles_x = (Q->ne[1] + ncols - 1) / ncols;
+    if (mask && K->ne[1] % FATTN_KQ_STRIDE == 0) {
+        KV_max.alloc(ntiles_x * Q->ne[3]);
+    }
+
+    const to_fp16_nc_cuda_t K_to_f16 = ggml_get_to_fp16_nc_cuda(K->type);
+    const to_fp16_nc_cuda_t V_to_f16 = ggml_get_to_fp16_nc_cuda(V->type);
+    GGML_ASSERT(K_to_f16 != nullptr && V_to_f16 != nullptr);
+
+    const size_t K_ts = ggml_type_size(K->type);
+    const size_t V_ts = ggml_type_size(V->type);
+    const int64_t K_s01 = K->nb[1] / K_ts;
+    const int64_t K_s02 = K->nb[2] / K_ts;
+    const int64_t K_s03 = K->nb[3] / K_ts;
+    const int64_t V_s01 = V->nb[1] / V_ts;
+    const int64_t V_s02 = V->nb[2] / V_ts;
+    const int64_t V_s03 = V->nb[3] / V_ts;
+
+    float scale = 1.0f;
+    float max_bias = 0.0f;
+    float logit_softcap = 0.0f;
+    memcpy(&scale, (const float *) dst->op_params + 0, sizeof(float));
+    memcpy(&max_bias, (const float *) dst->op_params + 1, sizeof(float));
+    memcpy(&logit_softcap, (const float *) dst->op_params + 2, sizeof(float));
+    if (logit_softcap != 0.0f) {
+        scale /= logit_softcap;
+    }
+
+    const uint32_t n_head = Q->ne[2];
+    const uint32_t n_head_log2 = 1u << uint32_t(floorf(log2f(float(n_head))));
+    const float m0 = powf(2.0f, -max_bias / n_head_log2);
+    const float m1 = powf(2.0f, -(max_bias / 2.0f) / n_head_log2);
+    const uint3 ne01 = init_fastdiv_values(Q->ne[1]);
+
+    const dim3 block_dim(ggml_cuda_info().devices[ctx.device].warp_size, nwarps, 1);
+    const dim3 blocks_num(ntiles_x, 1, Q->ne[2] * Q->ne[3]);
+    const dim3 combine_blocks(ggml_nrows(dst), 1, 1);
+    const dim3 combine_threads(D, 1, 1);
+
+    bool first_chunk = true;
+    for (int64_t k0 = 0; k0 < K->ne[1]; k0 += GGML_ROCM_FATTN_Q8_CHUNK_SIZE) {
+        const int64_t nk = std::min<int64_t>(GGML_ROCM_FATTN_Q8_CHUNK_SIZE, K->ne[1] - k0);
+        GGML_ASSERT(nk % FATTN_KQ_STRIDE == 0);
+
+        K_to_f16(
+            reinterpret_cast<const char *>(K->data) + k0*K->nb[1], K_f16,
+            K->ne[0], nk, K->ne[2], K->ne[3], K_s01, K_s02, K_s03, stream);
+        V_to_f16(
+            reinterpret_cast<const char *>(V->data) + k0*V->nb[1], V_f16,
+            V->ne[0], nk, V->ne[2], V->ne[3], V_s01, V_s02, V_s03, stream);
+
+        const char * mask_chunk = mask ?
+            reinterpret_cast<const char *>(mask->data) + k0*sizeof(half) : nullptr;
+        if (mask && KV_max.ptr != nullptr) {
+            const dim3 mask_blocks(ntiles_x, Q->ne[3], 1);
+            const dim3 mask_threads(FATTN_KQ_STRIDE/2, 1, 1);
+            flash_attn_mask_to_KV_max<ncols><<<mask_blocks, mask_threads, 0, stream>>>(
+                reinterpret_cast<const half2 *>(mask_chunk), KV_max.ptr,
+                nk / FATTN_KQ_STRIDE,
+                mask->nb[1] / sizeof(half2), mask->nb[3] / sizeof(half2));
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        const int32_t nb11 = D * sizeof(half);
+        const int32_t nb12 = nk * nb11;
+        const int64_t nb13 = K->ne[2] * int64_t(nb12);
+        const int32_t nb21 = D * sizeof(half);
+        const int32_t nb22 = nk * nb21;
+        const int64_t nb23 = V->ne[2] * int64_t(nb22);
+
+        fattn_kernel<<<blocks_num, block_dim, 0, stream>>>(
+            reinterpret_cast<const char *>(Q->data),
+            reinterpret_cast<const char *>(K_f16),
+            reinterpret_cast<const char *>(V_f16),
+            mask_chunk,
+            first_chunk && sinks ? reinterpret_cast<const char *>(sinks->data) : nullptr,
+            KV_max.ptr,
+            partial, partial_meta,
+            scale, max_bias, m0, m1, n_head_log2, logit_softcap,
+            Q->ne[0], ne01, Q->ne[2], Q->ne[3], Q->nb[1], Q->nb[2], Q->nb[3],
+            K->ne[0], nk, K->ne[2], K->ne[3], nb11, nb12, nb13,
+            nb21, nb22, nb23,
+            mask ? mask->ne[1] : 0, mask ? mask->ne[2] : 0, mask ? mask->ne[3] : 0,
+            mask ? mask->nb[1] : 0, mask ? mask->nb[2] : 0, mask ? mask->nb[3] : 0);
+        CUDA_CHECK(cudaGetLastError());
+
+        flash_attn_combine_chunk<D><<<combine_blocks, combine_threads, 0, stream>>>(
+            partial, partial_meta, reinterpret_cast<float *>(dst->data), accum_meta, first_chunk);
+        CUDA_CHECK(cudaGetLastError());
+        first_chunk = false;
+    }
+}
+
 template <int D, int cols_per_block, typename KQ_acc_t>
 void ggml_cuda_flash_attn_ext_wmma_f16_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * KQV = dst;
@@ -558,18 +793,62 @@ void ggml_cuda_flash_attn_ext_wmma_f16_case(ggml_backend_cuda_context & ctx, ggm
 
     float logit_softcap;
     memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
+    const bool q8_v_direct = ggml_cuda_flash_attn_ext_use_rdna4_q8_v_direct_wmma(ctx.device, dst);
+    const bool q8_chunked = ggml_cuda_flash_attn_ext_use_rdna4_q8_chunked_wmma(ctx.device, dst);
 
     fattn_kernel_t fattn_kernel;
     if (logit_softcap == 0.0f) {
         constexpr bool use_logit_softcap = false;
-        fattn_kernel = flash_attn_ext_f16<
-            D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m), KQ_acc_t, use_logit_softcap>;
+        if constexpr (D == 256 && (cols_per_block == 16 || cols_per_block == 32)) {
+            if (q8_chunked) {
+                fattn_kernel = flash_attn_ext_f16<
+                    D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                    KQ_acc_t, use_logit_softcap, false, true>;
+            } else if (q8_v_direct) {
+                fattn_kernel = flash_attn_ext_f16<
+                    D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                    KQ_acc_t, use_logit_softcap, true>;
+            } else {
+                fattn_kernel = flash_attn_ext_f16<
+                    D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                    KQ_acc_t, use_logit_softcap, false>;
+            }
+        } else {
+            fattn_kernel = flash_attn_ext_f16<
+                D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                KQ_acc_t, use_logit_softcap, false>;
+        }
     } else {
         constexpr bool use_logit_softcap = true;
-        fattn_kernel = flash_attn_ext_f16<
-            D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m), KQ_acc_t, use_logit_softcap>;
+        if constexpr (D == 256 && (cols_per_block == 16 || cols_per_block == 32)) {
+            if (q8_chunked) {
+                fattn_kernel = flash_attn_ext_f16<
+                    D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                    KQ_acc_t, use_logit_softcap, false, true>;
+            } else if (q8_v_direct) {
+                fattn_kernel = flash_attn_ext_f16<
+                    D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                    KQ_acc_t, use_logit_softcap, true>;
+            } else {
+                fattn_kernel = flash_attn_ext_f16<
+                    D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                    KQ_acc_t, use_logit_softcap, false>;
+            }
+        } else {
+            fattn_kernel = flash_attn_ext_f16<
+                D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                KQ_acc_t, use_logit_softcap, false>;
+        }
     }
-    launch_fattn<D, cols_per_block, 1>(ctx, dst, fattn_kernel, nwarps, 0, FATTN_KQ_STRIDE, true, true, false, warp_size);
+    if constexpr (D == 256 && (cols_per_block == 16 || cols_per_block == 32)) {
+        if (q8_chunked) {
+            launch_fattn_chunked_q8_wmma<D, cols_per_block>(ctx, dst, fattn_kernel);
+            return;
+        }
+    }
+    launch_fattn<D, cols_per_block, 1>(
+        ctx, dst, fattn_kernel, nwarps, 0, FATTN_KQ_STRIDE,
+        true, !q8_v_direct, false, warp_size);
 }
 
 void ggml_cuda_flash_attn_ext_wmma_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {

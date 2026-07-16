@@ -575,11 +575,76 @@ const ggml_cuda_device_info & ggml_cuda_info() {
 
 // #define DEBUG_CUDA_MALLOC
 
+static bool ggml_cuda_pool_trace_enabled() {
+    static const bool enabled = getenv("GGML_TRACE_CUDA_POOL") != nullptr;
+    return enabled;
+}
+
+static size_t ggml_cuda_pool_cache_limit() {
+#if defined(GGML_USE_HIP) && defined(_WIN32)
+    static const size_t limit = [] {
+        const char * value = getenv("GGML_HIP_POOL_CACHE_LIMIT_MB");
+        if (value == nullptr || value[0] == '\0') {
+            return size_t(0);
+        }
+        return (size_t) strtoull(value, nullptr, 10) * 1024 * 1024;
+    }();
+    return limit;
+#else
+    return 0;
+#endif
+}
+
+static void ggml_cuda_pool_trace_update_peak(std::atomic<size_t> & peak, size_t value) {
+    size_t observed = peak.load(std::memory_order_relaxed);
+    while (observed < value &&
+           !peak.compare_exchange_weak(observed, value, std::memory_order_relaxed)) {
+    }
+}
+
+struct ggml_cuda_pool_trace_stats {
+    std::atomic<size_t> allocated       { 0 };
+    std::atomic<size_t> active          { 0 };
+    std::atomic<size_t> cached          { 0 };
+    std::atomic<size_t> peak_allocated  { 0 };
+    std::atomic<size_t> peak_active     { 0 };
+    std::atomic<size_t> peak_cached     { 0 };
+    std::atomic<uint64_t> malloc_count  { 0 };
+    std::atomic<uint64_t> cache_hits    { 0 };
+    std::atomic<uint64_t> driver_frees { 0 };
+    std::atomic<uint32_t> pool_count    { 0 };
+};
+
+static ggml_cuda_pool_trace_stats ggml_cuda_pool_trace[GGML_CUDA_MAX_DEVICES];
+
+static void ggml_cuda_pool_trace_adjust(
+        int device, int64_t allocated_delta, int64_t active_delta, int64_t cached_delta) {
+    if (!ggml_cuda_pool_trace_enabled()) {
+        return;
+    }
+
+    ggml_cuda_pool_trace_stats & stats = ggml_cuda_pool_trace[device];
+    const size_t allocated = allocated_delta >= 0
+        ? stats.allocated.fetch_add((size_t) allocated_delta, std::memory_order_relaxed) + (size_t) allocated_delta
+        : stats.allocated.fetch_sub((size_t) -allocated_delta, std::memory_order_relaxed) - (size_t) -allocated_delta;
+    const size_t active = active_delta >= 0
+        ? stats.active.fetch_add((size_t) active_delta, std::memory_order_relaxed) + (size_t) active_delta
+        : stats.active.fetch_sub((size_t) -active_delta, std::memory_order_relaxed) - (size_t) -active_delta;
+    const size_t cached = cached_delta >= 0
+        ? stats.cached.fetch_add((size_t) cached_delta, std::memory_order_relaxed) + (size_t) cached_delta
+        : stats.cached.fetch_sub((size_t) -cached_delta, std::memory_order_relaxed) - (size_t) -cached_delta;
+
+    ggml_cuda_pool_trace_update_peak(stats.peak_allocated, allocated);
+    ggml_cuda_pool_trace_update_peak(stats.peak_active, active);
+    ggml_cuda_pool_trace_update_peak(stats.peak_cached, cached);
+}
+
 // buffer pool for cuda (legacy)
 struct ggml_cuda_pool_leg : public ggml_cuda_pool {
     static const int MAX_BUFFERS = 256;
 
     int device;
+    int stream_no;
     struct ggml_cuda_buffer {
         void * ptr = nullptr;
         size_t size = 0;
@@ -587,14 +652,78 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
 
     ggml_cuda_buffer buffer_pool[MAX_BUFFERS] = {};
     size_t pool_size = 0;
+    size_t active_size = 0;
+    size_t cached_size = 0;
+    size_t peak_pool_size = 0;
+    size_t peak_active_size = 0;
+    size_t peak_cached_size = 0;
+    uint64_t malloc_count = 0;
+    uint64_t cache_hits = 0;
+    uint64_t driver_frees = 0;
 
-    explicit ggml_cuda_pool_leg(int device) :
-        device(device) {
+    explicit ggml_cuda_pool_leg(int device, int stream_no) :
+        device(device), stream_no(stream_no) {
+        if (ggml_cuda_pool_trace_enabled()) {
+            ggml_cuda_pool_trace[device].pool_count.fetch_add(1, std::memory_order_relaxed);
+            GGML_LOG_INFO(
+                "GGML_CUDA_POOL_POLICY: device=%d stream=%d cache_limit_mib=%.2f\n",
+                device, stream_no, ggml_cuda_pool_cache_limit() / 1024.0 / 1024.0);
+        }
     }
 
     ~ggml_cuda_pool_leg() {
         clear_pool();
         GGML_ASSERT(pool_size == 0);
+        GGML_ASSERT(active_size == 0);
+        GGML_ASSERT(cached_size == 0);
+
+        if (!ggml_cuda_pool_trace_enabled()) {
+            return;
+        }
+
+        GGML_LOG_INFO(
+            "GGML_CUDA_POOL_STREAM_STATS: device=%d stream=%d peak_allocated_mib=%.2f peak_active_mib=%.2f peak_cached_mib=%.2f mallocs=%llu cache_hits=%llu driver_frees=%llu\n",
+            device, stream_no,
+            peak_pool_size / 1024.0 / 1024.0,
+            peak_active_size / 1024.0 / 1024.0,
+            peak_cached_size / 1024.0 / 1024.0,
+            (unsigned long long) malloc_count,
+            (unsigned long long) cache_hits,
+            (unsigned long long) driver_frees);
+
+        ggml_cuda_pool_trace_stats & stats = ggml_cuda_pool_trace[device];
+        if (stats.pool_count.fetch_sub(1, std::memory_order_relaxed) == 1) {
+            GGML_LOG_INFO(
+                "GGML_CUDA_POOL_DEVICE_STATS: device=%d peak_allocated_mib=%.2f peak_active_mib=%.2f peak_cached_mib=%.2f mallocs=%llu cache_hits=%llu driver_frees=%llu\n",
+                device,
+                stats.peak_allocated.load(std::memory_order_relaxed) / 1024.0 / 1024.0,
+                stats.peak_active.load(std::memory_order_relaxed) / 1024.0 / 1024.0,
+                stats.peak_cached.load(std::memory_order_relaxed) / 1024.0 / 1024.0,
+                (unsigned long long) stats.malloc_count.load(std::memory_order_relaxed),
+                (unsigned long long) stats.cache_hits.load(std::memory_order_relaxed),
+                (unsigned long long) stats.driver_frees.load(std::memory_order_relaxed));
+        }
+    }
+
+    void update_peaks() {
+        peak_pool_size = std::max(peak_pool_size, pool_size);
+        peak_active_size = std::max(peak_active_size, active_size);
+        peak_cached_size = std::max(peak_cached_size, cached_size);
+    }
+
+    void release_cached_buffer(int index) {
+        ggml_cuda_buffer & b = buffer_pool[index];
+        GGML_ASSERT(b.ptr != nullptr);
+        CUDA_CHECK(cudaFree(b.ptr));
+        pool_size -= b.size;
+        cached_size -= b.size;
+        driver_frees++;
+        ggml_cuda_pool_trace_adjust(device, -(int64_t) b.size, 0, -(int64_t) b.size);
+        if (ggml_cuda_pool_trace_enabled()) {
+            ggml_cuda_pool_trace[device].driver_frees.fetch_add(1, std::memory_order_relaxed);
+        }
+        b.ptr = nullptr;
+        b.size = 0;
     }
 
     void clear_pool() {
@@ -602,11 +731,41 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
         for (int i = 0; i < MAX_BUFFERS; ++i) {
             ggml_cuda_buffer & b = buffer_pool[i];
             if (b.ptr != nullptr) {
-                CUDA_CHECK(cudaFree(b.ptr));
-                pool_size -= b.size;
-                b.ptr  = nullptr;
-                b.size = 0;
+                release_cached_buffer(i);
             }
+        }
+    }
+
+    void trim_cached_to_limit(size_t limit) {
+        if (limit == 0 || cached_size <= limit) {
+            return;
+        }
+
+        ggml_cuda_set_device(device);
+        const size_t cached_before = cached_size;
+        int released = 0;
+        while (cached_size > limit) {
+            int smallest = -1;
+            for (int i = 0; i < MAX_BUFFERS; ++i) {
+                if (buffer_pool[i].ptr != nullptr &&
+                    (smallest < 0 || buffer_pool[i].size < buffer_pool[smallest].size)) {
+                    smallest = i;
+                }
+            }
+            if (smallest < 0) {
+                break;
+            }
+            release_cached_buffer(smallest);
+            released++;
+        }
+
+        if (ggml_cuda_pool_trace_enabled()) {
+            GGML_LOG_INFO(
+                "GGML_CUDA_POOL_TRIM: device=%d stream=%d released=%d released_mib=%.2f cached_mib=%.2f limit_mib=%.2f\n",
+                device, stream_no, released,
+                (cached_before - cached_size) / 1024.0 / 1024.0,
+                cached_size / 1024.0 / 1024.0,
+                limit / 1024.0 / 1024.0);
         }
     }
 
@@ -632,6 +791,14 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
                         if (!best_diff) {
                             void * ptr = b.ptr;
                             *actual_size = b.size;
+                            active_size += b.size;
+                            cached_size -= b.size;
+                            cache_hits++;
+                            update_peaks();
+                            ggml_cuda_pool_trace_adjust(device, 0, (int64_t) b.size, -(int64_t) b.size);
+                            if (ggml_cuda_pool_trace_enabled()) {
+                                ggml_cuda_pool_trace[device].cache_hits.fetch_add(1, std::memory_order_relaxed);
+                            }
                             b.ptr = nullptr;
                             b.size = 0;
                             return ptr;
@@ -644,10 +811,21 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
             ggml_cuda_buffer& b = buffer_pool[ibest];
             void * ptr = b.ptr;
             *actual_size = b.size;
+            active_size += b.size;
+            cached_size -= b.size;
+            cache_hits++;
+            update_peaks();
+            ggml_cuda_pool_trace_adjust(device, 0, (int64_t) b.size, -(int64_t) b.size);
+            if (ggml_cuda_pool_trace_enabled()) {
+                ggml_cuda_pool_trace[device].cache_hits.fetch_add(1, std::memory_order_relaxed);
+            }
             b.ptr = nullptr;
             b.size = 0;
             return ptr;
         }
+
+        trim_cached_to_limit(ggml_cuda_pool_cache_limit());
+
         void * ptr;
         size_t look_ahead_size = (size_t) (1.05 * size);
         look_ahead_size = 256 * ((look_ahead_size + 255)/256);
@@ -668,6 +846,21 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
         CUDA_CHECK(err);
         *actual_size = look_ahead_size;
         pool_size += look_ahead_size;
+        active_size += look_ahead_size;
+        malloc_count++;
+        update_peaks();
+        ggml_cuda_pool_trace_adjust(device, (int64_t) look_ahead_size, (int64_t) look_ahead_size, 0);
+        if (ggml_cuda_pool_trace_enabled()) {
+            ggml_cuda_pool_trace[device].malloc_count.fetch_add(1, std::memory_order_relaxed);
+            GGML_LOG_INFO(
+                "GGML_CUDA_POOL_ALLOC: device=%d stream=%d requested_mib=%.2f actual_mib=%.2f allocated_mib=%.2f active_mib=%.2f cached_mib=%.2f\n",
+                device, stream_no,
+                size / 1024.0 / 1024.0,
+                look_ahead_size / 1024.0 / 1024.0,
+                pool_size / 1024.0 / 1024.0,
+                active_size / 1024.0 / 1024.0,
+                cached_size / 1024.0 / 1024.0);
+        }
 #ifdef DEBUG_CUDA_MALLOC
         GGML_LOG_INFO("%s[%d]: %d buffers, max_size = %u MB, pool_size = %u MB, requested %u MB\n", __func__, device, nnz,
                            (uint32_t)(max_size / 1024 / 1024), (uint32_t)(pool_size / 1024 / 1024), (uint32_t)(size / 1024 / 1024));
@@ -676,11 +869,16 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
     }
 
     void free(void * ptr, size_t size) override {
+        GGML_ASSERT(active_size >= size);
+        active_size -= size;
         for (int i = 0; i < MAX_BUFFERS; ++i) {
             ggml_cuda_buffer& b = buffer_pool[i];
             if (b.ptr == nullptr) {
                 b.ptr = ptr;
                 b.size = size;
+                cached_size += size;
+                update_peaks();
+                ggml_cuda_pool_trace_adjust(device, 0, -(int64_t) size, (int64_t) size);
                 return;
             }
         }
@@ -688,6 +886,11 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
         ggml_cuda_set_device(device);
         CUDA_CHECK(cudaFree(ptr));
         pool_size -= size;
+        driver_frees++;
+        ggml_cuda_pool_trace_adjust(device, -(int64_t) size, -(int64_t) size, 0);
+        if (ggml_cuda_pool_trace_enabled()) {
+            ggml_cuda_pool_trace[device].driver_frees.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 };
 
@@ -809,7 +1012,7 @@ std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(i
         return std::unique_ptr<ggml_cuda_pool>(new ggml_cuda_pool_vmm(device));
     }
 #endif // defined(GGML_USE_VMM)
-    return std::unique_ptr<ggml_cuda_pool>(new ggml_cuda_pool_leg(device));
+    return std::unique_ptr<ggml_cuda_pool>(new ggml_cuda_pool_leg(device, stream_no));
 }
 
 // destroying a cuBLAS handle while a graph is being captured in a different thread can result in a CUDA error

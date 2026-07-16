@@ -44,6 +44,141 @@ typedef void (* fattn_kernel_t)(
 typedef float (*vec_dot_KQ_t)(
     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8 , const void * __restrict__ Q_ds);
 
+struct ggml_cuda_flash_attn_ext_f16_extra_data {
+    uintptr_t K;
+    uintptr_t V;
+    uintptr_t end;
+};
+
+constexpr int GGML_ROCM_FATTN_Q8_CHUNK_SIZE = 4096;
+constexpr int GGML_ROCM_FATTN_Q8_CHUNK_MIN_KV = 16384;
+
+struct ggml_cuda_flash_attn_ext_chunked_extra_data {
+    uintptr_t K;
+    uintptr_t V;
+    uintptr_t partial;
+    uintptr_t partial_meta;
+    uintptr_t accum_meta;
+    uintptr_t end;
+};
+
+bool ggml_cuda_flash_attn_ext_rdna4_q8_chunked_policy(const ggml_tensor * dst);
+
+static inline bool ggml_cuda_flash_attn_ext_use_rdna4_q8_v_direct_wmma(
+        const int device, const ggml_tensor * dst) {
+#if defined(GGML_USE_HIP)
+    static const bool enabled = getenv("GGML_ROCM_FATTN_Q8_V_DIRECT_WMMA") != nullptr;
+    if (!GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[device].cc)) {
+        return false;
+    }
+
+    const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+    return Q != nullptr && K != nullptr && V != nullptr &&
+        (enabled || (Q->ne[1] < 256 && ggml_cuda_flash_attn_ext_rdna4_q8_chunked_policy(dst))) &&
+        Q->ne[0] == 256 && V->ne[0] == 256 &&
+        K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q8_0;
+#else
+    GGML_UNUSED(device);
+    GGML_UNUSED(dst);
+    return false;
+#endif
+}
+
+static inline bool ggml_cuda_flash_attn_ext_use_rdna4_q8_chunked_wmma(
+        const int device, const ggml_tensor * dst) {
+#if defined(GGML_USE_HIP)
+    if (!ggml_cuda_flash_attn_ext_rdna4_q8_chunked_policy(dst) ||
+        !GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[device].cc)) {
+        return false;
+    }
+
+    const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+    return Q != nullptr && K != nullptr && V != nullptr && Q->ne[1] >= 256 &&
+        Q->ne[0] == 256 && V->ne[0] == 256 &&
+        K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q8_0;
+#else
+    GGML_UNUSED(device);
+    GGML_UNUSED(dst);
+    return false;
+#endif
+}
+
+static inline ggml_cuda_flash_attn_ext_chunked_extra_data
+ggml_cuda_flash_attn_ext_get_chunked_extra_data(const ggml_tensor * dst) {
+    GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);
+
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+    GGML_ASSERT(K != nullptr);
+    GGML_ASSERT(V != nullptr);
+
+    const int64_t chunk_K = std::min<int64_t>(K->ne[1], GGML_ROCM_FATTN_Q8_CHUNK_SIZE);
+    const int64_t chunk_V = std::min<int64_t>(V->ne[1], GGML_ROCM_FATTN_Q8_CHUNK_SIZE);
+
+    ggml_cuda_flash_attn_ext_chunked_extra_data data = {};
+    data.end = (uintptr_t) dst->data + ggml_nbytes(dst);
+
+    data.end = GGML_PAD(data.end, 128);
+    data.K = data.end;
+    data.end += K->ne[0] * chunk_K * K->ne[2] * K->ne[3] * sizeof(half);
+
+    data.end = GGML_PAD(data.end, 128);
+    data.V = data.end;
+    data.end += V->ne[0] * chunk_V * V->ne[2] * V->ne[3] * sizeof(half);
+
+    data.end = GGML_PAD(data.end, 128);
+    data.partial = data.end;
+    data.end += ggml_nbytes(dst);
+
+    data.end = GGML_PAD(data.end, 128);
+    data.partial_meta = data.end;
+    data.end += ggml_nrows(dst) * sizeof(float2);
+
+    data.end = GGML_PAD(data.end, 128);
+    data.accum_meta = data.end;
+    data.end += ggml_nrows(dst) * sizeof(float2);
+
+    return data;
+}
+
+static inline ggml_cuda_flash_attn_ext_f16_extra_data ggml_cuda_flash_attn_ext_get_f16_extra_data(
+        const ggml_tensor * dst, const bool need_f16_K, const bool need_f16_V) {
+    GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);
+
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+
+    GGML_ASSERT(K != nullptr);
+    GGML_ASSERT(V != nullptr);
+
+    const bool V_is_K_view = V->view_src && (V->view_src == K || (V->view_src == K->view_src && V->view_offs == K->view_offs));
+
+    ggml_cuda_flash_attn_ext_f16_extra_data data = {};
+    data.end = (uintptr_t) dst->data + ggml_nbytes(dst);
+
+    if (need_f16_K && K->type != GGML_TYPE_F16) {
+        data.end = GGML_PAD(data.end, 128);
+        data.K   = data.end;
+        data.end += ggml_nelements(K)*ggml_type_size(GGML_TYPE_F16);
+    }
+
+    if (need_f16_V && V->type != GGML_TYPE_F16) {
+        if (V_is_K_view) {
+            data.V = data.K;
+        } else {
+            data.end = GGML_PAD(data.end, 128);
+            data.V   = data.end;
+            data.end += ggml_nelements(V)*ggml_type_size(GGML_TYPE_F16);
+        }
+    }
+
+    return data;
+}
+
 template <int D, int nthreads>
 static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_f16(
     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8 , const void * __restrict__ Q_ds_v) {
@@ -1206,8 +1341,9 @@ void launch_fattn(
     const int cc  = ggml_cuda_info().devices[id].cc;
     const int nsm = ggml_cuda_info().devices[id].nsm;
 
-    ggml_cuda_pool_alloc<half>   K_f16(pool);
-    ggml_cuda_pool_alloc<half>   V_f16(pool);
+    const ggml_cuda_flash_attn_ext_f16_extra_data f16_extra =
+        ggml_cuda_flash_attn_ext_get_f16_extra_data(KQV, need_f16_K, need_f16_V);
+
     ggml_cuda_pool_alloc<int>    KV_max(pool);
     ggml_cuda_pool_alloc<float>  dst_tmp(pool);
     ggml_cuda_pool_alloc<float2> dst_tmp_meta(pool);
@@ -1226,10 +1362,11 @@ void launch_fattn(
         const size_t bs = ggml_blck_size(K->type);
         const size_t ts = ggml_type_size(K->type);
 
-        K_f16.alloc(ggml_nelements(K));
+        GGML_ASSERT(f16_extra.K != 0);
+        half * K_f16 = (half *) f16_extra.K;
         if (ggml_is_contiguously_allocated(K)) {
             to_fp16_cuda_t to_fp16 = ggml_get_to_fp16_cuda(K->type);
-            to_fp16(K_data, K_f16.ptr, ggml_nelements(K), main_stream);
+            to_fp16(K_data, K_f16, ggml_nelements(K), main_stream);
 
             nb11 = nb11*bs*sizeof(half)/ts;
             nb12 = nb12*bs*sizeof(half)/ts;
@@ -1240,13 +1377,13 @@ void launch_fattn(
             const int64_t s01 = nb11 / ts;
             const int64_t s02 = nb12 / ts;
             const int64_t s03 = nb13 / ts;
-            to_fp16(K_data, K_f16.ptr, K->ne[0], K->ne[1], K->ne[2], K->ne[3], s01, s02, s03, main_stream);
+            to_fp16(K_data, K_f16, K->ne[0], K->ne[1], K->ne[2], K->ne[3], s01, s02, s03, main_stream);
 
             nb11 = K->ne[0] * sizeof(half);
             nb12 = K->ne[1] * nb11;
             nb13 = K->ne[2] * nb12;
         }
-        K_data = (char *) K_f16.ptr;
+        K_data = (char *) K_f16;
     }
 
     if (need_f16_V && V->type != GGML_TYPE_F16) {
@@ -1259,11 +1396,12 @@ void launch_fattn(
             const size_t bs = ggml_blck_size(V->type);
             const size_t ts = ggml_type_size(V->type);
 
-            V_f16.alloc(ggml_nelements(V));
+            GGML_ASSERT(f16_extra.V != 0);
+            half * V_f16 = (half *) f16_extra.V;
             if (ggml_is_contiguously_allocated(V)) {
                 to_fp16_cuda_t to_fp16 = ggml_get_to_fp16_cuda(V->type);
-                to_fp16(V_data, V_f16.ptr, ggml_nelements(V), main_stream);
-                V_data = (char *) V_f16.ptr;
+                to_fp16(V_data, V_f16, ggml_nelements(V), main_stream);
+                V_data = (char *) V_f16;
 
                 nb21 = nb21*bs*sizeof(half)/ts;
                 nb22 = nb22*bs*sizeof(half)/ts;
@@ -1274,13 +1412,13 @@ void launch_fattn(
                 const int64_t s01 = nb21 / ts;
                 const int64_t s02 = nb22 / ts;
                 const int64_t s03 = nb23 / ts;
-                to_fp16(V_data, V_f16.ptr, V->ne[0], V->ne[1], V->ne[2], V->ne[3], s01, s02, s03, main_stream);
+                to_fp16(V_data, V_f16, V->ne[0], V->ne[1], V->ne[2], V->ne[3], s01, s02, s03, main_stream);
 
                 nb21 = V->ne[0] * sizeof(half);
                 nb22 = V->ne[1] * nb21;
                 nb23 = V->ne[2] * nb22;
             }
-            V_data = (char *) V_f16.ptr;
+            V_data = (char *) V_f16;
         }
     }
 

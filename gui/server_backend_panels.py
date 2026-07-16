@@ -33,12 +33,21 @@ _TAB_TITLES = {
 
 # (display, -dev value or None for all, -sm value or None, -ts value or None)
 # shared with the bench tab so bench/autotune runs get the same device options
+ROCM_BALANCED_DUAL_CHOICE = (
+    "ROCm1,ROCm0 - layer split (recommended)", "ROCm1,ROCm0", "layer", "1,1"
+)
+ROCM_Q4KM_LONG_CONTEXT_CHOICE = (
+    "ROCm1,ROCm0 - Q4_K_M 131K+ split (27:37)", "ROCm1,ROCm0", "layer", "27,37"
+)
+ROCM_Q4KM_LONG_CONTEXT_MIN = 131072
+
 ROCM_DEVICE_CHOICES = [
     ("All GPUs — layer split (default order)", None,          "layer", None),
     ("ROCm1 only — diagnostics",               "ROCm1",      "none",  None),
     ("ROCm0 only — diagnostics",               "ROCm0",      "none",  None),
-    ("ROCm1,ROCm0 — layer split (recommended)", "ROCm1,ROCm0", "layer", "1,1"),
+    ROCM_BALANCED_DUAL_CHOICE,
     ("ROCm0,ROCm1 — layer split (reverse order)", "ROCm0,ROCm1", "layer", "1,1"),
+    ROCM_Q4KM_LONG_CONTEXT_CHOICE,
 ]
 
 VULKAN_DEVICE_CHOICES = [
@@ -63,6 +72,18 @@ def device_choice_args(choice: tuple) -> list[str]:
     return out
 
 
+def is_qwen36_q4km_model(model_name: str) -> bool:
+    """Return whether the measured Q4_K_M placement profile applies."""
+    normalized = (model_name or "").lower().replace("-", "_").replace(".", "_")
+    return "qwen3_6" in normalized and "27b" in normalized and "q4_k_m" in normalized
+
+
+def recommended_rocm_device_choice(model_name: str, ctx_size: int) -> tuple:
+    if is_qwen36_q4km_model(model_name) and ctx_size >= ROCM_Q4KM_LONG_CONTEXT_MIN:
+        return ROCM_Q4KM_LONG_CONTEXT_CHOICE
+    return ROCM_BALANCED_DUAL_CHOICE
+
+
 class _RocmPanel(QWidget):
     """ROCm-specific launch parameters (2x RX 9070 XT rig defaults)."""
 
@@ -83,7 +104,8 @@ class _RocmPanel(QWidget):
             "Which GPUs the server uses.\n"
             "For large MTP runs, use ROCm1,ROCm0 layer split so weights/KV stay\n"
             "on the two cards instead of spilling one card into RAM. Single-GPU\n"
-            "choices are mainly for clean diagnostics."
+            "choices are mainly for clean diagnostics. Qwen3.6 Q4_K_M at 131K+\n"
+            "uses the measured 27:37 split to respect each GPU's WDDM budget."
         )
         dev_row.addWidget(self.device_combo, 1)
         layout.addLayout(dev_row)
@@ -154,6 +176,18 @@ class _RocmPanel(QWidget):
         if spec_window == 8192 and not data.get("spec_window_default_256", False):
             spec_window = 256
         self.spec_window_spin.setValue(spec_window)
+
+    def apply_model_recommendation(self, model_name: str, ctx_size: int) -> None:
+        recommended = recommended_rocm_device_choice(model_name, ctx_size)
+        current = self.DEVICE_CHOICES[self.device_combo.currentIndex()]
+
+        # Default/all-GPU and these two profiles are managed automatically.
+        # Explicit single-GPU or reverse-order choices remain manual.
+        managed = {ROCM_BALANCED_DUAL_CHOICE, ROCM_Q4KM_LONG_CONTEXT_CHOICE}
+        if current in managed or (
+            current[1] is None and recommended == ROCM_Q4KM_LONG_CONTEXT_CHOICE
+        ):
+            self.device_combo.setCurrentIndex(self.DEVICE_CHOICES.index(recommended))
 
 
 class _VulkanPanel(QWidget):
@@ -347,6 +381,10 @@ class BackendPanels(QTabWidget):
 
     def env(self) -> dict[str, str]:
         return self.panels[self.current_backend()].env()
+
+    def apply_model_recommendation(self, model_name: str, ctx_size: int) -> None:
+        if self.current_backend() == BACKEND_ROCM:
+            self.panels[BACKEND_ROCM].apply_model_recommendation(model_name, ctx_size)
 
     # -- persistence -----------------------------------------------------------
     def to_settings(self) -> dict:

@@ -6,6 +6,25 @@
 #include "fattn-wmma-f16.cuh"
 #include "fattn.cuh"
 
+#include <atomic>
+
+
+bool ggml_cuda_flash_attn_ext_rdna4_q8_chunked_policy(const ggml_tensor * dst) {
+    const char * env = getenv("GGML_ROCM_FATTN_Q8_CHUNKED_WMMA");
+    if (env != nullptr) {
+        return strcmp(env, "0") != 0;
+    }
+
+    // The reservation graph exposes the configured KV capacity before execution starts. Latch
+    // that decision so smaller prompt chunks do not switch graph topology and churn the HIP pool.
+    static std::atomic<bool> long_context_latched(false);
+    const ggml_tensor * K = dst->src[1];
+    if (K != nullptr && K->ne[1] >= GGML_ROCM_FATTN_Q8_CHUNK_MIN_KV) {
+        long_context_latched.store(true, std::memory_order_relaxed);
+    }
+    return long_context_latched.load(std::memory_order_relaxed);
+}
+
 
 template <int DKQ, int DV, int ncols2>
 static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
@@ -622,6 +641,79 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         }
     }
     return BEST_FATTN_KERNEL_TILE;
+}
+
+size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * dst) {
+    GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);
+
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+
+    GGML_ASSERT(K != nullptr);
+    GGML_ASSERT(V != nullptr);
+
+    const best_fattn_kernel kernel = ggml_cuda_get_best_fattn_kernel(device, dst);
+
+    if (kernel == BEST_FATTN_KERNEL_WMMA_F16 &&
+        ggml_cuda_flash_attn_ext_use_rdna4_q8_chunked_wmma(device, dst)) {
+        const ggml_cuda_flash_attn_ext_chunked_extra_data chunked =
+            ggml_cuda_flash_attn_ext_get_chunked_extra_data(dst);
+        if (std::getenv("GGML_TRACE_FATTN_ALLOC_SIZE") != nullptr) {
+            GGML_LOG_INFO(
+                "GGML_TRACE_FATTN_ALLOC_SIZE: device=%d kernel=wmma_f16_chunked_q8 dst=%s "
+                "base_mib=%.2f total_mib=%.2f extra_mib=%.2f chunk=%d\n",
+                device, dst->name,
+                ggml_nbytes(dst) / 1024.0 / 1024.0,
+                (chunked.end - (uintptr_t) dst->data) / 1024.0 / 1024.0,
+                (chunked.end - (uintptr_t) dst->data - ggml_nbytes(dst)) / 1024.0 / 1024.0,
+                GGML_ROCM_FATTN_Q8_CHUNK_SIZE);
+        }
+        return chunked.end - (uintptr_t) dst->data;
+    }
+
+    bool need_f16_K = false;
+    bool need_f16_V = false;
+
+    switch (kernel) {
+        case BEST_FATTN_KERNEL_TILE:
+            need_f16_K = true;
+            need_f16_V = true;
+            break;
+        case BEST_FATTN_KERNEL_WMMA_F16:
+            need_f16_K = true;
+            need_f16_V = !ggml_cuda_flash_attn_ext_use_rdna4_q8_v_direct_wmma(device, dst);
+            break;
+        case BEST_FATTN_KERNEL_MMA_F16:
+            need_f16_K = true;
+            need_f16_V = true;
+            break;
+        case BEST_FATTN_KERNEL_VEC:
+            need_f16_K = K->type == GGML_TYPE_F32;
+            need_f16_V = V->type == GGML_TYPE_F32;
+            break;
+        case BEST_FATTN_KERNEL_NONE:
+            break;
+    }
+
+    const ggml_cuda_flash_attn_ext_f16_extra_data f16_extra =
+        ggml_cuda_flash_attn_ext_get_f16_extra_data(dst, need_f16_K, need_f16_V);
+
+    if (std::getenv("GGML_TRACE_FATTN_ALLOC_SIZE") != nullptr) {
+        GGML_LOG_INFO(
+            "GGML_TRACE_FATTN_ALLOC_SIZE: device=%d kernel=%s dst=%s base_mib=%.2f total_mib=%.2f extra_mib=%.2f "
+            "Q=[%lld,%lld,%lld,%lld] K=[%lld,%lld,%lld,%lld] V=[%lld,%lld,%lld,%lld] need_f16_k=%d need_f16_v=%d\n",
+            device, ggml_cuda_best_fattn_kernel_name(kernel), dst->name,
+            ggml_nbytes(dst) / 1024.0 / 1024.0,
+            (f16_extra.end - (uintptr_t) dst->data) / 1024.0 / 1024.0,
+            (f16_extra.end - (uintptr_t) dst->data - ggml_nbytes(dst)) / 1024.0 / 1024.0,
+            (long long) dst->src[0]->ne[0], (long long) dst->src[0]->ne[1],
+            (long long) dst->src[0]->ne[2], (long long) dst->src[0]->ne[3],
+            (long long) K->ne[0], (long long) K->ne[1], (long long) K->ne[2], (long long) K->ne[3],
+            (long long) V->ne[0], (long long) V->ne[1], (long long) V->ne[2], (long long) V->ne[3],
+            need_f16_K ? 1 : 0, need_f16_V ? 1 : 0);
+    }
+
+    return f16_extra.end - (uintptr_t) dst->data;
 }
 
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {

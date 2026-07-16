@@ -286,6 +286,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             "Server context size in tokens. Qwen3.6 advertises 262144 tokens;\n"
             "larger values still require enough VRAM/RAM and may need quantized KV cache."
         )
+        self.server_context_spinbox.valueChanged.connect(self._apply_backend_model_recommendation)
 
         self.server_kv_type_combo = QComboBox()
         self.server_kv_type_combo.addItems([
@@ -606,6 +607,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         )
         if file_path:
             self.server_model_path.setText(file_path)
+            self._apply_backend_model_recommendation()
 
     def browse_server_mmproj(self):
         """Browse for a multimodal projector GGUF."""
@@ -659,6 +661,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             model_path = self.models_dir / model_name
             self.server_model_path.setText(str(model_path))
             self.apply_model_file_preset()
+            self._apply_backend_model_recommendation()
             if self.server_vision_check.isChecked():
                 self._autodetect_mmproj()
 
@@ -819,6 +822,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         # Backend-specific args from the active Backend Settings sub-tab
         # (device selection / split mode etc.). Skipped when the user already
         # provided the same flag via Extra Arguments.
+        self._apply_backend_model_recommendation()
         backend_args = self.backend_panels.args()
         skip = False
         filtered_backend_args: list[str] = []
@@ -1004,6 +1008,13 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             display = self.server_build_backend_combo.currentText().strip()
             if display and display != "Auto":
                 self.backend_panels.set_backend(self._backend_key_from_display(display))
+        self._apply_backend_model_recommendation()
+
+    def _apply_backend_model_recommendation(self, *_args) -> None:
+        if not hasattr(self, "backend_panels") or not hasattr(self, "server_context_spinbox"):
+            return
+        model_name = Path(self.server_model_path.text().strip()).name
+        self.backend_panels.apply_model_recommendation(model_name, self.server_context_spinbox.value())
 
     def refresh_server_build_versions_for_backend(self, select_latest: bool):
         selected_backend_display = self.server_build_backend_combo.currentText().strip() if self.server_build_backend_combo.count() else "Auto"
@@ -1301,6 +1312,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
                 self.server_models_combo.setCurrentIndex(idx)
 
         self.on_spec_type_changed()
+        self._apply_backend_model_recommendation()
 
     def save_settings(self):
         """Save server settings"""

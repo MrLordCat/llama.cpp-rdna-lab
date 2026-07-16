@@ -111,7 +111,7 @@ materially change the numbers below.
 
 ## Current Performance
 
-Snapshot date: **2026-07-15**.
+Snapshot date: **2026-07-16**.
 
 Unless a table explicitly names Bonsai, headline rows use the Qwen3.6-27B
 Q3_K_S MTP-enabled GGUF, FlashAttention, one server slot, cold prompt
@@ -126,15 +126,17 @@ rerun after rebuilding both backends, with no foreground GPU workload active.
 | --- | ---: | ---: | ---: | ---: | --- | ---: |
 | Vulkan short | 12,288 | 7,842 | 128 | 8192 / 1024 | q8_0 / q8_0 | 3 |
 | ROCm short | 12,288 | 6,393 | 256 | 8192 / 1024 | q8_0 / q8_0 | 3 |
-| Matched long, both backends | 49,152 | 29,563 | 128 | 8192 / 1024 | q8_0 / q8_0 | 1 |
-| ROCm extended long | 65,536 | 41,114 | 128 | 8192 / 1024 | q8_0 / q8_0 | 1 |
+| Matched long, both backends | 49,152 | 29,561 | 128 | 8192 / 1024 | q8_0 / q8_0 | 1 |
+| ROCm extended long | 65,536 | 41,058 | 128 | 8192 / 1024 | q8_0 / q8_0 | 1 |
+| ROCm near-capacity | 131,072 | 72,295 | 64 | 8192 / 1024 | q8_0 / q8_0 | 1 |
 
 Every row also uses `-np 1 -ngl 999 --flash-attn on --no-warmup -fit off`, seed
 42, top-p 0.9, `--cache-ram 0`, `--ctx-checkpoints 0`, and no prompt reuse. The
 short lanes use temperature 0.2; the deterministic long lanes
 use temperature 0.0. The matched long lane injects 96,000 repository-snapshot
-characters and produces 29,563 prompt tokens. The extended ROCm lane requests
-147,456 characters and produces 41,114 prompt tokens.
+characters and produces 29,561 prompt tokens. The extended ROCm lane requests
+147,456 characters; the current tree reaches its 144,287-character safe cap
+and produces 41,058 prompt tokens.
 
 Device routes are part of the benchmark contract. The short Vulkan lane uses
 `-dev Vulkan0,Vulkan1`; the matched long and stock-comparison lanes use
@@ -145,12 +147,14 @@ add `--spec-type draft-mtp`; depth is 3 except for the ROCm short lane, where
 the measured best is `--spec-draft-n-max 4`. ROCm MTP uses KV-only sparse
 history by default: 4096 rows every 32768 prompt positions plus the latest 256
 rows. Vulkan uses the 256-token recent window and host hidden-state handoff.
+ROCm uses one pipeline scheduler graph copy for this single-request workload.
 
 ### Headline Fork Advantage
 
-This compact view uses the matched 29,563-token long lane. It is included here
-so the stock comparison is visible before the detailed backend tables; full
-methodology and acceptance data are in
+This compact view preserves the original matched 29,563-token A/B snapshot. It
+is included so the stock comparison remains a coherent historical measurement;
+the current ROCm long rebaseline is in the detailed tables below. Full
+methodology for the archived comparison is in
 [Fork vs Stock Upstream](#fork-vs-stock-upstream).
 
 | Backend | Mode | Stock prompt / decode TPS | Fork prompt / decode TPS | Fork change |
@@ -180,14 +184,14 @@ In this lane, Vulkan MTP changes prompt/decode/aggregate throughput by
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | Vulkan | `none` | 29,563 / 128 | 1556.89 | 35.45 | 5.65 | `ctx=49152`, `b8192/ub1024`, q8/q8 KV |
 | Vulkan | MTP n3 | 29,563 / 128 | 1508.01 | **45.20** | 5.69 | 52.38% acceptance; backend-specific host handoff |
-| ROCm | `none` | 29,563 / 128 | **1787.94** | 25.21 | 5.91 | `ctx=49152`, `b8192/ub1024`, q8/q8 KV |
-| ROCm | MTP n3 | 29,563 / 128 | 1721.97 | 42.02 | **6.31** | 75.86% acceptance; sparse KV-only history |
+| ROCm | `none` | 29,561 / 128 | **1734.14** | 25.77 | 5.79 | `ctx=49152`, `b8192/ub1024`, q8/q8 KV |
+| ROCm | MTP n3 | 29,561 / 128 | 1672.05 | 35.42 | **5.99** | 63.08% acceptance; sparse KV-only history |
 
 On the matched 29.5k lane, Vulkan MTP changes prompt/decode throughput by
-`-3.14% / +27.50%`. ROCm MTP changes prompt/decode/aggregate throughput by
-`-3.69% / +66.68% / +6.77%`. ROCm MTP is 10.9% faster in aggregate and 14.2%
-faster in prompt evaluation than Vulkan MTP on this lane, while Vulkan retains
-a 7.6% decode advantage.
+`-3.14% / +27.50%`. The current ROCm rebaseline changes
+prompt/decode/aggregate throughput by `-3.58% / +37.45% / +3.35%`. ROCm MTP
+is 10.9% faster in prompt evaluation and 5.3% faster in aggregate than the
+recorded Vulkan MTP row, while Vulkan retains a 27.6% decode advantage.
 
 ### Ternary Bonsai PQ2 on ROCm
 
@@ -202,7 +206,7 @@ offload, cold prompts, no cache reuse, and `spec=none`. Single GPU means
 | Qwen3.6-27B Q3_K_S | dual | short, r3 mean | 6,393 / 256 | 1850.13 | 27.67 | 20.07 |
 | Bonsai-27B PQ2 | single | short, r3 mean | 6,393 / 256 | 1189.20 | **50.30** | 24.39 |
 | Bonsai-27B PQ2 | dual | short, r3 mean | 6,393 / 256 | **1858.69** | 45.40 | **28.06** |
-| Qwen3.6-27B Q3_K_S | dual | matched long | 29,563 / 128 | **1787.94** | 25.21 | 5.91 |
+| Qwen3.6-27B Q3_K_S | dual | matched long | 29,561 / 128 | **1734.14** | 25.77 | 5.79 |
 | Bonsai-27B PQ2 | single | matched long | 29,561 / 128 | 1046.07 | **41.55** | 4.08 |
 | Bonsai-27B PQ2 | dual | matched long | 29,561 / 128 | 1779.50 | 37.72 | **6.38** |
 
@@ -236,11 +240,13 @@ device order available. See
 
 ### Fork vs Stock Upstream
 
-The same 29,563-token lane was also run against stock
+This section is an archived A/B snapshot. The same earlier 29,563-token lane
+was run against stock
 [`ggml-org/llama.cpp` commit `f955e394b`](https://github.com/ggml-org/llama.cpp/commit/f955e394b)
 from a neighboring clean checkout. The model, generated prompt, output length,
 sampling, context, batch/ubatch, KV types, device order, layer split, and server
-cache settings match the fork rows above.
+cache settings matched inside that snapshot. Its fork rows intentionally remain
+unchanged; current ROCm rows use the refreshed 29,561-token repository snapshot.
 
 | Implementation | Backend | Mode | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
@@ -274,14 +280,35 @@ The stock tree does not implement the fork-specific `LLAMA_OUTPUT_DEVICE` or
 
 | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `none` | 41,114 / 128 | **1670.27** | 25.34 | 4.30 | - |
-| MTP n3 | 41,114 / 128 | 1597.23 | **35.92** | **4.36** | 68.55% |
+| `none` | 41,058 / 128 | **1630.59** | 24.96 | **4.2096** | - |
+| MTP n3 | 41,058 / 128 | 1546.88 | **33.92** | 4.2062 | 68.00% |
 
-At 41.1k tokens, sparse-history MTP costs 4.4% prompt throughput and gains
-41.7% decode throughput. Full-history MTP reaches 74.36% acceptance and 37.54
-decode tok/s, but loses 10.9% prompt throughput, so it is not the default for
-agent workloads. Longer generated answers benefit more because prompt
-evaluation dominates these 128-token runs.
+At 41.1k tokens, sparse-history MTP costs 5.13% prompt throughput and gains
+35.90% decode throughput. Aggregate throughput is effectively neutral
+(`-0.08%`) for this 128-token answer, so MTP remains most useful when the
+generated answer is longer. The current artifacts use the `e335-rocm-q3ks-`
+prefix.
+
+### Near-Capacity ROCm Prompt
+
+This lane uses `ctx=131072`, a 278,083-character repository snapshot, 72,295
+prompt tokens, 64 output tokens, and the production one-copy ROCm scheduler.
+
+| Mode | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance | Prefill dedicated | Prefill Shared |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `none` | **1439.89** | 21.90 | **1.20** | - | 19.35 GiB | 3.51 GiB |
+| MTP n3 | 1363.95 | **32.53** | 1.16 | 74.14% | 21.71 GiB | 3.58 GiB |
+
+MTP costs 5.27% prompt throughput and gains 48.5% decode throughput. Shared
+changes by only about 62 MiB during prefill, so n3 does not create a separate
+RAM-residency cliff here. The 64-token request remains prompt-dominated; MTP's
+wall-time benefit starts with longer generated answers.
+
+The MTP-enabled Q4_K_M GGUF was also validated at `ctx=98304` with a 59,045
+token prompt and 64 output tokens. `none` measured `1493.21/19.15` prompt/decode
+tok/s; MTP n3 measured `1435.97/35.44` with 80.00% acceptance. MTP therefore
+costs 3.83% prompt throughput and gains 85.1% decode. Prefill Shared changes
+only from 3.204 to 3.261 GiB, while the additional 1.91 GiB is Dedicated.
 
 After these fixed-lane tables were recorded, E292 promoted a packed HIP Q3_K
 staging kernel. Matched A/B runs improved ROCm prompt evaluation by
@@ -302,21 +329,43 @@ improved `1091.68 -> 1557.94 tok/s` (`+42.71%`) and wall time fell
 discover the bundled headers automatically. Configure with
 `-DGGML_HIP_ROCWMMA_FATTN=OFF` for the generic-tile rollback.
 
+E337 removes the remaining context-sized F16 staging for the RDNA4 Q8 K/V
+rocWMMA path. It converts one bounded 4096-token K/V chunk, reuses the fast
+WMMA kernel, and combines chunk-local softmax outputs online. A matched
+one-card 49K/29.5K lane recovered 216 MiB (`1282 -> 1066 MiB` unaccounted)
+while prompt/decode throughput stayed neutral (`1044.47/31.07 ->
+1045.61/31.31 tok/s`). The automatic policy keeps short contexts on the
+standard WMMA route.
+
+E338 identifies the larger dual-GPU Shared source as duplicated split-graph
+scheduler arenas, not a growing KV cache. ROCm now uses one graph copy by
+default for `-np 1`. In the Q4 98K lane this reduced prefill Dedicated/Shared
+from `23.85/5.46` to `22.05/3.20 GiB` without reducing prompt throughput. The
+environment variable `GGML_SCHED_PIPELINE_COPIES=1..4` remains available for
+controlled multi-request experiments.
+
 E315 adds ROCm KV-only sparse MTP history and event-ordered backend handoff.
 The long-prompt acceptance improvement is not a ROCm numerical workaround:
 matched target-prefix traces showed equal backend acceptance when both paths
 received the same history. The new policy retains selected long-range KV blocks
 without evaluating the entire draft layer over the prompt. It raises acceptance
-to 75.86% at 29.5k and 68.55% at 41.1k while keeping prompt loss below 4.5%.
+to 75.86% at 29.5k and 68.55% at 41.1k on its recorded output. The current
+E335 rebaseline measures 63.08% and 68.00%, respectively; acceptance is output
+and prompt-content dependent, so the archived and current samples are kept
+separate.
 
-Q4_K_M and UD-Q4_K_XL are supported, but the 27B Q4 long-context working set
-currently enters WDDM shared memory on this 2x16 GB system; Q3_K_S remains the
-practical performance model. The active Q3 prompt-evaluation research target is
-2000 prompt tok/s.
+Q4_K_M and UD-Q4_K_XL are supported. Windows still reports WDDM Shared for the
+27B Q4 long-context working set, but E337/E338 removed the old active-residency
+cliff: the Q4_K_M 98K lane improved from 553.50 to 1493.21 prompt tok/s while
+Shared fell from 6.25 to 3.20 GiB. Q3_K_S remains the practical model when MTP,
+vision, or maximum context headroom is required. The active Q3 prompt-evaluation
+research target is 2000 prompt tok/s.
 
 Evidence:
 
 - [E331: Bonsai PQ2 ubatch/decode isolation](docs/research/experiments/E331_bonsai_pq2_ubatch_decode_isolation.md)
+- [E337: bounded ROCm Q8 FlashAttention WMMA](docs/research/experiments/E337_rocm_q8_chunked_wmma.md)
+- [E338: ROCm dual-GPU long-context scheduler residency](docs/research/experiments/E338_rocm_dual_long_context_scheduler_residency.md)
 - [E291: ROCm long-context Q3_K decode and memory](docs/research/experiments/E291_rocm_long_context_q3k_decode_and_memory.md)
 - [E292: ROCm packed padded-Q3_K dequant](docs/research/experiments/E292_rocm_q3k_packed_dequant_probe.md)
 - [E293: ROCm RDNA4 rocWMMA FlashAttention restore](docs/research/experiments/E293_rocm_rdna4_rocwmma_fattn_restore.md)
@@ -345,6 +394,87 @@ Evidence:
 - Prompt checkpoints, cache controls, benchmark history, and diagnostic traces.
 - DFlash integration for research; it is not currently the recommended runtime
   profile.
+
+## Fork-Only Backend Fixes
+
+The following production paths are local to this fork. They were checked
+against the neighboring stock `ggml-org/llama.cpp` checkout at commit
+`f955e394b` (2026-07-15); the named controls and implementations are absent
+there. Upstream changes quickly, so this is a snapshot rather than a permanent
+claim about future llama.cpp releases.
+
+### Vulkan Fixes
+
+- **AMD large cooperative matmul route.** The proprietary Windows AMD driver
+  can use the large cooperative-matrix pipelines and fork-tuned `bn256`
+  variant instead of being limited to the conservative small/medium route.
+  It is automatic on the tested discrete RDNA device. Use
+  `GGML_VK_DISABLE_AMD_LARGE_MATMUL=1` for rollback;
+  `GGML_VK_AMD_LARGE_MATMUL_VARIANT` selects a research variant.
+- **Explicit output and MTP placement.** `LLAMA_OUTPUT_DEVICE` places the large
+  output/vocabulary tensors on the intended card. NextN tensors are placed on
+  the first Vulkan device, and the expensive four-copy MTP pipeline scheduler
+  is disabled by default. Diagnostic rollbacks are
+  `LLAMA_VK_MTP_NEXTN_MAIN_DEVICE=0` and
+  `LLAMA_MTP_PIPELINE_PARALLEL=1`. See
+  [E274](docs/research/experiments/E274_vulkan_dual_mtp_nextn_placement.md) and
+  [E280](docs/research/experiments/E280_vulkan_gpu1_primary_residency.md).
+- **Warm MTP verification topology.** Startup prepares verification widths
+  `1..n_max+1`, retains the warmed token-generation scheduler across prompt
+  processing, and avoids invalidating it with prompt-only output reservation
+  changes. Windows/AMD widths 5-8 are split into safe `4 + remainder`
+  dispatches instead of using the driver-crashing specialization or the slow
+  generic fallback. Set `LLAMA_VK_MTP_VERIFY_WARMUP=0` to disable the path. See
+  [D086](docs/research/major-topology/D086_P003_VULKAN_MTP_TG_WARM_CACHE.md).
+- **Batched recurrent-checkpoint reads.** Vulkan groups checkpoint tensor reads
+  by backend and performs one staged transfer/synchronization per GPU instead
+  of synchronizing every tensor. The measured incremental-tail checkpoint time
+  fell 17.9%, with prompt TPS up 8.9%. Set
+  `LLAMA_CHECKPOINT_BATCH_READ=0` for the sequential path. See
+  [E279](docs/research/experiments/E279_vulkan_batched_recurrent_checkpoint.md).
+
+### ROCm/HIP Fixes
+
+- **RDNA4 rocWMMA FlashAttention.** Fresh HIP builds discover the bundled
+  rocWMMA 7.1 headers and enable the D=256 WMMA path. The matched 53.5K prompt
+  improved from 1091.68 to 1557.94 tok/s. Configure with
+  `-DGGML_HIP_ROCWMMA_FATTN=OFF` for the generic-tile rollback. See
+  [E293](docs/research/experiments/E293_rocm_rdna4_rocwmma_fattn_restore.md).
+- **Q3_K and PQ2_0 kernels.** Packed Q3_K conversion/staging and RDNA4 small-N
+  MMQ/MMVQ specializations cover the primary Qwen model. The fork also adds
+  the Prism `PQ2_0` GGUF type plus CPU and native HIP kernels for Ternary
+  Bonsai. `GGML_CUDA_Q3K_PADDED_DEQUANT_PACKED=0` restores the older Q3_K
+  staging path. See
+  [E292](docs/research/experiments/E292_rocm_q3k_packed_dequant_probe.md) and
+  [E331](docs/research/experiments/E331_bonsai_pq2_ubatch_decode_isolation.md).
+- **Bounded quantized-KV FlashAttention memory.** Quantized K/V conversion
+  scratch is graph-owned instead of accumulating in the non-VMM HIP pool. For
+  long Q8 K/V contexts, a 4096-token chunked WMMA route replaces full-context
+  F16 staging and combines chunk softmax results online. Set
+  `GGML_ROCM_FATTN_Q8_CHUNKED_WMMA=0` to disable it. See
+  [E334](docs/research/experiments/E334_rocm_quantized_kv_scratch_reservation.md)
+  and [E337](docs/research/experiments/E337_rocm_q8_chunked_wmma.md).
+- **Windows dual-GPU safety and staging.** Direct HIP peer copy is quarantined
+  by default on Windows because the tested driver path was not reliable; the
+  backend uses explicit host-staged transfers. `GGML_ROCM_ENABLE_PEER_COPY=1`
+  is a diagnostic opt-in, not a production recommendation. The independently
+  gated `GGML_ROCM_ASYNC_CROSS_DEVICE_STAGE=1` overlaps the safe staged layer
+  boundary. See
+  [E295](docs/research/experiments/E295_rocm_windows_peer_copy_reliability.md)
+  and [E313](docs/research/experiments/E313_rocm_async_cross_device_stage.md).
+- **Long-prompt MTP transport.** ROCm keeps NextN hidden states on the backend,
+  prefills only KV work, and retains sparse long-range history plus the recent
+  tail. Deferred sparse blocks are flushed before staging reuse, preventing a
+  duplicate final-window decode. `LLAMA_MTP_DEVICE_HANDOFF=0` restores host
+  handoff; `LLAMA_SPEC_PREFILL_SPARSE_CHUNK=0` removes sparse anchors. See
+  [E315](docs/research/experiments/E315_rocm_long_context_mtp_sparse_history.md)
+  and [E338](docs/research/experiments/E338_rocm_dual_long_context_scheduler_residency.md).
+- **Single-request scheduler residency.** ROCm defaults to one split-graph copy
+  instead of four for this fork's `-np 1` workload. On Q4 98K this reduced
+  prefill Dedicated/Shared from 23.85/5.46 to 22.05/3.20 GiB without reducing
+  prompt throughput. `GGML_SCHED_PIPELINE_COPIES=2` or `4` restores extra
+  copies for controlled concurrent-request experiments. See
+  [E338](docs/research/experiments/E338_rocm_dual_long_context_scheduler_residency.md).
 
 ## Quick Start
 
@@ -538,7 +668,10 @@ build-rocm-full\bin\llama-server.exe `
 
 ROCm builds default to a 4096-row sparse anchor every 32768 prompt positions,
 the latest 256 rows, KV-only draft prefill, staging preallocation, and
-event-ordered device hidden-state handoff. Set
+event-ordered device hidden-state handoff. For `-np 1`, ROCm also defaults to
+one pipeline scheduler graph copy to avoid retaining duplicate long-context
+arenas. Multi-request experiments can override this with
+`GGML_SCHED_PIPELINE_COPIES=2` or `4`. Set
 `LLAMA_SPEC_PREFILL_SPARSE_CHUNK=0` to disable the sparse anchors or
 `LLAMA_MTP_DEVICE_HANDOFF=0` to restore the host hidden-state path for a
 diagnostic comparison.
@@ -598,6 +731,9 @@ Practical rules:
   automatically faster because acceptance falls and verification batches grow.
 - For prompt-dominated requests with short answers, `none` can still win wall
   time even when MTP decode is much faster.
+- Non-zero Windows Shared memory is not by itself proof that MTP is reading KV
+  from RAM. Check for a throughput cliff and compare process Dedicated/Shared;
+  the current 72K lane adds only about 62 MiB Shared during MTP prefill.
 - Set `LLAMA_MTP_DEVICE_HANDOFF=0` only as a diagnostic rollback to the old host
   hidden-state path.
 

@@ -42,9 +42,14 @@ from backend_names import backend_key_from_display, display_backend_from_key
 from bench_history import BenchHistoryMixin
 from bench_runner import BenchCommandThread, console_python_executable, send_windows_console_break
 from server_backend_panels import (
+    ROCM_BALANCED_DUAL_CHOICE,
     ROCM_DEVICE_CHOICES,
+    ROCM_Q4KM_LONG_CONTEXT_CHOICE,
+    ROCM_Q4KM_LONG_CONTEXT_MIN,
     VULKAN_DEVICE_CHOICES,
     device_choice_args,
+    is_qwen36_q4km_model,
+    recommended_rocm_device_choice,
 )
 from bench_widgets import (
     NumericTableWidgetItem,
@@ -975,9 +980,20 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.autotune_resume_checkbox.toggled.connect(self.save_settings)
         self.autotune_reset_session_checkbox.toggled.connect(self.save_settings)
         self.mode_tabs.currentChanged.connect(lambda _index: self.save_settings())
+        self.mode_tabs.currentChanged.connect(
+            lambda _index: self._apply_recommended_device_choice(self._active_device_profile_context())
+        )
+        self.ctx_spin.valueChanged.connect(
+            lambda value: self._apply_recommended_device_choice(value)
+            if self.mode_tabs.currentIndex() == 0 else None
+        )
 
         self.lane_combo.currentIndexChanged.connect(self._on_lane_changed)
         self.lane_custom_ctx_spin.valueChanged.connect(self._update_autotune_grid_preview)
+        self.lane_custom_ctx_spin.valueChanged.connect(
+            lambda _value: self._apply_recommended_device_choice(self._selected_lane()[0])
+            if self.mode_tabs.currentIndex() == 1 else None
+        )
         self.lane_custom_ctx_spin.valueChanged.connect(self.save_settings)
         self.autotune_device_sweep_check.toggled.connect(self._update_autotune_grid_preview)
         self.autotune_device_sweep_check.toggled.connect(self.save_settings)
@@ -1282,6 +1298,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         if model_name and not model_name.startswith("--"):
             self.model_path_input.setText(str(self.models_dir / model_name))
             self._last_selected_model = model_name
+            self._apply_recommended_device_choice(self._active_device_profile_context())
 
     def _resolve_selected_model(self) -> Path | None:
         model_path = self.model_path_input.text().strip()
@@ -1436,6 +1453,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             )
             spec_mode = "none"
         server_extra = self._active_lane_base_server_extra(self.ctx_spin.value())
+        self._apply_recommended_device_choice(self.ctx_spin.value())
         device_args = self._selected_device_args()
         if device_args:
             server_extra.extend(device_args)
@@ -1601,7 +1619,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             QMessageBox.warning(self, "Auto-tune", "No valid extra presets resolved for autotune.")
             return
         extra_presets = self._apply_draft_sweep_to_extra_presets(extra_presets)
-        extra_presets = self._apply_device_sweep_to_extra_presets(extra_presets)
+        extra_presets = self._apply_device_sweep_to_extra_presets(extra_presets, lane_ctx)
 
         autotune_extra_presets = "||".join(extra_presets)
         autotune_kv_values = ",".join(kv_values)
@@ -1630,6 +1648,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         base_server_extra = self._active_lane_base_server_extra(autotune_min_ctx)
         # global device selection applies unless the sweep provides per-config devices
         if not self.autotune_device_sweep_check.isChecked():
+            self._apply_recommended_device_choice(autotune_min_ctx)
             base_server_extra = base_server_extra + self._selected_device_args()
 
         request_timeout = self._request_timeout_for_ctx(autotune_min_ctx)
@@ -1771,8 +1790,9 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.log_output.append(
             f"[INFO] Lane: ctx={lane_ctx}, prompt chars={lane_chars}, configs: {config_count}"
         )
-        if self.autotune_device_sweep_check.isChecked() and self._device_sweep_presets():
-            self.log_output.append("[INFO] Device sweep: both dual orders plus both single GPUs")
+        if self.autotune_device_sweep_check.isChecked() and self._device_sweep_presets(lane_ctx):
+            sweep_names = ", ".join(name for name, _args in self._device_sweep_presets(lane_ctx))
+            self.log_output.append(f"[INFO] Device sweep: {sweep_names}")
         if bench_env:
             env_summary = ", ".join(f"{key}={value}" for key, value in sorted(bench_env.items()))
             self.log_output.append(f"[INFO] Env overrides: {env_summary}")
@@ -1996,24 +2016,56 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.device_combo.setCurrentIndex(idx if idx >= 0 else self._recommended_device_choice_index())
         self.device_combo.blockSignals(False)
 
-    def _recommended_device_choice_index(self) -> int:
+    def _active_device_profile_context(self) -> int:
+        if hasattr(self, "mode_tabs") and self.mode_tabs.currentIndex() == 1 and hasattr(self, "lane_combo"):
+            return self._selected_lane()[0]
+        if hasattr(self, "ctx_spin"):
+            return self.ctx_spin.value()
+        return 0
+
+    def _selected_model_name(self) -> str:
+        if hasattr(self, "model_path_input"):
+            path_text = self.model_path_input.text().strip()
+            if path_text:
+                return Path(path_text).name
+        return self._last_selected_model or ""
+
+    def _recommended_device_choice_index(self, ctx_size: int | None = None) -> int:
         backend_key = self._backend_key_from_display(
             self.build_backend_combo.currentText().strip()
         ).lower()
-        recommended_dev = {
-            "rocm": "ROCm1,ROCm0",
-            "vulkan": "Vulkan0,Vulkan1",
-        }.get(backend_key)
-        if recommended_dev is None:
+        if backend_key == "rocm":
+            recommended_args = device_choice_args(recommended_rocm_device_choice(
+                self._selected_model_name(),
+                self._active_device_profile_context() if ctx_size is None else ctx_size,
+            ))
+        elif backend_key == "vulkan":
+            recommended_args = ["-dev", "Vulkan0,Vulkan1", "-sm", "layer", "-ts", "1,1"]
+        else:
             return 0
 
         for idx, (_display, args) in enumerate(self._device_choices):
-            if "-dev" not in args:
-                continue
-            dev_idx = args.index("-dev") + 1
-            if dev_idx < len(args) and args[dev_idx] == recommended_dev:
+            if args == recommended_args:
                 return idx
         return 0
+
+    def _apply_recommended_device_choice(self, ctx_size: int) -> None:
+        backend_key = self._backend_key_from_display(
+            self.build_backend_combo.currentText().strip()
+        ).lower()
+        if backend_key != "rocm" or not self._device_choices:
+            return
+
+        selected_args = self._selected_device_args()
+        managed_args = {
+            tuple(device_choice_args(ROCM_BALANCED_DUAL_CHOICE)),
+            tuple(device_choice_args(ROCM_Q4KM_LONG_CONTEXT_CHOICE)),
+        }
+        recommended = recommended_rocm_device_choice(self._selected_model_name(), ctx_size)
+        if tuple(selected_args) in managed_args or (
+            not selected_args and recommended == ROCM_Q4KM_LONG_CONTEXT_CHOICE
+        ):
+            self.device_combo.setCurrentIndex(self._recommended_device_choice_index(ctx_size))
 
     def _selected_device_args(self) -> list[str]:
         idx = self.device_combo.currentIndex()
@@ -2021,10 +2073,21 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             return list(self._device_choices[idx][1])
         return []
 
-    def _device_sweep_presets(self) -> list[tuple[str, str]]:
+    def _device_sweep_presets(self, ctx_size: int | None = None) -> list[tuple[str, str]]:
         """(name, server-args) pairs for the explicit device-placement sweep."""
         backend_key = self._backend_key_from_display(self.build_backend_combo.currentText().strip()).lower()
         if backend_key == "rocm":
+            effective_ctx = self._active_device_profile_context() if ctx_size is None else ctx_size
+            if is_qwen36_q4km_model(self._selected_model_name()):
+                presets = [
+                    ("dual-1-0-balanced", "-dev ROCm1,ROCm0 -sm layer -ts 1,1"),
+                ]
+                if effective_ctx >= ROCM_Q4KM_LONG_CONTEXT_MIN:
+                    presets.insert(0, (
+                        "dual-1-0-q4-long",
+                        "-dev ROCm1,ROCm0 -sm layer -ts 27,37",
+                    ))
+                return presets
             return [
                 ("dual-1-0", "-dev ROCm1,ROCm0 -sm layer -ts 1,1"),
                 ("dual-0-1", "-dev ROCm0,ROCm1 -sm layer -ts 1,1"),
@@ -2075,11 +2138,13 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
                 combined.append(f"{combo_name}::{combo_args}")
         return combined
 
-    def _apply_device_sweep_to_extra_presets(self, extra_presets: list[str]) -> list[str]:
+    def _apply_device_sweep_to_extra_presets(
+        self, extra_presets: list[str], ctx_size: int | None = None
+    ) -> list[str]:
         """Cross-multiply extra presets with device sweep configs when enabled."""
         if not self.autotune_device_sweep_check.isChecked():
             return extra_presets
-        device_presets = self._device_sweep_presets()
+        device_presets = self._device_sweep_presets(ctx_size)
         if not device_presets:
             return extra_presets
 
@@ -2109,6 +2174,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
     def _on_lane_changed(self, *_args) -> None:
         is_custom = self.AUTOTUNE_LANES[self.lane_combo.currentIndex()][1] == 0
         self.lane_custom_ctx_spin.setEnabled(is_custom)
+        self._apply_recommended_device_choice(self._selected_lane()[0])
         self._update_autotune_grid_preview()
         self.save_settings()
 

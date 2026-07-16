@@ -92,3 +92,13 @@ For long agent prompts, MTP now has a bounded 3.7-4.4% prompt cost and a
 
 Key artifacts use the prefixes `e318-`, `e319-`, `e320-`, and `e321-` in
 `build_logs/agent-workload`.
+
+## 2026-07-16 correctness follow-up
+
+E338 found an adjacent-active-batch edge case in deferred sparse prefill. A
+pending sparse block could survive a true-to-true capture gate transition and
+be overwritten by the final recent-window batch. The implementation now
+flushes the pending block before every next active capture and checks failed
+draft-memory trims. A 72,295-token MTP n3 validation completed with no warning,
+74.14% acceptance, and 32.53 decode tok/s. See
+[E338: ROCm dual-GPU long-context scheduler residency](E338_rocm_dual_long_context_scheduler_residency.md).
