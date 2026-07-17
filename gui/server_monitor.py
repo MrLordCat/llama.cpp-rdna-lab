@@ -166,6 +166,12 @@ class ServerMonitorThread(QThread):
     # the GPU query itself takes ~2-3s (two-sample rate counters), so the
     # effective refresh period is roughly POLL_INTERVAL_MS + 3s
     POLL_INTERVAL_MS = 2000
+    METRICS_CONNECT_TIMEOUT_S = 1.5
+    # /metrics is serialized through the llama-server task queue. A large
+    # prompt batch can keep that queue busy for much longer than a normal HTTP
+    # request, so allow the current poll to wait instead of repeatedly timing
+    # out and leaving cancellation tasks behind.
+    METRICS_READ_TIMEOUT_S = 30.0
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -200,7 +206,11 @@ class ServerMonitorThread(QThread):
             return None
         try:
             headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-            response = requests.get(f"{base_url}/metrics", headers=headers, timeout=1.5)
+            response = requests.get(
+                f"{base_url}/metrics",
+                headers=headers,
+                timeout=(self.METRICS_CONNECT_TIMEOUT_S, self.METRICS_READ_TIMEOUT_S),
+            )
             if response.status_code != 200:
                 return {"error": True}
             metrics = _parse_prometheus(response.text)
