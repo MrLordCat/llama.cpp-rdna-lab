@@ -334,6 +334,7 @@ static vk_pipeline ggml_vk_get_cpy_pipeline(ggml_backend_vk_context * ctx, const
         case GGML_TYPE_Q5_1:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_TKV4_0:
             return ctx->device->pipeline_cpy_f32_quant[to];
         default:
             break;
@@ -1966,7 +1967,8 @@ static bool ggml_vk_flash_attn_scalar_shmem_support(const vk_device& device, con
     const bool mmq = device->integer_dot_product && device->subgroup_clustered &&
                      (kv_type == GGML_TYPE_Q4_0 || kv_type == GGML_TYPE_Q4_1 ||
                       kv_type == GGML_TYPE_Q5_0 || kv_type == GGML_TYPE_Q5_1 ||
-                      kv_type == GGML_TYPE_Q8_0 || kv_type == GGML_TYPE_IQ4_NL);
+                      kv_type == GGML_TYPE_Q8_0 || kv_type == GGML_TYPE_IQ4_NL ||
+                      kv_type == GGML_TYPE_TKV4_0);
 
     // tmpsh is overestimated slightly
     const uint32_t tmpsh = wg_size * sizeof(float);

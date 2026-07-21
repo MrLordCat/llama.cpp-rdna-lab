@@ -51,6 +51,73 @@ def apply_modern_theme(app) -> None:
             font-weight: 600;
             font-size: 10.5pt;
         }
+        QGroupBox[scenarioCard="true"] {
+            background: #192127;
+            border: 1px solid #3f736a;
+            border-radius: 8px;
+            padding: 12px;
+        }
+        QGroupBox[scenarioCard="true"]::title {
+            background: #192127;
+            color: #8ce5d3;
+        }
+        QGroupBox[advancedPanel="true"] {
+            background: #181c22;
+            border-color: #303943;
+        }
+        QLabel[scenarioDetail="true"] {
+            color: #aeb7c2;
+            padding: 2px 1px;
+        }
+        QLabel[preflightState="neutral"] {
+            color: #aeb7c2;
+            background: #20262d;
+            border: 1px solid #3a444f;
+            border-radius: 5px;
+            padding: 6px 8px;
+        }
+        QLabel[preflightState="ok"] {
+            color: #91e6af;
+            background: #193326;
+            border: 1px solid #346d4b;
+            border-radius: 5px;
+            padding: 6px 8px;
+        }
+        QLabel[preflightState="busy"] {
+            color: #f0c674;
+            background: #332b18;
+            border: 1px solid #756128;
+            border-radius: 5px;
+            padding: 6px 8px;
+        }
+        QLabel[preflightState="warning"] {
+            color: #ffcc80;
+            background: #38291b;
+            border: 1px solid #80572f;
+            border-radius: 5px;
+            padding: 6px 8px;
+        }
+        QLabel[gridState="ok"] {
+            color: #aeb7c2;
+            background: #1b2026;
+            border: 1px solid #343e48;
+            border-radius: 5px;
+            padding: 7px 9px;
+        }
+        QLabel[gridState="busy"] {
+            color: #f0c674;
+            background: #2d281b;
+            border: 1px solid #645527;
+            border-radius: 5px;
+            padding: 7px 9px;
+        }
+        QLabel[gridState="error"] {
+            color: #ff8a80;
+            background: #351f21;
+            border: 1px solid #7a3639;
+            border-radius: 5px;
+            padding: 7px 9px;
+        }
         QLabel, QCheckBox, QRadioButton {
             background: transparent;
         }

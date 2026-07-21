@@ -156,6 +156,30 @@
             "problemMatcher": []
         },
         {
+            "label": "bench: primary q4 49k control",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-lc",
+                "unset HSA_OVERRIDE_GFX_VERSION GGML_TRACE_FATTN_SELECTED GGML_TRACE_FATTN_TIMING GGML_TRACE_FATTN_TIMING_SYNC GGML_TRACE_FATTN_TIMING_PRE_SYNC GGML_TRACE_CUBLAS_SPLIT_TIMING GGML_TRACE_CUBLAS_Q3K_ROUTE GGML_TRACE_MMVQ_TIMING GGML_TRACE_MMVQ_RESOURCES GGML_VK_PIPELINE_STATS GGML_VK_FA_ROUTE_TRACE GGML_VK_FFN_ROUTE_TRACE GGML_CUDA_FORCE_MMQ_RUNTIME; python scripts/agent_workload_bench.py --server-bin build-rocm-full/bin/llama-server.exe --model models/Qwen3.6-27B-Q4_K_M.gguf --label vscode-primary-q4km-rocm49k-none-r1 --ctx-size 49152 --batch-size 8192 --ubatch-size 1024 --gpu-layers 999 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn --parallel 1 --max-tokens 128 --tasks quick --task-ids triage_diff --real-context-mode repo-snapshot --real-context-chars 96000 --no-disable-thinking --no-reuse --no-v2-prime-pass --runs 1 --request-timeout 300 --startup-timeout 900 --task-hard-timeout 300 --background-server-policy fail --server-extra \"-dev ROCm1,ROCm0 -sm layer -ts 1,1 --cache-ram 0 --ctx-checkpoints 0 --spec-type none -fit off\" --write-diagnostics"
+            ],
+            "dependsOn": ["bench: check no llama-server"],
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "bench: primary q4 49k mtp3",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-lc",
+                "unset HSA_OVERRIDE_GFX_VERSION GGML_TRACE_FATTN_SELECTED GGML_TRACE_FATTN_TIMING GGML_TRACE_FATTN_TIMING_SYNC GGML_TRACE_FATTN_TIMING_PRE_SYNC GGML_TRACE_CUBLAS_SPLIT_TIMING GGML_TRACE_CUBLAS_Q3K_ROUTE GGML_TRACE_MMVQ_TIMING GGML_TRACE_MMVQ_RESOURCES GGML_VK_PIPELINE_STATS GGML_VK_FA_ROUTE_TRACE GGML_VK_FFN_ROUTE_TRACE GGML_CUDA_FORCE_MMQ_RUNTIME; python scripts/agent_workload_bench.py --server-bin build-rocm-full/bin/llama-server.exe --model models/Qwen3.6-27B-Q4_K_M.gguf --label vscode-primary-q4km-rocm49k-mtp3-r1 --ctx-size 49152 --batch-size 8192 --ubatch-size 1024 --gpu-layers 999 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn --parallel 1 --max-tokens 128 --tasks quick --task-ids triage_diff --real-context-mode repo-snapshot --real-context-chars 96000 --no-disable-thinking --no-reuse --no-v2-prime-pass --runs 1 --request-timeout 300 --startup-timeout 900 --task-hard-timeout 300 --background-server-policy fail --server-extra \"-dev ROCm1,ROCm0 -sm layer -ts 1,1 --cache-ram 0 --ctx-checkpoints 0 --spec-type draft-mtp --spec-draft-n-max 3 -fit off\" --write-diagnostics"
+            ],
+            "dependsOn": ["bench: check no llama-server"],
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
             "label": "bench: vulkan q3 130k baseline",
             "type": "shell",
             "command": "bash",

@@ -6,6 +6,7 @@
         "ms-vscode.powershell",
         "ms-vscode.cmake-tools",
         "ms-vscode.cpptools",
+        "editorconfig.editorconfig",
         "dbaumeis.radeon-gpu-analyzer"
     ],
     "unwantedRecommendations": [

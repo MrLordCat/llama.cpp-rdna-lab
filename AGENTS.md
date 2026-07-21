@@ -86,6 +86,7 @@ Protected local paths:
 docs/**
 README.md
 AGENTS.md
+AGENT_WORKFLOW.md
 BENCHMARKS.md
 MTP.md
 PROJECT_PROFILE.md
@@ -95,10 +96,28 @@ gui/**
 scripts/agent_workload_bench.py
 ```
 
+## Instruction precedence and multi-agent work
+
+- This file contains global mandatory rules. Task-specific instructions may
+  tighten them, but never relax backend, driver-safety, worktree, or validation
+  requirements.
+- For subagents, parallel research, independent review, repository cleanup, or
+  BYOK model routing, read and follow `AGENT_WORKFLOW.md`.
+- The coordinating agent owns the plan, shared integration files, final
+  validation, and user-facing answer. Subagents receive bounded scopes and
+  explicit file ownership.
+- Read-only investigation may run in parallel. GPU discovery, model servers,
+  and benchmarks always have exactly one sequential owner.
+- Shared agent definitions remain model-neutral. Select the advisory BYOK model
+  class at dispatch time; never store provider credentials or endpoints here.
+
 ## Performance policy
 
-- The active prompt target is Qwen3.6-27B Q3_K_S on realistic long prompts;
-  `2000 prompt tok/s` is a research target, not a current claim.
+- The primary production and performance model is Qwen3.6-27B Q4_K_M. The
+  safe baseline is the dual-ROCm 49K lane from D089; Q3_K_S remains a
+  secondary headroom and model-specific kernel-research lane.
+- Preserve model-scoped targets. The Q3 `2000 prompt tok/s` objective remains
+  historical/open for that lane and is not a Q4 baseline claim.
 - MTP performance is measured against an adjacent `spec=none` decode baseline.
 - MTP is expected to accelerate decode, not prompt evaluation.
 - Compare only equal backend, model, context, batch/ubatch, KV, split, cache

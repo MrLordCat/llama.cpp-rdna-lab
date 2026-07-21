@@ -4,6 +4,13 @@ This workspace layer is for fast, reproducible TPS work on `llama.cpp-with-GUI`.
 It does not replace `AGENTS.md`; it points agents to the shortest safe path for
 local ROCm/Vulkan performance research.
 
+Current baseline (D089, 2026-07-20): use
+`Qwen3.6-27B-Q4_K_M.gguf` on dual ROCm at
+`ctx=49152,b8192/ub1024,q8_0/q8_0,-dev ROCm1,ROCm0,-sm layer,-ts 1,1` for
+generic production/performance work. Keep an adjacent spec-none control for
+MTP n3. The older Q3_K_S P002/P003 workflows remain model-specific secondary
+programs, not interchangeable baseline rows.
+
 Open this repository in VS Code via `llama.cpp-with-GUI.code-workspace` from the
 repo root. The workspace file provides the folder, search/watcher exclusions,
 file associations, and extension recommendations; `.vscode/tasks.json` provides

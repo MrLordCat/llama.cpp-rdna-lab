@@ -23,7 +23,7 @@ decode gain does not impose an unacceptable prefill cost.
 | Host platform | Windows 11 on AMD AM4 |
 | Accelerators | 2x Radeon RX 9070 XT 16 GB (`gfx1201`) |
 | Backends | ROCm/HIP, Vulkan, and CPU |
-| Primary model | Qwen3.6-27B Q3_K_S with MTP |
+| Primary model | Qwen3.6-27B Q4_K_M with MTP |
 | Experimental model | Ternary Bonsai 27B `PQ2_0` on CPU and ROCm |
 | Main objective | Maximum cold prompt evaluation without sacrificing useful decode speed |
 | Serving | OpenAI-compatible `llama-server` plus a PyQt6 desktop GUI |
@@ -85,10 +85,12 @@ NVIDIA hardware. See [Supported Backends](docs/SUPPORTED_BACKENDS.md).
 | Qwen3.6 vision projector | Yes | Yes | Yes | Use a matching `mmproj-*.gguf` |
 | DFlash | Research | Research | Research | Not a recommended production profile |
 
-Q4_K_M and UD-Q4_K_XL load correctly, but their 27B long-context working sets
-can enter WDDM shared memory on this 2x16 GB machine. Q3_K_S is therefore the
-current practical Qwen performance target. `PQ2_0` is an experimental Prism
-format and should not be confused with conventional `Q2_0` quantization.
+Q4_K_M is the primary practical Qwen model on this 2x16 GB machine. The
+one-copy ROCm scheduler and bounded Q8 Flash Attention route make its measured
+49K and 98K lanes viable. Q3_K_S remains the secondary choice for maximum
+context/VRAM headroom, vision, and Q3-specific kernel research. `PQ2_0` is an
+experimental Prism format and should not be confused with conventional `Q2_0`
+quantization.
 
 ## Reference System
 
@@ -98,7 +100,7 @@ format and should not be confused with conventional `Q2_0` quantization.
 - 2x AMD Radeon RX 9070 XT, 16 GB VRAM each, RDNA4 `gfx1201`
 - AMD ROCm/HIP SDK 7.1 for Windows
 - AMD proprietary Vulkan driver
-- Main model: `Qwen3.6-27B-Q3_K_S_mtp.gguf`
+- Main model: `Qwen3.6-27B-Q4_K_M.gguf`
 - Vision projector: `mmproj-F16.gguf`
 
 The two GPUs are normally used with layer split, not tensor split. GPU1 is the
@@ -113,12 +115,12 @@ materially change the numbers below.
 
 Snapshot date: **2026-07-16**.
 
-Unless a table explicitly names Bonsai, headline rows use the Qwen3.6-27B
-Q3_K_S MTP-enabled GGUF, FlashAttention, one server slot, cold prompt
-processing, no prompt-cache reuse, and no prime pass. Prompt and decode TPS
-come from server timings; aggregate TPS includes the whole request wall time.
-Compare `none` and `MTP` only inside the same backend and lane. The table was
-rerun after rebuilding both backends, with no foreground GPU workload active.
+The fixed headline tables below retain their original model-scoped contracts.
+Q3_K_S rows are historical/secondary evidence; the current primary Q4_K_M
+rows are identified explicitly in the near-capacity and matched 49K sections.
+All use FlashAttention, one server slot, cold prompt processing, no
+prompt-cache reuse, and no prime pass. Compare `none` and `MTP` only inside the
+same model, backend, and lane.
 
 ### Benchmark Launch Parameters
 
@@ -193,7 +195,7 @@ prompt/decode/aggregate throughput by `-3.58% / +37.45% / +3.35%`. ROCm MTP
 is 10.9% faster in prompt evaluation and 5.3% faster in aggregate than the
 recorded Vulkan MTP row, while Vulkan retains a 27.6% decode advantage.
 
-### Ternary Bonsai PQ2 on ROCm
+### Ternary Bonsai PQ2 Performance
 
 The first table preserves the pre-optimization functional baseline for
 `Ternary-Bonsai-27B-PQ2_0.gguf`. It uses the same ROCm benchmark contracts as
@@ -310,6 +312,14 @@ tok/s; MTP n3 measured `1435.97/35.44` with 80.00% acceptance. MTP therefore
 costs 3.83% prompt throughput and gains 85.1% decode. Prefill Shared changes
 only from 3.204 to 3.261 GiB, while the additional 1.91 GiB is Dedicated.
 
+The current Q4_K_M kernel profile was revalidated on the matched 49K lane with
+a 29,561-token prompt and 128 output tokens. Baseline measures `1778.59/21.98`
+prompt/decode tok/s and `5.6829` aggregate TPS. MTP n3 measures
+`1731.71/39.58`, `6.2802` aggregate TPS, and 74.36% acceptance: a 2.64% prompt
+cost, 80.11% decode gain, and 10.51% end-to-end gain. E344 widens only Q4_K and
+Q5_K prompt MMQ geometry; E345 keeps Q6_K prompt on hipBLAS and improves its
+RDNA4 MMVQ decode policy.
+
 After these fixed-lane tables were recorded, E292 promoted a packed HIP Q3_K
 staging kernel. Matched A/B runs improved ROCm prompt evaluation by
 `+0.72%` to `+1.52%` across 7.8k-30.1k-token prompts. The table values remain
@@ -357,15 +367,17 @@ separate.
 Q4_K_M and UD-Q4_K_XL are supported. Windows still reports WDDM Shared for the
 27B Q4 long-context working set, but E337/E338 removed the old active-residency
 cliff: the Q4_K_M 98K lane improved from 553.50 to 1493.21 prompt tok/s while
-Shared fell from 6.25 to 3.20 GiB. Q3_K_S remains the practical model when MTP,
-vision, or maximum context headroom is required. The active Q3 prompt-evaluation
-research target is 2000 prompt tok/s.
+Shared fell from 6.25 to 3.20 GiB. Q4_K_M is now the primary production and
+performance model. Q3_K_S remains available when vision or maximum context
+headroom matters; its 2000 prompt tok/s program remains model-specific history.
 
 Evidence:
 
 - [E331: Bonsai PQ2 ubatch/decode isolation](docs/research/experiments/E331_bonsai_pq2_ubatch_decode_isolation.md)
 - [E337: bounded ROCm Q8 FlashAttention WMMA](docs/research/experiments/E337_rocm_q8_chunked_wmma.md)
 - [E338: ROCm dual-GPU long-context scheduler residency](docs/research/experiments/E338_rocm_dual_long_context_scheduler_residency.md)
+- [E344: ROCm Q4_K/Q5_K MMQ geometry](docs/research/experiments/E344_rocm_q4q5_type_specific_mmq_geometry.md)
+- [E345: ROCm Q6_K route and MMVQ policy](docs/research/experiments/E345_rocm_q6_route_and_smallk.md)
 - [E291: ROCm long-context Q3_K decode and memory](docs/research/experiments/E291_rocm_long_context_q3k_decode_and_memory.md)
 - [E292: ROCm packed padded-Q3_K dequant](docs/research/experiments/E292_rocm_q3k_packed_dequant_probe.md)
 - [E293: ROCm RDNA4 rocWMMA FlashAttention restore](docs/research/experiments/E293_rocm_rdna4_rocwmma_fattn_restore.md)
@@ -607,7 +619,7 @@ $env:LLAMA_OUTPUT_DEVICE = "Vulkan1"
 $env:GGML_VK_FORCE_AMD_LARGE_MATMUL = "1"
 
 build-vulkan\bin\llama-server.exe `
-  -m models\Qwen3.6-27B-Q3_K_S_mtp.gguf `
+  -m models\Qwen3.6-27B-Q4_K_M.gguf `
   -c 131072 -b 8192 -ub 1024 -ngl 999 `
   --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on `
   -dev Vulkan1,Vulkan0 -sm layer -ts 1,1 `
@@ -659,8 +671,8 @@ variables:
 
 ```powershell
 build-rocm-full\bin\llama-server.exe `
-  -m models\Qwen3.6-27B-Q3_K_S_mtp.gguf `
-  -c 65536 -b 8192 -ub 1024 -ngl 999 `
+  -m models\Qwen3.6-27B-Q4_K_M.gguf `
+  -c 49152 -b 8192 -ub 1024 -ngl 999 `
   --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on `
   -dev ROCm1,ROCm0 -sm layer -ts 1,1 `
   --spec-type draft-mtp --spec-draft-n-max 3
@@ -676,7 +688,7 @@ arenas. Multi-request experiments can override this with
 `LLAMA_MTP_DEVICE_HANDOFF=0` to restore the host hidden-state path for a
 diagnostic comparison.
 
-### Ternary Bonsai PQ2 on ROCm
+### Ternary Bonsai PQ2 Runtime Profile
 
 Bonsai does not use Qwen NextN MTP. Its recommended dual-GPU starting profile
 uses the same explicit ROCm order and the large prefill ubatch validated in

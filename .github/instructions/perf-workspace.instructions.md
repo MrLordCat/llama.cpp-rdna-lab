@@ -3,6 +3,12 @@ description: "Use when doing llama.cpp-with-GUI TPS, performance, ROCm, Vulkan, 
 ---
 # Performance Workspace Instructions
 
+This file inherits all safety, dirty-worktree, ownership, delegation, and
+handoff rules from `AGENTS.md` and `AGENT_WORKFLOW.md`. It may tighten those
+rules for performance work but never relax them. In delegated workflows,
+`tps-research` owns the hypothesis/source patch, `bench-runner` alone owns the
+hardware lane, and `research-docs` writes prose from accepted artifacts.
+
 For TPS/performance work in this fork, start with:
 
 1. `AGENTS.md`
@@ -25,30 +31,32 @@ spec mode, reuse, thinking mode, max tokens, real-context settings, and backend.
 For quick iteration use `--runs 1`; use `--runs 3` only for final confirmation of
 borderline or promising deltas.
 
-Current active dense Qwen target is `Qwen3.6-27B-Q3_K_S` at `ctx=131072`
-(~130k), cold-first, repo-snapshot real context, thinking enabled, no reuse and
-no prime pass. The quick baseline shape is `real-context-chars=24576`,
-`max_tokens=16`: Vulkan D012 `b512/ub256` = `2.0013 TPS` r3 after
-q3quad/GLU opt-in stack with `--no-mmap` is now the baseline; the active Vulkan
-target is `2.4 TPS` (D028 gate: `1.1992x` wall, about `1.387x` local on dense
-FFN or `1.260x` on all-Q3). D029-D033 reject activation-only/naive-streaming
-whole-FFN, old all-Q3 storage/helper/Q8/tile families, compact Q3S layout-body
-work, an FA-only pivot, and q3-octa/LOAD_VEC_A=8 repeats; the next Vulkan speed
-route needs a true Q3_K compute body or compressed-dot route, not layout-only
-unpack simplification or wider per-invocation dequant. FA can stack only after
-Q3 has about `1.18-1.20x` local point/static evidence. ROCm baseline
-`b512/ub128` = `1.5200 TPS` r3 and ROCm is paused after D013-D027. Treat older 12k/32k/64k/128k runs as historical references unless
-the user explicitly asks for a short-context lane. At 130k, RX 9070 XT 16 GB is
-expected to spill KV/context/working set into system RAM; diagnostics about
-residency, mmap/no-mmap, startup time, and RAM pressure are part of the result.
+Current primary dense Qwen baseline is `Qwen3.6-27B-Q4_K_M.gguf`. Start generic
+production/performance work from the safe ROCm lane
+`ctx=49152,b=8192,ub=1024,q8_0/q8_0,-dev ROCm1,ROCm0,-sm layer,-ts 1,1`, one
+slot, cold/no-reuse/no-warmup. The adjacent `spec=none` control is
+`1778.59 prompt tok/s`; MTP n3 is the production agent profile when answer
+length amortizes its `2.64%` prompt cost (`39.58 decode tok/s`, `6.2802`
+aggregate TPS, `74.36%` acceptance on the measured 29.5K/128 lane). The
+one-copy ROCm scheduler is validated at `ctx=98304`; `ctx=131072` remains a
+residency stress lane requiring fresh placement evidence. Keep q8 as the Q4 KV
+baseline. D088 TKV4 is an opt-in residency route pending Q4 quality/perplexity.
+
+The prior `Qwen3.6-27B-Q3_K_S` 130K Vulkan P002/P003 programs remain valid
+model-scoped history and a secondary headroom/Q3-kernel lane. Do not compare
+Q3 and Q4 speed rows as one baseline or carry Q3-specific target math into a
+Q4 experiment.
 
 Primary workflow policy: open or update a major-topology P/D/S note first, then
 run gates and measured A/B. Do not start new performance work from a standalone
 E### note unless it is an explicit narrow ledger update.
 
 Negative shader/runtime probes should be reverted unless they are intentionally
-kept behind a documented opt-in gate. Update the experiment note and
-`docs/research/RESULTS_LOG.md` before closing the task.
+kept behind a documented opt-in gate. Revert only the patch created for that
+probe, by its owner or the coordinator, using a narrow reverse patch. Never use
+`git checkout`, `git reset`, or whole-file restoration over user/other-agent
+changes; `bench-runner` never edits or reverts source. Update the experiment
+note and `docs/research/RESULTS_LOG.md` before closing the task.
 
 Benchmark history uses three canonical files written by
 `scripts/agent_workload_bench.py`: `build_logs/agent-workload/BENCH_RUNS.csv`,

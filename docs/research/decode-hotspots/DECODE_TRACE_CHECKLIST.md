@@ -2,6 +2,17 @@
 
 Archive status: performance R&D is paused in `docs/research/archive/2026-05-fast-probe-cycle/PERFORMANCE_ARCHIVE_2026-05-18.md`. This checklist is historical unless C01 is deliberately reopened through the archive resume protocol.
 
+## D090 Closure Checkpoint (2026-07-20)
+
+- Verified-idle A/C/D brackets all reported `15428 MiB` total on both GPUs.
+- Candidate deltas versus adjacent control means: chunk8192 `-2.21%`, D256
+  float cols32 `-13.53%`, Q4_K half2 scale product `-9.37%`.
+- All candidates are rejected; no `r3` or decode confirmation is warranted.
+- All temporary gates and repeat tasks are removed; production source and ROCm
+  binary are restored.
+- Canonical evidence:
+  `docs/research/major-topology/D090_Q4_K_M_ROCM_PROMPT_ROUTE_GATE.md`.
+
 ## Current P002 Pause Checkpoint (2026-05-27)
 
 - User paused acceleration work to switch to public `llama-bench` comparison.
@@ -298,3 +309,16 @@ Use:
 - `docs/research/decode-hotspots/C03_mul_mat_fused.md`
 - `docs/research/decode-hotspots/C04_rms_norm_fused.md`
 - `docs/research/decode-hotspots/C05_gated_delta_net_forward.md`
+
+## 2026-07-19 Vulkan 49K Trace State
+
+- Clean internal trace attribution: Q3_K MUL_MAT `54.90%`, q8 FlashAttention
+  `31.43%`; use the uninstrumented adjacent control for TPS claims.
+- D081 `Br32/Bc64` is blocked by the exposed 32 KiB Vulkan shared-memory limit.
+- Compact `Br32/Bc32,row_split=8,WG=512` remained coopmat1 at `KV=1k..32k`
+  with `65 VGPR / 79 SGPR / 32256 B LDS / 0 scratch`, but its two-order prompt
+  center was `-0.98%`; source reverted and Vulkan server rebuilt.
+- Forced Q3 low-tile split-K 3 and packed q3quad subtract are also closed by
+  E347. Do not repeat nearby geometry/helper probes.
+- Next trace must establish a new mechanism before editing: attention-block
+  sparsity/KV-compression potential or a Q3_K body-level work reduction.

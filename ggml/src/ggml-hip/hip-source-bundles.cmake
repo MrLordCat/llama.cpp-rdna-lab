@@ -67,6 +67,11 @@ function(ggml_hip_collect_sources out_headers out_sources out_host_sources out_p
 
     file(GLOB _sr "../ggml-cuda/template-instances/mmq*.cu")
     list(APPEND _sources ${_sr})
+    # Q4_K/Q5_K benefit from the wider RDNA4 tile; keep the Q3 and generic geometry unchanged.
+    set_source_files_properties(
+        ../ggml-cuda/template-instances/mmq-instance-q4_k.cu
+        ../ggml-cuda/template-instances/mmq-instance-q5_k.cu
+        PROPERTIES COMPILE_DEFINITIONS "GGML_MMQ_RDNA4_Q4Q5_Y128_W8=1")
 
     file(GLOB _sr "../ggml-cuda/template-instances/mmf*.cu")
     list(APPEND _sources ${_sr})

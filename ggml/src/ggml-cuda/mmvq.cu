@@ -1487,8 +1487,9 @@ static void mul_mat_vec_q_switch_ncols_dst(
         }
 
         if (is_qwen_hot_rdna4) {
-            // RDNA4 Qwen-hot decode path: default to small_k and allow explicit env overrides.
-            use = true;
+            // RDNA4 Qwen-hot decode policy with explicit env overrides.
+            // Q6_K's heavier vec_dot and fused FFN path are faster with one row per block.
+            use = type != GGML_TYPE_Q6_K;
             forced_small_k = ggml_cuda_mmvq_qwen_force_small_k_enabled();
             forced_disable_small_k = ggml_cuda_mmvq_qwen_disable_small_k_enabled();
             if (forced_small_k) {

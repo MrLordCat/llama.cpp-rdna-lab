@@ -236,6 +236,11 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
             return ctx->device->pipeline_l2_norm_f32;
         }
         return nullptr;
+    case GGML_OP_TURBO_WHT:
+        if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
+            return ctx->device->pipeline_turbo_wht_f32;
+        }
+        return nullptr;
     case GGML_OP_UNARY:
         if ((src0->type != GGML_TYPE_F32 && src0->type != GGML_TYPE_F16) ||
             (dst->type != GGML_TYPE_F32 && dst->type != GGML_TYPE_F16) ||
@@ -782,6 +787,9 @@ static void ggml_vk_op_f32(ggml_backend_vk_context * ctx, vk_context& subctx, co
             elements = { (uint32_t)ne01, (uint32_t)ne02, (uint32_t)ne03 };
         }
         break;
+    case GGML_OP_TURBO_WHT:
+        elements = { (uint32_t)(ne00 / 128), (uint32_t)ne01, (uint32_t)(ne02 * ne03) };
+        break;
 
     case GGML_OP_SUM:
         // We use GGML_OP_SUM_ROWS with 1 row.
@@ -962,7 +970,10 @@ static void ggml_vk_op_f32(ggml_backend_vk_context * ctx, vk_context& subctx, co
     case GGML_OP_SET_ROWS:
         {
             uint32_t ne = ggml_nelements(src0);
-            if (ggml_is_quantized(dst->type)) {
+            if (dst->type == GGML_TYPE_TKV4_0) {
+                // TKV4 uses one 128-thread workgroup per quantization block.
+                ne = CEIL_DIV(ne, ggml_blck_size(dst->type));
+            } else if (ggml_is_quantized(dst->type)) {
                 // quants run 32 threads each doing QUANT_K elements
                 ne = CEIL_DIV(ne, 32 * ggml_blck_size(dst->type));
             } else {

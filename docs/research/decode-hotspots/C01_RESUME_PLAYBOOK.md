@@ -5,7 +5,24 @@
 This file is the fast handoff anchor when C01 work is paused and later resumed.
 
 Primary center:
+
 - `CUDA_NODE op=MUL_MAT kind=forward`
+
+## D090 Closure Checkpoint (2026-07-20)
+
+D090 repeated all provisional Q4_K_M prompt candidates under verified idle
+conditions. Every run completed with `15428 MiB` total visible on both GPUs:
+
+- q8 chunk `8192`: `-2.21%` versus the adjacent control mean;
+- D256 float cols32: `-13.53%`;
+- Q4_K packed half2 scale product: `-9.37%`.
+
+Control spreads were `1.63%`, `0.17%` and `1.92%`, all inside the 3%
+validity gate. None advances to `r3` or decode confirmation. Temporary runtime
+overrides, compile options, source branches and VS Code tasks are removed.
+The production ROCm server is rebuilt with fixed chunk `4096`, D256 float
+cols16, and FP32 Q4_K scale products. Canonical evidence is in
+`docs/research/major-topology/D090_Q4_K_M_ROCM_PROMPT_ROUTE_GATE.md`.
 
 ## Current Pause Checkpoint (2026-05-27)
 
@@ -268,3 +285,28 @@ Note:
    dense staging, GDN chunking, F32 SSM route experiments, and hipBLASLt/Stream-K env gates.
 6. `ngram-mod 24/48/64` remains a useful opt-in repeated/steady profile, but it is not a C01 kernel/default fix.
 7. Do not start another C01 code probe unless the reopen conditions in `Closed Status` are met.
+
+## 2026-07-19 Vulkan Program Handoff
+
+- C01 remains closed; the current work did not reopen its ROCm 12K contract.
+- Active comparison lane: `Qwen3.6-27B-Q3_K_S_mtp.gguf`, Vulkan,
+   `ctx49152,b8192/ub1024,q8/q8,FA,MTP n2`, cold/no-reuse/no-warmup,
+   `triage_diff`, about 32.1k measured prompt tokens.
+- Adjacent clean FA controls centered at `1430.13 prompt tok/s` in the short
+   deterministic gate. The earlier exact GUI/CLI replay remains `1486.18 prompt
+   tok/s`; repeat an adjacent control before any new speed conclusion.
+- E347 rejects and removes forced Q3 low-tile split-K 3 (`-1.99%`), the Vulkan
+   packed q3quad subtract (`-1.89%`), and D081 exact two-query FA (`-0.98%`).
+- The Windows Vulkan driver exposes 32 KiB compute shared memory. D081's compact
+   resource-passing shader used 65 VGPR, 79 SGPR, 32,256 B LDS, zero scratch,
+   preserved deterministic output, but did not improve prompt throughput.
+- `build-vulkan/bin/llama-server.exe` was rebuilt after removing all three
+   prototypes. Next work must start from the adjacent baseline and use a new
+   mechanism: attention sparsity/KV compression evidence or a Q3_K body that
+   reduces matrix work.
+
+Resume baseline command:
+
+```bash
+PATH="/c/Strawberry/c/bin:$PATH" python scripts/agent_workload_bench.py --server-bin build-vulkan/bin/llama-server.exe --model models/Qwen3.6-27B-Q3_K_S_mtp.gguf --label vulkan-mtp49k-resume-control-r1 --ctx-size 49152 --batch-size 8192 --ubatch-size 1024 --gpu-layers 999 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn --parallel 1 --max-tokens 128 --tasks quick --task-ids triage_diff --real-context-mode repo-snapshot --real-context-chars 147456 --no-disable-thinking --no-reuse --no-v2-prime-pass --no-warmup --runs 1 --request-timeout 900 --startup-timeout 900 --task-hard-timeout 900 --background-server-policy fail --server-extra "--spec-type draft-mtp --spec-draft-n-max 2 -fit off" --write-diagnostics
+```

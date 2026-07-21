@@ -1,6 +1,8 @@
 """Server tab - Launch llama-server"""
 
+import html
 import json
+import time
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QLabel, QPushButton, QLineEdit,
@@ -18,7 +20,7 @@ from threads import ServerThread
 from server_backend_panels import BackendPanels
 from server_monitor import ServerMonitorPanel, ServerMonitorThread
 from server_presets import ServerPresetsMixin
-from ui_widgets import CollapsibleSection, LogView, StatusPill
+from ui_widgets import CollapsibleSection, LogPanel, StatusPill
 
 
 class ServerTabWidget(ServerPresetsMixin, QWidget):
@@ -48,6 +50,13 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(300)
         self._preview_timer.timeout.connect(self._update_command_preview)
+
+        # status pill lifecycle: elapsed time while starting/stopping, uptime while running
+        self._server_phase: str | None = None
+        self._phase_started = 0.0
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(1000)
+        self._status_timer.timeout.connect(self._tick_server_status)
         self.create_ui()
         self._on_vision_toggled(False)
         self.refresh_server_build_choices()
@@ -92,6 +101,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         # Create splitter for left (settings) and right (log) panels
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.main_splitter = splitter
 
         # LEFT PANEL: All settings
         left_widget = QWidget()
@@ -543,10 +553,6 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_web_btn.setEnabled(False)
         buttons_layout.addWidget(self.server_web_btn)
 
-        self.server_clear_log_btn = QPushButton("🧹 Clear Log")
-        self.server_clear_log_btn.clicked.connect(self.clear_server_log)
-        buttons_layout.addWidget(self.server_clear_log_btn)
-
         buttons_layout.addStretch()
         right_layout.addLayout(buttons_layout)
 
@@ -568,11 +574,16 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_cmd_preview.setStyleSheet("font-family: Consolas, 'Courier New', monospace; font-size: 11px;")
         self.server_cmd_preview.setToolTip("Full llama-server command with env overrides, updated as you change settings")
         settings = self.parent.settings if hasattr(self.parent, "settings") else None
+        self._preview_full_text = ""
+        preview_copy_btn = QPushButton("Copy")
+        preview_copy_btn.setToolTip("Copy the full launch command (with all ENV overrides) to clipboard")
+        preview_copy_btn.clicked.connect(self._copy_command_preview)
         preview_section = CollapsibleSection(
             "Command Preview",
             self.server_cmd_preview,
             settings=settings,
             settings_key="server/command_preview_expanded",
+            corner_widget=preview_copy_btn,
         )
         right_layout.addWidget(preview_section)
 
@@ -580,10 +591,11 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         log_label = QLabel("Server Output Log:")
         right_layout.addWidget(log_label)
 
-        self.server_log = LogView()
+        self.server_log_panel = LogPanel(clear_callback=self.clear_server_log)
+        self.server_log = self.server_log_panel.log
         self.server_log.setMinimumHeight(220)
-        self.server_log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        right_layout.addWidget(self.server_log, 1)
+        self.server_log_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        right_layout.addWidget(self.server_log_panel, 1)
 
         # Add panels to splitter
         splitter.addWidget(left_widget)
@@ -892,36 +904,82 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
     def _schedule_command_preview(self, *_args):
         self._preview_timer.start()
 
+    def _copy_command_preview(self):
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(self._preview_full_text or self.server_cmd_preview.toPlainText())
+
     def _update_command_preview(self):
         command, server_env, build_dir, problems, notes = self._compose_server_command()
 
-        lines: list[str] = []
-        if problems:
-            lines.extend(f"⚠ {problem}" for problem in problems)
-            lines.append("")
-        lines.append(f"# build: {build_dir.name}")
         # env dicts may be full os.environ copies (rocm env); show only overrides
+        env_lines: list[str] = []
         for key, value in sorted((server_env or {}).items()):
             if os.environ.get(key) != value:
                 if len(value) > 120:
                     value = value[:117] + "…"
-                lines.append(f"ENV {key}={value}")
+                env_lines.append(f"ENV {key}={value}")
 
         # one flag (with its values) per line, binary first; mask the API key
+        cmd_lines: list[str] = []
         current = Path(command[0]).name
         for tok in command[1:]:
             if tok.startswith("-"):
-                lines.append(current)
+                cmd_lines.append(current)
                 current = "  " + tok
             else:
                 value = "••••" if current.strip() == "--api-key" else tok
                 current += f" {value}"
-        lines.append(current)
+        cmd_lines.append(current)
 
-        for note in notes:
-            lines.append(f"# note: {note}")
+        note_lines = [f"# note: {note}" for note in notes]
 
-        self.server_cmd_preview.setPlainText("\n".join(lines))
+        full_lines: list[str] = []
+        if problems:
+            full_lines.extend(f"⚠ {problem}" for problem in problems)
+            full_lines.append("")
+        full_lines.append(f"# build: {build_dir.name}")
+        full_lines.extend(env_lines)
+        full_lines.extend(cmd_lines)
+        full_lines.extend(note_lines)
+        # Copy always yields the complete text, even when ENV is folded below
+        self._preview_full_text = "\n".join(full_lines)
+
+        html_parts: list[str] = []
+
+        def esc(text: str) -> str:
+            return html.escape(text).replace("  ", "&nbsp;&nbsp;")
+
+        for problem in problems:
+            html_parts.append(f'<div style="color:#ff8a80;">{esc("⚠ " + problem)}</div>')
+        html_parts.append(f'<div style="color:#7f8a97;">{esc("# build: " + build_dir.name)}</div>')
+
+        # more than two env overrides collapse into one summary line
+        if len(env_lines) > 2:
+            keys = ", ".join(line.split("=", 1)[0][len("ENV "):] for line in env_lines)
+            html_parts.append(f'<div style="color:#6fb8d9;">{esc(f"ENV ({len(env_lines)}): {keys}")}</div>')
+        else:
+            for line in env_lines:
+                html_parts.append(f'<div style="color:#6fb8d9;">{esc(line)}</div>')
+
+        for index, line in enumerate(cmd_lines):
+            if index == 0:
+                html_parts.append(f'<div style="font-weight:600;">{esc(line)}</div>')
+            else:
+                flag, _, value = line.strip().partition(" ")
+                rendered = f'<span style="color:#7bd8c5;">{esc("  " + flag)}</span>'
+                if value:
+                    rendered += f" <span>{esc(value)}</span>"
+                html_parts.append(f"<div>{rendered}</div>")
+
+        for line in note_lines:
+            html_parts.append(f'<div style="color:#7f8a97;">{esc(line)}</div>')
+
+        self.server_cmd_preview.setHtml("".join(html_parts))
+        scrollbar = self.server_cmd_preview.verticalScrollBar()
+        if scrollbar is not None:
+            scrollbar.setValue(0)
+        self.server_cmd_preview.setToolTip(self._preview_full_text)
 
     def start_server(self):
         """Start llama-server"""
@@ -950,7 +1008,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_start_btn.setEnabled(False)
         self.server_stop_btn.setEnabled(True)
         self.server_web_btn.setEnabled(False)
-        self.server_status_label.set_state("busy", "Starting…")
+        self._set_server_phase("starting")
 
         if self.parent.statusBar():
             self.parent.statusBar().showMessage("Starting server...")
@@ -1132,10 +1190,40 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
                 return candidate
         return None
 
+    def _set_server_phase(self, phase: str | None):
+        """Switch pill lifecycle phase: starting/running/stopping or None (final)."""
+        if phase == self._server_phase:
+            return
+        self._server_phase = phase
+        self._phase_started = time.monotonic()
+        if phase is None:
+            self._status_timer.stop()
+            return
+        self._status_timer.start()
+        self._tick_server_status()
+
+    @staticmethod
+    def _fmt_uptime(seconds: int) -> str:
+        if seconds < 60:
+            return f"{seconds}s"
+        if seconds < 3600:
+            return f"{seconds // 60}m"
+        return f"{seconds // 3600}h {(seconds % 3600) // 60:02d}m"
+
+    def _tick_server_status(self):
+        elapsed = int(time.monotonic() - self._phase_started)
+        if self._server_phase == "starting":
+            self.server_status_label.set_state("busy", f"Starting… {elapsed}s")
+        elif self._server_phase == "stopping":
+            self.server_status_label.set_state("busy", f"Stopping… {elapsed}s")
+        elif self._server_phase == "running":
+            port = self.server_port_spinbox.value()
+            self.server_status_label.set_state("ok", f"Running · :{port} · {self._fmt_uptime(elapsed)}")
+
     def on_server_ready(self, url: str):
         """Handle server ready event"""
         self.server_web_btn.setEnabled(True)
-        self.server_status_label.set_state("ok", f"Running ({url})")
+        self._set_server_phase("running")
         if self.parent.statusBar():
             self.parent.statusBar().showMessage(f"Server running: {url}")
 
@@ -1155,6 +1243,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_start_btn.setEnabled(True)
         self.server_stop_btn.setEnabled(False)
         self.server_web_btn.setEnabled(False)
+        self._set_server_phase(None)
         if exit_code == 0:
             self.server_status_label.set_state("neutral", "Stopped")
             self.server_log.append("[INFO] Server stopped")
@@ -1179,7 +1268,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             )
 
         if "listening" in message.lower() or "started" in message.lower():
-            self.server_status_label.set_state("ok", "Running ✓")
+            self._set_server_phase("running")
             if self.parent.statusBar():
                 self.parent.statusBar().showMessage("Server running on port " + str(self.server_port_spinbox.value()))
         elif "error" in message.lower():
@@ -1188,6 +1277,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
     def on_server_error(self, error: str):
         """Handle server error"""
         self.monitor_thread.clear_server()
+        self._set_server_phase(None)
         self.server_log.append(f"[ERROR] {error}")
         self.server_status_label.set_state("error", "Error ✗")
         self.server_start_btn.setEnabled(True)
@@ -1203,7 +1293,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             self.server_thread.stop()
             self.server_stop_btn.setEnabled(False)
             self.server_web_btn.setEnabled(False)
-            self.server_status_label.set_state("busy", "Stopping…")
+            self._set_server_phase("stopping")
             self.server_log.append("[INFO] Graceful server shutdown requested")
             if self.parent.statusBar():
                 self.parent.statusBar().showMessage("Stopping server gracefully")
@@ -1311,6 +1401,10 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             if idx >= 0:
                 self.server_models_combo.setCurrentIndex(idx)
 
+        splitter_state = settings.value("server/splitter_state")
+        if splitter_state:
+            self.main_splitter.restoreState(splitter_state)
+
         self.on_spec_type_changed()
         self._apply_backend_model_recommendation()
 
@@ -1320,6 +1414,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             return
 
         settings = self.parent.settings
+        settings.setValue("server/splitter_state", self.main_splitter.saveState())
         settings.setValue("server/host", self.server_host_input.text().strip())
         settings.setValue("server/port", self.server_port_spinbox.value())
         settings.setValue("server/backend_panels", json.dumps(self.backend_panels.to_settings()))

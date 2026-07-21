@@ -570,6 +570,7 @@ struct server_prompt_checkpoint {
     llama_pos pos_max;
 
     int64_t n_tokens;
+    int id_task = -1;
 
     std::vector<uint8_t> data_tgt;
     std::vector<uint8_t> data_dft;
@@ -587,6 +588,7 @@ struct server_prompt_checkpoint {
         pos_min = 0;
         pos_max = 0;
         n_tokens = 0;
+        id_task = -1;
         data_tgt.clear();
         data_dft.clear();
         data_spec.clear();

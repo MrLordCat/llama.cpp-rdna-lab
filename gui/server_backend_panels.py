@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QSizePolicy,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -354,6 +355,20 @@ class BackendPanels(QTabWidget):
         }
         for key in _TAB_ORDER:
             self.addTab(self.panels[key], _TAB_TITLES[key])
+
+        # a QTabWidget is as tall as its tallest page; ignore inactive pages
+        # so the group shrinks to the active backend's content
+        self.currentChanged.connect(self._sync_page_heights)
+        self._sync_page_heights(self.currentIndex())
+
+    def _sync_page_heights(self, index: int) -> None:
+        for i in range(self.count()):
+            page = self.widget(i)
+            vertical = QSizePolicy.Policy.Preferred if i == index else QSizePolicy.Policy.Ignored
+            page.setSizePolicy(QSizePolicy.Policy.Preferred, vertical)
+        page = self.widget(index)
+        if page is not None:
+            page.adjustSize()
 
     # -- backend selection ---------------------------------------------------
     def set_backend(self, backend_key: str) -> None:

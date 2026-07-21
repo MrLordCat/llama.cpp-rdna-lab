@@ -2,7 +2,10 @@
 
 #include "types.glsl"
 
-#if defined(SET_ROWS) && QUANT_K == 1
+#if defined(DATA_A_TKV4_0)
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+const uint BLOCK_SIZE = 128;
+#elif defined(SET_ROWS) && QUANT_K == 1
 layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
 const uint BLOCK_SIZE = 512;
 #else
@@ -183,6 +186,76 @@ void quantize(uint dst_idx, uint src_idx)
 }
 #endif
 
+#if defined(DATA_A_TKV4_0)
+shared float tkv_values[QUANT_K_TKV4_0];
+shared float tkv_norm_sq[QUANT_K_TKV4_0];
+
+int tkv_sign(uint i) {
+    uint x = i * 0x9E3779B9u + 0x85EBCA6Bu;
+    x ^= x >> 16;
+    x *= 0x7FEB352Du;
+    x ^= x >> 15;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16;
+    return (x & 1u) != 0 ? 1 : -1;
+}
+
+uint tkv_quantize_4bit(float x) {
+    if (x < -2.4008f) return 0;
+    if (x < -1.8435f) return 1;
+    if (x < -1.4371f) return 2;
+    if (x < -1.0993f) return 3;
+    if (x < -0.7996f) return 4;
+    if (x < -0.5225f) return 5;
+    if (x < -0.2583f) return 6;
+    if (x <  0.0000f) return 7;
+    if (x <  0.2583f) return 8;
+    if (x <  0.5225f) return 9;
+    if (x <  0.7996f) return 10;
+    if (x <  1.0993f) return 11;
+    if (x <  1.4371f) return 12;
+    if (x <  1.8435f) return 13;
+    if (x <  2.4008f) return 14;
+    return 15;
+}
+
+void quantize_tkv4(uint dst_idx, uint src_idx)
+{
+    const uint tid = gl_LocalInvocationID.x;
+    const float v = data_s[src_idx + tid];
+    tkv_norm_sq[tid] = v * v;
+    barrier();
+
+    [[unroll]] for (uint step = QUANT_K_TKV4_0 / 2; step > 0; step >>= 1) {
+        if (tid < step) {
+            tkv_norm_sq[tid] += tkv_norm_sq[tid + step];
+        }
+        barrier();
+    }
+
+    const float norm = max(sqrt(tkv_norm_sq[0]), 1e-10f);
+    tkv_values[tid] = v / norm * float(tkv_sign(tid));
+    barrier();
+
+    [[unroll]] for (uint step = 1; step < QUANT_K_TKV4_0; step <<= 1) {
+        const float current = tkv_values[tid];
+        const float peer = tkv_values[tid ^ step];
+        barrier();
+        tkv_values[tid] = (tid & step) == 0 ? current + peer : peer - current;
+        barrier();
+    }
+
+    if ((tid & 1u) == 0) {
+        const uint q0 = tkv_quantize_4bit(tkv_values[tid]);
+        const uint q1 = tkv_quantize_4bit(tkv_values[tid + 1]);
+        data_q[dst_idx].qs[tid / 2] = uint8_t(q0 | (q1 << 4));
+    }
+    if (tid == 0) {
+        data_q[dst_idx].d = float16_t(norm);
+    }
+}
+#endif
+
 #if defined(DATA_A_Q1_0)
 void quantize(uint dst_idx, uint src_idx)
 {
@@ -270,7 +343,36 @@ void quantize(uint dst_idx, uint src_idx)
 }
 #endif
 
+#if defined(DATA_A_TKV4_0)
+
+void main() {
+    const uint block_idx = gl_WorkGroupID.z * 262144 + gl_WorkGroupID.y * 512 + gl_WorkGroupID.x;
+    const uint idx = block_idx * QUANT_K_TKV4_0;
+
+    if (idx >= p.ne) {
+        return;
+    }
+
 #if defined(SET_ROWS)
+    uint i00, i01, i02, i03;
+    get_indices(idx, i00, i01, i02, i03);
+
+    const uint i12 = fastmod(i03, p.ne12);
+    const uint i11 = fastmod(i02, p.ne11);
+    const uint i10 = i01;
+    const uint i1 = data_i[src1_idx(i10, i11, i12, 0) + get_boffset()] DATA_I_SWIZZLE;
+
+    const uint src_idx = src0_idx(i00, i01, i02, i03) + get_aoffset();
+    const uint dst_block_idx = dst_idx(i00 / QUANT_K_TKV4_0, i1, i02, i03) + get_doffset();
+#else
+    const uint src_idx = get_aoffset() + src0_idx(idx);
+    const uint dst_block_idx = dst_idx_quant(idx, QUANT_K_TKV4_0) + get_doffset();
+#endif
+
+    quantize_tkv4(dst_block_idx, src_idx);
+}
+
+#elif defined(SET_ROWS)
 
 void main() {
 #ifdef NEEDS_INIT_IQ_SHMEM

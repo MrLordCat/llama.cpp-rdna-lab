@@ -5,10 +5,13 @@ from __future__ import annotations
 import html
 
 from PyQt6.QtCore import QPoint, QRect, QSize, Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QTextCursor
 from PyQt6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
     QLabel,
     QLayout,
+    QLineEdit,
     QPushButton,
     QSizePolicy,
     QTextEdit,
@@ -117,7 +120,7 @@ class StatusPill(QLabel):
         self._state = state
         self.setStyleSheet(
             f"QLabel {{ background: {background}; color: {color}; border: 1px solid {border};"
-            " border-radius: 11px; padding: 3px 12px; font-weight: 600; }}"
+            " border-radius: 11px; padding: 3px 12px; font-weight: 600; }"
         )
 
     def set_state(self, state: str, text: str | None = None) -> None:
@@ -131,9 +134,11 @@ class CollapsibleSection(QWidget):
     """Arrow-header section that shows/hides its content widget.
 
     Remembers its expanded state in QSettings when settings+key are given.
+    An optional corner widget (e.g. a Copy button) sits at the right edge
+    of the header row.
     """
 
-    def __init__(self, title: str, content: QWidget, settings=None, settings_key: str = "", expanded: bool = True, parent=None):
+    def __init__(self, title: str, content: QWidget, settings=None, settings_key: str = "", expanded: bool = True, corner_widget: QWidget | None = None, parent=None):
         super().__init__(parent)
         self._content = content
         self._settings = settings
@@ -146,10 +151,18 @@ class CollapsibleSection(QWidget):
         self._header.setProperty("sectionHeader", True)
         self._header.setCursor(Qt.CursorShape.PointingHandCursor)
 
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(4)
+        header_row.addWidget(self._header)
+        header_row.addStretch()
+        if corner_widget is not None:
+            header_row.addWidget(corner_widget)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
-        layout.addWidget(self._header)
+        layout.addLayout(header_row)
         layout.addWidget(self._content)
 
         if self._settings is not None and self._settings_key:
@@ -175,10 +188,15 @@ _LOG_STYLES = [
 
 
 class LogView(QTextEdit):
-    """Read-only monospace log with lightweight per-line highlighting.
+    """Read-only monospace log with per-line highlighting, consecutive-repeat
+    collapsing (xN counter) and substring filtering.
 
-    Drop-in for QTextEdit used via append()/clear().
+    Drop-in for QTextEdit used via append()/clear(). Native QTextEdit.append
+    keeps the view pinned to the bottom only while it is already there, so
+    scrolling up to read is never interrupted.
     """
+
+    MAX_LINES = 4000
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -187,19 +205,121 @@ class LogView(QTextEdit):
         font.setStyleHint(QFont.StyleHint.Monospace)
         font.setPointSize(9)
         self.setFont(font)
+        self._lines: list[str] = []
+        self._counts: list[int] = []
+        self._filter = ""
 
     @staticmethod
-    def _render_line(line: str) -> str:
+    def _render_line(line: str, count: int = 1) -> str:
         escaped = html.escape(line).replace("  ", "&nbsp;&nbsp;")
+        rendered = f"<span>{escaped}</span>"
         for token, style in _LOG_STYLES:
             if token in line:
-                return f'<span style="{style}">{escaped}</span>'
-        if line.startswith("[INFO]"):
-            rest = html.escape(line[len("[INFO]"):])
-            return f'<span style="color:#7f8a97;">[INFO]</span><span>{rest}</span>'
-        return f"<span>{escaped}</span>"
+                rendered = f'<span style="{style}">{escaped}</span>'
+                break
+        else:
+            if line.startswith("[INFO]"):
+                rest = html.escape(line[len("[INFO]"):])
+                rendered = f'<span style="color:#7f8a97;">[INFO]</span><span>{rest}</span>'
+        if count > 1:
+            rendered += f'&nbsp;<span style="color:#5bc8b6; font-weight:600;">×{count}</span>'
+        return rendered
+
+    def _passes_filter(self, line: str) -> bool:
+        return not self._filter or self._filter in line.lower()
 
     def append(self, text: str) -> None:  # noqa: A003 - mirrors QTextEdit API
         lines = str(text).splitlines() or [""]
         for line in lines:
+            self._append_line(line)
+
+    def _append_line(self, line: str) -> None:
+        if self._lines and line.strip() and line == self._lines[-1]:
+            self._counts[-1] += 1
+            if self._passes_filter(line):
+                self._rewrite_last_block(line, self._counts[-1])
+            return
+
+        self._lines.append(line)
+        self._counts.append(1)
+        if len(self._lines) > self.MAX_LINES + 400:
+            del self._lines[: -self.MAX_LINES]
+            del self._counts[: -self.MAX_LINES]
+            self._render_all()
+            return
+        if self._passes_filter(line):
             super().append(self._render_line(line))
+
+    def _rewrite_last_block(self, line: str, count: int) -> None:
+        # edit through a detached cursor so the view's scroll position is
+        # untouched while the counter ticks
+        cursor = QTextCursor(self.document())
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock, QTextCursor.MoveMode.KeepAnchor)
+        cursor.removeSelectedText()
+        cursor.insertHtml(self._render_line(line, count))
+
+    def set_filter(self, text: str) -> None:
+        self._filter = text.strip().lower()
+        self._render_all()
+
+    def _render_all(self) -> None:
+        parts = [
+            f"<div>{self._render_line(line, count)}</div>"
+            for line, count in zip(self._lines, self._counts)
+            if self._passes_filter(line)
+        ]
+        super().clear()
+        self.setHtml("".join(parts))
+        self.moveCursor(QTextCursor.MoveOperation.End)
+
+    def clear(self) -> None:  # noqa: A003 - mirrors QTextEdit API
+        self._lines = []
+        self._counts = []
+        super().clear()
+
+
+class LogPanel(QWidget):
+    """LogView plus a compact toolbar: substring filter, Copy, Clear.
+
+    The inner view is exposed as .log so existing append()/clear() call
+    sites keep working against the LogView directly.
+    """
+
+    def __init__(self, clear_callback=None, parent=None):
+        super().__init__(parent)
+        self.log = LogView()
+
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(6)
+
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("Filter…")
+        self.filter_input.setClearButtonEnabled(True)
+        self.filter_input.setMaximumWidth(220)
+        self.filter_input.setToolTip("Show only lines containing this text")
+        self.filter_input.textChanged.connect(self.log.set_filter)
+        toolbar.addWidget(self.filter_input)
+        toolbar.addStretch()
+
+        copy_btn = QPushButton("Copy")
+        copy_btn.setToolTip("Copy the visible log text to clipboard")
+        copy_btn.clicked.connect(self._copy_all)
+        toolbar.addWidget(copy_btn)
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.setToolTip("Clear the log")
+        clear_btn.clicked.connect(clear_callback if clear_callback is not None else self.log.clear)
+        toolbar.addWidget(clear_btn)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addLayout(toolbar)
+        layout.addWidget(self.log, 1)
+
+    def _copy_all(self) -> None:
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(self.log.toPlainText())

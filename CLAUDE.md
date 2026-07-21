@@ -1,5 +1,11 @@
 # llama.cpp-with-GUI — Инструкции для AI-моделей
 
+> **Канонические правила находятся в `AGENTS.md`.** Для субагентов, BYOK,
+> параллельной работы, ownership и review дополнительно прочитай
+> `AGENT_WORKFLOW.md`. Эти два файла имеют приоритет над любыми устаревшими
+> сведениями ниже; performance-задачи также наследуют
+> `.github/instructions/perf-workspace.instructions.md`.
+
 > **Это форк [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp)** с добавлением PyQt6 GUI и Google TurboQuant квантизации.
 > Владелец: [MrLordCat](https://github.com/MrLordCat)
 

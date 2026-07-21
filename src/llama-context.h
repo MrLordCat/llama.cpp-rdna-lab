@@ -262,6 +262,8 @@ private:
     size_t state_seq_write_data(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags);
     size_t state_seq_read_data (llama_io_read_i  & io, llama_seq_id seq_id, llama_state_seq_flags flags);
 
+    uint8_t * state_pinned_staging(size_t size);
+
     //
     // members
     //
@@ -390,6 +392,9 @@ private:
 
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;
+
+    // Reusable backend-pinned host buffer for state checkpoint transfers.
+    ggml_backend_buffer_ptr buf_state_staging;
 
     bool has_evaluated_once = false;
 

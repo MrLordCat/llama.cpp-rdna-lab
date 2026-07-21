@@ -2,15 +2,20 @@
 
 ## Status
 
-- Design/compile gate only; runtime source prototype is not yet authorized.
+- Rejected on 2026-07-19; both source prototypes were removed.
 - Target route: q8/q8 coopmat1 FlashAttention at `N=1024`, `KV=1k..56k`, head size 256.
 - Baseline: D080 `1350.01 prompt tok/s` cold-first.
+- The original `Br32/Bc64` design exceeds the Vulkan LDS limit. A compact
+  `Br32/Bc32` redesign passed the resource gate but regressed the two-run prompt
+  center by `0.98%`.
 
 ## Evidence
 
 - D079 parsed FlashAttention share: 46.4%.
 - Active route: `Br=16`, `Bc=64`, `D_split=8`, `row_split=4`, `split_k=1`.
 - q8 FA pipeline: 98 VGPR, 76 SGPR, 26,112 B LDS, zero scratch.
+- `vulkaninfo` reports `maxComputeSharedMemorySize=32768` for both RX 9070 XT
+  devices on the active Windows driver.
 - The shader stages each q8 K and V tile once per 16 query rows. At long KV, exact attention is dominated by repeatedly reading the same K/V for adjacent query tiles.
 
 ## Candidate Mechanism
@@ -31,7 +36,12 @@ Estimated shared memory:
 
 - direct `row_split=8` layout: about 50-51 KiB;
 - compact V-staging layout with four effective V groups: about 42-43 KiB;
-- device limit: 64 KiB.
+- exposed Vulkan device limit: 32 KiB.
+
+The direct `Br32/Bc64` route therefore failed before pipeline creation and fell
+back to scalar FA. A follow-up `Br32/Bc32,row_split=8,WG=512` layout reduced the
+actual allocation to 32,256 B and compiled at 65 VGPR, 79 SGPR, and zero
+scratch. It remained coopmat1 throughout `KV=1k..32k`.
 
 Risks:
 
@@ -53,6 +63,21 @@ Runtime gate:
 2. Point/short FA timing must improve at least 1.3x before a long benchmark.
 3. Promote to the 56k lane only if local FA improvement projects at least one third of the remaining target gap.
 
+## Runtime Outcome
+
+The compact resource-passing layout was tested in both A/B orders on the 49K
+Vulkan/MTP lane with `temperature=0`:
+
+| Order | Control prompt tok/s | Candidate prompt tok/s | Delta |
+| --- | ---: | ---: | ---: |
+| control -> candidate | 1417.16 | 1428.40 | +0.79% |
+| candidate -> control | 1443.11 | 1403.92 | -2.72% |
+| two-run center | 1430.13 | 1416.16 | -0.98% |
+
+All four saved responses and MTP acceptance counts matched. The candidate did
+not approach the required 1.3x local gate, so no long run was justified. See
+`docs/research/experiments/E347_vulkan49k_q3_fa_candidate_gates.md`.
+
 ## Stack Ceiling
 
 FA alone cannot reach 2000:
@@ -61,7 +86,8 @@ FA alone cannot reach 2000:
 - 1.8x local FA projects roughly 1.26x total, about 1700 tok/s.
 - 2.0x local FA projects roughly 1.30x total, about 1755 tok/s.
 
-At 1.8x FA, the remaining Q3_K center still needs about 1.34x local speedup. D081 is therefore the first half of a required FA+Q3 stack, not a standalone target claim.
+At 1.8x FA, the remaining Q3_K center would still need about 1.34x local
+speedup. D081 did not reach that premise and is not part of the active stack.
 
 ## Rejection Conditions
 

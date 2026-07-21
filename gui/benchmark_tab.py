@@ -60,7 +60,7 @@ from bench_widgets import (
 )
 from model_capabilities import model_supports_mtp
 from proc_utils import run_hidden
-from ui_widgets import FlowLayout, LogView, StatusPill, make_chip
+from ui_widgets import FlowLayout, LogPanel, StatusPill, make_chip
 
 
 class _ServerHelpProbeThread(QThread):
@@ -365,7 +365,13 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.lane_custom_ctx_spin.setValue(
                 self.settings.value("benchmark/autotune/lane_custom_ctx", self.lane_custom_ctx_spin.value(), type=int)
             )
-            self.lane_custom_ctx_spin.setEnabled(self.AUTOTUNE_LANES[self.lane_combo.currentIndex()][1] == 0)
+            self._set_lane_custom_visibility(
+                self.AUTOTUNE_LANES[self.lane_combo.currentIndex()][1] == 0
+            )
+            self._set_autotune_expert_mode(
+                self.settings.value("benchmark/autotune/expert_mode", False, type=bool),
+                save=False,
+            )
             self.autotune_device_sweep_check.setChecked(
                 self.settings.value("benchmark/autotune/device_sweep", False, type=bool)
             )
@@ -455,6 +461,9 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.settings.setValue("benchmark/mode_tab", self.mode_tabs.currentIndex())
             self.settings.setValue("benchmark/autotune/lane", self.lane_combo.currentIndex())
             self.settings.setValue("benchmark/autotune/lane_custom_ctx", self.lane_custom_ctx_spin.value())
+            self.settings.setValue(
+                "benchmark/autotune/expert_mode", self.autotune_expert_mode_btn.isChecked()
+            )
             self.settings.setValue("benchmark/autotune/device_sweep", self.autotune_device_sweep_check.isChecked())
             self.settings.setValue("benchmark/devices", self.device_combo.currentText())
             self.settings.setValue("benchmark/scale_prompt", self.scale_prompt_check.isChecked())
@@ -691,8 +700,13 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         autotune_layout.setContentsMargins(6, 6, 6, 6)
         autotune_layout.setSpacing(8)
 
+        scenario_group = QGroupBox("Autotune scenario")
+        scenario_group.setProperty("scenarioCard", True)
+        scenario_layout = QVBoxLayout(scenario_group)
+        scenario_layout.setSpacing(7)
+
         lane_row = QHBoxLayout()
-        lane_row.addWidget(QLabel("Lane:"))
+        lane_row.addWidget(QLabel("Scenario:"))
         self.lane_combo = QComboBox()
         for display, _ctx, _chars in self.AUTOTUNE_LANES:
             self.lane_combo.addItem(display)
@@ -704,20 +718,59 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         )
         lane_row.addWidget(self.lane_combo, 1)
 
-        lane_row.addWidget(QLabel("ctx:"))
+        self.lane_custom_ctx_label = QLabel("ctx:")
+        self.lane_custom_ctx_label.setVisible(False)
+        lane_row.addWidget(self.lane_custom_ctx_label)
         self.lane_custom_ctx_spin = QSpinBox()
         self.lane_custom_ctx_spin.setRange(8192, 131072)
         self.lane_custom_ctx_spin.setSingleStep(4096)
         self.lane_custom_ctx_spin.setValue(32768)
-        self.lane_custom_ctx_spin.setEnabled(False)
+        self.lane_custom_ctx_spin.setVisible(False)
         self.lane_custom_ctx_spin.setToolTip("Context size for the Custom lane")
         lane_row.addWidget(self.lane_custom_ctx_spin)
-        autotune_layout.addLayout(lane_row)
+
+        lane_row.addSpacing(8)
+        lane_row.addWidget(QLabel("View:"))
+        self.autotune_simple_mode_btn = make_chip(
+            "Simple", "Show the controls needed for a normal autotune run", True
+        )
+        self.autotune_expert_mode_btn = make_chip(
+            "Expert", "Show batch ranges, extra presets and session controls", False
+        )
+        lane_row.addWidget(self.autotune_simple_mode_btn)
+        lane_row.addWidget(self.autotune_expert_mode_btn)
+        scenario_layout.addLayout(lane_row)
+
+        scenario_badge_host = QWidget()
+        scenario_badge_flow = FlowLayout(scenario_badge_host)
+        self.autotune_ctx_badge = StatusPill("CTX —")
+        self.autotune_prompt_badge = StatusPill("Prompt target —")
+        self.autotune_device_badge = StatusPill("Devices —")
+        self.autotune_mode_badge = StatusPill("KV — · Spec —")
+        for badge in (
+            self.autotune_ctx_badge,
+            self.autotune_prompt_badge,
+            self.autotune_device_badge,
+            self.autotune_mode_badge,
+        ):
+            scenario_badge_flow.addWidget(badge)
+        scenario_layout.addWidget(scenario_badge_host)
 
         self.autotune_mode_info = QLabel("")
         self.autotune_mode_info.setWordWrap(True)
-        self.autotune_mode_info.setStyleSheet("color: #b0b0b0;")
-        autotune_layout.addWidget(self.autotune_mode_info)
+        self.autotune_mode_info.setProperty("scenarioDetail", True)
+        scenario_layout.addWidget(self.autotune_mode_info)
+
+        self.autotune_preflight_label = QLabel("")
+        self.autotune_preflight_label.setWordWrap(True)
+        self.autotune_preflight_label.setProperty("preflightState", "neutral")
+        scenario_layout.addWidget(self.autotune_preflight_label)
+        autotune_layout.addWidget(scenario_group)
+
+        self.autotune_expert_panel = QGroupBox("Expert settings")
+        self.autotune_expert_panel.setProperty("advancedPanel", True)
+        autotune_expert_layout = QVBoxLayout(self.autotune_expert_panel)
+        autotune_expert_layout.setSpacing(8)
 
         batch_grid = QGridLayout()
         batch_grid.setHorizontalSpacing(8)
@@ -773,7 +826,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.at_ubatch_step_spin.setToolTip("Increment for ubatch range")
         batch_grid.addWidget(self.at_ubatch_step_spin, 1, 5)
         batch_grid.setColumnStretch(6, 1)
-        autotune_layout.addLayout(batch_grid)
+        autotune_expert_layout.addLayout(batch_grid)
 
         kv_row = QHBoxLayout()
         kv_label = QLabel("KV sweep:")
@@ -834,7 +887,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         )
         mtp_draft_row.addWidget(self.at_mtp_draft_input)
         mtp_draft_row.addStretch()
-        autotune_layout.addLayout(mtp_draft_row)
+        autotune_expert_layout.addLayout(mtp_draft_row)
 
         extra_row = QHBoxLayout()
         extra_label = QLabel("Extra presets:")
@@ -863,7 +916,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.autotune_extra_checks[key] = chip
             extra_flow.addWidget(chip)
         extra_row.addWidget(extra_chip_host, 1)
-        autotune_layout.addLayout(extra_row)
+        autotune_expert_layout.addLayout(extra_row)
 
         custom_extra_row = QHBoxLayout()
         custom_extra_row.addWidget(QLabel("Custom extras:"))
@@ -876,7 +929,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         )
         self.autotune_custom_extra_input.setMinimumWidth(0)
         custom_extra_row.addWidget(self.autotune_custom_extra_input)
-        autotune_layout.addLayout(custom_extra_row)
+        autotune_expert_layout.addLayout(custom_extra_row)
 
         self.autotune_device_sweep_check = QCheckBox("Sweep GPU order + single GPUs")
         self.autotune_device_sweep_check.setChecked(False)
@@ -885,18 +938,18 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             "both dual-GPU orders and each GPU by itself. This overrides the\n"
             "Devices selection above and multiplies the autotune grid by four."
         )
-        autotune_layout.addWidget(self.autotune_device_sweep_check)
+        autotune_expert_layout.addWidget(self.autotune_device_sweep_check)
 
         quickset_row = QHBoxLayout()
-        quickset_row.addWidget(QLabel("Grid quick-set:"))
-        self.screen_grid_btn = QPushButton("Screen grid")
+        quickset_row.addWidget(QLabel("Search depth:"))
+        self.screen_grid_btn = QPushButton("Quick screen")
         self.screen_grid_btn.setToolTip(
             "Minimal stage-1 grid: batch=512, ubatch 64–256, kv=q4_0, spec=none, extras=base"
         )
         self.screen_grid_btn.clicked.connect(self._apply_screen_grid)
         quickset_row.addWidget(self.screen_grid_btn)
 
-        self.full_grid_btn = QPushButton("Full grid")
+        self.full_grid_btn = QPushButton("Wider sweep")
         self.full_grid_btn.setToolTip("Wide sweep: batch 256–1024, ubatch 64–256, kv q4_0+q8_0")
         self.full_grid_btn.clicked.connect(self._apply_full_grid)
         quickset_row.addWidget(self.full_grid_btn)
@@ -916,10 +969,12 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.autotune_reset_session_checkbox.setToolTip("Ignore and overwrite previous session checkpoint for this model/profile")
         session_grid.addWidget(self.autotune_reset_session_checkbox, 1, 0)
         session_grid.setColumnStretch(1, 1)
-        autotune_layout.addLayout(session_grid)
+        autotune_expert_layout.addLayout(session_grid)
+        autotune_layout.addWidget(self.autotune_expert_panel)
 
         self.autotune_grid_preview_label = QLabel("")
         self.autotune_grid_preview_label.setWordWrap(True)
+        self.autotune_grid_preview_label.setProperty("gridState", "ok")
         autotune_layout.addWidget(self.autotune_grid_preview_label)
 
         self.run_autotune_btn = QPushButton("🔁 Run Auto-tune")
@@ -977,6 +1032,12 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             checkbox.toggled.connect(self.save_settings)
         self.autotune_custom_extra_input.textChanged.connect(self._update_autotune_grid_preview)
         self.autotune_custom_extra_input.textChanged.connect(self.save_settings)
+        self.autotune_simple_mode_btn.clicked.connect(
+            lambda _checked=False: self._set_autotune_expert_mode(False)
+        )
+        self.autotune_expert_mode_btn.clicked.connect(
+            lambda _checked=False: self._set_autotune_expert_mode(True)
+        )
         self.autotune_resume_checkbox.toggled.connect(self.save_settings)
         self.autotune_reset_session_checkbox.toggled.connect(self.save_settings)
         self.mode_tabs.currentChanged.connect(lambda _index: self.save_settings())
@@ -997,11 +1058,15 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.lane_custom_ctx_spin.valueChanged.connect(self.save_settings)
         self.autotune_device_sweep_check.toggled.connect(self._update_autotune_grid_preview)
         self.autotune_device_sweep_check.toggled.connect(self.save_settings)
+        self.device_combo.currentIndexChanged.connect(
+            lambda _index: self._update_autotune_grid_preview()
+        )
         self.device_combo.currentIndexChanged.connect(lambda _index: self.save_settings())
         self.scale_prompt_check.toggled.connect(self.save_settings)
         self.mtp_draft_spin.valueChanged.connect(self.save_settings)
         self.at_mtp_draft_input.textChanged.connect(self._update_autotune_grid_preview)
         self.at_mtp_draft_input.textChanged.connect(self.save_settings)
+        self._set_autotune_expert_mode(False, save=False)
         self._update_autotune_grid_preview()
 
         shared_btn_row = QHBoxLayout()
@@ -1034,9 +1099,10 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
 
         log_group = QGroupBox("Run Log")
         log_layout = QVBoxLayout()
-        self.log_output = LogView()
+        self.log_panel = LogPanel()
+        self.log_output = self.log_panel.log
         self.log_output.setMinimumHeight(150)
-        log_layout.addWidget(self.log_output)
+        log_layout.addWidget(self.log_panel)
         log_group.setLayout(log_layout)
         right_layout.addWidget(log_group, 2)
 
@@ -1201,6 +1267,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
     def _on_backend_changed(self, *_args):
         self.refresh_versions_for_backend(select_latest=True)
         self._refresh_device_choices()
+        if hasattr(self, "autotune_grid_preview_label"):
+            self._update_autotune_grid_preview()
 
     def refresh_versions_for_backend(self, select_latest: bool):
         backend_display = self.build_backend_combo.currentText().strip()
@@ -2171,12 +2239,30 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.refresh_saved_presets_table()
         self.save_settings()
 
+    def _set_lane_custom_visibility(self, visible: bool) -> None:
+        self.lane_custom_ctx_label.setVisible(visible)
+        self.lane_custom_ctx_spin.setVisible(visible)
+        self.lane_custom_ctx_spin.setEnabled(visible)
+
     def _on_lane_changed(self, *_args) -> None:
         is_custom = self.AUTOTUNE_LANES[self.lane_combo.currentIndex()][1] == 0
-        self.lane_custom_ctx_spin.setEnabled(is_custom)
+        self._set_lane_custom_visibility(is_custom)
         self._apply_recommended_device_choice(self._selected_lane()[0])
         self._update_autotune_grid_preview()
         self.save_settings()
+
+    def _set_autotune_expert_mode(self, expert: bool, *, save: bool = True) -> None:
+        self.autotune_simple_mode_btn.blockSignals(True)
+        self.autotune_expert_mode_btn.blockSignals(True)
+        self.autotune_simple_mode_btn.setChecked(not expert)
+        self.autotune_expert_mode_btn.setChecked(expert)
+        self.autotune_simple_mode_btn.blockSignals(False)
+        self.autotune_expert_mode_btn.blockSignals(False)
+        self.autotune_expert_panel.setVisible(expert)
+        if hasattr(self, "autotune_grid_preview_label"):
+            self._update_autotune_grid_preview()
+        if save:
+            self.save_settings()
 
     def _apply_screen_grid(self) -> None:
         """Stage-1 minimal grid for a fast preset hunt."""
@@ -2241,6 +2327,23 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         if backend_key == "vulkan":
             return self._vulkan_runtime_env()
         return {}
+
+    @staticmethod
+    def _format_compact_count(value: int) -> str:
+        if value >= 1000:
+            digits = 0 if value >= 100000 else 1
+            return f"{value / 1000:.{digits}f}K"
+        return str(value)
+
+    @staticmethod
+    def _set_dynamic_property(widget: QWidget, name: str, value: str) -> None:
+        if widget.property(name) == value:
+            return
+        widget.setProperty(name, value)
+        style = widget.style()
+        style.unpolish(widget)
+        style.polish(widget)
+        widget.update()
 
     def _update_autotune_grid_preview(self) -> None:
         batch_values = self._build_autotune_range_values(
@@ -2309,20 +2412,81 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         usable_prompt_tokens = max(1024, usable_prompt_tokens)
         safe_chars = int(usable_prompt_tokens * self.REAL_CONTEXT_CHARS_PER_TOKEN)
         effective_chars = safe_chars if lane_chars <= 0 else min(lane_chars, safe_chars)
-        prompt_tokens = min(int(effective_chars / self.REAL_CONTEXT_CHARS_PER_TOKEN), usable_prompt_tokens)
-        per_config_sec = 75 + prompt_tokens / 500
+        requested_prompt_tokens = max(1, int(lane_chars / self.REAL_CONTEXT_CHARS_PER_TOKEN))
+        prompt_target_tokens = min(
+            int(effective_chars / self.REAL_CONTEXT_CHARS_PER_TOKEN), usable_prompt_tokens
+        )
+        per_config_sec = 75 + prompt_target_tokens / 500
         total_min = total_configs * per_config_sec / 60.0
         if total_min >= 90:
             eta_text = f"~{total_min / 60.0:.1f} h"
         else:
             eta_text = f"~{max(1, int(round(total_min)))} min"
 
+        capacity_text = self._format_compact_count(usable_prompt_tokens)
+        requested_text = self._format_compact_count(requested_prompt_tokens)
+        target_text = self._format_compact_count(prompt_target_tokens)
+        self.autotune_ctx_badge.setText(f"CTX {lane_ctx:,}")
+        self.autotune_prompt_badge.setText(f"Prompt target ≤ {target_text}")
+
+        device_text = self.device_combo.currentText().split(" — ", 1)[0].strip()
+        self.autotune_device_badge.setText(f"Devices {device_text or 'backend default'}")
+        mode_kv_text = ", ".join(kv_values[:2]) + ("…" if len(kv_values) > 2 else "")
+        mode_spec_text = ", ".join(selected_spec_values[:2]) + (
+            "…" if len(selected_spec_values) > 2 else ""
+        )
+        self.autotune_mode_badge.setText(
+            f"KV {mode_kv_text or '—'} · Spec {mode_spec_text or '—'}"
+        )
+
         self.autotune_mode_info.setText(
-            f"Lane: ctx={lane_ctx} · ~{prompt_tokens} prompt tok · quick:triage_diff · runs=1 · max_tokens=128"
+            f"Prompt capacity {capacity_text} · requested target {requested_text} · "
+            f"safety-capped target {target_text}. Actual prompt size is resolved from "
+            "the current repository snapshot at run start and may be smaller."
         )
         self.autotune_mode_info.setToolTip(
-            f"repo-snapshot chars={effective_chars}/{lane_chars} (~{prompt_tokens} prompt tokens)\n"
+            f"requested repo-snapshot chars={lane_chars}; safety-capped chars={effective_chars}\n"
+            f"prompt capacity={usable_prompt_tokens}; target<={prompt_target_tokens} tokens\n"
             "tasks=quick:triage_diff, runs=1, max_tokens=128, no-reuse, no-prime, thinking on."
+        )
+
+        backend_key = self._backend_key_from_display(
+            self.build_backend_combo.currentText().strip()
+        ).lower()
+        selected_device_args = self._selected_device_args()
+        preflight_state = "neutral"
+        if self.autotune_device_sweep_check.isChecked():
+            preflight_state = "busy"
+            preflight_text = (
+                "Device placement sweep enabled; every selected placement becomes "
+                "a separate configuration."
+            )
+        elif backend_key == "rocm":
+            recommended_choice = recommended_rocm_device_choice(
+                self._selected_model_name(), lane_ctx
+            )
+            recommended_args = device_choice_args(recommended_choice)
+            if selected_device_args == recommended_args:
+                preflight_state = "ok"
+                preflight_text = f"Recommended ROCm placement selected: {recommended_choice[0]}."
+            elif not selected_device_args:
+                preflight_state = "warning"
+                preflight_text = (
+                    f"Backend-default GPU order selected; recommended: {recommended_choice[0]}."
+                )
+            else:
+                preflight_state = "warning"
+                preflight_text = (
+                    f"Custom ROCm placement selected; measured recommendation: {recommended_choice[0]}."
+                )
+        else:
+            preflight_text = (
+                f"{self.build_backend_combo.currentText().strip() or 'Backend'} placement "
+                "will be used as selected."
+            )
+        self.autotune_preflight_label.setText(preflight_text)
+        self._set_dynamic_property(
+            self.autotune_preflight_label, "preflightState", preflight_state
         )
         lane_short = self.AUTOTUNE_LANES[self.lane_combo.currentIndex()][0].split(" — ")[0]
         if lane_short == "Custom":
@@ -2357,9 +2521,14 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             errors.append("check that min <= max and step > 0")
 
         summary = (
-            f"Grid: {total_configs} configs · {eta_text} (~{int(per_config_sec)}s/config)   "
-            f"—  {len(batch_values)}b × {len(ubatch_values)}ub × kv {kv_text} × spec {effective_spec_text} × {extra_count} extra"
+            f"{total_configs} configurations · ETA {eta_text} · "
+            f"about {int(per_config_sec)}s each"
         )
+        if self.autotune_expert_mode_btn.isChecked():
+            summary += (
+                f" · {len(batch_values)} batch × {len(ubatch_values)} ubatch × "
+                f"{len(kv_values)} KV × {len(effective_spec_values)} spec × {extra_count} extra"
+            )
         lines = [summary]
         if probing_help:
             lines.append("Spec support: probing server --help in background…")
@@ -2368,10 +2537,10 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         if errors:
             lines.append("Fix selection: " + "; ".join(errors))
 
-        if valid_ranges and valid_modes:
-            self.autotune_grid_preview_label.setStyleSheet("color: #b0b0b0;")
-        else:
-            self.autotune_grid_preview_label.setStyleSheet("color: #ff6b6b;")
+        grid_state = "ok" if valid_ranges and valid_modes else "error"
+        if probing_help and grid_state == "ok":
+            grid_state = "busy"
+        self._set_dynamic_property(self.autotune_grid_preview_label, "gridState", grid_state)
 
         self.autotune_grid_preview_label.setText("\n".join(lines))
         self.autotune_grid_preview_label.setToolTip("\n".join(detail_lines))

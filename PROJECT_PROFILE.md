@@ -1,6 +1,6 @@
 # Project Profile
 
-Дата профиля: 2026-05-26.
+Дата профиля: 2026-07-20.
 
 ## Назначение форка
 
@@ -8,10 +8,10 @@
 
 ## Текущий performance target
 
-- Активный target: dense `Qwen3.6-27B-Q3_K_S` на длинном контексте `ctx=131072` (~130k), cold-first, repo-snapshot real context, no-reuse/no-prime, thinking enabled.
-- Первое обязательное действие новой фазы: получить свежие baseline для Vulkan и ROCm на одинаковом 130k lane, затем сравнивать любые ускорения только с ними.
-- Ключевое ограничение: RX 9070 XT имеет 16 GB VRAM, поэтому при `ctx=131072` значимая часть KV/context/working set может уходить в system RAM. RAM-spill/residency/PCIe поведение теперь является частью целевой задачи.
-- Старые `ctx=12288`, `32768`, `65536` и sentinel `128k` результаты остаются историческими reference; особенно старые sentinel128 с tiny prompt не считать 130k baseline.
+- Primary model: dense `Qwen3.6-27B-Q4_K_M.gguf`. Базовая безопасная дорожка — dual-ROCm `ctx=49152,b=8192,ub=1024,q8_0/q8_0`, cold/no-reuse/no-warmup.
+- Любой MTP результат сравнивать с соседним `spec=none` запуском той же Q4 модели. Production agent profile использует MTP n3, когда длина ответа окупает небольшой prefill tax.
+- `ctx=98304` — проверенный extended Q4 lane с one-copy ROCm scheduler. `ctx=131072` остаётся residency stress и требует отдельного placement/backend контроля.
+- Q3_K_S остаётся secondary моделью для максимального VRAM/context headroom, vision и исторической Q3 kernel research программы. Q3 и Q4 TPS не объединять в один baseline.
 
 ## Текущий research workflow (главный)
 
@@ -45,7 +45,8 @@
 | --- | ---: | --- |
 | `bge-m3-Q8_0.gguf` | ~605 MB | embeddings |
 | `Qwen3.5-9B-Q6_K.gguf` | ~6.9 GB | быстрый Qwen text/VLM pair |
-| `Qwen3.6-27B-Q3_K_S.gguf` | ~11.5 GB | основной dense Qwen3.6 для 16 GB VRAM |
+| `Qwen3.6-27B-Q4_K_M.gguf` | ~15.9 GiB | primary dense Qwen3.6, MTP-enabled, dual-GPU |
+| `Qwen3.6-27B-Q3_K_S.gguf` | ~11.5 GB | secondary headroom/vision/Q3 research model |
 | `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf` | ~12.3 GB | MoE Qwen3.6 A3B для RX 9070 XT |
 | `mmproj-F16.gguf` | ~876 MB | generic VLM projector |
 | `Qwen3.5-9B.mmproj-F16.gguf` | ~876 MB | Qwen3.5 VLM projector |
@@ -100,32 +101,37 @@
 
 ## Практичные defaults для RX 9070 XT
 
-Для Qwen3.6 dense 27B active 130k research profile (2026-05-26):
+Для primary Qwen3.6-27B Q4_K_M profile (2026-07-20):
 
 ```text
-backend=Vulkan and ROCm, measured separately
+backend=ROCm
+model=Qwen3.6-27B-Q4_K_M.gguf
+-dev ROCm1,ROCm0 -sm layer -ts 1,1
 -ngl 999
 --flash-attn on
 -np 1
--c 131072
--b 512
--ub 256    # Vulkan current best; use 128 for ROCm until rechecked
---cache-type-k q4_0
---cache-type-v q4_0
---spec-type none
---no-reuse
---no-v2-prime-pass
---real-context-mode repo-snapshot
---real-context-chars 24576
---max-tokens 16
---tasks quick --task-ids triage_diff
-request timeout >= 180s, startup timeout >= 900s, task hard timeout >= 120s
+-c 49152
+-b 8192
+-ub 1024
+--cache-type-k q8_0
+--cache-type-v q8_0
+--no-warmup
+--cache-ram 0
+--ctx-checkpoints 0
+-fit off
 
-Optional experimental:
---spec-type mtp --spec-draft-n-max 3 (MTP support already in codebase, awaiting MTP-enabled GGUF)
+Choose exactly one speculation mode:
+--spec-type none                              # adjacent performance control
+--spec-type draft-mtp --spec-draft-n-max 3  # production agent profile
 ```
 
-На 130k нельзя интерпретировать slowdown как простой kernel regression без проверки residency: сохранять diagnostics/server log, startup messages, mmap/no-mmap settings, RAM pressure and prompt/decode split. Текущий короткий baseline: Vulkan `1.7898 TPS` r3 на `b512/ub256` после D005 split-K с `--no-mmap`; ROCm `1.5200 TPS` r3 на `b512/ub128`, оба с `real-context-chars=24576`.
+Текущий Q4 baseline на prompt `29561`, output `128`: spec-none
+`1778.59/21.98` prompt/decode tok/s; MTP n3 `1731.71/39.58`, aggregate
+`6.2802 TPS`, acceptance `74.36%`. На 98K one-copy scheduler проверен до
+`1493.21` prompt tok/s. Для 131K сохранять residency diagnostics; старый
+memory-aware ROCm split `27,37` и Vulkan — отдельные stress-профили, а не
+автоматический safe default. TKV4 пока opt-in: его основной доказанный выигрыш
+— размер KV, но Q4 quality/perplexity gate ещё не завершён.
 
 Для исторического 32k prompt-heavy ROCm/Qwen3.6-27B lane после native ubatch cliff fix (2026-05-12):
 

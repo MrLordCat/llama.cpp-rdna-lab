@@ -5,6 +5,9 @@ argument-hint: "Backend, label, lane parameters"
 ---
 Run the requested benchmark control exactly as specified.
 
+Recommended model class: fast executor. Escalate to a full executor only for a
+reproducible anomaly or flaky lane. Do not pin a provider model ID.
+
 Inputs from user:
 
 - Backend: ${input:backend}

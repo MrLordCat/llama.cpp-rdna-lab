@@ -263,7 +263,9 @@ Mechanics:
   ids, and `use_stream_k`.
 - `ggml_cuda_mul_mat_q_switch_type(...)` instantiates the matching type kernel
   for Q1/Q4/Q5/Q8/K-quants/IQ types and FP4 types.
-- On RDNA4, current MMQ geometry is `mmq_y=64`, `nwarps=4` from E015.
+- On RDNA4, Q4_K/Q5_K use the E344 source-specific
+  `mmq_y=128,nwarps=8` geometry. Q3_K and all other MMQ instances keep the
+  E015 `mmq_y=64,nwarps=4` geometry.
 
 Current RDNA4 selector policy in `ggml_cuda_should_use_mmq(...)`:
 
@@ -282,9 +284,12 @@ Important knobs:
 - `GGML_MMQ_RDNA4_STREAM_K_MIN_NE11=<n>`: backend/split MMQ Stream-K threshold
   experiment knob. It is not a default speed claim.
 - `GGML_CUDA_FORCE_MMQ_RUNTIME=1`: broad force-MMQ escape hatch. It was rejected
-  for the Q3_K lanes; use only as a diagnostic.
+  for the Q3_K lanes. E345 also rejects forcing the normal N=801/1024 Q6_K
+  prompt shapes from hipBLAS onto current MMQ; use only as a diagnostic.
 - `GGML_MMQ_RDNA4_Q3_FORCE_MMQ_X=<8..128 multiple of 8>`: diagnostic force-x
   knob in `mmq.cuh`; E016 rejected force-x points below the selected default.
+- `GGML_MMQ_RDNA4_Q4Q5_FORCE_MMQ_X=<8..128 multiple of 8>`: Q4_K/Q5_K
+  diagnostic force-x knob; E344 rejected the measured sub-128 points.
 - `GGML_RDNA4_MOE_MMQ_STAGING=1`: opt-in MoE staging experiment path; not a
   dense Q3_K default.
 - `GGML_CUDA_Q3K_PADDED_STORAGE=1` + `GGML_CUDA_Q3K_PADDED_STORAGE_MMQ=1`:
@@ -302,6 +307,8 @@ Key evidence:
 | E016 | Force-x points after E015 all below reference (`x64=9.02`, `x80=8.20`, `x112=9.06`, `x128=8.77` vs `9.6080`) | Keep default selector, do not force-x |
 | E050 | Large Q3_K forced-MMQ target shape was `37.52%` slower than cublas split; broad forced route `10.05 TPS` | Do not send large Q3_K prefill to current MMQ |
 | E070 | Q4_K/Q5_K threshold `ne11<=1024` improved Q4 pp512 `57.30 -> 246.60 tok/s`; full Q4 lane recovered from `122.23s` timeout-scale to `28.44s`, prompt `330.42 tok/s` | Keep Q4_K/Q5_K RDNA4 selector extension |
+| E344 | Type-specific Q4_K/Q5_K `mmq_y=128,nwarps=8` improved resident one-GPU Q4 prompt `1126.11 -> 1178.91 tok/s` and aggregate `11.1575 -> 11.5169` | Keep Q4_K/Q5_K wide geometry; Q3 remains `y64/w4` |
+| E345 | Resident Q6_K route trace uses hipBLAS at N=801/1024 and MMVQ at N=1/2; forcing prompt MMQ reduced warm prompt from about `3785.75` to `2045.80 tok/s` | Keep the existing Q6_K MMQ threshold; optimize its decode MMVQ route separately |
 | E105 | Narrow Q3_K existing-MMQ override did not beat baseline (`11.74 -> 11.54/11.68/11.44 TPS`) | Do not add Q3 large-prefill selector override |
 | E201-P2a | Padded-storage Q3_K MMQ loader improved Q3_K `ncols=159` point `252.526 -> 231.453 ms` and short-lane r3 `30.2390 -> 30.9884 TPS` | Keep opt-in behind both padded-storage gates |
 
@@ -342,11 +349,15 @@ RDNA4 Qwen-hot behavior:
 
 - `ggml_cuda_mmvq_is_qwen_hot_type(...)` returns true for `Q3_K`, `Q4_K`, and
   `Q6_K`.
-- For RDNA4, `ncols_dst=1`, and Qwen-hot types, `should_use_small_k(...)`
-  defaults to `small_k=true` unless disabled.
+- For RDNA4 and `ncols_dst=1`, Q3_K/Q4_K default to `small_k=true`. Q6_K
+  defaults to `small_k=false`: its heavier vec-dot and fused FFN shapes are
+  faster with one row per block.
 - E151 confirms the current-tree policy: RDNA4 `Q3_K/ncols_dst=1` uses
   `nwarps=2`. Because Qwen-hot `small_k` is enabled, this lets
   `calc_rows_per_block(...)` use two rows per block instead of staying at one.
+- E345 confirms that Q6_K keeps `nwarps=8` but must not inherit the Q3/Q4
+  row-batching default. `GGML_MMVQ_QWEN_FORCE_SMALL_K=1` restores the old Q6
+  behavior for rollback and comparison.
 
 Important knobs:
 
@@ -365,6 +376,9 @@ Key evidence:
 | E013 | Historical Q3_K MMVQ `nwarps=2` note improved paired control `9.1629 -> 9.3847 TPS`; Q3_K `nwarps=4` follow-up regressed `9.3847 -> 9.2136` | Historical prior for the current E151 policy |
 | E151 | Current-tree RDNA4 Q3_K `nwarps=2` improves clean post-rebuild r3 `28.1123 -> 30.3145 TPS`, decode `29.77 -> 32.2467 tok/s`; live server sanity output is normal | Keep RDNA4 Q3_K `nwarps=2`; collect post-E151 residual trace before larger changes |
 | E152 | Post-E151 sync trace confirms `nwarps=2`, `small_k=1`, `block=(32,2,1)` for Q3_K and residual Q3_K split fused `64.62%` / direct `35.38%` | Use as topology evidence only; sync timing is not a speed claim |
+| E345 | Same-build resident Q6_K r3: old forced `small_k=1` decode `66.74`, new default `small_k=0` decode `68.51 tok/s`; prompt `3268.21 -> 3263.85` | Keep Q6_K `small_k=false`, `nwarps=8`; prompt change is noise and decode improves `2.65%` |
+| E345-R1 | Production Q4_K_M: short decode `22.66 -> 24.00`, 49K decode `21.045 -> 21.975`; prompt neutral on both | Keep Q6 policy; whole-model decode improves `5.91%` short and `4.42%` long |
+| E345-R2 | Q5_K eight-row small-k `24.34 -> 23.64`; Q5_K nwarps4 `24.34 -> 23.98` decode tok/s | Reject both; keep Q5_K one row and nwarps8 |
 
 Cleanup notes:
 
@@ -487,6 +501,7 @@ Clear these before speed claims unless they are the explicit candidate:
 | `GGML_MMQ_RDNA4_Q4K_MAX_NE11` | MMQ selector | Q4_K/Q5_K threshold override/rollback |
 | `GGML_MMQ_RDNA4_STREAM_K_MIN_NE11` | backend/split MMQ | Stream-K threshold probe |
 | `GGML_MMQ_RDNA4_Q3_FORCE_MMQ_X` | MMQ kernel selection | Diagnostic force-x probe |
+| `GGML_MMQ_RDNA4_Q4Q5_FORCE_MMQ_X` | Q4_K/Q5_K MMQ kernel selection | Diagnostic force-x probe; sub-128 points rejected |
 | `GGML_CUDA_Q3K_PADDED_STORAGE` | Q3_K storage | Default-off padded physical storage route |
 | `GGML_CUDA_Q3K_PADDED_STORAGE_MMQ` | Q3_K MMQ | Enables padded-storage MMQ loader under storage gate |
 | `GGML_MMVQ_QWEN_FORCE_SMALL_K` | MMVQ | Force Qwen-hot small-k |
@@ -513,6 +528,9 @@ Clear these before speed claims unless they are the explicit candidate:
 | E054 | Q3_K staging detail | diagnostic | `src0_convert_ms=3370.32 ms`, alloc `6.12 ms`; target convert `1430.88 ms` | Conversion/store is target, not allocation |
 | E055/E056 | Q3_K half2 store | E053/E056 controls | r1 small apparent gain, r3 `11.6726 -> 11.6375 TPS` | Reject and revert |
 | E070 | Q4_K/Q5_K MMQ selector | Q4 pp512 `57.30 tok/s`; full lane `122.23s`, prompt `64.39 tok/s` | pp512 `246.60 tok/s`; full lane `28.44s`, prompt `330.42 tok/s` | Keep Q4_K/Q5_K threshold |
+| E344 | Q4_K/Q5_K MMQ geometry | prompt `1126.11 tok/s`; aggregate `11.1575` | prompt `1178.91 tok/s`; aggregate `11.5169` | Keep type-specific `mmq_y=128,nwarps=8`; Q3 stays `y64/w4` |
+| E345 | Q6_K MMVQ decode | forced old `small_k=1`: prompt `3268.21`, decode `66.74` | new default `small_k=0`: prompt `3263.85`, decode `68.51` | Keep Q6_K one-row blocks: decode `+2.65%`, prompt `-0.13%` noise |
+| E345-R1 | Production Q4_K_M Q6 policy | long prompt `1777.285`, decode `21.045`, aggregate `5.6159` | prompt `1778.590`, decode `21.975`, aggregate `5.6829` | Keep: long decode `+4.42%`, prompt neutral; short decode `+5.91%` |
 | E103 | Q3_K staging reuse | diagnostic | `2792` rows, `349` keys, all repeated `8x`; full cache footprint `42.002 GiB` | Keep trace, avoid unlimited cache |
 | E104 | persistent Q3_K fp16 cache | `11.74 TPS` | `9.56 TPS` full cache, `11.59 TPS` 480 MiB cache | Reject/reverted |
 | E105 | existing-MMQ Q3_K override | `11.74 TPS` | `11.54`, `11.68`, `11.44 TPS` | Reject/reverted |

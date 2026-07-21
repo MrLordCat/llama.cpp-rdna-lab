@@ -2,27 +2,16 @@
 
 This file tracks candidate changes that could unlock additional efficiency.
 
-Active policy note (2026-05-27): current speed claims target dense
-`Qwen3.6-27B-Q3_K_S` at `ctx=131072` (~130k), cold-first, repo-snapshot real
-context, `b=512`, `q4_0/q4_0`, `real-context-chars=24576`,
-`max_tokens=16`, thinking on, no reuse and no prime. Vulkan current best uses
-`ub=256` and includes D005's default Q3_K FFN-down split-K 3 route
-plus D012's q3quad/GLU opt-in stack (`2.0013 TPS` r3). The active Vulkan target
-is now `2.4 TPS`; D028 shows that needs `1.1992x` wall over D012, about
-`1.387x` local on dense FFN or `1.260x` local on all-Q3. D029 rejects
-activation-only/naive-streaming whole-FFN, D030 rejects nearby old all-Q3
-body/layout families, D031 rejects compact Q3S layout-body work, D032 shows
-FA-only cannot carry the target, and D033 rejects q3-octa/`LOAD_VEC_A=8` as an
-E087 repeat. D036 keeps direct host-KV last3 as q4/q4 default stability/decode
-recovery, and D037 keeps q8/q8 only as explicit stability/offline opt-in while
-rejecting mixed q4/q8 or q8/q4 on the current Vulkan/RDNA lane. The next route
-needs a true Q3_K compute body or compressed-dot route; FA is only a stack
-component after Q3 reaches roughly `1.18-1.20x` local evidence.
-ROCm is paused at the D013-D027 rejection fence unless a stronger
-compressed-GEMM/FFN dataflow proof appears.
-Older 12k/32k/64k lanes in this file are historical evidence unless explicitly
-reopened by a new design note. At 130k, RAM-spill/residency is part of the
-target constraint.
+Active policy note (2026-07-20): generic performance claims now target
+`Qwen3.6-27B-Q4_K_M.gguf`. The D089 safe baseline is dual ROCm
+`ctx=49152,b8192/ub1024,q8_0/q8_0`, cold/no-reuse/no-warmup, with an adjacent
+spec-none control. MTP n3 is the production agent profile. At 98K use the
+validated one-copy scheduler; 131K remains a placement/residency stress lane.
+
+The Q3_K_S P002/P003 policy below remains valid only for explicitly reopened
+Q3 work. Its D012 2.4-TPS target math, Q3 body rejection fence, and 130K Vulkan
+rows are not Q4 baseline evidence. D088 TKV4 is likewise an opt-in residency
+candidate until it passes a Q4 long-agent quality/perplexity gate.
 
 ## Core Equation Used For Screening
 

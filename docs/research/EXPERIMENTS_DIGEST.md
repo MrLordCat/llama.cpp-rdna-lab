@@ -1,6 +1,6 @@
 # Experiment Digest
 
-Updated: 2026-07-15.
+Updated: 2026-07-20.
 
 This is the compact historical base for performance work. `RESULTS_LOG.md` remains the detailed ledger; this file groups the evidence so agents can pick the next route without rereading every E/D note.
 
@@ -8,7 +8,7 @@ This is the compact historical base for performance work. `RESULTS_LOG.md` remai
 
 | Area | Current conclusion |
 | --- | --- |
-| Active dense 130k target | `Qwen3.6-27B-Q3_K_S`, cold/no-reuse/no-prime, thinking on. Vulkan D012 `b512/ub256,q4/q4` remains the 2.0013 TPS quick-lane baseline. ROCm E293 uses a different prompt-heavy contract (`b8192/ub1024,q8/q8`, 53,523 prompt tokens) and now reaches `1557.94 prompt tok/s`, `22.47 decode tok/s`, and `0.4551` aggregate TPS after restoring rocWMMA. Do not compare aggregate TPS across these unmatched prompt scales; E293 is the ROCm long-prompt baseline. |
+| Primary dense model | D089 promotes `Qwen3.6-27B-Q4_K_M.gguf`. Safe baseline: dual ROCm `ctx=49152,b8192/ub1024,q8/q8`, spec-none `1778.59/21.98` prompt/decode tok/s; MTP n3 `1731.71/39.58`, `6.2802` aggregate TPS, `74.36%` acceptance. Q3_K_S 130K Vulkan D012/P003 remains a secondary model-specific program, not a Q4 comparator. |
 | 130k residency constraint | RX 9070 XT 16 GB is not expected to keep dense 27B + 130k KV/context/working set fully VRAM-resident. RAM-spill/residency/PCIe/startup diagnostics are part of the metric, not noise. |
 | Archived dense Vulkan 12k | E257 remains the short-context reference: `ctx=12288,b=7168,ub=1024,q4_0/q4_0,spec=none`, cold/no-reuse/no-prime, thinking on, `7.0319 TPS` r3. |
 | Vulkan post-E265 | D005/D012 show the 130k Vulkan path: split-K plus q3quad/GLU stack clears 2 TPS with documented opt-in env and `--no-mmap`; D034 identifies the current 130k slow pocket as residency-driven; D035/D036 promote guarded route defaults plus a narrow direct host-KV guard to recover default stability/decode; D037 rejects q8 KV as a speed/default replacement and keeps q8/q8 only as explicit stability opt-in. D038 improves measured q4 tool-call quality from `2/4` to `4/4` with a default server-side thinking guard; D039 extends this to BFCL-lite public data (`24/25` default vs `16/25` explicit thinking) and leaves repeated parallel-call undercoverage as the next quality target. Neither D038 nor D039 is a TPS route. D028 retargets Vulkan to `2.4 TPS`; D029 rejects activation-only/naive-streaming whole-FFN, D030 rejects nearby old all-Q3 storage/helper/Q8/tile families, D031 rejects compact Q3S layout-body work, D032 shows FA-only cannot carry, and D033 rejects q3-octa/LOAD_VEC_A=8. Next speed work needs a true Q3_K compute body/compressed-dot route; FA can stack only after Q3 reaches roughly `1.18-1.20x` local evidence. |

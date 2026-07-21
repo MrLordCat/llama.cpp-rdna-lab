@@ -3,7 +3,20 @@
 This directory is for post-E264 architecture work. It is intentionally upstream
 of normal E### benchmarking: use it to rank designs before editing backend code.
 
-## Active Program
+## Primary Project Baseline
+
+| Field | Value |
+| --- | --- |
+| Decision | D089 Q4_K_M primary baseline promotion |
+| Latest gate | [D091 Q4_K_M ROCm 98K WDDM placement](D091_Q4_K_M_ROCM98K_WDDM_PLACEMENT_GATE.md), closed: corrected device order recovered MTP n2 prompt `947.46 -> 1426.54 tok/s` (`+50.56%`) |
+| Model | `models/Qwen3.6-27B-Q4_K_M.gguf` (MTP-enabled) |
+| Safe lane | ROCm `ctx=49152,b=8192,ub=1024,q8_0/q8_0,-dev ROCm1,ROCm0,-sm layer,-ts 1,1`, cold/no-reuse/no-warmup |
+| Control | spec-none `1778.59 prompt / 21.98 decode tok/s`, `5.6829` aggregate TPS |
+| Agent profile | MTP n3 `1731.71 / 39.58`, `6.2802` aggregate TPS, `74.36%` acceptance |
+| Extended lane | ROCm `ctx=98304` one-copy scheduler with `-dev ROCm1,ROCm0 -sm layer -ts 1,1`; 131K remains a `27:37` placement/residency stress lane |
+| KV policy | q8 primary; D088 TKV4 remains opt-in pending Q4 quality/perplexity |
+
+## Secondary Q3-Specific Program
 
 | Field | Value |
 | --- | --- |
@@ -17,6 +30,57 @@ of normal E### benchmarking: use it to rank designs before editing backend code.
 | Current trace | D079: Q3_K 46.6%, FA 46.4%, Q4_K 4.0%, GLU 1.8%; tensor split rejected at 540.18 vs 1809.02 small-layer control |
 | Primary risk | target needs a topology-level gain; do not reopen D029-D033 helper/layout-only Q3 probes |
 | Residency | startup reports 6,685 MiB free on Vulkan1 and 7,958 MiB free on Vulkan0; WDDM runtime observation remains mandatory |
+
+## 2000 tok/s Scaling Verdict
+
+Applying the Candidate Selection Rubric to the intuitive "one GPU is about
+`1100`, so two should reach `2000`" model. Verdict: the naive parallelism route
+is rejected by gate 4 on already-measured evidence, without a new GPU run.
+
+Measured topology curve on the P003 lane:
+
+| Topology | Prompt tok/s | Data-parallel within a ubatch? |
+| --- | ---: | --- |
+| `-sm layer -ts 5,6` (production, D080) | `1350` (56k) / `1826` (12k) | no; layers are pipelined |
+| `-sm tensor`, native BF16 all-reduce (D084) | `1042` (12k) | yes, but communication-bound |
+| `-sm tensor`, generic reduction (D084) | `540` (12k) | yes, worst |
+
+Why `2x` cannot come from adding the second GPU here:
+
+- Layer split is not data-parallel; it pipelines layers, so it cannot be `2x`
+  single-GPU. It already exceeds single-GPU via pipeline overlap and better
+  residency.
+- Tensor split is the only data-parallel topology, but Qwen3.6 needs 127
+  all-reduce boundaries per 1024-token ubatch, the Windows AMD driver exposes
+  the two cards as two singleton device groups (no peer collective), and every
+  boundary is host-mediated at about `3.4 ms` (`~0.43 s/ubatch`). D084/D085 also
+  exclude `VK_KHR_external_memory_win32`, D3D12 cross-adapter, and Windows
+  RCCL/NCCL.
+- Gate 4 on the best remaining transport candidate (Q8 all-reduce compression,
+  D085) is already modeled at `1250-1450` tok/s at 12k, still below the `1826`
+  layer result, and "unlikely to reach 2000 by itself". So it does not close the
+  target and does not even beat production layer split.
+
+Rubric-selected route to `2000` instead: reduce per-GPU compute in the two
+dominant D079 buckets (Q3_K `46.6%`, FA `46.4%`). From layer `1350` the target
+is `1.4815x`; only two open families have a real ceiling, and both must clear a
+cheap measurement gate before any shader:
+
+1. T5a attention sparsity / K-compression. Scout now exists. Gate 1
+   (concentration) PASSED at mid-context (frac75 `0.044`; 99% of mass in 35% of
+   keys), but gate 2 (cheap block selector) FAILED at the realistic `Bc=64`
+   FA-tile granularity: block-max top-25% recovers only `79.7%` mass and needs
+   ~75% of blocks for 99%. block-max ≈ oracle, so the keys are scattered, not
+   block-clustered (confirmed at both `Bc=64` and `Bc=16`). Block-sparse FA at
+   contiguous tiles is therefore Amdahl-rejected (`<=1.18x`). Only a key-level
+   top-k gather kernel could approach the target (~`1.43x` at 99% mass), and it
+   needs its own design note plus a GPU-instrumented 56k confirmation.
+2. T2/T3a true Q3_K compressed-dot body that reduces matrix work itself, not
+   helper arithmetic (nearby Q3 body/layout routes already rejected in
+   D030-D033).
+
+Do not spend a GPU run re-confirming the tensor-parallel negative; it is closed
+by model, not by a missing measurement.
 
 ## Previous P002 Program
 
@@ -68,11 +132,13 @@ Do not reopen these for the 130k program without a new mechanism and a design no
 | ID | Candidate | Status | Next required artifact |
 | --- | --- | --- | --- |
 | T11 | Same-lane Q3_K + FA wall decomposition | completed D079 | Q3_K 46.6%, FA 46.4%; neither route can close alone |
-| T12 | True Q3_K + long-KV FA body/dataflow route | active D081 | q8 FA two-query-tile compile/resource gate, then Q3_K body stack if FA reaches at least 1.8x local |
+| T12 | True Q3_K + long-KV FA body/dataflow route | D081 rejected | `Br32/Bc64` exceeds the exposed 32 KiB LDS limit; compact `Br32/Bc32` passed at 65 VGPR / 32,256 B LDS / zero scratch but changed the two-run prompt center by `-0.98%`. Reopen only with sparsity/KV compression or a non-nearby dataflow mechanism |
 | T13 | Vulkan tensor-parallel prefill rehabilitation | D084 opt-in infrastructure kept; rejected as default | native BF16 all-reduce raises tensor from about 540 to `1032-1043`, but remains far below layer `1826`; 127 required host-mediated collectives per ubatch |
 | T14 | Hybrid PP tensor / TG layer topology | design-only | prove phase-specific graph/device ownership can avoid duplicate model residency and preserve decode |
 | T15 | Reopened 12k Q3_K `BN512` route | rejected D082 | over-LDS route was not selected; `950.35 tok/s`; prototype removed |
 | T16 | Vulkan native tensor collective | completed D084 | keep BF16 communicator opt-in; require true peer/device-group primitive before reopening tensor as a target-closing route |
+| T17 | RDNA4 compact KV and Q5 FA dequant | D087 packed-bit Q5 path kept | q8_0 is 8.5 bpw and correctly consumes 4352 MiB at ctx131072. q5_1 consumes 3072 MiB, and the bit-exact packed high-bit dequant improves the exact 43k r3 mean `1368.02 -> 1411.60 prompt tok/s` (`+3.19%`); comparable cold-first q5_1 is within `2.69%` of q8 and paired BFCL-lite smoke is `8/8` for both. Keep q5_1 as the compact-KV opt-in and q8 as the maximum-quality reference; only design a new Q6 KV type if broader q5 quality fails |
+| T18 | No-peer compensation with Vulkan TKV4 direct prefill | D088 implementation kept opt-in | a custom layer-boundary host relay is Amdahl-limited to about `1-1.5%`; TKV4 instead cuts 131k KV from `4352` to `2112 MiB` (`-51.5%`) and stays within `1.02-1.14%` of q8 prompt speed. Keep behind `GGML_TKV_DIRECT_PREFILL=1` pending long-agent quality/perplexity; continue target-closing work in the Q3_K body |
 
 ## P002 Candidate Queue
 
@@ -82,15 +148,47 @@ Do not reopen these for the 130k program without a new mechanism and a design no
 | T2 | Shader-native Q3_K prompt layout: compact signed/scale-expanded block for coopmat matmul | D031 rejects compact Q3S/signed-nibble plus scale-expanded layout-body as target-closing route | Reopen only with a compute body that reduces matrix work itself, not just unpack metadata |
 | T3 | Fused dense FFN block: gate/up/swiglu/down tiled route | D029 rejects activation-only and naive streaming whole-FFN routes; D007 still proves the graph surface exists | reopen only if the design reduces Q3_K matmul work itself or becomes part of a broader all-Q3 dataflow; launch/hidden-materialization-only fusion is below the `2.4 TPS` bar |
 | T3a | Vulkan all-Q3/body-layout target for `2.4 TPS` | D030 rejects current q3quad extension, scale-only metadata/helper reuse, signed-nibble-only storage, Q8_1/int-dot, expanded layouts, and neighboring tile tweaks; D031 rejects compact Q3S layout-body; D032 shows FA cannot carry alone; D033 rejects q3-octa/`LOAD_VEC_A=8` repeat | First implementation gate remains a true Q3_K body/compressed-dot route; a Q3+FA stack is only useful after Q3 reaches about `1.18-1.20x` local point/static proof |
-| T4 | FA shader-body work for long-KV and 130k RAM-spill lane | D076 rejects Bc scaling (shmem limit: 64KB on RDNA4 blocks Bc>64, shmem_staging also fails pipeline); D077 analyses coopmat2-on-RDNA4 emulation and concludes FA is memory-bound — wider matmul instructions don't help; sparsity/K-compression/architectural approaches remain open | rerun evidence if attention sparsity scout shows >50% K/V can be skipped |
+| T4 | FA shader-body work for long-KV and 130k RAM-spill lane | D076 rejects Bc scaling; the active Windows Vulkan driver exposes a 32 KiB compute-shared-memory limit, and D081 closes exact two-query nearby geometry. D077 concludes wider matmul instructions do not help this memory-bound route; sparsity/K-compression/architectural approaches remain open | rerun evidence if attention sparsity scout shows >50% K/V can be skipped |
 | T5 | Vulkan/ROCm differential harness | first Vulkan pack complete | run `bench: vulkan q3 130k route trace`, `bench: vulkan q3 130k q3 stats`, then `research: vulkan evidence pack` |
-| T5a | FA memory-bandwidth research: sparse FA, K-compression, or attention sparsity | D077 analytical gate; scout script needed | write `scripts/research/attention_sparsity_scout.py` to measure attention mass distribution on Qwen3.6 layers; if >75% mass in <25% of K/V blocks → sparse FA prototype |
+| T5a | FA memory-bandwidth research: sparse FA, K-compression, or attention sparsity | scout implemented (`llama-attn-sparsity-scout` + `scripts/research/attention_sparsity_scout.py`). Gate 1 (mass concentration) PASSED on Qwen3.6-27B-Q3_K_S at 3,509-token/1,753-valid mid-context: global frac75 `0.044`, frac90 `0.107`, frac95 `0.171`, frac99 `0.350`. Gate 2 (cheap block-max top-k recovers the mass) FAILED at every tested contiguous-block granularity: top-25% blocks recover only `79.7%` mass at `Bc=64` (`99%` needs ~65-75% of blocks). block-max ≈ oracle — the important keys are scattered ~1 per block, not clustered. Gate 3 (gather-FA viability: per-query key-level recovery + tile-union shared-key test) FAILED on both models at ctx=4096/tile=32. 9B: `pq25=0.9603`, `tu25=0.8911` (penalty `+6.9%`). 27B at full 3,509‑token context: `pq25=0.9621`, `tu25=0.8755` (penalty `+8.7%`). 99% gate needs ~50% key budget on both (`pq50=0.9906` 27B, `pq50=0.9908` 9B) — no advantage over dense FA at that ratio | All three cheap sparse-FA families rejected: block-sparse at `Bc>=16` Amdahl-limited (`<=1.18x`), per-query key-level gather fails 99%@25%, tile-union shared-key fails worse. The attention mass is too diffuse at key granularity. Remaining non-matrix FA route: true K-compression (2-3× fewer VRAM bytes per key). Reopen sparse/gather-FA only on a model where pq25 ≥ 0.99. Evidence: `build_logs/agent-workload/attn-scout-{27b-blk64,27b-blk16,gather-9b,gather-27b}.csv` |
 | T6 | ROCm low-level Q3_K MMQ/FFN body | D078 keeps a dedicated RDNA4 Q3_K small-N DP4A MMQ route: MTP n3 decode `34.92 -> 41.25 tok/s` and `1.65x` the same-build spec-none short baseline; 131k/56k-token prompt decode `19.02 -> 26.85` (`1.41x`) | next route must target the long-context FA/KV share or the remaining draft overhead; keep N=5 DP4A opt-in because n4 did not improve materially |
 | T7 | Vulkan `ub>=320` residency cliff | D003 closed as non-speed recovery | do not promote `GGML_VK_ENABLE_MEMORY_PRIORITY=1`; revisit only with a shader/body/lifetime change that beats `ub256` |
 | T8 | Vulkan output-layer residency relief | D006 closed as diagnostic, not speed route | next work must be a source/topology design with a residency model; do not continue ubatch/output-placement sweeps |
 | T8a | Vulkan backend-host KV residency relief | D036 keeps a narrow Qwen35-like direct host-KV auto guard for q4/q4 default stability and restores decode to `40.2033 tok/s` (`1.9410 TPS` r3). D037 keeps q8/q8 only as `LLAMA_VK_KV_HOST_AUTO_Q8=1` stability/offline opt-in and rejects mixed q4/q8/q8/q4 on this Vulkan lane; broad D034-D037 KV sweeps remain below D012 | reopen only with a lifetime/migration or mixed-FA design that beats D012, not as a launch/KV placement sweep |
 | T9 | Vulkan q3quad/bn256/lowtile promotion hardening | D035 promotes guarded source defaults for AMD `bn256`, Q3_K quad dequant, and Q3 low-tile split-K; D012 `2.0013 TPS` r3 remains the speed comparator | run confirm3 before final default-promotion wording; keep exact D012 r3 as baseline until a matching confirmation beats or ties it |
 | T10 | Q4/Q3 tool-call reliability guard | D038 promotes the guard to default-on after improving the D038 q4 tool-call workload from `2/4` to `4/4`; D039 BFCL-lite public subset measured `24/25` default versus `16/25` with explicit thinking; disable with `LLAMA_SERVER_TOOL_CALL_THINKING_GUARD=0` for server A/B or explicit request `enable_thinking=true` for per-request A/B | next implementation should try fallback/retry after no-tool-call/length failures and repeated parallel-call undercoverage, while normal thinking remains available where explicitly requested |
+
+## Candidate Selection Rubric
+
+Derived from the E344/E345 wins versus the E347/D081 loss series. The negative
+series was selected top-down (idea or analogy first, then "does it fit"); the
+wins were selected bottom-up (measured bottleneck, then measured waste, then a
+minimal compile-gated change). Every new candidate must pass all gates below
+before a prototype is written.
+
+1. Bottleneck gate. Start from a fresh hot-path trace on the exact target
+   lane and backend. The candidate must attack an op that is a documented
+   top-share consumer of that trace. No trace, no candidate.
+2. Waste gate. Provide a measured waste signal for the proposed mechanism:
+   low occupancy, register/LDS spill, redundant traffic counter, or a
+   forced-route A/B proving the current selector is suboptimal. A design story
+   or analogy is not evidence.
+3. Transfer gate. A cross-backend transplant (for example a ROCm win moved to
+   Vulkan) requires target-backend evidence that the same bottleneck exists
+   there. Do not port because it worked elsewhere.
+4. Upside gate. Compute the expected upside by Amdahl:
+   `expected = op_share * plausible_per_op_improvement`. Reject if the expected
+   upside is below the lane's measured order-swing noise (about `3%` on the
+   current two-order cold-first harness) unless the noise is first reduced.
+5. Work-volume preference. Prefer changes that reduce matrix/memory work volume
+   over helper-arithmetic or tile micro-reshapes on an already-tuned automatic
+   route. Reshaping dataflow on a good coopmat path usually trades one overhead
+   for another.
+6. Feasibility is a filter, not a reason. "Fits in LDS and compiles as
+   coopmat1" gates admission only; it never justifies selecting a candidate.
+
+If a candidate cannot pass gates 1, 2, and 4 from existing or cheap-diagnostic
+evidence, write a scout/design rejection instead of a benchmark-shaped E### note.
 
 ## Required Evidence Pack
 

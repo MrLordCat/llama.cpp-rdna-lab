@@ -174,17 +174,24 @@ static void server_prompt_checkpoint_update_data(std::vector<uint8_t> & data, ll
     data.resize(checkpoint_size);
     const int64_t t_allocated = trace ? ggml_time_us() : 0;
 
+    // state_seq_get_data_ext() synchronizes internally. Make that wait visible
+    // so checkpoint transfer time is not confused with pending graph compute.
+    if (trace) {
+        llama_synchronize(ctx);
+    }
+    const int64_t t_synchronized = trace ? ggml_time_us() : 0;
     const size_t n = llama_state_seq_get_data_ext(ctx, data.data(), checkpoint_size, id, flags);
     const int64_t t_finished = trace ? ggml_time_us() : 0;
     if (n != checkpoint_size) {
         GGML_ABORT("checkpoint size mismatch: expected %zu, got %zu\n", checkpoint_size, n);
     }
     if (trace) {
-        SRV_INF("checkpoint phase=save bytes=%zu size=%.3f alloc=%.3f transfer=%.3f total=%.3f ms\n",
+        SRV_INF("checkpoint phase=save bytes=%zu size=%.3f alloc=%.3f sync=%.3f transfer=%.3f total=%.3f ms\n",
                 checkpoint_size,
                 (t_sized - t_start) / 1000.0,
                 (t_allocated - t_sized) / 1000.0,
-                (t_finished - t_allocated) / 1000.0,
+                (t_synchronized - t_allocated) / 1000.0,
+                (t_finished - t_synchronized) / 1000.0,
                 (t_finished - t_start) / 1000.0);
     }
 }
@@ -194,7 +201,21 @@ static bool server_prompt_checkpoint_load_data(const std::vector<uint8_t> & data
         return true;
     }
 
+    const bool trace = server_env_enabled("LLAMA_CHECKPOINT_TIMING");
+    const int64_t t_start = trace ? ggml_time_us() : 0;
+    if (trace) {
+        llama_synchronize(ctx);
+    }
+    const int64_t t_synchronized = trace ? ggml_time_us() : 0;
     const size_t n = llama_state_seq_set_data_ext(ctx, data.data(), data.size(), id, flags);
+    const int64_t t_finished = trace ? ggml_time_us() : 0;
+    if (trace) {
+        SRV_INF("checkpoint phase=load bytes=%zu sync=%.3f transfer=%.3f total=%.3f ms\n",
+                data.size(),
+                (t_synchronized - t_start) / 1000.0,
+                (t_finished - t_synchronized) / 1000.0,
+                (t_finished - t_start) / 1000.0);
+    }
     return n == data.size();
 }
 
@@ -2074,17 +2095,44 @@ private:
 
     // n_tokens_cur: the number of tokens added to the batch for the current slot
     void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max) {
-        while (slot.prompt.checkpoints.size() >= (size_t) params_base.n_ctx_checkpoints) {
-            // make room for the new checkpoint, if needed
-            const auto & cur = slot.prompt.checkpoints.front();
+        const int id_task = slot.task ? slot.task->id : -1;
 
-            SLT_WRN(slot, "erasing old context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
-                    cur.pos_min, cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
-
-            slot.prompt.checkpoints.erase(slot.prompt.checkpoints.begin());
+        // Keep older rollback points distributed across the prompt. Checkpoints
+        // from the active request are exempt because the two prompt-end points
+        // intentionally straddle the final physical ubatch.
+        int64_t last = -1;
+        for (auto it = slot.prompt.checkpoints.begin(); it != slot.prompt.checkpoints.end();) {
+            if (it->id_task != id_task && last >= 0 &&
+                    it->n_tokens <= last + params_base.checkpoint_min_step) {
+                SLT_INF(slot, "erasing context checkpoint too close to an earlier one "
+                        "(pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+                        it->pos_min, it->pos_max, it->n_tokens, (float) it->size() / 1024 / 1024);
+                it = slot.prompt.checkpoints.erase(it);
+                continue;
+            }
+            last = it->n_tokens;
+            ++it;
         }
 
-        auto & cur = slot.prompt.checkpoints.emplace_back();
+        server_prompt_checkpoint * cur_ptr = nullptr;
+        if (slot.prompt.checkpoints.size() >= (size_t) params_base.n_ctx_checkpoints) {
+            // Recycle the oldest large vectors instead of freeing and allocating
+            // roughly 185 MiB again for every prompt-tail checkpoint.
+            const auto & old = slot.prompt.checkpoints.front();
+
+            SLT_WRN(slot, "erasing old context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+                    old.pos_min, old.pos_max, old.n_tokens, (float) old.size() / 1024 / 1024);
+
+            slot.prompt.checkpoints.splice(
+                    slot.prompt.checkpoints.end(), slot.prompt.checkpoints, slot.prompt.checkpoints.begin());
+            cur_ptr = &slot.prompt.checkpoints.back();
+            cur_ptr->clear();
+        } else {
+            cur_ptr = &slot.prompt.checkpoints.emplace_back();
+        }
+
+        auto & cur = *cur_ptr;
+        cur.id_task = id_task;
         server_prompt_checkpoint_update(cur, ctx, slot.id, slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max);
         server_prompt_checkpoint_update_dft(cur, ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
         common_speculative_get_state(spec.get(), slot.id, cur.data_spec);
@@ -2957,6 +3005,7 @@ private:
 
                     // the number of tokens added to the batch for the current slot
                     const auto n_tokens_cur = batch.n_tokens - n_tokens_prev;
+                    const int64_t checkpoint_pos = slot.prompt.n_tokens() - n_tokens_cur;
 
                     // entire prompt has been processed
                     if (slot.prompt.n_tokens() == slot.task->n_tokens()) {
@@ -3007,7 +3056,20 @@ private:
                     do_checkpoint = do_checkpoint && !has_mtmd;
 
                     // no need to create checkpoints that are too close together
-                    do_checkpoint = do_checkpoint && (slot.prompt.checkpoints.empty() || slot.prompt.n_tokens() - n_tokens_cur > slot.prompt.checkpoints.back().n_tokens + 64);
+                    if (do_checkpoint && !slot.prompt.checkpoints.empty()) {
+                        const int64_t prompt_tokens = slot.task->n_tokens();
+                        const int64_t checkpoint_before_tail = std::max<int64_t>(
+                                0, prompt_tokens - std::min<int64_t>(n_batch, 4 + n_ubatch));
+                        const int64_t checkpoint_before_last = std::max<int64_t>(
+                                0, prompt_tokens - std::min<int64_t>(n_batch, 4));
+                        const bool intended_prompt_end_checkpoint =
+                                checkpoint_pos == checkpoint_before_tail ||
+                                checkpoint_pos == checkpoint_before_last;
+                        const bool sufficiently_spaced =
+                                checkpoint_pos > slot.prompt.checkpoints.back().n_tokens +
+                                        params_base.checkpoint_min_step;
+                        do_checkpoint = intended_prompt_end_checkpoint || sufficiently_spaced;
+                    }
                     SLT_DBG(slot, "main/do_checkpoint = %s, pos_min = %d, pos_max = %d\n", do_checkpoint ? "yes" : "no", pos_min, pos_max);
 
                     // note: we create the checkpoint before calling llama_decode(), so the current batch is not

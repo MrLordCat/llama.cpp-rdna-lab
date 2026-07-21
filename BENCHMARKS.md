@@ -1,5 +1,18 @@
 # Benchmarks
 
+## Primary Q4_K_M Baseline (2026-07-20)
+
+The project baseline is now `Qwen3.6-27B-Q4_K_M.gguf`. The safe production
+research lane is dual ROCm, `ctx=49152,b8192/ub1024,q8_0/q8_0`, one slot,
+FlashAttention, cold/no-reuse/no-warmup, and `-dev ROCm1,ROCm0 -sm layer -ts
+1,1`. The adjacent spec-none row measures `1778.59/21.98` prompt/decode tok/s;
+MTP n3 measures `1731.71/39.58`, `6.2802` aggregate TPS, and 74.36% acceptance.
+See [Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md) and
+[D089](docs/research/major-topology/D089_Q4_K_M_PRIMARY_BASELINE_PROMOTION.md).
+
+The Q3 sections below retain their original model-specific contracts. They are
+secondary/historical evidence and must not be used as Q4 baseline rows.
+
 ## D079-D080 Vulkan Q3_K_S 56k Prompt Baseline (2026-07-12)
 
 The active Q3 prompt-eval lane uses non-MTP `Qwen3.6-27B-Q3_K_S.gguf`,

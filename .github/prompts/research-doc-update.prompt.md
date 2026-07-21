@@ -5,6 +5,9 @@ argument-hint: "Experiment ID, artifact labels, decision"
 ---
 Update research documentation from existing measured artifacts.
 
+Recommended model class: long-context workhorse, with a fast executor for
+artifact/path verification. Do not pin a provider model ID.
+
 Inputs from user:
 
 - Experiment ID: ${input:experiment}

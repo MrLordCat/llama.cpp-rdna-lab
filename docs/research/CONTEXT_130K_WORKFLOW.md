@@ -1,6 +1,11 @@
 # 130k Context Workflow
 
-This is the active dense Qwen performance lane as of 2026-05-27.
+Status update (2026-07-20): D089 promotes Qwen3.6-27B Q4_K_M and the safe
+dual-ROCm 49K lane to the project baseline. This document remains the
+model-scoped Q3_K_S 130K workflow and a residency-stress reference; it is no
+longer the generic project entry lane.
+
+This was the active dense Qwen performance lane as of 2026-05-27.
 
 Important correction: `ctx=131072` only sets capacity. It does not mean the
 benchmark actually filled the prompt close to 130k. The D012/D005 quick rows

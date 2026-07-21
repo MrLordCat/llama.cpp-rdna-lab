@@ -1,10 +1,14 @@
 # Qwen3.6-27B Q4_K_M Results
 
-ROCm short and 49K rows were refreshed on 2026-07-15 after the E334
-quantized-KV scratch reservation change. The 98K production row was refreshed
-on 2026-07-16 after E337 bounded Q8 WMMA and the E338 one-copy ROCm scheduler
-default. Vulkan rows are the unchanged E332 reference measurements. No
-foreground GPU workload was active.
+Status (2026-07-20): this is now the primary production and performance model
+for the fork. The safe default research lane is dual-ROCm `ctx=49152` with q8
+KV and an adjacent spec-none control; MTP n3 is the agent profile. See
+[D089](docs/research/major-topology/D089_Q4_K_M_PRIMARY_BASELINE_PROMOTION.md).
+
+ROCm short and 49K rows were refreshed on 2026-07-16 after the E344 Q4_K/Q5_K
+prompt geometry and E345 Q6_K decode policy. The 98K production row remains the
+E337/E338 bounded-Q8 and one-copy scheduler measurement. Vulkan rows are the
+unchanged E332 reference measurements. No foreground GPU workload was active.
 
 ## Test system
 
@@ -19,21 +23,23 @@ foreground GPU workload was active.
 
 | Backend | Mode | Context | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| ROCm | none | 12,288 | 6,393 / 256 | 1522.70 | 22.23 | 16.23 | - |
-| ROCm | MTP n3 | 12,288 | 6,393 / 256 | 1444.35 | **42.12** | **24.23** | 68.40% |
+| ROCm | none, r3 mean | 12,288 | 6,393 / 256 | **1798.03** | 24.00 | 17.9169 | - |
+| ROCm | MTP n3, r3 mean | 12,288 | 6,393 / 256 | 1671.69 | **47.17** | **27.4421** | **79.06%** |
 | Vulkan | none | 12,288 | 6,393 / 128 | 1229.31 | 26.55 | 12.73 | - |
 | Vulkan | MTP n3 | 12,288 | 6,393 / 128 | **1320.21** | **50.56** | **17.26** | 64.34% |
-| ROCm | none, r2 mean | 49,152 | 29,561 / 128 | **1716.16** | 20.00 | 5.39 | - |
-| ROCm | MTP n3 | 49,152 | 29,561 / 128 | 1604.76 | **38.10** | **5.86** | 77.19% |
+| ROCm | none, r2 mean | 49,152 | 29,561 / 128 | **1778.59** | 21.98 | 5.6829 | - |
+| ROCm | MTP n3, r2 mean | 49,152 | 29,561 / 128 | 1731.71 | **39.58** | **6.2802** | **74.36%** |
 | Vulkan | none | 49,152 | 29,561 / 128 | **1432.13** | 26.36 | 5.01 | - |
 | Vulkan | MTP n3 | 49,152 | 29,561 / 128 | 1389.59 | **47.21** | **5.32** | 69.11% |
 | ROCm | none | 98,304 | 59,045 / 64 | **1493.21** | 19.15 | **1.4890** | - |
 | ROCm | MTP n3 | 98,304 | 59,045 / 64 | 1435.97 | **35.44** | 1.4872 | **80.00%** |
 
-At 29.5k prompt tokens, current ROCm MTP loses 6.49% prompt throughput, gains
-90.5% decode throughput, and gains 8.52% aggregate throughput. Vulkan MTP loses
-2.97% prompt throughput and gains 79.1% decode throughput in the archived E332
-reference.
+At 6.4k prompt tokens, current ROCm MTP loses 7.03% prompt throughput, gains
+96.54% decode throughput, and gains 53.15% aggregate throughput for a 256-token
+answer. At 29.5k prompt tokens, it loses only 2.64% prompt throughput, gains
+80.11% decode throughput, and gains 10.51% aggregate throughput. Vulkan MTP
+loses 2.97% prompt throughput and gains 79.1% decode throughput in the archived
+E332 reference.
 
 At 59k prompt tokens, ROCm MTP loses 3.83% prompt throughput and gains 85.1%
 decode throughput. The 64-token request is exactly at the amortization
@@ -44,13 +50,17 @@ answers favor MTP.
 
 | Backend | Context | Actual prompt | Prompt TPS | Decode TPS | Dedicated peak | Shared peak |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| ROCm, current r2 | 49,152 | 29,561 | 1716.16 | 20.00 | 21.21 GiB | 2.60 GiB |
+| ROCm, current performance / E335 memory | 49,152 | 29,561 | 1778.59 | 21.98 | 21.21 GiB | 2.60 GiB |
 | Vulkan | 49,152 | 29,561 | 1432.13 | 26.36 | 18.09 GiB | 0.29 GiB |
 | ROCm, pre-E337 spill | 98,304 | 59,004 | 553.50 | 17.64 | 24.45 GiB | 6.25 GiB |
 | ROCm, E338 one copy, none | 98,304 | 59,045 | **1493.21** | 19.15 | 22.05 GiB | 3.20 GiB |
 | ROCm, E338 one copy, MTP n3 | 98,304 | 59,045 | 1435.97 | **35.44** | 23.96 GiB | 3.26 GiB |
 | Vulkan | 98,304 | 58,982 | 1171.17 | 24.18 | 20.06 GiB | 0.54 GiB |
 | Vulkan | 131,072 | 75,979 | 1051.67 | **23.02** | 21.38 GiB | 0.70 GiB |
+
+The current 49K performance row is E353; its Dedicated/Shared peaks are the
+matched-placement E335 sampler values because E353 did not run the WDDM memory
+monitor. The kernel changes do not add persistent buffers.
 
 ROCm remains the faster prompt-evaluation backend at `ctx=49152`. The old
 `ctx=98304` run reached a real residency cliff: Shared peaked at 6.25 GiB and
@@ -86,7 +96,8 @@ Q4_K_M cannot be fully resident on one 16 GiB card. The GPU model tensors alone
 use about 15.25 GiB before KV, recurrent state, compute buffers, driver
 reservations, and desktop usage.
 
-The old 49K artifacts use the `e335-rocm-q4km-` prefix; the current 98K
+The refreshed short/49K artifacts use the `e352-`, `e353-`, and `e357-q4km-`
+prefixes. The sampled 49K residency artifacts use `e335-rocm-q4km-`; the 98K
 scheduler-residency artifacts use `e338-rocm-dual-q4km-`. The benchmark
 registry identifies the configured build directory as `build-rocm-full`. The
 complete original methodology and historical per-device measurements are
@@ -102,3 +113,7 @@ The bounded active-staging follow-up is recorded in
 [E337: bounded ROCm Q8 FlashAttention WMMA](docs/research/experiments/E337_rocm_q8_chunked_wmma.md).
 The scheduler-residency follow-up is recorded in
 [E338: ROCm dual-GPU long-context scheduler residency](docs/research/experiments/E338_rocm_dual_long_context_scheduler_residency.md).
+The current quantized prompt/decode kernel work is recorded in
+[E344: Q4_K/Q5_K MMQ geometry](docs/research/experiments/E344_rocm_q4q5_type_specific_mmq_geometry.md)
+and
+[E345: Q6_K MMVQ policy](docs/research/experiments/E345_rocm_q6_route_and_smallk.md).

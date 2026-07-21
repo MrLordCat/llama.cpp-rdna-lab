@@ -3268,15 +3268,18 @@ public:
 
         struct backend_batch {
             ggml_backend_t backend = nullptr;
-            std::vector<ggml_backend_tensor_get_entry> entries;
+            std::vector<const write_info *> entries;
         };
         std::vector<backend_batch> batches;
         std::vector<const write_info *> fallback;
 
         for (const auto & info : winfos) {
             ggml_backend_t owner = nullptr;
+            const ggml_backend_buffer_t buffer = info.tensor->view_src
+                    ? info.tensor->view_src->buffer
+                    : info.tensor->buffer;
             const ggml_backend_dev_t device = ggml_backend_buft_get_device(
-                    ggml_backend_buffer_get_type(info.tensor->buffer));
+                    ggml_backend_buffer_get_type(buffer));
             for (const auto & backend : backends) {
                 if (ggml_backend_get_device(backend.get()) == device) {
                     owner = backend.get();
@@ -3296,7 +3299,7 @@ public:
                 batches.push_back({ owner, {} });
                 it = std::prev(batches.end());
             }
-            it->entries.push_back({ info.tensor, info.ptr, info.offset, info.size });
+            it->entries.push_back(&info);
         }
 
         if (std::getenv("LLAMA_CHECKPOINT_TIMING")) {
@@ -3304,8 +3307,16 @@ public:
                     winfos.size(), batches.size(), fallback.size());
         }
 
+        // Submit every device before waiting so dual-GPU D2H transfers can
+        // overlap. Pinned checkpoint staging makes these copies truly async.
         for (const auto & batch : batches) {
-            ggml_backend_tensor_get_batch(batch.backend, batch.entries.data(), batch.entries.size());
+            for (const write_info * info : batch.entries) {
+                ggml_backend_tensor_get_async(
+                        batch.backend, info->tensor, info->ptr, info->offset, info->size);
+            }
+        }
+        for (const auto & batch : batches) {
+            ggml_backend_synchronize(batch.backend);
         }
         for (const write_info * info : fallback) {
             ggml_backend_tensor_get(info->tensor, info->ptr, info->offset, info->size);
@@ -3356,12 +3367,66 @@ private:
 
 class llama_io_read_buffer : public llama_io_read_i {
 public:
-    llama_io_read_buffer(const uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
+    llama_io_read_buffer(
+            const uint8_t * p, size_t len,
+            const std::vector<ggml_backend_ptr> & backends) : ptr(p), buf_size(len), backends(backends) {}
 
     ~llama_io_read_buffer() {
-        // flush the reads
+        struct backend_batch {
+            ggml_backend_t backend = nullptr;
+            std::vector<const read_info *> entries;
+        };
+        std::vector<backend_batch> batches;
+        std::vector<const read_info *> fallback;
+
         for (const auto & info : rinfos) {
-            ggml_backend_tensor_set(info.tensor, info.ptr, info.offset, info.size);
+            ggml_backend_t owner = nullptr;
+            const ggml_backend_buffer_t buffer = info.tensor->view_src
+                    ? info.tensor->view_src->buffer
+                    : info.tensor->buffer;
+            const ggml_backend_dev_t device = ggml_backend_buft_get_device(
+                    ggml_backend_buffer_get_type(buffer));
+            for (const auto & backend : backends) {
+                if (ggml_backend_get_device(backend.get()) == device) {
+                    owner = backend.get();
+                    break;
+                }
+            }
+
+            if (!owner) {
+                fallback.push_back(&info);
+                continue;
+            }
+
+            auto it = std::find_if(batches.begin(), batches.end(), [owner](const backend_batch & batch) {
+                return batch.backend == owner;
+            });
+            if (it == batches.end()) {
+                batches.push_back({ owner, {} });
+                it = std::prev(batches.end());
+            }
+            it->entries.push_back(&info);
+        }
+
+        if (std::getenv("LLAMA_CHECKPOINT_TIMING")) {
+            LLAMA_LOG_INFO("checkpoint restore route: tensors=%zu backends=%zu fallback=%zu\n",
+                    rinfos.size(), batches.size(), fallback.size());
+        }
+
+        // Submit all devices before waiting so dual-GPU H2D transfers can run
+        // concurrently. Backends without async set support retain the generic
+        // synchronous behavior.
+        for (const auto & batch : batches) {
+            for (const read_info * info : batch.entries) {
+                ggml_backend_tensor_set_async(
+                        batch.backend, info->tensor, info->ptr, info->offset, info->size);
+            }
+        }
+        for (const auto & batch : batches) {
+            ggml_backend_synchronize(batch.backend);
+        }
+        for (const read_info * info : fallback) {
+            ggml_backend_tensor_set(info->tensor, info->ptr, info->offset, info->size);
         }
     }
 
@@ -3396,6 +3461,7 @@ private:
     const uint8_t * ptr;
     size_t buf_size = 0;
     size_t size_read = 0;
+    const std::vector<ggml_backend_ptr> & backends;
 
     struct read_info {
         ggml_tensor * tensor;
@@ -3466,10 +3532,60 @@ size_t llama_context::state_get_size() {
     }
 }
 
+uint8_t * llama_context::state_pinned_staging(size_t size) {
+    const char * env = std::getenv("LLAMA_CHECKPOINT_PINNED_STAGING");
+    if (env == nullptr || env[0] == '\0' || std::strcmp(env, "0") == 0) {
+        return nullptr;
+    }
+
+    if (buf_state_staging && ggml_backend_buffer_get_size(buf_state_staging.get()) >= size) {
+        return static_cast<uint8_t *>(ggml_backend_buffer_get_base(buf_state_staging.get()));
+    }
+
+    ggml_backend_buffer_type_t host_buft = nullptr;
+    for (const auto & backend : backends) {
+        ggml_backend_dev_t dev = ggml_backend_get_device(backend.get());
+        if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+            continue;
+        }
+        host_buft = ggml_backend_dev_host_buffer_type(dev);
+        if (host_buft) {
+            break;
+        }
+    }
+    if (!host_buft) {
+        return nullptr;
+    }
+
+    ggml_backend_buffer_ptr next(ggml_backend_buft_alloc_buffer(host_buft, size));
+    if (!next || ggml_backend_buffer_get_type(next.get()) != host_buft) {
+        LLAMA_LOG_WARN("%s: backend-pinned host allocation failed for %.2f MiB; using pageable checkpoint memory\n",
+                __func__, size / 1024.0 / 1024.0);
+        return nullptr;
+    }
+
+    LLAMA_LOG_INFO("%s: allocated %.2f MiB backend-pinned checkpoint staging buffer\n",
+            __func__, size / 1024.0 / 1024.0);
+    buf_state_staging = std::move(next);
+    return static_cast<uint8_t *>(ggml_backend_buffer_get_base(buf_state_staging.get()));
+}
+
 size_t llama_context::state_get_data(uint8_t * dst, size_t size) {
-    llama_io_write_buffer io(dst, size, backends);
     try {
-        return state_write_data(io);
+        const size_t staging_size = size == SIZE_MAX ? state_get_size() : size;
+        uint8_t * staging = state_pinned_staging(staging_size);
+        if (!staging) {
+            llama_io_write_buffer io(dst, size, backends);
+            return state_write_data(io);
+        }
+
+        size_t written = 0;
+        {
+            llama_io_write_buffer io(staging, size, backends);
+            written = state_write_data(io);
+        }
+        std::memcpy(dst, staging, written);
+        return written;
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: error saving state: %s\n", __func__, err.what());
         return 0;
@@ -3477,8 +3593,16 @@ size_t llama_context::state_get_data(uint8_t * dst, size_t size) {
 }
 
 size_t llama_context::state_set_data(const uint8_t * src, size_t size) {
-    llama_io_read_buffer io(src, size);
     try {
+        const size_t staging_size = size == SIZE_MAX ? state_get_size() : size;
+        uint8_t * staging = state_pinned_staging(staging_size);
+        if (!staging) {
+            llama_io_read_buffer io(src, size, backends);
+            return state_read_data(io);
+        }
+
+        std::memcpy(staging, src, staging_size);
+        llama_io_read_buffer io(staging, staging_size, backends);
         return state_read_data(io);
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: error loading state: %s\n", __func__, err.what());
@@ -3497,9 +3621,21 @@ size_t llama_context::state_seq_get_size(llama_seq_id seq_id, llama_state_seq_fl
 }
 
 size_t llama_context::state_seq_get_data(llama_seq_id seq_id, uint8_t * dst, size_t size, llama_state_seq_flags flags) {
-    llama_io_write_buffer io(dst, size, backends);
     try {
-        return state_seq_write_data(io, seq_id, flags);
+        const size_t staging_size = size == SIZE_MAX ? state_seq_get_size(seq_id, flags) : size;
+        uint8_t * staging = state_pinned_staging(staging_size);
+        if (!staging) {
+            llama_io_write_buffer io(dst, size, backends);
+            return state_seq_write_data(io, seq_id, flags);
+        }
+
+        size_t written = 0;
+        {
+            llama_io_write_buffer io(staging, size, backends);
+            written = state_seq_write_data(io, seq_id, flags);
+        }
+        std::memcpy(dst, staging, written);
+        return written;
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: error saving state: %s\n", __func__, err.what());
         return 0;
@@ -3507,8 +3643,16 @@ size_t llama_context::state_seq_get_data(llama_seq_id seq_id, uint8_t * dst, siz
 }
 
 size_t llama_context::state_seq_set_data(llama_seq_id seq_id, const uint8_t * src, size_t size, llama_state_seq_flags flags) {
-    llama_io_read_buffer io(src, size);
     try {
+        const size_t staging_size = size == SIZE_MAX ? state_seq_get_size(seq_id, flags) : size;
+        uint8_t * staging = state_pinned_staging(staging_size);
+        if (!staging) {
+            llama_io_read_buffer io(src, size, backends);
+            return state_seq_read_data(io, seq_id, flags);
+        }
+
+        std::memcpy(staging, src, staging_size);
+        llama_io_read_buffer io(staging, staging_size, backends);
         return state_seq_read_data(io, seq_id, flags);
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: error loading state: %s\n", __func__, err.what());

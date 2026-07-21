@@ -5,6 +5,11 @@ argument-hint: "Hypothesis ID, baseline label, candidate change, lane"
 ---
 Run a focused TPS A/B gate for the requested hypothesis.
 
+Recommended model classes: long-context workhorse for initial synthesis; full
+executor for the source patch. When subagents are available, hand the fixed
+hardware lane to `bench-runner` and the completed diff to
+`reviewer-validator`. Do not pin a provider model ID.
+
 Inputs from user:
 
 - Hypothesis / experiment ID: ${input:hypothesis}

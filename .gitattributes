@@ -12,6 +12,7 @@ tools/server/public/index.html -diff
 
 # При merge из upstream: всегда сохранять нашу версию этих файлов
 AGENTS.md merge=ours
+AGENT_WORKFLOW.md merge=ours
 CLAUDE.md merge=ours
 README.md merge=ours
 MTP.md merge=ours

@@ -1,5 +1,10 @@
 # Major Topology Workflow
 
+Status update (2026-07-20): the primary project model is now
+`Qwen3.6-27B-Q4_K_M.gguf` with the D089 dual-ROCm 49K baseline. The Q3_K_S
+program described below remains valid as a secondary model-specific topology
+program. Do not carry its target math or TPS rows into Q4 experiments.
+
 This document starts the post-E264 research mode. The earlier E### loop was good
 for quick gates, but the active Vulkan/ROCm Q3_K lane has exhausted nearby
 flags, batch shapes, f16 pivots, helper rewrites, and simple layout flips. The

@@ -142,8 +142,13 @@ static constexpr __device__ int get_mmq_x_max_device() {
 }
 
 static int get_mmq_y_host(const int cc) {
+#if defined(GGML_MMQ_RDNA4_Q4Q5_Y128_W8)
+    return GGML_CUDA_CC_IS_AMD(cc) ? (GGML_CUDA_CC_IS_RDNA1(cc) ? 64 : 128) :
+        ((GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA) ? 128 : 64);
+#else
     return GGML_CUDA_CC_IS_AMD(cc) ? ((GGML_CUDA_CC_IS_RDNA1(cc) || GGML_CUDA_CC_IS_RDNA4(cc)) ? 64 : 128) :
         ((GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA) ? 128 : 64);
+#endif
 }
 
 static constexpr __device__ int get_iter_k([[maybe_unused]] const ggml_type type) {
@@ -160,7 +165,11 @@ static constexpr __device__ int get_mmq_y_device() {
 #if defined(RDNA1)
     return 64;
 #elif defined(RDNA4)
+#if defined(GGML_MMQ_RDNA4_Q4Q5_Y128_W8)
+    return 128;
+#else
     return 64;
+#endif
 #else
     return 128;
 #endif // defined RDNA1
@@ -310,9 +319,11 @@ static constexpr __device__ int mmq_get_granularity_device(const int /*mmq_x*/) 
 
 #if defined(GGML_USE_HIP)
 static int mmq_get_nwarps_host(const int cc, const int warp_size) {
+#if !defined(GGML_MMQ_RDNA4_Q4Q5_Y128_W8)
     if (GGML_CUDA_CC_IS_RDNA4(cc)) {
         return 4;
     }
+#endif
     return amd_mfma_available(cc) ? 8 : 256/warp_size;
 }
 #else
@@ -324,7 +335,11 @@ static int mmq_get_nwarps_host(const int /*cc*/, const int warp_size) {
 static constexpr __device__ int mmq_get_nwarps_device() {
 #if defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
 #if defined(RDNA4)
+#if defined(GGML_MMQ_RDNA4_Q4Q5_Y128_W8)
+    return 8;
+#else
     return 4;
+#endif
 #else
     return 8;
 #endif
@@ -4223,6 +4238,24 @@ static int mmq_rdna4_pq2_force_mmq_x() {
 #endif
 }
 
+static int mmq_rdna4_q4q5_force_mmq_x() {
+#if defined(GGML_USE_HIP)
+    const char * env = std::getenv("GGML_MMQ_RDNA4_Q4Q5_FORCE_MMQ_X");
+    if (env == nullptr) {
+        return 0;
+    }
+
+    const int mmq_x = std::atoi(env);
+    if (mmq_x < 8 || mmq_x > 128 || mmq_x % 8 != 0) {
+        return 0;
+    }
+
+    return mmq_x;
+#else
+    return 0;
+#endif
+}
+
 static bool mmq_rdna4_q3_smalln_dp4a_enabled(const mmq_args & args, const int cc) {
 #if defined(GGML_USE_HIP)
     const char * env = std::getenv("GGML_RDNA4_Q3K_SMALLN_DP4A");
@@ -4576,9 +4609,17 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
             select_mmq_x_best(use_rdna4_moe_mmq_staging_effective);
         }
 
-        if (GGML_CUDA_CC_IS_RDNA4(cc) && (type == GGML_TYPE_Q3_K || type == GGML_TYPE_PQ2_0)) {
-            const int mmq_x_override = type == GGML_TYPE_Q3_K ?
-                mmq_rdna4_q3_force_mmq_x() : mmq_rdna4_pq2_force_mmq_x();
+        if (GGML_CUDA_CC_IS_RDNA4(cc) &&
+                (type == GGML_TYPE_Q3_K || type == GGML_TYPE_PQ2_0 ||
+                 type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K)) {
+            int mmq_x_override = 0;
+            if constexpr (type == GGML_TYPE_Q3_K) {
+                mmq_x_override = mmq_rdna4_q3_force_mmq_x();
+            } else if constexpr (type == GGML_TYPE_PQ2_0) {
+                mmq_x_override = mmq_rdna4_pq2_force_mmq_x();
+            } else {
+                mmq_x_override = mmq_rdna4_q4q5_force_mmq_x();
+            }
             if (mmq_x_override > 0) {
                 const int granularity = mmq_get_granularity_host(mmq_x_override, cc);
                 const bool shared_fits = mmq_get_nbytes_shared<type>(mmq_x_override, mmq_y, cc, warp_size, nwarps, use_rdna4_moe_mmq_staging_effective) <= smpbo;
@@ -4775,4 +4816,3 @@ void ggml_cuda_op_mul_mat_q(
     const int64_t src1_padded_row_size, cudaStream_t stream);
 
 bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t n_experts);
-

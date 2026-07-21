@@ -1,5 +1,9 @@
 # Repository Automation
 
+Agent orchestration, BYOK model routing, ownership, and handoff rules are
+defined in `AGENT_WORKFLOW.md`. VS Code custom roles and reusable entry points
+live under `.github/agents/` and `.github/prompts/`.
+
 This fork keeps `.github/**` as a local integration layer. Upstream workflows
 from `ggml-org/llama.cpp` must not automatically overwrite the fork's local
 automation and hardware assumptions.
