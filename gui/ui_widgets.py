@@ -183,7 +183,7 @@ _LOG_STYLES = [
     ("[ERROR]", "color:#ff8a80;"),
     ("ERROR", "color:#ff8a80;"),
     ("[WARN]", "color:#f0c674;"),
-    ("BEST", "color:#4fd1bd; font-weight:600;"),
+    ("BEST", "color:#7fa8e6; font-weight:600;"),
 ]
 
 
@@ -222,7 +222,7 @@ class LogView(QTextEdit):
                 rest = html.escape(line[len("[INFO]"):])
                 rendered = f'<span style="color:#7f8a97;">[INFO]</span><span>{rest}</span>'
         if count > 1:
-            rendered += f'&nbsp;<span style="color:#5bc8b6; font-weight:600;">×{count}</span>'
+            rendered += f'&nbsp;<span style="color:#7fa8e6; font-weight:600;">×{count}</span>'
         return rendered
 
     def _passes_filter(self, line: str) -> bool:

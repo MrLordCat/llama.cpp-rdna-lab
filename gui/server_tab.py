@@ -94,8 +94,8 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        info_label = QLabel("🚀 Launch Server - Start llama-server with OpenAI compatible API")
-        info_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        info_label = QLabel("Launch Server - Start llama-server with OpenAI compatible API")
+        info_label.setProperty("heading", True)
         layout.addWidget(info_label)
 
         # Create splitter for left (settings) and right (log) panels
@@ -113,6 +113,8 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
+        scroll_layout.setContentsMargins(2, 2, 10, 2)
+        scroll_layout.setSpacing(10)
 
         # Model selection
         model_group = QGroupBox("Model Selection")
@@ -123,7 +125,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_model_path.setPlaceholderText("Path to model file...")
         model_row.addWidget(self.server_model_path)
 
-        self.browse_server_model_btn = QPushButton("📂 Browse")
+        self.browse_server_model_btn = QPushButton("Browse")
         self.browse_server_model_btn.clicked.connect(self.browse_server_model)
         model_row.addWidget(self.browse_server_model_btn)
 
@@ -138,7 +140,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_models_combo.currentTextChanged.connect(self.on_server_model_selected)
         model_list_row.addWidget(self.server_models_combo, 1)
 
-        self.server_models_refresh_btn = QPushButton("🔄 Refresh")
+        self.server_models_refresh_btn = QPushButton("Refresh")
         self.server_models_refresh_btn.clicked.connect(self.refresh_server_models_list)
         model_list_row.addWidget(self.server_models_refresh_btn)
         model_layout.addLayout(model_list_row)
@@ -163,21 +165,13 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         vision_row.addWidget(self.server_mmproj_offload_check)
         model_layout.addLayout(vision_row)
 
-        # Presets: quick presets apply on selection; the model preset comes
-        # from gui/model_presets.json and is re-applied automatically when a
-        # model is picked — the button is a manual re-apply.
+        # Model preset: the matching profile from gui/model_presets.json is
+        # re-applied automatically when a model is picked — this button is a
+        # manual re-apply after hand edits.
         preset_layout = QHBoxLayout()
-        preset_label = QLabel("Quick preset:")
-        preset_label.setFixedWidth(108)
-        preset_layout.addWidget(preset_label)
-        self.server_preset_combo = QComboBox()
-        self.server_preset_combo.addItems(["Default", "Fast", "Quality", "Balanced", "VRAM Limited", "CPU Fallback"])
-        self.server_preset_combo.setToolTip("Generic starting points; applied immediately on selection")
-        self.server_preset_combo.currentIndexChanged.connect(self.apply_server_preset)
-        preset_layout.addWidget(self.server_preset_combo)
         preset_layout.addStretch()
 
-        self.server_apply_model_preset_btn = QPushButton("✨ Re-apply Model Preset")
+        self.server_apply_model_preset_btn = QPushButton("Re-apply Model Preset")
         self.server_apply_model_preset_btn.setToolTip(
             "Apply the matching preset for this model from gui/model_presets.json.\n"
             "Runs automatically when a model is selected — use this to re-apply\n"
@@ -345,9 +339,8 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self._grid_pair(resources_grid, 2, 0, "Checkpoints:", self.server_ctx_checkpoints_spinbox)
         self._grid_pair(resources_grid, 2, 1, "Interval:", self.server_checkpoint_interval_spinbox)
         resources_grid.setColumnStretch(4, 1)
-        resources_grid.setRowStretch(3, 1)
         resources_group.setLayout(resources_grid)
-        res_spec_row.addWidget(resources_group, 1)
+        res_spec_row.addWidget(resources_group, 1, Qt.AlignmentFlag.AlignTop)
 
         # Speculative Decoding — separate sub-grids per parameter family so
         # on_spec_type_changed can enable/disable them as before
@@ -410,9 +403,8 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.ngram_layout_group = ngram_grid
         self.ngram_layout_group.setEnabled(False)
 
-        spec_layout.addStretch(1)
         spec_group.setLayout(spec_layout)
-        res_spec_row.addWidget(spec_group, 1)
+        res_spec_row.addWidget(spec_group, 1, Qt.AlignmentFlag.AlignTop)
         scroll_layout.addLayout(res_spec_row)
 
         # Sampling + Performance Options share the next row
@@ -445,9 +437,8 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self._grid_pair(sampling_grid, 0, 1, "Top-P:", self.server_top_p_spinbox)
         self._grid_pair(sampling_grid, 1, 0, "Top-K:", self.server_top_k_spinbox)
         sampling_grid.setColumnStretch(4, 1)
-        sampling_grid.setRowStretch(2, 1)
         sampling_group.setLayout(sampling_grid)
-        samp_perf_row.addWidget(sampling_group, 1)
+        samp_perf_row.addWidget(sampling_group, 1, Qt.AlignmentFlag.AlignTop)
 
         perf_group = QGroupBox("Performance Options")
         perf_layout = QVBoxLayout()
@@ -476,9 +467,8 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_auto_fit_check.setChecked(True)
         perf_layout.addWidget(self.server_auto_fit_check)
 
-        perf_layout.addStretch(1)
         perf_group.setLayout(perf_layout)
-        samp_perf_row.addWidget(perf_group, 1)
+        samp_perf_row.addWidget(perf_group, 1, Qt.AlignmentFlag.AlignTop)
         scroll_layout.addLayout(samp_perf_row)
 
         # Security & API + Extra Arguments share the last row
@@ -517,7 +507,18 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
 
         extra_args_group.setLayout(extra_args_layout)
         sec_extra_row.addWidget(extra_args_group, 1)
-        scroll_layout.addLayout(sec_extra_row)
+
+        sec_extra_container = QWidget()
+        sec_extra_container.setLayout(sec_extra_row)
+        advanced_settings = self.parent.settings if hasattr(self.parent, "settings") else None
+        advanced_section = CollapsibleSection(
+            "Security && Extra Arguments",
+            sec_extra_container,
+            settings=advanced_settings,
+            settings_key="server/advanced_expanded",
+            expanded=False,
+        )
+        scroll_layout.addWidget(advanced_section)
         scroll_layout.addStretch(1)
 
         scroll_area.setWidget(scroll_widget)
@@ -531,24 +532,34 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         # Control buttons at top
         buttons_layout = QHBoxLayout()
 
-        self.server_start_btn = QPushButton("▶️ Start Server")
+        self.server_start_btn = QPushButton("Start Server")
         self.server_start_btn.clicked.connect(self.start_server)
         self.server_start_btn.setStyleSheet(
-            "QPushButton { font-size: 12px; padding: 8px; background-color: #4CAF50; color: white; }"
-            "QPushButton:disabled { background-color: #3a3a3a; color: #808080; }"
+            "QPushButton { font-size: 12px; font-weight: 600; padding: 8px 14px;"
+            " background-color: #3d6fd6; color: white; border: 1px solid #5a8ce8;"
+            " border-radius: 6px; }"
+            "QPushButton:hover { background-color: #4d7fdd; border-color: #7ba6ee; }"
+            "QPushButton:pressed { background-color: #2f5cb8; }"
+            "QPushButton:disabled { background-color: #262f40; color: #77808c;"
+            " border-color: #313c52; }"
         )
         buttons_layout.addWidget(self.server_start_btn)
 
-        self.server_stop_btn = QPushButton("⏹️ Stop Server")
+        self.server_stop_btn = QPushButton("Stop Server")
         self.server_stop_btn.clicked.connect(self.stop_server)
         self.server_stop_btn.setEnabled(False)
         self.server_stop_btn.setStyleSheet(
-            "QPushButton { font-size: 12px; padding: 8px; background-color: #f44336; color: white; }"
-            "QPushButton:disabled { background-color: #3a3a3a; color: #808080; }"
+            "QPushButton { font-size: 12px; font-weight: 600; padding: 8px 14px;"
+            " background-color: #c74d45; color: white; border: 1px solid #e06a60;"
+            " border-radius: 6px; }"
+            "QPushButton:hover { background-color: #d65c52; border-color: #f0837a; }"
+            "QPushButton:pressed { background-color: #a53c35; }"
+            "QPushButton:disabled { background-color: #262f40; color: #77808c;"
+            " border-color: #313c52; }"
         )
         buttons_layout.addWidget(self.server_stop_btn)
 
-        self.server_web_btn = QPushButton("🌐 Open Web")
+        self.server_web_btn = QPushButton("Open Web")
         self.server_web_btn.clicked.connect(self.open_web_ui)
         self.server_web_btn.setEnabled(False)
         buttons_layout.addWidget(self.server_web_btn)
@@ -967,7 +978,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
                 html_parts.append(f'<div style="font-weight:600;">{esc(line)}</div>')
             else:
                 flag, _, value = line.strip().partition(" ")
-                rendered = f'<span style="color:#7bd8c5;">{esc("  " + flag)}</span>'
+                rendered = f'<span style="color:#7fa8e6;">{esc("  " + flag)}</span>'
                 if value:
                     rendered += f" <span>{esc(value)}</span>"
                 html_parts.append(f"<div>{rendered}</div>")

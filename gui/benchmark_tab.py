@@ -60,20 +60,8 @@ from bench_widgets import (
 )
 from model_capabilities import model_supports_mtp
 from proc_utils import run_hidden
+from server_capabilities import ServerCapabilityResolver
 from ui_widgets import FlowLayout, LogPanel, StatusPill, make_chip
-
-
-class _ServerHelpProbeThread(QThread):
-    """Warm the server --help cache off the GUI thread (loading a server
-    binary pulls in every backend DLL and can take seconds)."""
-
-    def __init__(self, tab, server_bin: Path):
-        super().__init__(tab)
-        self._tab = tab
-        self._server_bin = server_bin
-
-    def run(self):
-        self._tab._server_help_output(self._server_bin)
 
 
 class LlamaServerStopThread(QThread):
@@ -293,12 +281,18 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         # Use --flag=value form so server flags such as "--no-mmap" are preserved.
         return f"--server-extra={server_extra}"
 
-    def __init__(self, parent):
+    def __init__(self, parent, capability_resolver: ServerCapabilityResolver | None = None):
         super().__init__()
         self.parent = parent
         self.settings = getattr(parent, "settings", None)
         self.models_dir = parent.models_dir if hasattr(parent, "models_dir") else Path("models")
         self.project_root = parent.project_root if hasattr(parent, "project_root") else Path.cwd()
+        self.server_capabilities = capability_resolver or getattr(parent, "server_capabilities", None)
+        if self.server_capabilities is None:
+            self.server_capabilities = ServerCapabilityResolver(
+                self.project_root,
+                getattr(parent, "build_registry", None),
+            )
         self.history_csv = self.project_root / "build_logs" / "agent-workload" / "BENCH_HISTORY.csv"
         self.history_csv_v2 = self.project_root / "build_logs" / "agent-workload" / "BENCH_HISTORY_V2.csv"
         self.best_presets_path = self.project_root / "gui" / "model_autotune_best.json"
@@ -309,7 +303,6 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self._current_autotune_profile = "ctx130k-only"
         self._current_build_id = ""
         self._summary_sweep_cache: dict[str, tuple[str, str]] = {}
-        self._server_help_cache: dict[str, str] = {}
         self._bench_help_cache: dict[str, str] = {}
         self._autotune_result = {"best": "", "summary_json": "", "summary_csv": ""}
         self._autotune_active_run: str | None = None
@@ -486,8 +479,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         root_layout.setContentsMargins(8, 8, 8, 8)
         root_layout.setSpacing(8)
 
-        info_label = QLabel("📈 Bench & Autotune - dedicated benchmark workflows")
-        info_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        info_label = QLabel("Bench & Autotune - dedicated benchmark workflows")
+        info_label.setProperty("heading", True)
         info_label.setWordWrap(True)
         root_layout.addWidget(info_label)
 
@@ -663,14 +656,14 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         )
         single_page_layout.addWidget(self.scale_prompt_check)
 
-        self.apply_best_btn = QPushButton("⭐ Apply Best Known")
+        self.apply_best_btn = QPushButton("Apply Best Known")
         self.apply_best_btn.setToolTip(
             "Fill ctx/batch/ubatch/KV/spec from the best autotune result recorded for the selected model"
         )
         self.apply_best_btn.clicked.connect(self.apply_best_known_config)
         single_page_layout.addWidget(self.apply_best_btn)
 
-        self.run_bench_btn = QPushButton("▶ Run Benchmark")
+        self.run_bench_btn = QPushButton("Run Benchmark")
         self.run_bench_btn.setToolTip("Run a single benchmark with the parameters above")
         self.run_bench_btn.clicked.connect(self.run_benchmark)
         single_page_layout.addWidget(self.run_bench_btn)
@@ -682,7 +675,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.validate_ctx_combo.addItem(display)
         validate_row.addWidget(self.validate_ctx_combo)
 
-        self.validate_best_btn = QPushButton("🔬 Validate Best (long prompt)")
+        self.validate_best_btn = QPushButton("Validate Best (long prompt)")
         self.validate_best_btn.setToolTip(
             "Stage 2 of the screen→validate flow: apply the model's best known\n"
             "config, set the chosen long context, enable long-prompt mode and\n"
@@ -693,7 +686,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         single_page_layout.addLayout(validate_row)
         single_page_layout.addStretch(1)
 
-        self.mode_tabs.addTab(single_page, "▶ Single Bench")
+        self.mode_tabs.addTab(single_page, "Single Bench")
 
         autotune_page = QWidget()
         autotune_layout = QVBoxLayout(autotune_page)
@@ -977,13 +970,13 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.autotune_grid_preview_label.setProperty("gridState", "ok")
         autotune_layout.addWidget(self.autotune_grid_preview_label)
 
-        self.run_autotune_btn = QPushButton("🔁 Run Auto-tune")
+        self.run_autotune_btn = QPushButton("Run Auto-tune")
         self.run_autotune_btn.setToolTip("Run the autotune grid on the selected context lane")
         self.run_autotune_btn.clicked.connect(self.run_autotune)
         autotune_layout.addWidget(self.run_autotune_btn)
         autotune_layout.addStretch(1)
 
-        self.mode_tabs.addTab(autotune_page, "🔁 Auto-tune")
+        self.mode_tabs.addTab(autotune_page, "Auto-tune")
         left_layout.addWidget(self.mode_tabs)
 
         for combo, minimum_contents_length in [
@@ -1678,7 +1671,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
                 "Auto-tune",
                 "No valid spec modes resolved for autotune.\n"
                 f"Selected: {','.join(requested_spec_values)}\n"
-                "Check llama-server --help and model compatibility.",
+                "Check build capability metadata and model compatibility.",
             )
             return
 
@@ -2369,24 +2362,21 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         effective_spec_values = list(selected_spec_values)
         skipped_spec_values: list[str] = []
         has_runtime_context = False
-
-        probing_help = False
+        capability_source = ""
+        capability_note = ""
         preview_model = self._resolve_selected_model()
         preview_server, _ = self._resolve_selected_server()
         if preview_model is not None and preview_server is not None and selected_spec_values:
-            # never run server --help on the GUI thread: use the cache when
-            # warm, otherwise probe in the background and refresh on finish
-            if self._server_help_cached(preview_server):
-                has_runtime_context = True
-                effective_spec_values = self._resolve_autotune_spec_values(
-                    preview_server,
-                    preview_model,
-                    ",".join(selected_spec_values),
-                )
-                skipped_spec_values = [mode for mode in selected_spec_values if mode not in effective_spec_values]
-            else:
-                probing_help = True
-                self._start_server_help_probe(preview_server)
+            capabilities = self.server_capabilities.resolve(preview_server)
+            has_runtime_context = True
+            capability_source = capabilities.source
+            capability_note = capabilities.note
+            effective_spec_values = self._resolve_autotune_spec_values(
+                preview_server,
+                preview_model,
+                ",".join(selected_spec_values),
+            )
+            skipped_spec_values = [mode for mode in selected_spec_values if mode not in effective_spec_values]
 
         effective_spec_text = ",".join(effective_spec_values) if effective_spec_values else "-"
         extra_count = len(extra_presets)
@@ -2491,7 +2481,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         lane_short = self.AUTOTUNE_LANES[self.lane_combo.currentIndex()][0].split(" — ")[0]
         if lane_short == "Custom":
             lane_short = f"Custom {lane_ctx}"
-        self.run_autotune_btn.setText(f"🔁 Run Auto-tune — {lane_short}")
+        self.run_autotune_btn.setText(f"Run Auto-tune — {lane_short}")
 
         detail_lines = [
             f"Batch values: {self._format_values_preview(batch_values)}",
@@ -2503,10 +2493,13 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         ]
         if has_runtime_context:
             detail_lines.insert(4, f"Spec modes (effective): {effective_spec_text}")
+            detail_lines.insert(5, f"Capability source: {capability_source}")
             if skipped_spec_values:
                 detail_lines.append(
                     "Spec auto-skipped (unsupported by server/model): " + ",".join(skipped_spec_values)
                 )
+            if capability_note:
+                detail_lines.append(capability_note)
         else:
             detail_lines.append("Spec effective set is resolved at run start (needs model + server).")
 
@@ -2530,24 +2523,22 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
                 f"{len(kv_values)} KV × {len(effective_spec_values)} spec × {extra_count} extra"
             )
         lines = [summary]
-        if probing_help:
-            lines.append("Spec support: probing server --help in background…")
+        if capability_note:
+            lines.append("Spec support: metadata unavailable; using conservative spec=none.")
         if skipped_spec_values:
             lines.append("Spec auto-skipped: " + ",".join(skipped_spec_values))
         if errors:
             lines.append("Fix selection: " + "; ".join(errors))
 
         grid_state = "ok" if valid_ranges and valid_modes else "error"
-        if probing_help and grid_state == "ok":
+        if capability_note and grid_state == "ok":
+            # amber caution: config is valid but capabilities fell back to the
+            # conservative spec=none default (no build metadata available)
             grid_state = "busy"
         self._set_dynamic_property(self.autotune_grid_preview_label, "gridState", grid_state)
 
         self.autotune_grid_preview_label.setText("\n".join(lines))
         self.autotune_grid_preview_label.setToolTip("\n".join(detail_lines))
-
-    @staticmethod
-    def _parse_csv_values(values: str) -> list[str]:
-        return [v.strip().lower() for v in values.split(",") if v.strip()]
 
     def _bench_help_output(self) -> str:
         script_path = self.project_root / "scripts" / "agent_workload_bench.py"
@@ -2582,130 +2573,15 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             normalized = f"--{normalized}"
         return normalized in self._bench_help_output()
 
-    @staticmethod
-    def _server_help_cache_key(server_bin: Path) -> str:
-        try:
-            return str(server_bin.resolve())
-        except Exception:
-            return str(server_bin)
-
-    def _server_help_cached(self, server_bin: Path) -> bool:
-        return self._server_help_cache_key(server_bin) in self._server_help_cache
-
-    def _start_server_help_probe(self, server_bin: Path) -> None:
-        thread = getattr(self, "_help_probe_thread", None)
-        if thread is not None and thread.isRunning():
-            return
-        thread = _ServerHelpProbeThread(self, server_bin)
-        thread.finished.connect(self._update_autotune_grid_preview)
-        self._help_probe_thread = thread
-        thread.start()
-
-    def _server_help_output(self, server_bin: Path) -> str:
-        cache_key = self._server_help_cache_key(server_bin)
-
-        if cache_key in self._server_help_cache:
-            return self._server_help_cache[cache_key]
-
-        try:
-            result = run_hidden(
-                [str(server_bin), "--help"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            output = ((result.stdout or "") + "\n" + (result.stderr or "")).lower()
-            self._server_help_cache[cache_key] = output
-            return output
-        except Exception:
-            self._server_help_cache[cache_key] = ""
-            return ""
-
     def _resolve_autotune_spec_values(self, server_bin: Path, model: Path, raw_values: str) -> list[str]:
-        requested = raw_values.strip().lower()
-        output = self._server_help_output(server_bin)
-
-        # Parse only explicit --spec-type enum options to avoid false positives
-        # from unrelated flags like --spec-draft-*.
-        spec_type_modes: list[str] = []
-        match = re.search(r"--spec-type\s*\[([^\]]+)\]", output)
-        if match:
-            for raw in match.group(1).split("|"):
-                mode = raw.strip().lower()
-                if mode:
-                    spec_type_modes.append("mtp" if mode == "draft-mtp" else mode)
-
-        allowed_modes = set(spec_type_modes)
-        mtp_compatible = model_supports_mtp(model)
-
-        def is_mode_model_compatible(mode: str) -> bool:
-            if mode not in {"mtp", "ngram-mtp"}:
-                return True
-            return mtp_compatible
-
-        if requested and requested not in {"auto", "all"}:
-            ordered: list[str] = []
-            seen: set[str] = set()
-            requested_values = self._parse_csv_values(requested)
-            for value in requested_values:
-                if allowed_modes and value not in allowed_modes:
-                    continue
-                if not is_mode_model_compatible(value):
-                    continue
-                if value not in seen:
-                    seen.add(value)
-                    ordered.append(value)
-
-            # A model switch should not leave autotune with an empty grid just
-            # because the previous MTP-capable model had only MTP selected.
-            # Keep malformed/unsupported selections invalid, but degrade an
-            # explicitly selected MTP-only set to the universal baseline mode.
-            requested_mtp_only = bool(requested_values) and all(
-                value in {"mtp", "ngram-mtp"} for value in requested_values
-            )
-            if (
-                not ordered
-                and not mtp_compatible
-                and requested_mtp_only
-                and (not allowed_modes or "none" in allowed_modes)
-            ):
-                return ["none"]
-            return ordered
-
-        if not spec_type_modes:
-            spec_type_modes = ["none", "ngram-mod"]
-
-        supported_order = ["none", "ngram-mod", "mtp", "ngram-mtp", "eagle3", "eagle"]
-        resolved: list[str] = []
-        for mode in supported_order:
-            if mode in spec_type_modes:
-                resolved.append(mode)
-
-        if "none" not in resolved:
-            resolved.insert(0, "none")
-
-        if "ngram-mod" not in resolved:
-            ngram_candidates = [mode for mode in spec_type_modes if mode.startswith("ngram")]
-            if ngram_candidates:
-                fallback_ngram = "ngram-mod" if "ngram-mod" in ngram_candidates else ngram_candidates[0]
-                if fallback_ngram not in resolved:
-                    resolved.append(fallback_ngram)
-
-        if not mtp_compatible:
-            resolved = [mode for mode in resolved if mode not in {"mtp", "ngram-mtp"}]
-
-        unique: list[str] = []
-        seen: set[str] = set()
-        for mode in resolved:
-            if mode in seen:
-                continue
-            seen.add(mode)
-            unique.append(mode)
-        return unique
+        return self.server_capabilities.select_spec_modes(
+            server_bin,
+            raw_values,
+            mtp_compatible=model_supports_mtp(model),
+        )
 
     def _server_supports_mtp(self, server_bin: Path) -> bool:
-        return "mtp" in self._server_help_output(server_bin)
+        return self.server_capabilities.resolve(server_bin).supports_mtp
 
     def _on_bench_output(self, line: str):
         self.log_output.append(line)

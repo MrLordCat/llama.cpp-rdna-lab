@@ -32,9 +32,11 @@ class DownloadTabWidget(QWidget):
     def create_ui(self):
         """Создание вкладки для загрузки models"""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
-        info_label = QLabel("📥 Search and Download Models from HuggingFace")
-        info_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        info_label = QLabel("Search and Download Models from HuggingFace")
+        info_label.setProperty("heading", True)
         layout.addWidget(info_label)
 
         # Search models
@@ -49,11 +51,11 @@ class DownloadTabWidget(QWidget):
         self.search_input.returnPressed.connect(self.search_hf_models)
         search_controls_layout.addWidget(self.search_input)
 
-        self.search_btn = QPushButton("🔍 Search")
+        self.search_btn = QPushButton("Search")
         self.search_btn.clicked.connect(self.search_hf_models)
         search_controls_layout.addWidget(self.search_btn)
 
-        self.load_popular_btn = QPushButton("⭐ Popular")
+        self.load_popular_btn = QPushButton("Popular")
         self.load_popular_btn.clicked.connect(self.load_popular_models)
         search_controls_layout.addWidget(self.load_popular_btn)
 
@@ -76,7 +78,7 @@ class DownloadTabWidget(QWidget):
         ])
         date_filter_layout.addWidget(self.filter_month_combo)
 
-        self.apply_date_filter_btn = QPushButton("🔄 Apply")
+        self.apply_date_filter_btn = QPushButton("Apply")
         self.apply_date_filter_btn.clicked.connect(self.apply_date_filter)
         date_filter_layout.addWidget(self.apply_date_filter_btn)
         date_filter_layout.addStretch()
@@ -88,7 +90,7 @@ class DownloadTabWidget(QWidget):
         sort_layout.addWidget(QLabel("Sort:"))
 
         self.sort_combo = QComboBox()
-        self.sort_combo.addItems(["By Downloads ⬇️", "By Likes ❤️", "By Date Updated 📅", "By Name 🔤"])
+        self.sort_combo.addItems(["By Downloads", "By Likes", "By Date Updated", "By Name"])
         self.sort_combo.currentIndexChanged.connect(self.on_sort_changed)
         sort_layout.addWidget(self.sort_combo)
         sort_layout.addStretch()
@@ -151,13 +153,13 @@ class DownloadTabWidget(QWidget):
         # Buttons
         buttons_layout = QHBoxLayout()
 
-        self.download_btn = QPushButton("📥 Download Model")
+        self.download_btn = QPushButton("Download Model")
         self.download_btn.clicked.connect(self.download_model)
         self.download_btn.setEnabled(False)
         self.download_btn.setStyleSheet("QPushButton { font-size: 14px; padding: 8px; }")
         buttons_layout.addWidget(self.download_btn)
 
-        self.cancel_download_btn = QPushButton("❌ Cancel")
+        self.cancel_download_btn = QPushButton("Cancel")
         self.cancel_download_btn.setEnabled(False)
         self.cancel_download_btn.clicked.connect(self.cancel_download)
         buttons_layout.addWidget(self.cancel_download_btn)

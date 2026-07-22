@@ -22,9 +22,11 @@ class BuildsInfoTabWidget(QWidget):
     def create_ui(self):
         """Create builds info tab UI"""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
-        info_label = QLabel("📋 Installed Builds - View and manage compiled builds")
-        info_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        info_label = QLabel("Installed Builds - View and manage compiled builds")
+        info_label.setProperty("heading", True)
         layout.addWidget(info_label)
 
         # Builds list
@@ -83,19 +85,19 @@ class BuildsInfoTabWidget(QWidget):
         # Buttons
         buttons_layout = QHBoxLayout()
 
-        self.refresh_btn = QPushButton("🔄 Refresh")
+        self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.clicked.connect(lambda: self.refresh_builds_info(update_benchmark_stats=True))
         buttons_layout.addWidget(self.refresh_btn)
 
-        self.open_build_btn = QPushButton("📂 Open Folder")
+        self.open_build_btn = QPushButton("Open Folder")
         self.open_build_btn.clicked.connect(self.open_build_folder)
         buttons_layout.addWidget(self.open_build_btn)
 
-        self.rename_build_btn = QPushButton("✏️ Rename")
+        self.rename_build_btn = QPushButton("Rename")
         self.rename_build_btn.clicked.connect(self.rename_build_folder)
         buttons_layout.addWidget(self.rename_build_btn)
 
-        self.delete_build_btn = QPushButton("🗑️ Delete")
+        self.delete_build_btn = QPushButton("Delete")
         self.delete_build_btn.clicked.connect(self.delete_selected_build)
         self.delete_build_btn.setStyleSheet("QPushButton { color: red; }")
         buttons_layout.addWidget(self.delete_build_btn)

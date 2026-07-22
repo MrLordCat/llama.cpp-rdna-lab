@@ -11,6 +11,7 @@ from PyQt6.QtCore import QSettings, QSize, QTimer
 # Import utility modules
 from project_utils import ProjectManager
 from build_registry import BuildVersionRegistry
+from server_capabilities import ServerCapabilityResolver
 
 # Import tab widgets
 from server_tab import ServerTabWidget
@@ -59,6 +60,10 @@ class LlamaCppGUI(QMainWindow):
         self.hardware_detector = HardwareDetector()
         self.build_registry = BuildVersionRegistry(self.project_root)
         self.build_registry.sync_with_existing_builds()
+        self.server_capabilities = ServerCapabilityResolver(
+            self.project_root,
+            self.build_registry,
+        )
         
         # Create UI
         self.create_ui()
@@ -109,18 +114,21 @@ class LlamaCppGUI(QMainWindow):
         self.inference_tab = InferenceTabWidget(self)
         self.download_tab = DownloadTabWidget(self)
         self.build_tab = BuildTabWidget(self)
-        self.benchmark_tab = BenchmarkTabWidget(self)
+        self.benchmark_tab = BenchmarkTabWidget(
+            self,
+            capability_resolver=self.server_capabilities,
+        )
         self.builds_info_tab = BuildsInfoTabWidget(self)
         self.hardware_tab = HardwareTabWidget(self)
         
         # Add tabs to tab widget
-        self.tabs.addTab(self.server_tab, "🚀 Launch Server")
-        self.tabs.addTab(self.inference_tab, "⚡ Inference")
-        self.tabs.addTab(self.download_tab, "📥 Download Models")
-        self.tabs.addTab(self.build_tab, "🔧 Build and Setup")
-        self.tabs.addTab(self.benchmark_tab, "📈 Bench and Autotune")
-        self.tabs.addTab(self.builds_info_tab, "📋 Installed Builds")
-        self.tabs.addTab(self.hardware_tab, "💻 System Info")
+        self.tabs.addTab(self.server_tab, "Launch Server")
+        self.tabs.addTab(self.inference_tab, "Inference")
+        self.tabs.addTab(self.download_tab, "Download Models")
+        self.tabs.addTab(self.build_tab, "Build and Setup")
+        self.tabs.addTab(self.benchmark_tab, "Bench and Autotune")
+        self.tabs.addTab(self.builds_info_tab, "Installed Builds")
+        self.tabs.addTab(self.hardware_tab, "System Info")
         self.tabs.currentChanged.connect(self.on_tab_changed)
         
         # Create status bar

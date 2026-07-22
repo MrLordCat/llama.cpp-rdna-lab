@@ -37,9 +37,11 @@ class HardwareTabWidget(QWidget):
     def create_ui(self):
         """Create UI components"""
         layout = QVBoxLayout(self)
-        
-        info_label = QLabel("💻 Your System Information")
-        info_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        info_label = QLabel("Your System Information")
+        info_label.setProperty("heading", True)
         layout.addWidget(info_label)
         
         self.hardware_info_text = QTextEdit()
@@ -50,13 +52,13 @@ class HardwareTabWidget(QWidget):
         # Buttons row
         buttons_layout = QHBoxLayout()
         
-        refresh_btn = QPushButton("🔄 Refresh Information")
+        refresh_btn = QPushButton("Refresh Information")
         refresh_btn.clicked.connect(self.detect_hardware)
         buttons_layout.addWidget(refresh_btn)
         
         # ROCm update button (Windows only)
         if platform.system() == "Windows":
-            self.rocm_update_btn = QPushButton("📦 Update/Install HIP SDK")
+            self.rocm_update_btn = QPushButton("Update/Install HIP SDK")
             self.rocm_update_btn.clicked.connect(self.update_rocm)
             self.rocm_update_btn.setToolTip("Open AMD website to download HIP SDK for ROCm support")
             buttons_layout.addWidget(self.rocm_update_btn)

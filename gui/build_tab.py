@@ -17,6 +17,7 @@ from bench_runner import background_process_options, console_python_executable
 from build_manager import BuildManager, ConfigureThread, BuildThread
 from model_capabilities import model_supports_mtp
 from proc_utils import run_hidden
+from server_capabilities import ServerCapabilityResolver
 
 try:
     from dependency_installer import (
@@ -97,9 +98,11 @@ class BuildTabWidget(QWidget):
     def create_ui(self):
         """Create build tab UI"""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
-        info_label = QLabel("🔧 Build and Setup - Configure and compile llama.cpp")
-        info_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        info_label = QLabel("Build and Setup - Configure and compile llama.cpp")
+        info_label.setProperty("heading", True)
         layout.addWidget(info_label)
 
         # Create scroll area for build options
@@ -148,25 +151,25 @@ class BuildTabWidget(QWidget):
         deps_group = QGroupBox("Install Dependencies")
         deps_layout = QVBoxLayout()
 
-        self.check_deps_btn = QPushButton("✓ Check Dependencies")
+        self.check_deps_btn = QPushButton("Check Dependencies")
         self.check_deps_btn.clicked.connect(self.check_dependencies)
         deps_layout.addWidget(self.check_deps_btn)
 
         deps_install_layout = QHBoxLayout()
         
-        self.install_msvc_btn = QPushButton("📦 MSVC")
+        self.install_msvc_btn = QPushButton("MSVC")
         self.install_msvc_btn.clicked.connect(lambda: self._install_dependency("msvc"))
         deps_install_layout.addWidget(self.install_msvc_btn)
 
-        self.install_cmake_btn = QPushButton("📦 CMake")
+        self.install_cmake_btn = QPushButton("CMake")
         self.install_cmake_btn.clicked.connect(lambda: self._install_dependency("cmake"))
         deps_install_layout.addWidget(self.install_cmake_btn)
 
-        self.install_ninja_btn = QPushButton("📦 Ninja")
+        self.install_ninja_btn = QPushButton("Ninja")
         self.install_ninja_btn.clicked.connect(lambda: self._install_dependency("ninja"))
         deps_install_layout.addWidget(self.install_ninja_btn)
 
-        self.install_all_deps_btn = QPushButton("📦 All")
+        self.install_all_deps_btn = QPushButton("All")
         self.install_all_deps_btn.clicked.connect(self.install_all_dependencies)
         deps_install_layout.addWidget(self.install_all_deps_btn)
 
@@ -196,7 +199,7 @@ class BuildTabWidget(QWidget):
         self.build_dir_input.setReadOnly(True)
         build_dir_row.addWidget(self.build_dir_input)
 
-        self.create_build_version_btn = QPushButton("🆕 Create Build Version")
+        self.create_build_version_btn = QPushButton("Create Build Version")
         self.create_build_version_btn.clicked.connect(self.create_build_version)
         build_dir_row.addWidget(self.create_build_version_btn)
 
@@ -275,35 +278,35 @@ class BuildTabWidget(QWidget):
         # Buttons
         buttons_layout = QHBoxLayout()
 
-        self.configure_btn = QPushButton("🔧 Configure CMake")
+        self.configure_btn = QPushButton("Configure CMake")
         self.configure_btn.clicked.connect(self.configure_build)
         self.configure_btn.setStyleSheet("QPushButton { font-size: 12px; padding: 8px; }")
         buttons_layout.addWidget(self.configure_btn)
 
-        self.build_btn = QPushButton("🔨 Build")
+        self.build_btn = QPushButton("Build")
         self.build_btn.clicked.connect(self.build_project)
         self.build_btn.setEnabled(False)
         self.build_btn.setStyleSheet("QPushButton { font-size: 12px; padding: 8px; }")
         buttons_layout.addWidget(self.build_btn)
 
-        self.rebuild_btn = QPushButton("🔄 Rebuild")
+        self.rebuild_btn = QPushButton("Rebuild")
         self.rebuild_btn.clicked.connect(self.rebuild_project)
         self.rebuild_btn.setEnabled(False)
         self.rebuild_btn.setStyleSheet("QPushButton { font-size: 12px; padding: 8px; }")
         buttons_layout.addWidget(self.rebuild_btn)
 
-        self.clean_btn = QPushButton("🧹 Clean")
+        self.clean_btn = QPushButton("Clean")
         self.clean_btn.clicked.connect(self.clean_build)
         self.clean_btn.setEnabled(False)
         self.clean_btn.setStyleSheet("QPushButton { font-size: 12px; padding: 8px; }")
         buttons_layout.addWidget(self.clean_btn)
 
-        self.prepare_upstream_btn = QPushButton("🌐 Prepare Upstream Source")
+        self.prepare_upstream_btn = QPushButton("Prepare Upstream Source")
         self.prepare_upstream_btn.clicked.connect(self.prepare_upstream_source)
         self.prepare_upstream_btn.setStyleSheet("QPushButton { font-size: 12px; padding: 8px; }")
         buttons_layout.addWidget(self.prepare_upstream_btn)
 
-        self.cancel_build_btn = QPushButton("❌ Cancel")
+        self.cancel_build_btn = QPushButton("Cancel")
         self.cancel_build_btn.setEnabled(False)
         self.cancel_build_btn.clicked.connect(self.cancel_build)
         buttons_layout.addWidget(self.cancel_build_btn)
@@ -311,7 +314,7 @@ class BuildTabWidget(QWidget):
         buttons_layout.addStretch()
         layout.addLayout(buttons_layout)
 
-        moved_label = QLabel("Benchmark and autotune controls moved to the '📈 Bench and Autotune' tab.")
+        moved_label = QLabel("Benchmark and autotune controls moved to the 'Bench and Autotune' tab.")
         moved_label.setStyleSheet("color: #666;")
         layout.addWidget(moved_label)
 
@@ -1222,69 +1225,27 @@ class BuildTabWidget(QWidget):
         filtered = [p for p in model_files if "mmproj" not in p.name.lower()]
         return filtered[0] if filtered else None
 
-    @staticmethod
-    def _server_help_output(server_bin: Path) -> str:
-        try:
-            result = run_hidden(
-                [str(server_bin), "--help"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            return ((result.stdout or "") + "\n" + (result.stderr or "")).lower()
-        except Exception:
-            return ""
+    def _capability_resolver(self) -> ServerCapabilityResolver:
+        resolver = getattr(self.parent, "server_capabilities", None)
+        if resolver is not None:
+            return resolver
+        project_root = getattr(self.parent, "project_root", Path.cwd())
+        return ServerCapabilityResolver(project_root, getattr(self.parent, "build_registry", None))
 
     def _resolve_autotune_spec_values(self, server_bin: Path, model_path: Path) -> list[str]:
-        output = self._server_help_output(server_bin)
+        # Never launch llama-server --help to probe capabilities: loading a GPU
+        # backend just to read CLI flags can trigger driver discovery and is
+        # unsafe while another server or benchmark is active. Capabilities are
+        # resolved from static build/sidecar metadata instead.
+        return self._capability_resolver().select_spec_modes(
+            server_bin,
+            "auto",
+            mtp_compatible=model_supports_mtp(model_path),
+        )
 
-        # Parse only explicit --spec-type enum options to avoid false positives
-        # from unrelated flags like --spec-draft-*.
-        spec_type_modes: list[str] = []
-        match = re.search(r"--spec-type\s*\[([^\]]+)\]", output)
-        if match:
-            for raw in match.group(1).split("|"):
-                mode = raw.strip().lower()
-                if mode:
-                    spec_type_modes.append("mtp" if mode == "draft-mtp" else mode)
-
-        if not spec_type_modes:
-            spec_type_modes = ["none", "ngram-mod"]
-
-        supported_order = ["none", "ngram-mod", "mtp", "ngram-mtp", "eagle3", "eagle"]
-
-        resolved: list[str] = []
-        for mode in supported_order:
-            if mode in spec_type_modes:
-                resolved.append(mode)
-
-        if "none" not in resolved:
-            resolved.insert(0, "none")
-
-        if "ngram-mod" not in resolved:
-            ngram_candidates = [mode for mode in spec_type_modes if mode.startswith("ngram")]
-            if ngram_candidates:
-                fallback_ngram = "ngram-mod" if "ngram-mod" in ngram_candidates else ngram_candidates[0]
-                if fallback_ngram not in resolved:
-                    resolved.append(fallback_ngram)
-
-        if not model_supports_mtp(model_path):
-            resolved = [mode for mode in resolved if mode not in {"mtp", "ngram-mtp"}]
-
-        unique: list[str] = []
-        seen: set[str] = set()
-        for mode in resolved:
-            if mode in seen:
-                continue
-            seen.add(mode)
-            unique.append(mode)
-        return unique
-
-    @staticmethod
-    def _server_supports_mtp(server_bin: Path) -> bool:
-        """Best-effort capability probe for --spec-type mtp support in llama-server."""
-        return "mtp" in BuildTabWidget._server_help_output(server_bin)
+    def _server_supports_mtp(self, server_bin: Path) -> bool:
+        """Metadata-based capability check for --spec-type mtp support."""
+        return self._capability_resolver().resolve(server_bin).supports_mtp
 
     def _on_quick_bench_output(self, line: str):
         if "Aggregate completion TPS by wall time" in line:

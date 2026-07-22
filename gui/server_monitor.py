@@ -296,21 +296,21 @@ class ServerMonitorThread(QThread):
 
 _BAR_STYLE = """
 QProgressBar {
-    border: 1px solid #3a3a3a;
-    border-radius: 3px;
-    background-color: #202020;
+    border: 1px solid #33415a;
+    border-radius: 4px;
+    background-color: #151c2b;
     text-align: center;
     font-size: 10px;
-    color: #dddddd;
-    min-height: 14px;
-    max-height: 14px;
+    color: #cbd4e2;
+    min-height: 15px;
+    max-height: 15px;
 }
-QProgressBar::chunk { background-color: %s; border-radius: 2px; }
+QProgressBar::chunk { background-color: %s; border-radius: 3px; margin: 1px; }
 """
 
-_CHUNK_OK = "#2e7d32"
-_CHUNK_WARN = "#b26a00"
-_CHUNK_HOT = "#b71c1c"
+_CHUNK_OK = "#3f9a57"
+_CHUNK_WARN = "#c98a2b"
+_CHUNK_HOT = "#cc4b43"
 
 
 def _make_bar() -> QProgressBar:

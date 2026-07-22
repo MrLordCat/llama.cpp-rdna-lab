@@ -35,6 +35,8 @@ class InferenceTabWidget(QWidget):
     def create_ui(self):
         """Create tab for running inference"""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
         # Model selection
         model_group = QGroupBox("Выбор модели")
@@ -46,7 +48,7 @@ class InferenceTabWidget(QWidget):
         model_select_layout.addWidget(QLabel("Model:"))
         model_select_layout.addWidget(self.model_path_edit)
 
-        browse_btn = QPushButton("📁 Обзор")
+        browse_btn = QPushButton("Обзор")
         browse_btn.clicked.connect(self.browse_model)
         model_select_layout.addWidget(browse_btn)
 
@@ -164,18 +166,18 @@ class InferenceTabWidget(QWidget):
         # Control buttons
         buttons_layout = QHBoxLayout()
 
-        self.run_btn = QPushButton("▶️ Run")
+        self.run_btn = QPushButton("Run")
         self.run_btn.clicked.connect(self.run_inference)
         self.run_btn.setStyleSheet("QPushButton { font-size: 14px; padding: 8px; }")
         buttons_layout.addWidget(self.run_btn)
 
-        self.stop_btn = QPushButton("⏹️ Stop")
+        self.stop_btn = QPushButton("Stop")
         self.stop_btn.clicked.connect(self.stop_inference)
         self.stop_btn.setEnabled(False)
         self.stop_btn.setStyleSheet("QPushButton { font-size: 14px; padding: 8px; }")
         buttons_layout.addWidget(self.stop_btn)
 
-        self.clear_btn = QPushButton("🗑️ Clear Output")
+        self.clear_btn = QPushButton("Clear Output")
         self.clear_btn.clicked.connect(lambda: self.output_text.clear())
         buttons_layout.addWidget(self.clear_btn)
 

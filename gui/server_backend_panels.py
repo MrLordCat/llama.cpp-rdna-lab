@@ -8,12 +8,12 @@ the final llama-server command.
 
 from __future__ import annotations
 
+from PyQt6.QtCore import QSize
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
-    QSizePolicy,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -27,9 +27,9 @@ BACKEND_CPU    = "cpu"
 
 _TAB_ORDER = [BACKEND_ROCM, BACKEND_VULKAN, BACKEND_CPU]
 _TAB_TITLES = {
-    BACKEND_ROCM:   "🟥 ROCm",
-    BACKEND_VULKAN: "🌋 Vulkan",
-    BACKEND_CPU:    "🧠 CPU",
+    BACKEND_ROCM:   "ROCm",
+    BACKEND_VULKAN: "Vulkan",
+    BACKEND_CPU:    "CPU",
 }
 
 # (display, -dev value or None for all, -sm value or None, -ts value or None)
@@ -356,19 +356,21 @@ class BackendPanels(QTabWidget):
         for key in _TAB_ORDER:
             self.addTab(self.panels[key], _TAB_TITLES[key])
 
-        # a QTabWidget is as tall as its tallest page; ignore inactive pages
-        # so the group shrinks to the active backend's content
-        self.currentChanged.connect(self._sync_page_heights)
-        self._sync_page_heights(self.currentIndex())
+        # a QTabWidget is normally as tall as its TALLEST page, which leaves a
+        # dead gap under shorter backends. Follow the active page instead by
+        # reporting its height from sizeHint and re-querying on tab switch.
+        self.currentChanged.connect(lambda _idx: self.updateGeometry())
 
-    def _sync_page_heights(self, index: int) -> None:
-        for i in range(self.count()):
-            page = self.widget(i)
-            vertical = QSizePolicy.Policy.Preferred if i == index else QSizePolicy.Policy.Ignored
-            page.setSizePolicy(QSizePolicy.Policy.Preferred, vertical)
-        page = self.widget(index)
-        if page is not None:
-            page.adjustSize()
+    def sizeHint(self) -> QSize:
+        base = super().sizeHint()
+        page = self.currentWidget()
+        if page is None:
+            return base
+        tab_h = self.tabBar().sizeHint().height()
+        return QSize(base.width(), page.sizeHint().height() + tab_h + 16)
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
 
     # -- backend selection ---------------------------------------------------
     def set_backend(self, backend_key: str) -> None:
