@@ -108,8 +108,10 @@ scripts/agent_workload_bench.py
   explicit file ownership.
 - Read-only investigation may run in parallel. GPU discovery, model servers,
   and benchmarks always have exactly one sequential owner.
-- Shared agent definitions remain model-neutral. Select the advisory BYOK model
-  class at dispatch time; never store provider credentials or endpoints here.
+- Shared agent definitions remain model-neutral. At dispatch time the
+  coordinator must actively choose and pass an explicit BYOK model for each
+  subagent; never rely on `auto`, and never store provider credentials or
+  endpoints here.
 
 ## Performance policy
 

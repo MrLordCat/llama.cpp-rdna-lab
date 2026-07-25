@@ -97,6 +97,27 @@ class ServerPresetsMixin:
         except Exception:
             return []
 
+    def _strip_spec_from_extra_tokens(self, tokens: list[str]) -> list[str]:
+        """Remove --spec-type, --spec-draft-n-max and their values from token list."""
+        skip_value_for = {
+            "--spec-type",
+            "--spec-draft-n-max",
+        }
+        cleaned = []
+        skip_next = False
+        for tok in tokens:
+            if skip_next:
+                skip_next = False
+                continue
+            if tok in skip_value_for:
+                skip_next = True
+                continue
+            # Handle --flag=value form
+            if any(tok.startswith(flag + "=") for flag in skip_value_for):
+                continue
+            cleaned.append(tok)
+        return cleaned
+
     def apply_model_file_preset(self):
         """Apply first regex-matching model preset from model_presets.json."""
         self._model_presets = self._load_model_presets()
@@ -118,6 +139,19 @@ class ServerPresetsMixin:
                 continue
 
         if not match:
+            # No preset for this model — clear stale spec state from a previous
+            # session/preset so the user's visible UI choices take effect.
+            self.server_spec_type_combo.setCurrentText("None")
+            self.on_spec_type_changed()
+            # Also strip stale --spec-type / --spec-draft-n-max from extra_args
+            extra_text = self.server_extra_args.toPlainText().strip()
+            if extra_text:
+                try:
+                    tokens = shlex.split(extra_text, posix=(os.name != "nt"))
+                except ValueError:
+                    tokens = extra_text.split()
+                cleaned = self._strip_spec_from_extra_tokens(tokens)
+                self.server_extra_args.setPlainText(" ".join(cleaned))
             return {"matched": False, "reason": "no-preset-match", "model": model_name}
 
         # Reset spec type to None before applying preset to avoid stale MTP/spec state

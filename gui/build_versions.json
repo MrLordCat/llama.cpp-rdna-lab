@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-14 17:24:37",
+  "updated_at": "2026-07-25 14:44:46",
   "builds": [
     {
       "id": "bld-20260508073132-4d3cb594",
@@ -353,6 +353,23 @@
       "toolchain": {},
       "created_at": "2026-07-14 17:24:37",
       "updated_at": "2026-07-14 17:24:37",
+      "status": "ready",
+      "notes": "Imported from existing build directory",
+      "bench_best_non_mtp_tps": null,
+      "bench_best_mtp_tps": null,
+      "bench_last_run_at": ""
+    },
+    {
+      "id": "bld-20260725144446-f3334732",
+      "name": "build-rocm",
+      "backend": "rocm",
+      "source_type": "fork",
+      "source_ref": "a1e2e9eb9",
+      "build_dir": "D:\\GitHub\\llama.cpp-with-GUI\\build-rocm",
+      "server_bin": "D:\\GitHub\\llama.cpp-with-GUI\\build-rocm\\bin\\llama-server.exe",
+      "toolchain": {},
+      "created_at": "2026-07-25 14:44:46",
+      "updated_at": "2026-07-25 14:44:46",
       "status": "ready",
       "notes": "Imported from existing build directory",
       "bench_best_non_mtp_tps": null,

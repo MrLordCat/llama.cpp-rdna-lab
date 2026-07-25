@@ -808,7 +808,21 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             if not self.server_mmproj_offload_check.isChecked() and not extra_has_any("--no-mmproj-offload"):
                 command.append("--no-mmproj-offload")
 
+        # When the user has explicitly selected a spec type in the UI (not "None"),
+        # strip any stale --spec-type / --spec-draft-n-max from Extra Arguments so
+        # the visible UI choice always wins.  Only when the UI is "None" do we let
+        # Extra Arguments supply the spec type (for preset-only / advanced usage).
         spec_type = self.server_spec_type_combo.currentText().strip().lower()
+        ui_has_spec = spec_type not in ("none", "")
+        if ui_has_spec and has_spec_type_in_extra:
+            # Remove the extra_args --spec-type so the UI branch below activates
+            extra_tokens = self._strip_spec_from_extra_tokens(extra_tokens)
+            has_spec_type_in_extra = False
+            has_spec_draft_n_max_in_extra = any(
+                tok == "--spec-draft-n-max" or tok.startswith("--spec-draft-n-max=")
+                for tok in extra_tokens
+            )
+
         if not has_spec_type_in_extra:
             if spec_type == "mtp":
                 command.extend(["--spec-type", "draft-mtp"])

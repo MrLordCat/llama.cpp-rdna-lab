@@ -111,6 +111,12 @@ class _RocmPanel(QWidget):
         dev_row.addWidget(self.device_combo, 1)
         layout.addLayout(dev_row)
 
+        # Once the user picks a device order by hand, stop auto-switching it to
+        # the context-based recommendation. `activated` fires only on user
+        # interaction, not on programmatic setCurrentIndex.
+        self._user_overrode_device = False
+        self.device_combo.activated.connect(self._mark_device_overridden)
+
         self.peer_copy_check = QCheckBox("Enable GPU peer-to-peer copies (GGML_ROCM_ENABLE_PEER_COPY=1)")
         self.peer_copy_check.setChecked(False)
         self.peer_copy_check.setToolTip(
@@ -158,9 +164,13 @@ class _RocmPanel(QWidget):
             out["LLAMA_SPEC_PREFILL_WINDOW"] = str(self.spec_window_spin.value())
         return out
 
+    def _mark_device_overridden(self, *_args) -> None:
+        self._user_overrode_device = True
+
     def to_settings(self) -> dict:
         return {
             "device_index": self.device_combo.currentIndex(),
+            "device_user_overridden": self._user_overrode_device,
             "peer_copy": self.peer_copy_check.isChecked(),
             "hsa_override": self.hsa_override_check.isChecked(),
             "spec_window": self.spec_window_spin.value(),
@@ -171,6 +181,7 @@ class _RocmPanel(QWidget):
         idx = int(data.get("device_index", 3))
         if 0 <= idx < self.device_combo.count():
             self.device_combo.setCurrentIndex(idx)
+        self._user_overrode_device = bool(data.get("device_user_overridden", False))
         self.peer_copy_check.setChecked(bool(data.get("peer_copy", False)))
         self.hsa_override_check.setChecked(bool(data.get("hsa_override", False)))
         spec_window = int(data.get("spec_window", 256))
@@ -179,6 +190,8 @@ class _RocmPanel(QWidget):
         self.spec_window_spin.setValue(spec_window)
 
     def apply_model_recommendation(self, model_name: str, ctx_size: int) -> None:
+        if self._user_overrode_device:
+            return
         recommended = recommended_rocm_device_choice(model_name, ctx_size)
         current = self.DEVICE_CHOICES[self.device_combo.currentIndex()]
 

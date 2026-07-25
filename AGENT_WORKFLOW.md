@@ -29,6 +29,7 @@ Before delegating, the coordinator must:
 - identify protected or shared integration files;
 - give each agent one bounded question or implementation scope;
 - specify whether the task is read-only or may edit files;
+- actively select and pass an explicit `model` for each subagent, never `auto`;
 - specify the required handoff and validation.
 
 ## When to Delegate
@@ -84,11 +85,23 @@ implementation-driver  gui/foo.py, tests/test_foo   patch + narrow tests
 reviewer-validator     read-only diff               findings + validation
 ```
 
-## BYOK Model Routing (Advisory)
+## BYOK Model Routing
 
-Shared repository agents must not pin a provider-specific `model` ID. Exact
-names, availability, tool support, fallbacks, context limits, and quotas belong
-to the user's VS Code/BYOK configuration. Select a model class at dispatch time:
+Model neutrality applies to the stored `.agent.md` definition files, not to
+dispatch. Shared repository agent files must not pin a provider-specific `model`
+ID, because exact names, availability, tool support, fallbacks, context limits,
+and quotas belong to the user's VS Code/BYOK configuration.
+
+Choosing the model for each subtask is mandatory. When the coordinator dispatches
+a subagent it must actively pick the model and pass it explicitly:
+
+- Always pass an explicit `model` argument to the subagent tool. Never omit it
+  and never rely on `auto`; `auto` resolves to a base free model and is not an
+  acceptable routing decision.
+- Match the subtask to a class in the table below, then map that class to a
+  concrete model exposed by the current client at dispatch time.
+- If no suitable BYOK model is available, say so explicitly and let the user
+  choose, instead of silently falling back to `auto`.
 
 | Model class | Typical local choice | Use for |
 | --- | --- | --- |
