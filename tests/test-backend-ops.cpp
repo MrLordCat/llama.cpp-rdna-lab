@@ -2359,8 +2359,7 @@ struct test_set_rows : public test_case {
 
     double max_nmse_err() override {
         if (type == GGML_TYPE_Q4_0 || type == GGML_TYPE_Q4_1 || type == GGML_TYPE_IQ4_NL ||
-            type == GGML_TYPE_Q5_0 || type == GGML_TYPE_Q5_1 || type == GGML_TYPE_Q8_0 ||
-            type == GGML_TYPE_TKV4_0) {
+            type == GGML_TYPE_Q5_0 || type == GGML_TYPE_Q5_1 || type == GGML_TYPE_Q8_0) {
             // estimate what the max nmse error would be if one quantized value is
             // off by one. The test values are distributed in [-1,1], so it'll be
             // roughly (2.0 / 2^bits)^2, divided by the mean square value of the reference,
@@ -2856,8 +2855,7 @@ struct test_cpy : public test_case {
             return 0.0;
         }
         if (type_dst == GGML_TYPE_Q4_0 || type_dst == GGML_TYPE_Q4_1 || type_dst == GGML_TYPE_IQ4_NL ||
-            type_dst == GGML_TYPE_Q5_0 || type_dst == GGML_TYPE_Q5_1 || type_dst == GGML_TYPE_Q8_0 ||
-            type_dst == GGML_TYPE_TKV4_0) {
+            type_dst == GGML_TYPE_Q5_0 || type_dst == GGML_TYPE_Q5_1 || type_dst == GGML_TYPE_Q8_0) {
             // estimate what the max nmse error would be if one quantized value is
             // off by one. The test values are distributed in [-150,150], so it'll be
             // roughly (150*2.0 / 2^bits)^2, divided by the mean square value of the reference,
@@ -5973,29 +5971,6 @@ struct test_l2_norm : public test_case {
     }
 };
 
-// GGML_OP_TURBO_WHT
-struct test_turbo_wht : public test_case {
-    const std::array<int64_t, 4> ne;
-    const int direction;
-
-    std::string vars() override {
-        return VARS_TO_STR2(ne, direction);
-    }
-
-    test_turbo_wht(std::array<int64_t, 4> ne, int direction)
-        : ne(ne), direction(direction) {}
-
-    ggml_tensor * build_graph(ggml_context * ctx) override {
-        ggml_tensor * a = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne.data());
-        ggml_set_name(a, "a");
-
-        ggml_tensor * out = ggml_turbo_wht(ctx, a, direction, 128);
-        ggml_set_name(out, "out");
-
-        return out;
-    }
-};
-
 // GGML_OP_ACC
 struct test_acc : public test_case {
     const ggml_type type;
@@ -7409,11 +7384,6 @@ static const ggml_type other_types[] = {
     GGML_TYPE_BF16,
 };
 
-static const ggml_type turboq_types[] = {
-    GGML_TYPE_TBQ3_0,
-    GGML_TYPE_TBQ4_0,
-};
-
 #ifdef _MSC_VER
 // Workaround long compile time with msvc
 #pragma optimize("", off)
@@ -7490,11 +7460,6 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_get_rows(GGML_TYPE_I32, 256, 5, 4, b, 1, v));
         }
     }
-    for (ggml_type type : turboq_types) {
-        for (bool v : {false, true}) {
-            test_cases.emplace_back(new test_get_rows(type, 256, 5, 4, 1, 1, v));
-        }
-    }
 
     test_cases.emplace_back(new test_get_rows_back(GGML_TYPE_F32, 1, 8, 2, 1, false));
     for (ggml_type type : all_types) {
@@ -7504,11 +7469,6 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
     for (bool v : {false, true}) {
         test_cases.emplace_back(new test_get_rows_back(GGML_TYPE_I32, 256, 5, 4, 1, v));
-    }
-    for (ggml_type type : turboq_types) {
-        for (bool v : {false, true}) {
-            test_cases.emplace_back(new test_get_rows_back(type, 256, 5, 4, 1, v));
-        }
     }
 
     test_cases.emplace_back(new test_set_rows(GGML_TYPE_F32, GGML_TYPE_I64, { 1, 8, 1, 3 }, { 1, 1 }, 2, false));
@@ -7529,13 +7489,6 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             }
         }
     }
-    for (ggml_type type : turboq_types) {
-        for (bool v : {false, true}) {
-            test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 256, 5, 1, 3 }, { 1, 1 }, 1, v));
-            test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 256, 11, 1, 1 }, { 2, 3 }, 7, v));
-        }
-    }
-    test_cases.emplace_back(new test_set_rows(GGML_TYPE_TKV4_0, GGML_TYPE_I64, { 256, 5, 2, 3 }, { 1, 1 }, 3, false));
 
     for (int mode : { GGML_ROPE_TYPE_NORMAL, GGML_ROPE_TYPE_NEOX, GGML_ROPE_TYPE_MROPE, GGML_ROPE_TYPE_VISION }) {
         for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32}) {
@@ -7907,12 +7860,6 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_cpy(type_src, type_dst, {256, 2, 3, 4}, {0, 2, 1, 3})); // cpy by rows
         }
     }
-    for (ggml_type type_src : all_types) {
-        for (ggml_type type_dst : {GGML_TYPE_F16, GGML_TYPE_BF16}) {
-            test_cases.emplace_back(new test_cpy(type_src, type_dst, {256, 4, 4, 4}));
-            test_cases.emplace_back(new test_cpy(type_src, type_dst, {256, 2, 3, 4}, {0, 2, 1, 3})); // cpy by rows
-        }
-    }
     for (ggml_type type_src : {GGML_TYPE_F16, GGML_TYPE_F32}) {
         for (ggml_type type_dst : {GGML_TYPE_F16, GGML_TYPE_F32}) {
             test_cases.emplace_back(new test_cpy(type_src, type_dst, {256, 2, 3, 4}, {1, 0, 2, 3})); // cpy not-contiguous
@@ -7932,11 +7879,6 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_cpy(GGML_TYPE_I32, GGML_TYPE_I32, {256, 4, 1, 1}, {0, 0, 0, 0}, {0, 0, 0, 0}, true));
     test_cases.emplace_back(new test_cpy(GGML_TYPE_I32, GGML_TYPE_I32, {256, 1, 4, 1}, {1, 2, 0, 3}, {0, 0, 0, 0}));
     test_cases.emplace_back(new test_cpy(GGML_TYPE_F32, GGML_TYPE_F32, {256, 1, 4, 1}, {1, 2, 0, 3}, {0, 0, 0, 0}));
-    test_cases.emplace_back(new test_cpy(GGML_TYPE_F32, GGML_TYPE_TKV4_0, {256, 4, 2, 1}));
-    for (ggml_type type : turboq_types) {
-        test_cases.emplace_back(new test_cpy(type, type, {256, 4, 4, 4}));
-        test_cases.emplace_back(new test_cpy(type, type, {256, 2, 3, 4}, {0, 2, 1, 3}));
-    }
 
     for (ggml_type type_dst : { GGML_TYPE_F32, GGML_TYPE_I32, GGML_TYPE_F16, GGML_TYPE_BF16 }) {
         for (bool use_view_slice : { true, false }) {
@@ -8030,11 +7972,6 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_l2_norm(GGML_TYPE_F32, { n, 5, 4, 3 }, eps, false));
             test_cases.emplace_back(new test_l2_norm(GGML_TYPE_F32, { n, 5, 4, 3 }, eps, true));
         }
-    }
-
-    for (int direction : {0, 1}) {
-        test_cases.emplace_back(new test_turbo_wht({128, 1, 1, 1}, direction));
-        test_cases.emplace_back(new test_turbo_wht({256, 4, 2, 3}, direction));
     }
 
     // in-place tests
@@ -9042,9 +8979,6 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
                 test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 8, {nr, 1}, kv, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
             }
         }
-    }
-    for (ggml_type type : turboq_types) {
-        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {1, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, type));
     }
 
     for (int col : {8192, 16384, 32768, 65536, 131072, 262144, 524288}) {

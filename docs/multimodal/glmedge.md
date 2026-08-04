@@ -25,7 +25,7 @@ git clone https://huggingface.co/THUDM/glm-edge-v-5b or https://huggingface.co/T
 2. Use `glmedge-surgery.py` to split the GLMV-EDGE model to LLM and multimodel projector constituents:
 
 ```sh
-python ./tools/mtmd/glmedge-surgery.py -m ../model_path
+python /path/to/upstream-llama.cpp/tools/mtmd/legacy-models/glmedge-surgery.py -m ../model_path
 ```
 
 4. Use `glmedge-convert-image-encoder-to-gguf.py` to convert the GLMV-EDGE image encoder to GGUF:
@@ -34,10 +34,10 @@ python ./tools/mtmd/glmedge-surgery.py -m ../model_path
 python ./tools/mtmd/glmedge-convert-image-encoder-to-gguf.py -m ../model_path --llava-projector ../model_path/glm.projector --output-dir ../model_path
 ```
 
-5. Use `examples/convert_hf_to_gguf.py` to convert the LLM part of GLMV-EDGE to GGUF:
+5. Use `convert_hf_to_gguf.py` from a separate upstream llama.cpp checkout to convert the LLM part of GLMV-EDGE to GGUF:
 
 ```sh
-python convert_hf_to_gguf.py ../model_path
+python /path/to/upstream-llama.cpp/convert_hf_to_gguf.py ../model_path
 ```
 
 Now both the LLM part and the image encoder are in the `model_path` directory.

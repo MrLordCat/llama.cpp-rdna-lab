@@ -177,14 +177,13 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
 #else
         uint qh = uint(k_packed.k_data_packed16[a_offset + ib].qh[0]) | (uint(k_packed.k_data_packed16[a_offset + ib].qh[1]) << 16);
 #endif
-        uint packed = (vui_lo & 0x0F0Fu) | ((vui_hi & 0x0F0Fu) << 16);
-        uint qh_bits = (qh >> iqs) & 0xFu;
-        packed |= (qh_bits * 0x02040810u) & 0x10101010u;
-        FLOAT_TYPEV4 quants = FLOAT_TYPEV4(unpack8(packed));
+        FLOAT_TYPEV4 hb = FLOAT_TYPEV4((qh >> iqs) & 1, (qh >> (iqs + 1)) & 1, (qh >> (iqs + 2)) & 1, (qh >> (iqs + 3)) & 1) * FLOAT_TYPE(16.0f);
+
+        FLOAT_TYPEV4 nibbles = FLOAT_TYPEV4(vui_lo & 0xF, (vui_lo >> 8) & 0xF, vui_hi & 0xF, (vui_hi >> 8) & 0xF);
 #ifdef DATA_A_Q5_1
-        return FLOAT_TYPE(k_packed.k_data_packed16[a_offset + ib].d) * quants + FLOAT_TYPE(k_packed.k_data_packed16[a_offset + ib].m);
+        return FLOAT_TYPE(k_packed.k_data_packed16[a_offset + ib].d) * (nibbles + hb) + FLOAT_TYPE(k_packed.k_data_packed16[a_offset + ib].m);
 #else
-        return FLOAT_TYPE(k_packed.k_data_packed16[a_offset + ib].d) * (quants - FLOAT_TYPE(16.0f));
+        return FLOAT_TYPE(k_packed.k_data_packed16[a_offset + ib].d) * (nibbles + hb - FLOAT_TYPE(16.0f));
 #endif
     } else {
         uint vui_lo = uint(v_packed.v_data_packed16[a_offset + ib].qs[(iqs & 0xF) / 2 + 0]);
@@ -198,14 +197,13 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
 #else
         uint qh = uint(v_packed.v_data_packed16[a_offset + ib].qh[0]) | (uint(v_packed.v_data_packed16[a_offset + ib].qh[1]) << 16);
 #endif
-        uint packed = (vui_lo & 0x0F0Fu) | ((vui_hi & 0x0F0Fu) << 16);
-        uint qh_bits = (qh >> iqs) & 0xFu;
-        packed |= (qh_bits * 0x02040810u) & 0x10101010u;
-        FLOAT_TYPEV4 quants = FLOAT_TYPEV4(unpack8(packed));
+        FLOAT_TYPEV4 hb = FLOAT_TYPEV4((qh >> iqs) & 1, (qh >> (iqs + 1)) & 1, (qh >> (iqs + 2)) & 1, (qh >> (iqs + 3)) & 1) * FLOAT_TYPE(16.0f);
+
+        FLOAT_TYPEV4 nibbles = FLOAT_TYPEV4(vui_lo & 0xF, (vui_lo >> 8) & 0xF, vui_hi & 0xF, (vui_hi >> 8) & 0xF);
 #ifdef DATA_A_Q5_1
-        return FLOAT_TYPE(v_packed.v_data_packed16[a_offset + ib].d) * quants + FLOAT_TYPE(v_packed.v_data_packed16[a_offset + ib].m);
+        return FLOAT_TYPE(v_packed.v_data_packed16[a_offset + ib].d) * (nibbles + hb) + FLOAT_TYPE(v_packed.v_data_packed16[a_offset + ib].m);
 #else
-        return FLOAT_TYPE(v_packed.v_data_packed16[a_offset + ib].d) * (quants - FLOAT_TYPE(16.0f));
+        return FLOAT_TYPE(v_packed.v_data_packed16[a_offset + ib].d) * (nibbles + hb - FLOAT_TYPE(16.0f));
 #endif
     }
 }
@@ -257,35 +255,6 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
 
         return FLOAT_TYPE(v_packed.v_data_packed16[a_offset + ib].d) * FLOAT_TYPEV4(v0.x, v0.y, v1.x, v1.y);
     }
-}
-#endif
-
-#if defined(DATA_A_TKV4_0)
-#define BLOCK_BYTE_SIZE 66
-
-const float tkv4_centroids[16] = float[16](
-    -2.7326f, -2.0690f, -1.6180f, -1.2562f,
-    -0.9424f, -0.6568f, -0.3881f, -0.1284f,
-     0.1284f,  0.3881f,  0.6568f,  0.9424f,
-     1.2562f,  1.6180f,  2.0690f,  2.7326f);
-
-FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
-    uint packed;
-    float norm;
-    if (binding_idx == BINDING_IDX_K) {
-        packed = uint(k_packed.k_data_packed16[a_offset + ib].qs[iqs / 4]);
-        norm = float(k_packed.k_data_packed16[a_offset + ib].d);
-    } else {
-        packed = uint(v_packed.v_data_packed16[a_offset + ib].qs[iqs / 4]);
-        norm = float(v_packed.v_data_packed16[a_offset + ib].d);
-    }
-
-    const FLOAT_TYPE scale = FLOAT_TYPE(norm * 0.08838834764831845f);
-    return scale * FLOAT_TYPEV4(
-        tkv4_centroids[ packed        & 0xFu],
-        tkv4_centroids[(packed >>  4) & 0xFu],
-        tkv4_centroids[(packed >>  8) & 0xFu],
-        tkv4_centroids[(packed >> 12) & 0xFu]);
 }
 #endif
 

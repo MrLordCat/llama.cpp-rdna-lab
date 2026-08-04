@@ -194,15 +194,6 @@ class BenchHistoryMixin:
             "q4_1": 6,
             "q4_0": 7,
             "iq4_nl": 8,
-            "tbq4_0": 9,
-            "tbq3_0": 10,
-            "tq3_0": 11,
-            "turbo4": 12,
-            "turbo4_0": 12,
-            "turbo3": 13,
-            "turbo3_0": 13,
-            "turbo2": 14,
-            "turbo2_0": 14,
         }
         return kv_map.get(kv_name.strip().lower(), 3)
 

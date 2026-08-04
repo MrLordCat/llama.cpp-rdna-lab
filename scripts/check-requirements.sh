@@ -96,47 +96,6 @@ check_requirements() {
     info "$reqs: OK"
 }
 
-check_convert_script() {
-    local py=$1             # e.g. ./convert_hf_to_gguf.py
-    local pyname=${py##*/}  # e.g. convert_hf_to_gguf.py
-    pyname=${pyname%.py}    # e.g. convert_hf_to_gguf
-
-    info "$py: beginning check"
-
-    local reqs="$reqs_dir/requirements-$pyname.txt"
-    if [[ ! -r $reqs ]]; then
-        fatal "$py missing requirements. Expected: $reqs"
-    fi
-
-    # Check that all sub-requirements are added to top-level requirements.txt
-    if ! grep -qF "$reqs" requirements.txt; then
-        fatal "$reqs needs to be added to requirements.txt"
-    fi
-
-    local venv="$workdir/$pyname-venv"
-    python3 -m venv "$venv"
-
-    (
-        # shellcheck source=/dev/null
-        source "$venv/bin/activate"
-
-        check_requirements "$reqs"
-
-        python - "$py" "$pyname" <<'EOF'
-import sys
-from importlib.machinery import SourceFileLoader
-py, pyname = sys.argv[1:]
-SourceFileLoader(pyname, py).load_module()
-EOF
-    )
-
-    if (( do_cleanup )); then
-        rm -rf -- "$venv"
-    fi
-
-    info "$py: imports OK"
-}
-
 readonly ignore_eq_eq='check_requirements: ignore "=="'
 
 for req in */**/requirements*.txt; do
@@ -165,15 +124,5 @@ python3 -m venv "$all_venv"
 if (( do_cleanup )); then
     rm -rf -- "$all_venv"
 fi
-
-check_convert_script examples/convert_legacy_llama.py
-for py in convert_*.py; do
-    # skip convert_hf_to_gguf_update.py
-    # TODO: the check is failing for some reason:
-    #       https://github.com/ggml-org/llama.cpp/actions/runs/8875330981/job/24364557177?pr=6920
-    [[ $py == convert_hf_to_gguf_update.py ]] && continue
-
-    check_convert_script "$py"
-done
 
 info 'Done! No issues found.'

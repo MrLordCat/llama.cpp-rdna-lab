@@ -12,7 +12,7 @@
 
 - Statement: Vulkan may be competitive with or faster than ROCm on short decode-heavy or mixed workloads on RDNA4.
 - Mechanism: Vulkan shader path and AMD proprietary driver may have lower generation overhead for some shapes, while ROCm is expected to remain strong in prompt processing.
-- Why now: Local notes in `ROCM_ACCELERATION_PLAN.md` already list ROCm vs Vulkan parity as Queue A, and the machine has a working Vulkan 1.4 driver.
+- Why now: Local performance notes identify ROCm vs Vulkan parity as a useful comparison, and the machine has a working Vulkan 1.4 driver.
 
 ## Math / Theory
 

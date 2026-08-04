@@ -402,34 +402,6 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .vec_dot_type             = GGML_TYPE_Q8_K,
         .nrows                    = 1,
     },
-    [GGML_TYPE_TBQ3_0] = {
-        .from_float               = quantize_row_tbq3_0,
-        .vec_dot                  = ggml_vec_dot_tbq3_0_q8_K,
-        .vec_dot_type             = GGML_TYPE_Q8_K,
-        .nrows                    = 1,
-    },
-    [GGML_TYPE_TBQ4_0] = {
-        .from_float               = quantize_row_tbq4_0,
-        .vec_dot                  = ggml_vec_dot_tbq4_0_q8_K,
-        .vec_dot_type             = GGML_TYPE_Q8_K,
-        .nrows                    = 1,
-    },
-    [GGML_TYPE_TQ3_0] = {
-        .from_float               = quantize_row_tq3_0,
-        .nrows                    = 1,
-    },
-    [GGML_TYPE_TKV2_0] = {
-        .from_float               = quantize_row_tkv2_0,
-        .nrows                    = 1,
-    },
-    [GGML_TYPE_TKV3_0] = {
-        .from_float               = quantize_row_tkv3_0,
-        .nrows                    = 1,
-    },
-    [GGML_TYPE_TKV4_0] = {
-        .from_float               = quantize_row_tkv4_0,
-        .nrows                    = 1,
-    },
     [GGML_TYPE_I32] = {
         .from_float               = (ggml_from_float_t) ggml_cpu_fp32_to_i32,
     },
@@ -2071,10 +2043,6 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_gated_delta_net(params, tensor);
             } break;
-        case GGML_OP_TURBO_WHT:
-            {
-                ggml_compute_forward_turbo_wht(params, tensor);
-            } break;
         case GGML_OP_MAP_CUSTOM1:
             {
                 ggml_compute_forward_map_custom1(params, tensor);
@@ -2255,7 +2223,6 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_COUNT_EQUAL:
         case GGML_OP_SOLVE_TRI:
         case GGML_OP_GATED_DELTA_NET:
-        case GGML_OP_TURBO_WHT:
             {
                 n_tasks = n_threads;
             } break;

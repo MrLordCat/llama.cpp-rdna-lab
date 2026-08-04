@@ -207,9 +207,6 @@ class ServerPresetsMixin:
             6: "q4_1",
             7: "q4_0",
             8: "iq4_nl",
-            9: "tbq4_0",
-            10: "tbq3_0",
-            11: "tq3_0",
         }
         kv_value = match.get("kv_cache")
         if isinstance(kv_value, int) and kv_value in kv_map:

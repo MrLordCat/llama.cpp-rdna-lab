@@ -23,5 +23,5 @@ cmake -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DCMAKE_BUIL
 ```
 
 If upstream adds a useful workflow, port it manually and validate that it does
-not break the GUI, TurboQuant, ROCm, or local Windows assumptions before
+not break the GUI, ROCm/Vulkan, or local Windows assumptions before
 enabling it in this fork.

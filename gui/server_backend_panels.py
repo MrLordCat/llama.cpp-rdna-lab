@@ -246,9 +246,12 @@ class _VulkanPanel(QWidget):
         )
         layout.addWidget(self.kv_gpu1_check)
 
-        self.large_matmul_check = QCheckBox("Force AMD large matmul path (GGML_VK_FORCE_AMD_LARGE_MATMUL=1)")
+        self.large_matmul_check = QCheckBox("Use tuned AMD large matmul path (wn32)")
         self.large_matmul_check.setChecked(True)
-        self.large_matmul_check.setToolTip("Measured faster on RX 9070 XT; disable to compare.")
+        self.large_matmul_check.setToolTip(
+            "Uses the wn32 Q4_K large-matmul variant recovered for recent AMD drivers.\n"
+            "Disable to force the generic Vulkan matmul path for comparison."
+        )
         layout.addWidget(self.large_matmul_check)
 
         spec_row = QHBoxLayout()
@@ -283,6 +286,9 @@ class _VulkanPanel(QWidget):
         out: dict[str, str] = {}
         if self.large_matmul_check.isChecked():
             out["GGML_VK_FORCE_AMD_LARGE_MATMUL"] = "1"
+            out["GGML_VK_AMD_LARGE_MATMUL_VARIANT"] = "wn32"
+        else:
+            out["GGML_VK_DISABLE_AMD_LARGE_MATMUL"] = "1"
         if self.output_gpu1_check.isChecked():
             out["LLAMA_OUTPUT_DEVICE"] = "Vulkan1"
         if self.kv_gpu1_check.isChecked():

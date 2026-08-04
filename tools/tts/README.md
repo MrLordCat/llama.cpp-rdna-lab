@@ -22,7 +22,7 @@ $ popd
 ```
 Convert the model to .gguf format:
 ```console
-(venv) python convert_hf_to_gguf.py models/OuteTTS-0.2-500M \
+(venv) python /path/to/upstream-llama.cpp/convert_hf_to_gguf.py models/OuteTTS-0.2-500M \
     --outfile models/outetts-0.2-0.5B-f16.gguf --outtype f16
 ```
 The generated model will be `models/outetts-0.2-0.5B-f16.gguf`.
@@ -45,7 +45,7 @@ $ popd
 This model file is a PyTorch checkpoint (.ckpt) and we first need to convert it to
 huggingface format:
 ```console
-(venv) python tools/tts/convert_pt_to_hf.py \
+(venv) python /path/to/upstream-llama.cpp/tools/tts/convert_pt_to_hf.py \
     models/WavTokenizer-large-speech-75token/wavtokenizer_large_speech_320_24k.ckpt
 ...
 Model has been successfully converted and saved to models/WavTokenizer-large-speech-75token/model.safetensors
@@ -54,7 +54,7 @@ Config has been saved to models/WavTokenizer-large-speech-75tokenconfig.json
 ```
 Then we can convert the huggingface format to gguf:
 ```console
-(venv) python convert_hf_to_gguf.py models/WavTokenizer-large-speech-75token \
+(venv) python /path/to/upstream-llama.cpp/convert_hf_to_gguf.py models/WavTokenizer-large-speech-75token \
     --outfile models/wavtokenizer-large-75-f16.gguf --outtype f16
 ...
 INFO:hf-to-gguf:Model successfully exported to models/wavtokenizer-large-75-f16.gguf

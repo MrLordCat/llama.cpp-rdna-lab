@@ -26,18 +26,18 @@ llama-mtmd-cli -hf ggml-org/gemma-3-27b-it-GGUF
 
 ## How to get mmproj.gguf?
 
-Simply to add `--mmproj` in when converting model via `convert_hf_to_gguf.py`:
+Add `--mmproj` when converting the model with `convert_hf_to_gguf.py` from a separate upstream llama.cpp checkout:
 
 ```bash
 cd gemma-3-4b-it
-python ../llama.cpp/convert_hf_to_gguf.py --outfile model.gguf --outtype f16 --mmproj .
+python /path/to/upstream-llama.cpp/convert_hf_to_gguf.py --outfile model.gguf --outtype f16 --mmproj .
 # output file: mmproj-model.gguf
 ```
 
 ## How to run it?
 
 What you need:
-- The text model GGUF, can be converted using `convert_hf_to_gguf.py`
+- The text model GGUF can be converted with the converter from a separate upstream llama.cpp checkout
 - The mmproj file from step above
 - An image file
 

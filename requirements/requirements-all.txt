@@ -7,12 +7,7 @@
 -r ./requirements-pydantic.txt
 -r ./requirements-test-tokenizer-random.txt
 
--r ./requirements-convert_hf_to_gguf.txt
--r ./requirements-convert_hf_to_gguf_update.txt
--r ./requirements-convert_legacy_llama.txt
--r ./requirements-convert_llama_ggml_to_gguf.txt
 -r ./requirements-tool_bench.txt
 
 -r ./requirements-gguf_editor_gui.txt
-
--r ../examples/model-conversion/requirements.txt
+# Model conversion dependencies are intentionally maintained outside this fork.

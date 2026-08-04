@@ -250,7 +250,8 @@ task_params server_task::params_from_json_cmpl(
     params.stream           = json_value(data,       "stream",             false);
     auto stream_opt         = json_value(data,       "stream_options",     json::object());
     params.include_usage    = json_value(stream_opt, "include_usage",      false);
-    params.cache_prompt     = json_value(data,       "cache_prompt",       defaults.cache_prompt);
+    params.cache_prompt     = params_base.conversation_cache ||
+                              json_value(data,       "cache_prompt",       defaults.cache_prompt);
     params.return_tokens    = json_value(data,       "return_tokens",      false);
     params.return_progress  = json_value(data,       "return_progress",    false);
     auto max_tokens         = json_value(data,       "max_tokens",         defaults.n_predict);

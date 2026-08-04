@@ -19,10 +19,8 @@ Build a prototype-ready theory for C2 without writing converter/runtime code.
 - H51: superblock graph remap + selective literal lanes (SGRL) — parked pre-gate
 - H52: hierarchical tuple-context dictionary (HTCD) — parked pre-gate
 - H53: nibble reordering within superblocks — rejected D063 (empirical delta=0, analytical 0 feasible)
-- H54-A: TBQ-style Householder Q rotation for Q4 — rejected D065 (Shannon entropy permutation invariant)
 - H54: quantization redesign for lower-entropy payloads
    - H54-B (value-aware quantization): fast gate positive in D067, move to full analytical gate
-   - H54-C (TBQ+Q4 hybrid): pending
    - H54-D (random projection): pending
 
 ## Hard gates inherited from D050-D053

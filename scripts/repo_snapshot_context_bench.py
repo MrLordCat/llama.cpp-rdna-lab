@@ -127,7 +127,6 @@ def wait_ready(base_url: str, timeout_s: float) -> None:
 def choose_prompt_files(root: Path) -> list[Path]:
     seed_files = [
         root / "AGENTS.md",
-        root / "CLAUDE.md",
         root / "BENCHMARKS.md",
         root / "PROJECT_PROFILE.md",
         root / "QWEN_SPEED_RESEARCH.md",

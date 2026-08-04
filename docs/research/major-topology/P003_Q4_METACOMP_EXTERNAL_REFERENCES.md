@@ -27,12 +27,7 @@ separate directly applicable signals from non-transferable ones.
 
 ## Comparative but non-transferable references
 
-1. Stormrage RDNA2 context (comparison only):
-   - `docs/research/experiments/E009_H12_stormrage_tq3_direct_fattn.md`
-   - Local notes repeatedly state RX6800XT/RDNA2 numbers are not pass/fail
-     targets for RX9070XT/RDNA4.
-
-2. Upstream-stock rollback controls (ROCm path):
+1. Upstream-stock rollback controls (ROCm path):
    - `docs/research/major-topology/D002_P002_ROCM_LOW_LEVEL_Q3K_BODY.md`
    - `docs/research/RESULTS_LOG.md` entry D022
    - Shows imported upstream-stock binary can be materially slower on this lane;

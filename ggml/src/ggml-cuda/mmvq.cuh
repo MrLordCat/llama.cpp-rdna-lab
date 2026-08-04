@@ -52,8 +52,7 @@ void ggml_cuda_mmvq_switch_type(
     X(GGML_TYPE_IQ1_M) \
     X(GGML_TYPE_IQ4_NL) \
     X(GGML_TYPE_IQ4_XS) \
-    X(GGML_TYPE_IQ3_S) \
-    X(GGML_TYPE_TQ3_0)
+    X(GGML_TYPE_IQ3_S)
 
 #define GGML_CUDA_MMVQ_DECLARE_TYPED_DISPATCH(type_name) \
     void ggml_cuda_mmvq_dispatch_type_##type_name(GGML_CUDA_MMVQ_TYPED_DISPATCH_ARGS);

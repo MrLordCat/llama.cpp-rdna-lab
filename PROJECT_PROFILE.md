@@ -1,10 +1,10 @@
 # Project Profile
 
-Дата профиля: 2026-07-20.
+Дата профиля: 2026-08-04.
 
 ## Назначение форка
 
-`llama.cpp-with-GUI` — персональный форк `ggml-org/llama.cpp` для локального inference на машине владельца. Главный сценарий: быстро запускать и тестировать Qwen/GGUF модели через GUI, собирать llama.cpp под AMD ROCm/Vulkan, пробовать TurboQuant и аккуратно подтягивать upstream runtime fixes без импорта чужой документации и CI-шума.
+`llama.cpp-with-GUI` — персональный форк `ggml-org/llama.cpp` для локального inference на машине владельца. Главный сценарий: быстро запускать и тестировать Qwen/GGUF модели через GUI, собирать llama.cpp под AMD ROCm/Vulkan и аккуратно подтягивать upstream runtime fixes без импорта нерелевантных backend, converter и CI-компонентов.
 
 ## Текущий performance target
 
@@ -30,7 +30,7 @@
 | RAM | 64 GB |
 | GPU | AMD Radeon RX 9070 XT |
 | ROCm target | `gfx1201` |
-| GPU driver | 32.0.23033.1002 |
+| GPU driver | 32.0.31035.1003 |
 | HIP SDK | `C:\Program Files\AMD\ROCm\7.1` |
 | Python | 3.13.4 |
 | CMake | 3.29.2 |
@@ -58,14 +58,12 @@
 | --- | --- | --- |
 | `origin` | `https://github.com/MrLordCat/llama.cpp-with-GUI.git` | основной fork |
 | `upstream` | `https://github.com/ggml-org/llama.cpp.git` | источник llama.cpp |
-| `animehacker` | `https://github.com/animehacker/llama-turboquant.git` | TurboQuant reference |
-| `turboquant` | `https://github.com/elusznik/llama.cpp.git` | альтернативный TurboQuant remote |
 
 ## Локальная ценность форка
 
 - GUI запускает `llama-server` и `llama-cli`, управляет build-директориями, моделями и системной диагностикой.
 - ROCm path адаптирован под Windows + HIP SDK 7.1 + Ninja.
-- Добавлены GUI-настройки KV cache, TurboQuant типов, multimodal/mmproj и export build log.
+- Добавлены GUI-настройки KV cache, multimodal/mmproj и export build log.
 - В `gui/model_presets.json` уже есть персональные Qwen3/Qwen3.5/Qwen3.6 presets.
 - Синхронизация upstream должна сохранять локальные docs/actions/instructions.
 
@@ -81,7 +79,7 @@
 - `examples/`
 - `cmake/`
 - `CMakeLists.txt`
-- conversion scripts, когда нужны новые модели
+- converter scripts не импортируются; для редкой конвертации используется отдельный upstream checkout
 
 ## Что считается локальным слоем
 
@@ -91,10 +89,8 @@
 - `README.md`
 - `PROJECT_PROFILE.md`
 - `AGENTS.md`
-- `CLAUDE.md`
 - `MTP.md`
 - `QWEN_SPEED_RESEARCH.md`
-- `ROCM_ACCELERATION_PLAN.md`
 - `UPSTREAM_SYNC.md`
 - `.github/**`
 - `docs/**`
@@ -130,8 +126,8 @@ Choose exactly one speculation mode:
 `6.2802 TPS`, acceptance `74.36%`. На 98K one-copy scheduler проверен до
 `1493.21` prompt tok/s. Для 131K сохранять residency diagnostics; старый
 memory-aware ROCm split `27,37` и Vulkan — отдельные stress-профили, а не
-автоматический safe default. TKV4 пока opt-in: его основной доказанный выигрыш
-— размер KV, но Q4 quality/perplexity gate ещё не завершён.
+автоматический safe default. На текущем драйвере Vulkan Q4_K_M использует
+восстановленный default `wn32`; детали и rollback gate зафиксированы в D093.
 
 Для исторического 32k prompt-heavy ROCm/Qwen3.6-27B lane после native ubatch cliff fix (2026-05-12):
 
@@ -175,4 +171,4 @@ no reuse / no v2 prime for cold-first claims
 --spec-draft-n-max 64
 ```
 
-Актуальный roadmap аппаратно-ориентированных ускорений и следующих optimizations вынесен в `ROCM_ACCELERATION_PLAN.md`.
+Актуальная очередь аппаратно-ориентированных ускорений ведётся в `docs/research/major-topology/README.md`.

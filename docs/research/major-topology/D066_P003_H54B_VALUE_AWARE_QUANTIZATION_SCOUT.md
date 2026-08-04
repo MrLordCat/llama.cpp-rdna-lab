@@ -1,14 +1,13 @@
 # D066: P003 H54-B Value-Aware Quantization Scout
 
 Date: 2026-05-28
-Previous: D065 (H54-A rejected)
+Previous: D063 (symbol-level reordering rejected)
 Status: **scout — defining direction**
 
 ## Context
 
-D065 H54-A (TBQ-style Householder rotation) rejected: Shannon entropy is permutation invariant. Rotation cannot reduce per-symbol entropy.
-
-This eliminates the easiest H54 sub-direction (reuse existing TBQ rotation code).
+Permutation-only transforms cannot reduce per-symbol Shannon entropy. A useful
+continuation therefore has to change the quantization mapping itself.
 
 The fundamental problem remains: current Q4 layout has `H1=3.864885 bpw`, leaving only `~0.135 bpw` headroom for any compression overhead. We need to change the quantization itself.
 
@@ -107,19 +106,17 @@ The question is whether real-world distributions allow enough entropy reduction.
    - Measure entropy + MSE
 3. Run on Qwen3.6-27B-Q4_K_S corpus
 4. If entropy < `3.77 bpw` and MSE within budget → proceed to full H54-B definition
-5. If fails → consider H54-C (TBQ+Q4 hybrid) or H54-D (random projection)
+5. If it fails, reconsider mixed precision or a different codebook design.
 
 ## Artifacts
 
 - This document
 - `scripts/research/q4_c2_symbol_atlas.py` (D055) for baseline extraction
-- `scripts/research/q4_c2_rotation_entropy_gate.py` (D065) for reference on entropy measurement
-- `ggml/src/ggml-turboq-tables.h` for Lloyd-Max codebook reference (TBQ uses this)
 - `ggml/src/ggml-common.h` for Q4_K layout definition
 
-## Key Insight from D065
+## Key insight
 
 Shannon entropy is permutation invariant — rotation cannot help.
 Value-aware quantization is different: it changes the quantization function itself,
 which DOES change the probability distribution p(x) of output symbols.
-This is the fundamental distinction that makes H54-B potentially viable where H54-A failed.
+This is the fundamental distinction that makes H54-B potentially viable.

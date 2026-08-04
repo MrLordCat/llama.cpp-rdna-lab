@@ -12,7 +12,7 @@
 
 - Statement: A guarded RDNA4-specific adaptation of Stormrage's MoE MMQ staging idea can improve MoE prefill without changing default dense/runtime behavior.
 - Mechanism: add an opt-in MMQ variant or route knob that changes LDS staging / padding / occupancy for RDNA4 MoE prefill, then enable it only when `GGML_CUDA_CC_IS_RDNA4(cc)` and an experiment env var are set.
-- Why now: Stormrage `RDNA2_MATMUL_OPT_V1` showed that MoE prefill can be sensitive to MMQ LDS layout. Local extra `b=1024,ub=1024` MoE results are already strong, but TurboKV still trails q4 on decode and may still have prefill headroom.
+- Why now: Stormrage `RDNA2_MATMUL_OPT_V1` showed that MoE prefill can be sensitive to MMQ LDS layout, while local `b=1024,ub=1024` MoE results still leave prefill headroom.
 
 ## Math / Theory
 
@@ -23,12 +23,12 @@
 ## Implementation Plan
 
 1. Minimal code surface to change: inspect `ggml/src/ggml-cuda/mmq.cuh` and dispatch helpers; add the smallest opt-in RDNA4 gate that can A/B the candidate path.
-2. Guard rails: env var off by default; RDNA4-only runtime gate; do not change default q4/TKV behavior.
+2. Guard rails: env var off by default; RDNA4-only runtime gate; do not change default q4 behavior.
 3. Rollback path: remove the candidate branch/gate if A/B is neutral or negative.
 
 ## Benchmark Plan
 
-- Baseline command: `llama-bench` MoE35B `q4_0/q4_0` and `turbo4_0/turbo2_0`, `p=512,2048,4096`, `n=128`, `b=1024`, `ub=1024`, `r=3`.
+- Baseline command: `llama-bench` MoE35B `q4_0/q4_0`, `p=512,2048,4096`, `n=128`, `b=1024`, `ub=1024`, `r=3`.
 - Candidate command: same commands with the RDNA4 experiment env var enabled.
 - Number of runs: use `r=3` for llama-bench rows; use focused `r=1` probes during route discovery.
 - Artifacts path: `build_logs/agent-workload/e010-rdna4-moe-mmq-*`.

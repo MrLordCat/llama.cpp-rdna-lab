@@ -9,7 +9,7 @@
         "parallel": "Number of parallel slots",
         "flash_attn": "Enable flash attention (true/false)",
         "no_mmap": "Optional: add --no-mmap for CPU fallback or residency-sensitive routes",
-        "kv_cache": "KV cache type index: 0=f16, 1=bf16, 2=f32, 3=q8_0, 4=q5_1, 5=q5_0, 6=q4_1, 7=q4_0, 8=iq4_nl, 9=tbq4_0, 10=tbq3_0, 11=tq3_0",
+        "kv_cache": "KV cache type index: 0=f16, 1=bf16, 2=f32, 3=q8_0, 4=q5_1, 5=q5_0, 6=q4_1, 7=q4_0, 8=iq4_nl",
         "extra_args": "Optional extra llama-server arguments applied into the Extra Arguments box",
         "temperature": "Sampling temperature (0.0-2.0, default 0.8)",
         "top_p": "Top-P nucleus sampling (0.0-1.0, default 0.95)",
@@ -329,7 +329,7 @@
             "min_p": 0.0,
             "presence_penalty": 1.5,
             "repeat_penalty": 1.0,
-            "notes": "Hybrid architecture. Add to Extra Args: --cache-type-k bf16 --cache-type-v bf16. On 16GB VRAM: use Q4/IQ4 quant with tq3_0 KV cache."
+            "notes": "Hybrid architecture. Add to Extra Args: --cache-type-k bf16 --cache-type-v bf16. On 16GB VRAM, use a Q4/IQ4 model quant with a supported quantized KV cache."
         },
         {
             "pattern": "Qwen2\\.5.*[Cc]oder.*32B",

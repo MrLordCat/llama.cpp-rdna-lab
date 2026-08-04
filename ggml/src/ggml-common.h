@@ -287,58 +287,6 @@ typedef struct {
 } block_tq2_0;
 static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 block size/padding");
 
-// TurboQuant blocks (CPU-only, 256-element blocks)
-
-// 3.0625 bpw
-typedef struct {
-    uint8_t qs[QK_K * 3 / 8];
-    ggml_half d;
-} block_tbq3_0;
-static_assert(sizeof(block_tbq3_0) == sizeof(ggml_half) + QK_K * 3 / 8, "wrong tbq3_0 block size/padding");
-
-// 4.0625 bpw
-typedef struct {
-    uint8_t qs[QK_K / 2];
-    ggml_half d;
-} block_tbq4_0;
-static_assert(sizeof(block_tbq4_0) == sizeof(ggml_half) + QK_K / 2, "wrong tbq4_0 block size/padding");
-
-// TurboQuant 3-bit GPU quantization (3.5 bpw, 32-element blocks)
-// Per TurboQuant paper (PolarQuant stage), ICLR 2026
-// Each block of 32 values: WHT rotation + 3-bit Lloyd-Max codebook
-#define QK_TQ3_0 32
-typedef struct {
-    uint8_t   qs[QK_TQ3_0 / 4]; // 2-bit codebook indices, 32 × 2 bits = 8 bytes
-    uint8_t   qr[QK_TQ3_0 / 8]; // upper 1 bit of 3-bit index, 32 × 1 bit = 4 bytes
-    ggml_half gamma;             // per-block scale factor
-} block_tq3_0;
-static_assert(sizeof(block_tq3_0) == QK_TQ3_0/4 + QK_TQ3_0/8 + sizeof(ggml_half), "wrong tq3_0 block size/padding");
-
-// TurboKV cache formats (128-element WHT blocks)
-#define QK_TKV_0 128
-
-// 2.125 bpw
-typedef struct {
-    uint8_t qs[QK_TKV_0 / 4];
-    ggml_half d;
-} block_tkv2_0;
-static_assert(sizeof(block_tkv2_0) == QK_TKV_0 / 4 + sizeof(ggml_half), "wrong tkv2_0 block size/padding");
-
-// 3.125 bpw
-typedef struct {
-    uint8_t qs[QK_TKV_0 / 4];
-    uint8_t qh[QK_TKV_0 / 8];
-    ggml_half d;
-} block_tkv3_0;
-static_assert(sizeof(block_tkv3_0) == QK_TKV_0 / 4 + QK_TKV_0 / 8 + sizeof(ggml_half), "wrong tkv3_0 block size/padding");
-
-// 4.125 bpw
-typedef struct {
-    uint8_t qs[QK_TKV_0 / 2];
-    ggml_half d;
-} block_tkv4_0;
-static_assert(sizeof(block_tkv4_0) == QK_TKV_0 / 2 + sizeof(ggml_half), "wrong tkv4_0 block size/padding");
-
 //
 // Super-block quantization structures
 //

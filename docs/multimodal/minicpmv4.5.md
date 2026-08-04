@@ -28,9 +28,9 @@ cmake --build build --config Release
 Convert PyTorch model to gguf files (You can also download the converted [gguf](https://huggingface.co/openbmb/MiniCPM-V-4_5-gguf) by us)
 
 ```bash
-python ./tools/mtmd/legacy-models/minicpmv-surgery.py -m ../MiniCPM-V-4_5
-python ./tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to-gguf.py -m ../MiniCPM-V-4_5 --minicpmv-projector ../MiniCPM-V-4_5/minicpmv.projector --output-dir ../MiniCPM-V-4_5/ --minicpmv_version 6
-python ./convert_hf_to_gguf.py ../MiniCPM-V-4_5/model
+python /path/to/upstream-llama.cpp/tools/mtmd/legacy-models/minicpmv-surgery.py -m ../MiniCPM-V-4_5
+python /path/to/upstream-llama.cpp/tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to-gguf.py -m ../MiniCPM-V-4_5 --minicpmv-projector ../MiniCPM-V-4_5/minicpmv.projector --output-dir ../MiniCPM-V-4_5/ --minicpmv_version 6
+python /path/to/upstream-llama.cpp/convert_hf_to_gguf.py ../MiniCPM-V-4_5/model
 
 # quantize int4 version
 ./build/bin/llama-quantize ../MiniCPM-V-4_5/model/ggml-model-f16.gguf ../MiniCPM-V-4_5/model/ggml-model-Q4_K_M.gguf Q4_K_M

@@ -781,7 +781,6 @@ struct vk_device_struct {
     vk_pipeline pipeline_rms_norm_mul_rope_f32_f16;
     vk_pipeline pipeline_rms_norm_back_f32;
     vk_pipeline pipeline_l2_norm_f32;
-    vk_pipeline pipeline_turbo_wht_f32;
 
     // [src/dst 0=fp32,1=fp16]
     vk_pipeline pipeline_exp[2];

@@ -264,7 +264,7 @@ class SafetensorRemote:
     @classmethod
     def _get_request_headers(cls) -> dict[str, str]:
         """Prepare common headers for requests."""
-        headers = {"User-Agent": "convert_hf_to_gguf"}
+        headers = {"User-Agent": "llama.cpp-gguf"}
         if os.environ.get("HF_TOKEN"):
             headers["Authorization"] = f"Bearer {os.environ['HF_TOKEN']}"
         return headers

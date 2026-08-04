@@ -396,31 +396,9 @@ const std::vector<ggml_type> kv_cache_types = {
     GGML_TYPE_IQ4_NL,
     GGML_TYPE_Q5_0,
     GGML_TYPE_Q5_1,
-    GGML_TYPE_TBQ3_0,
-    GGML_TYPE_TBQ4_0,
-    GGML_TYPE_TQ3_0,
-    GGML_TYPE_TKV2_0,
-    GGML_TYPE_TKV3_0,
-    GGML_TYPE_TKV4_0,
 };
 
 static ggml_type kv_cache_type_from_str(const std::string & s) {
-    if (s == "turbo4") {
-        return GGML_TYPE_TKV4_0;
-    }
-    if (s == "turbo3") {
-        return GGML_TYPE_TKV3_0;
-    }
-    if (s == "turbo2") {
-        return GGML_TYPE_TKV2_0;
-    }
-    if (s == "tbq4" || s == "tb4") {
-        return GGML_TYPE_TBQ4_0;
-    }
-    if (s == "tbq3" || s == "tb3") {
-        return GGML_TYPE_TBQ3_0;
-    }
-
     for (const auto & type : kv_cache_types) {
         if (ggml_type_name(type) == s) {
             return type;
@@ -434,7 +412,6 @@ static std::string get_all_kv_cache_types() {
     for (const auto & type : kv_cache_types) {
         msg << ggml_type_name(type) << (&type == &kv_cache_types.back() ? "" : ", ");
     }
-    msg << ", turbo4, turbo3, turbo2, tbq4, tbq3, tb4, tb3";
     return msg.str();
 }
 
@@ -770,7 +747,6 @@ static void common_params_print_completion(common_params_context & ctx_arg) {
         "llama-bench",
         "llama-cli",
         "llama-completion",
-        "llama-convert-llama2c-to-ggml",
         "llama-cvector-generator",
         "llama-debug",
         "llama-diffusion-cli",
@@ -1347,6 +1323,19 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.checkpoint_min_step = value;
         }
     ).set_env("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--conversation-cache"},
+        "enable the high-hit append-only chat cache profile: force prompt caching, keep at least 32 "
+        "hybrid/SWA rollback checkpoints, and checkpoint long prefills at intervals no larger than 8192 tokens",
+        [](common_params & params) {
+            params.conversation_cache = true;
+            params.cache_prompt = true;
+            params.n_ctx_checkpoints = std::max(params.n_ctx_checkpoints, 32);
+            params.checkpoint_every_nt = params.checkpoint_every_nt > 0
+                ? std::min(params.checkpoint_every_nt, 8192)
+                : 8192;
+        }
+    ).set_env("LLAMA_ARG_CONVERSATION_CACHE").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
         {"-cram", "--cache-ram"}, "N",
         string_format("set the maximum cache size in MiB (default: %d, -1 - no limit, 0 - disable)"

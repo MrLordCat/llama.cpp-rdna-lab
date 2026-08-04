@@ -136,10 +136,8 @@ Supported `src0` type set in `supports_op(...)`:
   `IQ3_S`, `IQ4_XS`, `IQ4_NL`.
 - FP4: `MXFP4`, `NVFP4`.
 
-Notable difference from ROCm: this Vulkan support list does not include the
-local TurboQuant `TQ3_0`/`TKV*` types in the same way the HIP path does. Do not
-assume a Vulkan fallback route exists for local TurboQuant experiments without a
-real load/run check.
+The support list is intentionally limited to the maintained dense, classic,
+K-quant, IQ and FP4 formats listed above.
 
 ### Matrix Route
 

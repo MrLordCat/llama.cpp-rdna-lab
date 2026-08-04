@@ -51,7 +51,7 @@ background load may have changed.
 - Keep E345's Q6_K decode `small_k=false` policy. It is not a prompt route.
 - Keep Q5_K decode at `small_k=false,nwarps=8`; row batching and `nwarps=4`
   lost.
-- Do not use MTP, TKV4, KV type changes, or layer-split sweeps as prompt-kernel
+- Do not use MTP, KV type changes, or layer-split sweeps as prompt-kernel
   candidates in this gate.
 - Do not enable unsafe peer copy. The production layer split and existing safe
   host-staged fallback remain the transport baseline.

@@ -126,6 +126,19 @@ int main(void) {
     assert(params.n_predict == 6789);
     assert(params.n_batch == 9090);
 
+    {
+        common_params server_params;
+        server_params.cache_prompt = false;
+        server_params.n_ctx_checkpoints = 4;
+        server_params.checkpoint_every_nt = -1;
+        argv = {"binary_name", "--conversation-cache"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), server_params, LLAMA_EXAMPLE_SERVER));
+        assert(server_params.conversation_cache);
+        assert(server_params.cache_prompt);
+        assert(server_params.n_ctx_checkpoints == 32);
+        assert(server_params.checkpoint_every_nt == 8192);
+    }
+
     // --draft cannot be used outside llama-speculative
     argv = {"binary_name", "--spec-draft-n-max", "123"};
     assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_SPECULATIVE));

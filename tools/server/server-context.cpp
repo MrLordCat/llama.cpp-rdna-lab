@@ -1012,6 +1012,14 @@ private:
 
         params_base = params;
 
+        if (params_base.conversation_cache) {
+            SRV_WRN("conversation cache profile enabled: cache_prompt=forced, ctx_checkpoints=%d, "
+                "checkpoint_every_n_tokens=%d, cache_ram=%d MiB\n",
+                params_base.n_ctx_checkpoints,
+                params_base.checkpoint_every_nt,
+                params_base.cache_ram_mib);
+        }
+
         llama_init = common_init_from_params(params_base);
 
         model = llama_init->model();
@@ -3021,6 +3029,18 @@ private:
 
                         slot.init_sampler();
                         SLT_INF(slot, "prompt processing done, n_tokens = %d, batch.n_tokens = %d\n", slot.prompt.n_tokens(), batch.n_tokens);
+                        if (params_base.conversation_cache) {
+                            const int32_t n_prompt_total = slot.n_prompt_tokens_cache + slot.n_prompt_tokens_processed;
+                            const double hit_pct = n_prompt_total > 0
+                                ? 100.0 * slot.n_prompt_tokens_cache / n_prompt_total
+                                : 0.0;
+                            SLT_INF(slot,
+                                    "conversation cache hit = %.2f%%, reused = %d/%d tokens, evaluated = %d\n",
+                                    hit_pct,
+                                    slot.n_prompt_tokens_cache,
+                                    n_prompt_total,
+                                    slot.n_prompt_tokens_processed);
+                        }
                     } else {
                         if (slot.task->n_tokens() < slot.prompt.n_tokens() + n_ubatch) {
                             // near the end of the prompt

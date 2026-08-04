@@ -55,14 +55,14 @@
 
 ## Вывод
 
-Да, MTP можно внедрять в этот форк самостоятельно, примерно как раньше добавлялся TurboQuant, но это крупнее и рискованнее, чем просто добавить новый quant type. MTP затрагивает model loader, model architecture registry, graph builder, context hooks, recurrent-state rollback, server batching и converter. Самый быстрый путь — не писать с нуля, а портировать PR `ggml-org/llama.cpp#22673` в отдельную ветку и затем локально стабилизировать под RX 9070 XT / ROCm.
+Да, MTP можно внедрять в этот форк самостоятельно, но это крупнее и рискованнее, чем локальное runtime-расширение. MTP затрагивает model loader, model architecture registry, graph builder, context hooks, recurrent-state rollback, server batching и GGUF metadata. Самый быстрый путь — не писать с нуля, а портировать PR `ggml-org/llama.cpp#22673` в отдельную ветку и затем локально стабилизировать под RX 9070 XT / ROCm.
 
 Для Qwen-моделей самые перспективные ускорения:
 
 1. MTP для Qwen3.6 MTP-enabled GGUF.
 2. `ngram-mod` для coding-agent задач с повторяющимся контекстом.
 3. Draft-model speculative decoding для non-MTP моделей.
-4. KV cache compression: `q8_0`, `q4_0`, и локальный TurboQuant `tq3_0`, если качество/стабильность приемлемы.
+4. KV cache compression: `q8_0` и `q4_0`, если качество и стабильность приемлемы.
 5. ROCm/Vulkan-specific tuning: `-np 1`, `-ngl 999`, `--flash-attn on`, правильный `-b/-ub`, HIP SDK 7.1, `gfx1201`.
 6. GUI-level auto-detection: включать MTP только если binary реально поддерживает `--spec-type mtp` и модель похожа на MTP GGUF.
 
@@ -79,7 +79,7 @@ PR #22673 меняет 40+ файлов. Основные зоны:
 | Qwen MTP graph | `src/models/qwen35_mtp.cpp`, `src/models/qwen35moe_mtp.cpp` | построить graph MTP блока |
 | Recurrent rollback | `src/llama-memory-recurrent.*`, `src/llama-memory-hybrid*`, `src/llama-cparams.h`, `include/llama.h` | partial rollback для rejected draft tokens |
 | Server integration | `tools/server/server-context.cpp` | загрузить MTP head из того же GGUF, отключить несовместимые пути |
-| Converter/GGUF metadata | `convert_hf_to_gguf.py`, `gguf-py/gguf/constants.py` | конвертировать HF MTP tensors в GGUF |
+| Converter/GGUF metadata | внешний upstream converter, `gguf-py/gguf/constants.py` | конвертировать HF MTP tensors в GGUF; converter в этом форке не поставляется |
 | Backend fixes | `ggml/src/ggml-*` | gated delta net / recurrent state / backend ops support |
 
 ## Почему это не просто GUI-флаг
@@ -162,7 +162,7 @@ git fetch upstream pull/22673/head:upstream-pr-22673
 git merge --no-ff upstream-pr-22673
 ```
 
-Если конфликтует с TurboQuant или GUI, не править GUI на этом этапе. Сначала поднять core.
+Если конфликтует с локальными ROCm/Vulkan или GUI изменениями, не править GUI на этом этапе. Сначала поднять core.
 
 ### Этап 2: минимальная сборка
 
@@ -239,7 +239,6 @@ build-rocm-mtp\bin\llama-server.exe `
 
 - short coding: `q8_0` KV;
 - long context: `q4_0` KV;
-- experimental: `tq3_0` KV with flash attention, если текущий build стабилен.
 
 ### 4. Backend A/B runner
 
@@ -249,7 +248,7 @@ build-rocm-mtp\bin\llama-server.exe `
 - один prompt set;
 - ROCm vs Vulkan;
 - MTP vs no MTP;
-- q8_0 vs q4_0 vs tq3_0 KV;
+- q8_0 vs q4_0 KV;
 - вывод CSV в `build_logs/bench-qwen-*.csv`.
 
 Это даст больше пользы, чем угадывать параметры на глаз.
@@ -261,7 +260,7 @@ build-rocm-mtp\bin\llama-server.exe `
 1. Дочистить repo profile/docs/ignore.
 2. Сделать `feature/qwen-mtp`.
 3. Подтянуть PR #22673 как merge, не cherry-pick по одному файлу.
-4. Починить конфликты с TurboQuant.
+4. Починить конфликты с локальными ROCm/Vulkan изменениями.
 5. Собрать `build-rocm-mtp`.
 6. Сравнить Qwen3.6-35B-A3B text-only baseline vs MTP.
 7. Если TG растёт без PP/VRAM катастрофы, добавить GUI controls.

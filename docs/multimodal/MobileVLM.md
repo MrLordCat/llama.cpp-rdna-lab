@@ -33,13 +33,13 @@ git clone https://huggingface.co/openai/clip-vit-large-patch14-336
 2. Use `llava_surgery.py` to split the LLaVA model to LLaMA and multimodel projector constituents:
 
 ```sh
-python ./tools/mtmd/llava_surgery.py -m path/to/MobileVLM-1.7B
+python /path/to/upstream-llama.cpp/tools/mtmd/legacy-models/llava_surgery.py -m path/to/MobileVLM-1.7B
 ```
 
 3. Use `convert_image_encoder_to_gguf.py` with `--projector-type ldp` (for **V2** please use `--projector-type ldpv2`) to convert the LLaVA image encoder to GGUF:
 
 ```sh
-python ./tools/mtmd/convert_image_encoder_to_gguf.py \
+python /path/to/upstream-llama.cpp/tools/mtmd/legacy-models/convert_image_encoder_to_gguf.py \
     -m path/to/clip-vit-large-patch14-336 \
     --llava-projector path/to/MobileVLM-1.7B/llava.projector \
     --output-dir path/to/MobileVLM-1.7B \
@@ -47,17 +47,17 @@ python ./tools/mtmd/convert_image_encoder_to_gguf.py \
 ```
 
 ```sh
-python ./tools/mtmd/convert_image_encoder_to_gguf.py \
+python /path/to/upstream-llama.cpp/tools/mtmd/legacy-models/convert_image_encoder_to_gguf.py \
     -m path/to/clip-vit-large-patch14-336 \
     --llava-projector path/to/MobileVLM-1.7B_V2/llava.projector \
     --output-dir path/to/MobileVLM-1.7B_V2 \
     --projector-type ldpv2
 ```
 
-4. Use `examples/convert_legacy_llama.py` to convert the LLaMA part of LLaVA to GGUF:
+4. Use `examples/convert_legacy_llama.py` from a separate upstream llama.cpp checkout to convert the LLaMA part of LLaVA to GGUF:
 
 ```sh
-python ./examples/convert_legacy_llama.py path/to/MobileVLM-1.7B --skip-unknown
+python /path/to/upstream-llama.cpp/examples/convert_legacy_llama.py path/to/MobileVLM-1.7B --skip-unknown
 ```
 
 5. Use `quantize` to convert LLaMA part's DataType from `fp32` to `q4_k`

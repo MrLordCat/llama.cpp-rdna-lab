@@ -11,7 +11,6 @@ Keep these local systems intact:
 - benchmark/autotune tooling and generated history format;
 - MTP/DFlash integration;
 - dual-RX 9070 XT Vulkan and ROCm optimizations;
-- TurboQuant work;
 - local documentation, CI and agent rules;
 - the CPU, Vulkan and ROCm/HIP-only backend allowlist.
 

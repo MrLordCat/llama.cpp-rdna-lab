@@ -14,7 +14,6 @@
 
 #include <cassert>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 #include <numeric>
 #include <sstream>
@@ -22,33 +21,6 @@
 #include <unordered_set>
 
 // dedup helpers
-
-static constexpr int LLAMA_TKV_GROUP_SIZE = 128;
-
-static bool llama_is_turbo_kv_type(enum ggml_type type) {
-    return type == GGML_TYPE_TQ3_0 || type == GGML_TYPE_TKV2_0 || type == GGML_TYPE_TKV3_0 || type == GGML_TYPE_TKV4_0;
-}
-
-static bool llama_is_tkv_kv_type(enum ggml_type type) {
-    return type == GGML_TYPE_TKV2_0 || type == GGML_TYPE_TKV3_0 || type == GGML_TYPE_TKV4_0;
-}
-
-static bool llama_tkv_direct_partner_type_ok(enum ggml_type type) {
-    return llama_is_tkv_kv_type(type) || type == GGML_TYPE_Q8_0;
-}
-
-static bool llama_tkv_direct_fattn_enabled() {
-    const char * env = std::getenv("GGML_TKV_DIRECT_FATTN");
-    if (env == nullptr || env[0] == '\0') {
-        return true;
-    }
-    return std::strcmp(env, "0") != 0;
-}
-
-static bool llama_tkv_direct_prefill_enabled() {
-    const char * env = std::getenv("GGML_TKV_DIRECT_PREFILL");
-    return env != nullptr && env[0] != '\0' && std::strcmp(env, "0") != 0;
-}
 
 static ggml_tensor * build_attn_inp_kq_mask(
         ggml_context * ctx,
@@ -2125,94 +2097,24 @@ ggml_tensor * llm_graph_context::build_attn_mha(
                float   kq_scale,
                  int   il) const {
     const bool v_trans = v->nb[1] > v->nb[2];
-    const bool k_is_tbq = k->type == GGML_TYPE_TBQ3_0 || k->type == GGML_TYPE_TBQ4_0;
-    const bool v_is_tbq = v->type == GGML_TYPE_TBQ3_0 || v->type == GGML_TYPE_TBQ4_0;
-    const bool use_flash_attn = cparams.flash_attn && kq_b == nullptr;
-    const enum ggml_type tbq_attn_type = use_flash_attn ? GGML_TYPE_F16 : GGML_TYPE_F32;
 
     // split the batch into streams if needed
-    const auto n_stream = k_is_tbq ? k->ne[2] : (v_is_tbq ? v->ne[2] : k->ne[3]);
+    const auto n_stream = k->ne[3];
 
     q = ggml_view_4d(ctx0, q, q->ne[0], q->ne[1], q->ne[2]/n_stream, n_stream, q->nb[1], q->nb[2], q->nb[3]/n_stream, 0);
-
-    if (k_is_tbq) {
-        const int64_t n_head_kv = hparams.n_head_kv(il);
-        const int64_t n_embd_k_gqa = k->ne[0];
-
-        GGML_ASSERT(n_head_kv > 0);
-        GGML_ASSERT(n_embd_k_gqa % n_head_kv == 0);
-
-        k = ggml_cast(ctx0, k, tbq_attn_type);
-        cb(k, use_flash_attn ? "k_tbq_f16" : "k_tbq_f32", il);
-
-        k = ggml_reshape_4d(ctx0, k, n_embd_k_gqa / n_head_kv, n_head_kv, k->ne[1], k->ne[2]);
-        cb(k, "k_tbq_reshaped", il);
-    }
-
-    if (v_is_tbq) {
-        const int64_t n_head_kv = hparams.n_head_kv(il);
-        const int64_t n_embd_v_gqa = v->ne[0];
-
-        GGML_ASSERT(n_head_kv > 0);
-        GGML_ASSERT(n_embd_v_gqa % n_head_kv == 0);
-
-        v = ggml_cast(ctx0, v, tbq_attn_type);
-        cb(v, use_flash_attn ? "v_tbq_f16" : "v_tbq_f32", il);
-
-        v = ggml_reshape_4d(ctx0, v, n_embd_v_gqa / n_head_kv, n_head_kv, v->ne[1], v->ne[2]);
-        cb(v, "v_tbq_reshaped", il);
-    }
 
     q = ggml_permute(ctx0, q, 0, 2, 1, 3);
     k = ggml_permute(ctx0, k, 0, 2, 1, 3);
     v = ggml_permute(ctx0, v, 0, 2, 1, 3);
 
-    const bool direct_tkv_k = llama_is_tkv_kv_type(k->type);
-    const bool direct_tkv_v = llama_is_tkv_kv_type(v->type);
-        const bool tkv_fattn_candidate = use_flash_attn &&
-            (direct_tkv_k || direct_tkv_v) &&
-            llama_tkv_direct_partner_type_ok(k->type) && llama_tkv_direct_partner_type_ok(v->type) &&
-            q->ne[0] % LLAMA_TKV_GROUP_SIZE == 0 &&
-            (!direct_tkv_k || k->ne[0] % LLAMA_TKV_GROUP_SIZE == 0) &&
-            (!direct_tkv_v || v->ne[0] % LLAMA_TKV_GROUP_SIZE == 0);
-        const bool direct_tkv_base = tkv_fattn_candidate && llama_tkv_direct_fattn_enabled();
-    const bool direct_tkv_fattn = direct_tkv_base && (q->ne[1] <= 2 || llama_tkv_direct_prefill_enabled());
-
-    if (direct_tkv_fattn && direct_tkv_k) {
-        if (!ggml_is_contiguous(q)) {
-            q = ggml_cont(ctx0, q);
-        }
-        q = ggml_turbo_wht(ctx0, q, 0, LLAMA_TKV_GROUP_SIZE);
-        cb(q, "q_tkv_wht", il);
-    }
-
     ggml_tensor * cur;
 
+    const bool use_flash_attn = cparams.flash_attn && kq_b == nullptr;
     if (use_flash_attn) {
         GGML_ASSERT(kq_b == nullptr && "Flash attention does not support KQ bias yet");
 
         if (v_trans) {
             v = ggml_transpose(ctx0, v);
-        }
-
-        // Dequant TurboQuant K/V for flash attention.
-        // Dequant kernels run inverse WHT, restoring original values.
-        // Flash attention consumes F16 K/V, so avoid a F32 intermediate on this GPU path.
-        if (!direct_tkv_fattn && llama_is_turbo_kv_type(k->type)) {
-            k = ggml_cast(ctx0, k, GGML_TYPE_F16);
-            cb(k, "k_dequant", il);
-        }
-        if (!direct_tkv_fattn && tkv_fattn_candidate && k->type == GGML_TYPE_Q8_0) {
-            k = ggml_cast(ctx0, k, GGML_TYPE_F16);
-            cb(k, "k_mixed_q8_f16", il);
-        }
-        if (!direct_tkv_fattn && llama_is_turbo_kv_type(v->type)) {
-            v = ggml_cast(ctx0, v, GGML_TYPE_F16);
-            cb(v, "v_dequant", il);
-        }
-        if (!direct_tkv_fattn && tkv_fattn_candidate && v->type == GGML_TYPE_Q8_0) {
-            v = ggml_cast(ctx0, v, GGML_TYPE_F16);
-            cb(v, "v_mixed_q8_f16", il);
         }
 
         // this can happen when KV cache is not used (e.g. an embedding model with non-causal attn)
@@ -2230,14 +2132,6 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         ggml_flash_attn_ext_add_sinks(cur, sinks);
         ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);
-
-        if (direct_tkv_fattn && direct_tkv_v) {
-            if (!ggml_is_contiguous(cur)) {
-                cur = ggml_cont(ctx0, cur);
-            }
-            cur = ggml_turbo_wht(ctx0, cur, 1, LLAMA_TKV_GROUP_SIZE);
-            cb(cur, "kqv_tkv_iwht", il);
-        }
 
         if (v_mla) {
 #if 0
@@ -2295,13 +2189,6 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         kq = ggml_soft_max_ext(ctx0, kq, kq_mask, kq_scale, hparams.f_max_alibi_bias);
         ggml_soft_max_add_sinks(kq, sinks);
         cb(kq, "kq_soft_max", il);
-
-        // Dequant quantized V cache (e.g., tq3_0) to f32 for attention
-        // Note: must use F32, not F16 — CPU backend only supports quantized→F32 dequant
-        if (ggml_is_quantized(v->type)) {
-            v = ggml_cast(ctx0, v, GGML_TYPE_F32);
-            cb(v, "v_dequant", il);
-        }
 
         if (!v_trans) {
             // note: avoid this branch

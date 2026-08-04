@@ -11,7 +11,7 @@ $ export GRANITE_MODEL=./granite-vision-3.2-2b
 ### 1. Running llava surgery v2.
 First, we need to run the llava surgery script as shown below:
 
-`python llava_surgery_v2.py -C -m $GRANITE_MODEL`
+`python /path/to/upstream-llama.cpp/tools/mtmd/legacy-models/llava_surgery_v2.py -C -m $GRANITE_MODEL`
 
 You should see two new files (`llava.clip` and `llava.projector`) written into your model's directory, as shown below.
 
@@ -111,7 +111,7 @@ config.json             llava.projector         pytorch_model.bin
 
 Now convert the components to GGUF; Note that we also override the image mean/std dev to `[.5,.5,.5]` since we use the SigLIP visual encoder - in the transformers model, you can find these numbers in the `preprocessor_config.json`.
 ```bash
-$ python convert_image_encoder_to_gguf.py \
+$ python /path/to/upstream-llama.cpp/tools/mtmd/legacy-models/convert_image_encoder_to_gguf.py \
     -m $ENCODER_PATH \
     --llava-projector $ENCODER_PATH/llava.projector \
     --output-dir $ENCODER_PATH \
@@ -161,7 +161,7 @@ Now you can convert the exported LLM to GGUF with the normal converter in the ro
 ```bash
 $ LLM_GGUF_PATH=$LLM_EXPORT_PATH/granite_llm.gguf
 ...
-$ python convert_hf_to_gguf.py --outfile $LLM_GGUF_PATH $LLM_EXPORT_PATH
+$ python /path/to/upstream-llama.cpp/convert_hf_to_gguf.py --outfile $LLM_GGUF_PATH $LLM_EXPORT_PATH
 ```
 
 

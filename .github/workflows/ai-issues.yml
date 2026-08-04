@@ -35,7 +35,6 @@ jobs:
             }
         run: |
           rm AGENTS.md
-          rm CLAUDE.md
 
           timeout 5m opencode run -m llama.cpp-dgx/ai-review-issues-find-similar --thinking "A new issue has been created:
 

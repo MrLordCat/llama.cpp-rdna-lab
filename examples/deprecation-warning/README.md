@@ -21,7 +21,6 @@ Please update all scripts and workflows to use the new binary names.
 | batched | llama-batched |
 | batched-bench | llama-batched-bench |
 | benchmark-matmult | llama-benchmark-matmult |
-| convert-llama2c-to-ggml | llama-convert-llama2c-to-ggml |
 | eval-callback | llama-eval-callback |
 | gbnf-validator | llama-gbnf-validator |
 | gguf | llama-gguf |

@@ -186,7 +186,7 @@ TASKS_FULL = TASKS_QUICK + [
     {
         "id": "implementation_plan",
         "title": "Implementation planning",
-        "prompt": """We want to port llama.cpp PR #22673 MTP support into a fork with TurboQuant and a PyQt GUI.
+        "prompt": """We want to port llama.cpp PR #22673 MTP support into a Windows ROCm/Vulkan fork with a PyQt GUI.
 Constraints:
 - focus on ROCm builds
 - keep GUI stable
@@ -423,7 +423,6 @@ def default_model() -> Path | None:
 def choose_repo_snapshot_files(root: Path) -> list[Path]:
     seed_files = [
         root / "AGENTS.md",
-        root / "CLAUDE.md",
         root / "BENCHMARKS.md",
         root / "PROJECT_PROFILE.md",
         root / "QWEN_SPEED_RESEARCH.md",

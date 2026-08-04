@@ -18,31 +18,6 @@
 #include <limits>
 #include <stdexcept>
 
-static bool llama_is_turbo_kv_type(enum ggml_type type) {
-    return type == GGML_TYPE_TQ3_0 || type == GGML_TYPE_TKV2_0 || type == GGML_TYPE_TKV3_0 || type == GGML_TYPE_TKV4_0;
-}
-
-static bool llama_is_tkv_kv_type(enum ggml_type type) {
-    return type == GGML_TYPE_TKV2_0 || type == GGML_TYPE_TKV3_0 || type == GGML_TYPE_TKV4_0;
-}
-
-static bool llama_tkv_direct_partner_type_ok(enum ggml_type type) {
-    return llama_is_tkv_kv_type(type) || type == GGML_TYPE_Q8_0;
-}
-
-static bool llama_tkv_direct_fattn_enabled() {
-    const char * env = std::getenv("GGML_TKV_DIRECT_FATTN");
-    if (env == nullptr || env[0] == '\0') {
-        return true;
-    }
-    return std::strcmp(env, "0") != 0;
-}
-
-static bool llama_tkv_direct_prefill_enabled() {
-    const char * env = std::getenv("GGML_TKV_DIRECT_PREFILL");
-    return env != nullptr && env[0] != '\0' && std::strcmp(env, "0") != 0;
-}
-
 static llm_graph_type llama_ctx_type_to_graph_type(llama_context_type ctx_type) {
     switch (ctx_type) {
         case LLAMA_CONTEXT_TYPE_DEFAULT: return LLM_GRAPH_TYPE_DECODER;
@@ -546,15 +521,8 @@ llama_context::llama_context(
         sched_reserve();
 
         if (!cparams.flash_attn) {
-            if (llama_is_turbo_kv_type(params.type_k)) {
-                throw std::runtime_error(std::string(ggml_type_name(params.type_k)) + " K cache requires Flash Attention until direct/non-FA kernels are implemented");
-            }
             if (ggml_is_quantized(params.type_v)) {
-                if (llama_is_turbo_kv_type(params.type_v)) {
-                    LLAMA_LOG_WARN("%s: %s V without flash_attn - will dequant V in attention graph\n", __func__, ggml_type_name(params.type_v));
-                } else {
-                    throw std::runtime_error("quantized V cache was requested, but this requires Flash Attention");
-                }
+                throw std::runtime_error("quantized V cache was requested, but this requires Flash Attention");
             }
         }
     }
@@ -4214,22 +4182,6 @@ llama_context * llama_init_from_model(
         }
     }
 
-    if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && (llama_is_turbo_kv_type(params.type_k) || llama_is_turbo_kv_type(params.type_v))) {
-        const bool direct_tkv_k = llama_is_tkv_kv_type(params.type_k);
-        const bool direct_tkv_v = llama_is_tkv_kv_type(params.type_v);
-        if (llama_tkv_direct_fattn_enabled() &&
-                (direct_tkv_k || direct_tkv_v) &&
-                llama_tkv_direct_partner_type_ok(params.type_k) && llama_tkv_direct_partner_type_ok(params.type_v)) {
-            if (llama_tkv_direct_prefill_enabled()) {
-                LLAMA_LOG_INFO("%s: %s/%s K/V cache with flash_attn - using full direct TKV FlashAttention\n", __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
-            } else {
-                LLAMA_LOG_INFO("%s: %s/%s K/V cache with flash_attn - using hybrid TKV FlashAttention (direct decode, F16 prefill)\n", __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
-            }
-        } else {
-            LLAMA_LOG_WARN("%s: %s/%s K/V cache with flash_attn - no direct TKV route, fallback to graph dequant where needed\n", __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
-        }
-    }
-
     if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && ggml_is_quantized(params.type_v)) {
         const uint32_t blck_size = ggml_blck_size(params.type_v);
         for (uint32_t il = 0; il < model->hparams.n_layer; ++il) {
@@ -4242,12 +4194,8 @@ llama_context * llama_init_from_model(
     }
 
     if (ggml_is_quantized(params.type_v) && params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_DISABLED) {
-        if (llama_is_turbo_kv_type(params.type_v)) {
-            LLAMA_LOG_WARN("%s: %s V cache without flash_attn - will dequant V in attention graph\n", __func__, ggml_type_name(params.type_v));
-        } else {
-            LLAMA_LOG_ERROR("%s: V cache quantization requires flash_attn\n", __func__);
-            return nullptr;
-        }
+        LLAMA_LOG_ERROR("%s: V cache quantization requires flash_attn\n", __func__);
+        return nullptr;
     }
 
     if (params.pooling_type != LLAMA_POOLING_TYPE_UNSPECIFIED &&

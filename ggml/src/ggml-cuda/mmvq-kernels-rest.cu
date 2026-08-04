@@ -33,7 +33,6 @@ bool ggml_cuda_mmvq_dispatch_rest(ggml_type type_x, GGML_CUDA_MMVQ_TYPED_DISPATC
         GGML_CUDA_MMVQ_DISPATCH_REST_CASE(GGML_TYPE_IQ4_NL)
         GGML_CUDA_MMVQ_DISPATCH_REST_CASE(GGML_TYPE_IQ4_XS)
         GGML_CUDA_MMVQ_DISPATCH_REST_CASE(GGML_TYPE_IQ3_S)
-        GGML_CUDA_MMVQ_DISPATCH_REST_CASE(GGML_TYPE_TQ3_0)
         default:
             return false;
     }

@@ -260,10 +260,6 @@ static void ggml_cuda_flash_attn_ext_mma_f16(ggml_backend_cuda_context & ctx, gg
     FATTN_VEC_CASE(128, type_K, type_V)       \
     FATTN_VEC_CASE(256, type_K, type_V)
 
-#define FATTN_VEC_CASES_TKV_D(type_K, type_V) \
-    FATTN_VEC_CASE(128, type_K, type_V)       \
-    FATTN_VEC_CASE(256, type_K, type_V)
-
 static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_tensor * Q = dst->src[0];
     ggml_tensor * K = dst->src[1];
@@ -331,22 +327,6 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_BF16)
 #endif // GGML_CUDA_FA_ALL_QUANTS
-
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV2_0, GGML_TYPE_TKV2_0)
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV3_0, GGML_TYPE_TKV3_0)
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV4_0, GGML_TYPE_TKV4_0)
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV2_0, GGML_TYPE_TKV3_0)
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV3_0, GGML_TYPE_TKV2_0)
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV2_0, GGML_TYPE_TKV4_0)
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV4_0, GGML_TYPE_TKV2_0)
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV3_0, GGML_TYPE_TKV4_0)
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV4_0, GGML_TYPE_TKV3_0)
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV2_0, GGML_TYPE_Q8_0)
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_Q8_0,   GGML_TYPE_TKV2_0)
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV3_0, GGML_TYPE_Q8_0)
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_Q8_0,   GGML_TYPE_TKV3_0)
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_TKV4_0, GGML_TYPE_Q8_0)
-    FATTN_VEC_CASES_TKV_D(GGML_TYPE_Q8_0,   GGML_TYPE_TKV4_0)
 
     GGML_ABORT("fatal error");
 }
@@ -450,13 +430,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
 #ifndef GGML_CUDA_FA_ALL_QUANTS
     if (K->type != V->type) {
-        const bool K_direct_tkv = K->type == GGML_TYPE_TKV2_0 || K->type == GGML_TYPE_TKV3_0 || K->type == GGML_TYPE_TKV4_0;
-        const bool V_direct_tkv = V->type == GGML_TYPE_TKV2_0 || V->type == GGML_TYPE_TKV3_0 || V->type == GGML_TYPE_TKV4_0;
-        const bool K_direct_ok  = K_direct_tkv || K->type == GGML_TYPE_Q8_0;
-        const bool V_direct_ok  = V_direct_tkv || V->type == GGML_TYPE_Q8_0;
-        if (!(K_direct_tkv || V_direct_tkv) || !K_direct_ok || !V_direct_ok) {
-            return BEST_FATTN_KERNEL_NONE;
-        }
+        return BEST_FATTN_KERNEL_NONE;
     }
 #endif // GGML_CUDA_FA_ALL_QUANTS
 
@@ -474,13 +448,6 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_BF16:
             break;
-        case GGML_TYPE_TKV2_0:
-        case GGML_TYPE_TKV3_0:
-        case GGML_TYPE_TKV4_0:
-            if (K->ne[0] % QK_TKV_0 != 0) {
-                return BEST_FATTN_KERNEL_NONE;
-            }
-            break;
         default:
             return BEST_FATTN_KERNEL_NONE;
     }
@@ -491,20 +458,6 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
     // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes:
     const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && K->ne[1] % FATTN_KQ_STRIDE == 0;
-
-    const bool K_is_tkv = K->type == GGML_TYPE_TKV2_0 || K->type == GGML_TYPE_TKV3_0 || K->type == GGML_TYPE_TKV4_0;
-    const bool V_is_tkv = V->type == GGML_TYPE_TKV2_0 || V->type == GGML_TYPE_TKV3_0 || V->type == GGML_TYPE_TKV4_0;
-    if (K_is_tkv || V_is_tkv) {
-        const bool K_direct_ok = K_is_tkv || K->type == GGML_TYPE_Q8_0;
-        const bool V_direct_ok = V_is_tkv || V->type == GGML_TYPE_Q8_0;
-        if (!K_direct_ok || !V_direct_ok ||
-                (K_is_tkv && K->ne[0] % QK_TKV_0 != 0) ||
-                (V_is_tkv && V->ne[0] % QK_TKV_0 != 0) ||
-                !can_use_vector_kernel) {
-            return BEST_FATTN_KERNEL_NONE;
-        }
-        return BEST_FATTN_KERNEL_VEC;
-    }
 
     // If Turing tensor cores are available, use them:
     if (turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {

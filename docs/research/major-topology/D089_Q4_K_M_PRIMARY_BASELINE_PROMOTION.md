@@ -55,11 +55,9 @@ adjacent baseline before a new production claim.
 
 ## KV Policy
 
-Q8 remains the primary Q4_K_M KV cache. D088 TKV4 currently provides a
-residency mechanism, not a Q4 production promotion: on its measured Q3 lane it
-cuts 131K KV from 4352 to 2112 MiB but trails q8 prompt throughput by about
-1.0-1.1%. TKV4 must pass a Q4 long-agent quality/perplexity and matched
-performance gate before it can replace q8 in the primary preset.
+Q8 remains the primary Q4_K_M KV cache. Alternative KV formats require a Q4
+long-agent quality/perplexity gate and a matched performance gate before they
+can replace q8 in the primary preset.
 
 ## Repository Effects
 

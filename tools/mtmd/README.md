@@ -41,7 +41,7 @@ Built upon `clip.cpp` (similar to `llava.cpp`), `libmtmd` offers several advanta
 
 Multimodal projector (`mmproj`) files are specific to each model architecture.
 
-For the following models, you can use `convert_hf_to_gguf.py` with `--mmproj` flag to get the `mmproj` file:
+For the following models, use the converter from a separate upstream llama.cpp checkout with the `--mmproj` flag to get the `mmproj` file:
 - [Gemma 3](https://huggingface.co/collections/google/gemma-3-release-67c6c6f89c4f76621268bb6d) ; See the guide [here](../../docs/multimodal/gemma3.md) - Note: 1B variant does not have vision support
 - SmolVLM (from [HuggingFaceTB](https://huggingface.co/HuggingFaceTB))
 - SmolVLM2 (from [HuggingFaceTB](https://huggingface.co/HuggingFaceTB))
@@ -52,7 +52,7 @@ For the following models, you can use `convert_hf_to_gguf.py` with `--mmproj` fl
 
 For older models, please refer to the relevant guide for instructions on how to obtain or create them:
 
-NOTE: conversion scripts are located under `tools/mtmd/legacy-models`
+NOTE: legacy conversion scripts are not shipped by this fork; use them from a separate upstream llama.cpp checkout.
 
 - [LLaVA](../../docs/multimodal/llava.md)
 - [MobileVLM](../../docs/multimodal/MobileVLM.md)

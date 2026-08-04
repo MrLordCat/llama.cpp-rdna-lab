@@ -295,17 +295,13 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_kv_type_combo = QComboBox()
         self.server_kv_type_combo.addItems([
             "f16", "bf16", "f32", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl",
-            "tbq4_0", "tbq3_0", "tq3_0",
         ])
         self.server_kv_type_combo.setCurrentText("f16")
         self.server_kv_type_combo.setToolTip(
             "KV cache quantization types:\n"
             "f16: default half-precision\n"
             "bf16: bfloat16, recommended for Qwen3.5/3.6\n"
-            "q8_0/q5_x/q4_x/iq4_nl: quantized KV cache\n"
-            "tbq4_0/tbq3_0: TurboQuant CPU-only, forces -ngl 0\n"
-            "tq3_0: TurboQuant GPU KV cache\n"
-            "TurboQuant KV types force flash_attn=on."
+            "q8_0/q5_x/q4_x/iq4_nl: quantized KV cache."
         )
 
         self.server_prompt_cache_ram_spinbox = QSpinBox()
@@ -332,12 +328,21 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             "Checkpoint interval during long prefill. Off still permits the required near-end rollback checkpoint."
         )
 
+        self.server_conversation_cache_check = QCheckBox("High-hit chat cache")
+        self.server_conversation_cache_check.setToolTip(
+            "Enable --conversation-cache for append-only chats. The server forces prompt caching, keeps at least 32\n"
+            "hybrid/recurrent rollback checkpoints, and uses an interval no larger than 8192 tokens. Qwen3.6\n"
+            "checkpoints are about 150 MiB each. Prompt Cache MiB remains separate and is only needed for evicted slots."
+        )
+        self.server_conversation_cache_check.toggled.connect(self._on_conversation_cache_toggled)
+
         self._grid_pair(resources_grid, 0, 0, "GPU Layers:", self.server_gpu_layers_spinbox)
         self._grid_pair(resources_grid, 0, 1, "Context:", self.server_context_spinbox)
         self._grid_pair(resources_grid, 1, 0, "KV Cache:", self.server_kv_type_combo)
         self._grid_pair(resources_grid, 1, 1, "Prompt Cache MiB:", self.server_prompt_cache_ram_spinbox)
         self._grid_pair(resources_grid, 2, 0, "Checkpoints:", self.server_ctx_checkpoints_spinbox)
         self._grid_pair(resources_grid, 2, 1, "Interval:", self.server_checkpoint_interval_spinbox)
+        resources_grid.addWidget(self.server_conversation_cache_check, 3, 0, 1, 4)
         resources_grid.setColumnStretch(4, 1)
         resources_group.setLayout(resources_grid)
         res_spec_row.addWidget(resources_group, 1, Qt.AlignmentFlag.AlignTop)
@@ -653,6 +658,10 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         if enabled and not self.server_mmproj_path.text().strip():
             self._autodetect_mmproj()
 
+    def _on_conversation_cache_toggled(self, enabled: bool):
+        self.server_ctx_checkpoints_spinbox.setEnabled(not enabled)
+        self.server_checkpoint_interval_spinbox.setEnabled(not enabled)
+
     def _autodetect_mmproj(self):
         model_path = Path(self.server_model_path.text().strip())
         search_dir = model_path.parent if model_path.parent.exists() else self.models_dir
@@ -716,6 +725,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
     def _vulkan_runtime_env() -> dict[str, str]:
         return {
             "GGML_VK_FORCE_AMD_LARGE_MATMUL": "1",
+            "GGML_VK_AMD_LARGE_MATMUL_VARIANT": "wn32",
         }
 
     def _compose_server_command(self) -> tuple[list[str], dict[str, str] | None, Path, list[str], list[str]]:
@@ -753,13 +763,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         ]
 
         kv_type = self.server_kv_type_combo.currentText().strip()
-        turboq_cpu_only = kv_type.startswith("tbq")
-        turboq_kv = turboq_cpu_only or kv_type.startswith("tq")
-
-        if turboq_cpu_only:
-            command.extend(["-ngl", "0"])
-        else:
-            command.extend(["-ngl", str(self.server_gpu_layers_spinbox.value())])
+        command.extend(["-ngl", str(self.server_gpu_layers_spinbox.value())])
 
         if kv_type and kv_type != "f16":
             command.extend(["--cache-type-k", kv_type, "--cache-type-v", kv_type])
@@ -788,15 +792,23 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         def extra_has_any(*flags: str) -> bool:
             return any(tok in flags or any(tok.startswith(flag + "=") for flag in flags) for tok in extra_tokens)
 
+        conversation_cache_enabled = (
+            self.server_conversation_cache_check.isChecked() or
+            extra_has_any("--conversation-cache")
+        )
+        if self.server_conversation_cache_check.isChecked() and not extra_has_any("--conversation-cache"):
+            command.append("--conversation-cache")
+            notes.append("High-hit chat cache keeps at least 32 hybrid checkpoints with an interval up to 8192 tokens")
+
         # Prometheus endpoint feeds the Live Monitor panel
         if "--metrics" not in extra_tokens:
             command.append("--metrics")
 
         if not extra_has_any("--cache-ram"):
             command.extend(["--cache-ram", str(self.server_prompt_cache_ram_spinbox.value())])
-        if not extra_has_any("-ctxcp", "--ctx-checkpoints", "--swa-checkpoints"):
+        if not conversation_cache_enabled and not extra_has_any("-ctxcp", "--ctx-checkpoints", "--swa-checkpoints"):
             command.extend(["--ctx-checkpoints", str(self.server_ctx_checkpoints_spinbox.value())])
-        if not extra_has_any("-cpent", "--checkpoint-every-n-tokens"):
+        if not conversation_cache_enabled and not extra_has_any("-cpent", "--checkpoint-every-n-tokens"):
             command.extend(["--checkpoint-every-n-tokens", str(self.server_checkpoint_interval_spinbox.value())])
 
         if self.server_vision_check.isChecked():
@@ -838,7 +850,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         if self.server_mode_combo.currentText() == "Embedding":
             command.append("--embeddings")
 
-        if self.server_flash_attn_check.isChecked() or turboq_kv:
+        if self.server_flash_attn_check.isChecked():
             command.extend(["--flash-attn", "on"])
 
         if self.server_no_warmup_check.isChecked():
@@ -853,7 +865,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
                 '{"enable_thinking":false,"preserve_thinking":false}',
             ])
 
-        if turboq_cpu_only or not self.server_auto_fit_check.isChecked():
+        if not self.server_auto_fit_check.isChecked():
             command.extend(["-fit", "off"])
 
         # Backend-specific args from the active Backend Settings sub-tab
@@ -1381,6 +1393,8 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_prompt_cache_ram_spinbox.setValue(int(settings.value("server/prompt_cache_ram", 0)))
         self.server_ctx_checkpoints_spinbox.setValue(int(settings.value("server/ctx_checkpoints", 4)))
         self.server_checkpoint_interval_spinbox.setValue(int(settings.value("server/checkpoint_interval", -1)))
+        self.server_conversation_cache_check.setChecked(settings.value("server/conversation_cache", False, type=bool))
+        self._on_conversation_cache_toggled(self.server_conversation_cache_check.isChecked())
 
         self.server_vision_check.setChecked(settings.value("server/vision", False, type=bool))
         self.server_mmproj_path.setText(settings.value("server/mmproj_path", ""))
@@ -1461,6 +1475,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         settings.setValue("server/prompt_cache_ram", self.server_prompt_cache_ram_spinbox.value())
         settings.setValue("server/ctx_checkpoints", self.server_ctx_checkpoints_spinbox.value())
         settings.setValue("server/checkpoint_interval", self.server_checkpoint_interval_spinbox.value())
+        settings.setValue("server/conversation_cache", self.server_conversation_cache_check.isChecked())
 
         settings.setValue("server/vision", self.server_vision_check.isChecked())
         settings.setValue("server/mmproj_path", self.server_mmproj_path.text().strip())

@@ -9,12 +9,13 @@ of normal E### benchmarking: use it to rank designs before editing backend code.
 | --- | --- |
 | Decision | D089 Q4_K_M primary baseline promotion |
 | Latest gate | [D091 Q4_K_M ROCm 98K WDDM placement](D091_Q4_K_M_ROCM98K_WDDM_PLACEMENT_GATE.md), closed: corrected device order recovered MTP n2 prompt `947.46 -> 1426.54 tok/s` (`+50.56%`) |
+| Vulkan recovery | [D093 current-driver Q4_K_M wn32 recovery](D093_VULKAN_Q4KM_AMD_WN32_RECOVERY.md), accepted: backend-default `wn32` restored 59K prompt evaluation `401.19 -> 1171.94 tok/s` (`2.92x`) on driver `32.0.31035.1003` |
 | Model | `models/Qwen3.6-27B-Q4_K_M.gguf` (MTP-enabled) |
 | Safe lane | ROCm `ctx=49152,b=8192,ub=1024,q8_0/q8_0,-dev ROCm1,ROCm0,-sm layer,-ts 1,1`, cold/no-reuse/no-warmup |
 | Control | spec-none `1778.59 prompt / 21.98 decode tok/s`, `5.6829` aggregate TPS |
 | Agent profile | MTP n3 `1731.71 / 39.58`, `6.2802` aggregate TPS, `74.36%` acceptance |
 | Extended lane | ROCm `ctx=98304` one-copy scheduler with `-dev ROCm1,ROCm0 -sm layer -ts 1,1`; 131K remains a `27:37` placement/residency stress lane |
-| KV policy | q8 primary; D088 TKV4 remains opt-in pending Q4 quality/perplexity |
+| KV policy | q8 primary; alternatives require matched Q4 quality and performance gates |
 
 ## Secondary Q3-Specific Program
 
@@ -138,7 +139,6 @@ Do not reopen these for the 130k program without a new mechanism and a design no
 | T15 | Reopened 12k Q3_K `BN512` route | rejected D082 | over-LDS route was not selected; `950.35 tok/s`; prototype removed |
 | T16 | Vulkan native tensor collective | completed D084 | keep BF16 communicator opt-in; require true peer/device-group primitive before reopening tensor as a target-closing route |
 | T17 | RDNA4 compact KV and Q5 FA dequant | D087 packed-bit Q5 path kept | q8_0 is 8.5 bpw and correctly consumes 4352 MiB at ctx131072. q5_1 consumes 3072 MiB, and the bit-exact packed high-bit dequant improves the exact 43k r3 mean `1368.02 -> 1411.60 prompt tok/s` (`+3.19%`); comparable cold-first q5_1 is within `2.69%` of q8 and paired BFCL-lite smoke is `8/8` for both. Keep q5_1 as the compact-KV opt-in and q8 as the maximum-quality reference; only design a new Q6 KV type if broader q5 quality fails |
-| T18 | No-peer compensation with Vulkan TKV4 direct prefill | D088 implementation kept opt-in | a custom layer-boundary host relay is Amdahl-limited to about `1-1.5%`; TKV4 instead cuts 131k KV from `4352` to `2112 MiB` (`-51.5%`) and stays within `1.02-1.14%` of q8 prompt speed. Keep behind `GGML_TKV_DIRECT_PREFILL=1` pending long-agent quality/perplexity; continue target-closing work in the Q3_K body |
 
 ## P002 Candidate Queue
 

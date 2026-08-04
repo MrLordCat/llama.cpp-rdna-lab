@@ -85,10 +85,7 @@ function(ggml_hip_collect_sources out_headers out_sources out_host_sources out_p
                 ../ggml-cuda/template-instances/fattn-vec-instance-f16-f16.cu
                 ../ggml-cuda/template-instances/fattn-vec-instance-q4_0-q4_0.cu
                 ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-q8_0.cu
-                ../ggml-cuda/template-instances/fattn-vec-instance-bf16-bf16.cu
-                ../ggml-cuda/template-instances/fattn-vec-instance-tkv2_0-tkv2_0.cu
-                ../ggml-cuda/template-instances/fattn-vec-instance-tkv3_0-tkv3_0.cu
-                ../ggml-cuda/template-instances/fattn-vec-instance-tkv4_0-tkv4_0.cu)
+                ../ggml-cuda/template-instances/fattn-vec-instance-bf16-bf16.cu)
         endif()
     endif()
 

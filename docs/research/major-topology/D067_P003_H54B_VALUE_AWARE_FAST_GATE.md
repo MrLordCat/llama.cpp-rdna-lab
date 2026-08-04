@@ -6,9 +6,9 @@ Mode: theory-only (fast analytical gate)
 
 ## Context
 
-After D065, H54-A (rotation/permutation family) was rejected by permutation invariance
-of Shannon entropy. The next branch is H54-B: change quantization itself via
-value-aware codebooks (Lloyd-Max style) and re-check payload entropy corridor.
+Permutation-only routes are blocked by invariance of Shannon entropy. H54-B
+instead changes quantization itself through value-aware codebooks (Lloyd-Max
+style) and re-checks the payload entropy corridor.
 
 ## Hypothesis
 
@@ -50,7 +50,7 @@ Gate verdict:
 
 ## Interpretation
 
-This is the first positive signal after H45-H53 and H54-A rejections.
+This is the first positive signal after the H45-H53 rejections.
 Unlike rotation/permutation routes, H54-B changes quantization mapping itself,
 so entropy reduction is not blocked by permutation invariance.
 

@@ -832,9 +832,6 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         for kv_name, enabled, hint in [
             ("q4_0", True, "Main KV cache for the current 130K target"),
             ("q8_0", False, "Higher-quality KV cache opt-in"),
-            ("turbo4", False, "TurboKV 4-bit cache (128-block WHT, correctness path)"),
-            ("turbo3", False, "TurboKV 3-bit cache (128-block WHT, correctness path)"),
-            ("turbo2", False, "TurboKV 2-bit cache (128-block WHT, correctness path)"),
             ("f16", False, "FP16 KV (usually slower/heavier)"),
             ("bf16", False, "BF16 KV (usually slower/heavier)"),
             ("f32", False, "FP32 KV (debug/reference only)"),
@@ -1997,7 +1994,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         return f"{head}, ... ({len(values)} total)"
 
     def _selected_autotune_kv_values(self) -> list[str]:
-        ordered = ["q4_0", "q8_0", "turbo4", "turbo3", "turbo2", "f16", "bf16", "f32"]
+        ordered = ["q4_0", "q8_0", "f16", "bf16", "f32"]
         return [name for name in ordered if name in self.autotune_kv_checks and self.autotune_kv_checks[name].isChecked()]
 
     def _selected_autotune_spec_values(self) -> list[str]:
@@ -2313,6 +2310,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
     def _vulkan_runtime_env() -> dict[str, str]:
         return {
             "GGML_VK_FORCE_AMD_LARGE_MATMUL": "1",
+            "GGML_VK_AMD_LARGE_MATMUL_VARIANT": "wn32",
         }
 
     def _bench_env_overrides(self) -> dict[str, str]:

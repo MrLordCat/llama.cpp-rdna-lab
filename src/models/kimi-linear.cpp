@@ -83,7 +83,7 @@ void llama_model_kimi_linear::load_arch_tensors(llama_model_loader &) {
              // b_proj (beta mixing coefficient)
              layer.ssm_beta = create_tensor(tn(LLM_TENSOR_SSM_BETA, "weight", i), {n_embd, n_head}, 0);
 
-             // A_log - Shape in GGUF: [1, num_heads, 1, 1] (4D) or [1, num_heads] (2D after quantization) Note: -exp(A_log) is applied in convert_hf_to_gguf.py
+             // A_log - Shape in GGUF: [1, num_heads, 1, 1] (4D) or [1, num_heads] (2D after quantization) Note: -exp(A_log) is applied during GGUF conversion
              layer.ssm_a = create_tensor(tn(LLM_TENSOR_SSM_A, i), {1, n_head, 1, 1}, TENSOR_NOT_REQUIRED);
              if (!layer.ssm_a) {
                  layer.ssm_a = create_tensor(tn(LLM_TENSOR_SSM_A, i), {1, n_head}, 0);
@@ -307,7 +307,7 @@ llama_model_kimi_linear::graph::graph(const llama_model & model, const llm_graph
             g1 = ggml_softplus(ctx0, g1);
             g1 = ggml_reshape_3d(ctx0, g1, head_dim, n_head, n_tokens);
 
-            // A_log shape is [1, n_head] or [1, n_head, 1, 1], need to broadcast to [head_dim, n_head, n_tokens]. No need to -exp(a_log) because it was done in convert_hf_to_gguf.py
+            // A_log shape is [1, n_head] or [1, n_head, 1, 1], need to broadcast to [head_dim, n_head, n_tokens]. No need to -exp(a_log) because it was done during GGUF conversion
             // Reshape to [1, n_head, 1] for broadcasting with g1 [head_dim, n_head, n_tokens]
             ggml_tensor * A = ggml_reshape_3d(ctx0, layer.ssm_a, 1, n_head, 1);
             g1 = ggml_mul(ctx0, g1, A);

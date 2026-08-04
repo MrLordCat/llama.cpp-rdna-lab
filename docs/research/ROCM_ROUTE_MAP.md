@@ -169,7 +169,7 @@ it is likely relevant to Qwen/RDNA4 performance work.
 | --- | --- | --- | --- | --- |
 | Metadata/no-op | `NONE`, `RESHAPE`, `VIEW`, `PERMUTE`, `TRANSPOSE` | `ggml-cuda.cu` switch only | Accepted as backend-owned graph nodes but no kernel launch | Keep; removing would break graph ownership/scheduler behavior |
 | Copy/layout | `DUP`, `CPY`, `CONT` | `cpy.cu`, `cpy-utils.cuh`, `convert.cu`, `convert.cuh`, `dequantize.cuh` | Dense F32/F16/BF16 copies, F32<->Q4/Q5/Q8/IQ4_NL/I32 conversions, same-type contiguous copies | Keep; these are staging routes for almost every fallback and pruning experiment |
-| Row gather/scatter | `GET_ROWS`, `GET_ROWS_BACK`, `SET_ROWS` | `getrows.cu`, `set-rows.cu` | `GET_ROWS` supports F16/F32/BF16/I32 plus classic Q1/Q4/Q5/Q8; `SET_ROWS` also covers TurboQuant/KV types in this fork | Keep for embeddings, KV cache edits, GUI/TurboQuant paths |
+| Row gather/scatter | `GET_ROWS`, `GET_ROWS_BACK`, `SET_ROWS` | `getrows.cu`, `set-rows.cu` | `GET_ROWS` supports F16/F32/BF16/I32 plus classic Q1/Q4/Q5/Q8 | Keep for embeddings and KV cache edits |
 | Binary/broadcast | `ADD`, `ADD1`, `SUB`, `MUL`, `DIV`, `REPEAT`, `REPEAT_BACK` | `binbcast.cu`, `add-id.cu` | Generic broadcast kernels plus fused add/mul variants in graph layer | Keep; common C01 trace nodes and fusion inputs |
 | Acc/set/concat/shape | `ACC`, `SET`, `CONCAT`, `PAD`, `PAD_REFLECT_1D`, `ROLL`, `ARANGE`, `FILL`, `UPSCALE` | `acc.cu`, `set.cu`, `concat.cu`, `pad.cu`, `pad_reflect_1d.cu`, `roll.cu`, `arange.cu`, `fill.cu`, `upscale.cu` | Mostly F32/F16/BF16 or simple contiguous gates, with some I32 support | Not a prefill bottleneck; prune only in a strict inference-only build profile |
 | Unary activations | `UNARY`, `SILU_BACK`, `LEAKY_RELU`, `SQR`, `SQRT`, `SIN`, `COS`, `CLAMP`, `LOG` | `unary.cu`, `clamp.cu`, `scale.cu`, `softcap.cu` | Contiguous source gates for `UNARY`; includes GELU/SILU/TANH/EXP/ELU/XIELU/etc. | Keep; GLU/activation routes are common in modern architectures |
@@ -183,7 +183,6 @@ it is likely relevant to Qwen/RDNA4 performance work.
 | Convolution/image | `IM2COL`, `IM2COL_3D`, `CONV_2D`, `CONV_2D_DW`, `CONV_TRANSPOSE_1D`, `CONV_TRANSPOSE_2D`, `POOL_2D` | `im2col.cu`, `conv2d.cu`, `conv2d-dw.cu`, `conv-transpose-1d.cu`, `conv2d-transpose.cu`, `pool2d.cu` | Mostly dense F32/F16 gates; useful for multimodal and non-LLM models | Possible future local-minimal prune candidate only if GUI drops these model classes |
 | State-space/RWKV | `SSM_CONV`, `SSM_SCAN`, `RWKV_WKV6`, `RWKV_WKV7`, `GATED_LINEAR_ATTN`, `GATED_DELTA_NET` | `ssm-conv.cu`, `ssm-scan.cu`, `wkv.cu`, `gla.cu`, `gated_delta_net.cu` | SSM gates include strict state/head shape constraints; GDN is disabled for MUSA but active for HIP | Keep if the fork wants broad model coverage; possible non-Qwen build-profile gate |
 | Loss/optimizer | `CROSS_ENTROPY_LOSS`, `CROSS_ENTROPY_LOSS_BACK`, `OPT_STEP_ADAMW`, `OPT_STEP_SGD`, `SOLVE_TRI`, `TRI`, `DIAG`, `DIAG_MASK_INF` | `cross-entropy-loss.cu`, `opt-step-*.cu`, `solve_tri.cu`, `tri.cu`, `diag.cu`, `diagmask.cu` | Training/fine-tuning/math utility surface | Least relevant to local inference speed; safest candidates for an inference-only profile experiment |
-| TurboQuant/local | `TURBO_WHT`, `TQ3_0`, `TKV2_0`, `TKV3_0`, `TKV4_0` type paths | `turbo-wht.cu`, `set-rows.cu`, `mmq.cu/.cuh`, `mmvq*.cu`, FA vec instances | `TURBO_WHT` requires F32 contiguous; TQ/KV types appear in set rows and selected quant routes | Do not prune in this fork without a separate TurboQuant compatibility decision |
 
 Support and launch are separate layers. A route can be listed in
 `supports_op(...)` but still dispatch through a fused graph path, a BLAS
@@ -562,8 +561,8 @@ if the fork decides to prioritize a local RX 9070 XT/Qwen-only binary:
 - NVIDIA-only and MUSA-only branches inside the shared CUDA backend. Removing
   them from source would make upstream sync harder; a HIP-only compile option is
   safer.
-- Rare quant families not used by the local Qwen profiles. This must be checked
-  against TurboQuant (`TQ3_0`) and any GUI-supported model presets before pruning.
+- Rare quant families not used by the local Qwen profiles. Check all
+  GUI-supported model presets before pruning them.
 - MoE/expert staging experiments if the fork explicitly drops MoE route research.
 - Diagnostic force knobs such as Q3 force-x if route-map reproducibility is no
   longer valued. Prefer a debug-build option over deletion.

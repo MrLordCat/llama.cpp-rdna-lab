@@ -28,7 +28,7 @@ ls ./models
 python3 -m pip install -r requirements.txt
 
 # convert the model to ggml FP16 format
-python3 convert_hf_to_gguf.py ./models/mymodel/
+python3 /path/to/upstream-llama.cpp/convert_hf_to_gguf.py ./models/mymodel/
 
 # quantize the model to 4-bits (using Q4_K_M method)
 ./llama-quantize ./models/mymodel/ggml-model-f16.gguf ./models/mymodel/ggml-model-Q4_K_M.gguf Q4_K_M
