@@ -1,8 +1,10 @@
 # Qwen3.6-27B Q4_K_M Results
 
-Status (2026-07-20): this is now the primary production and performance model
+Status (2026-08-07): this is now the primary production and performance model
 for the fork. The safe default research lane is dual-ROCm `ctx=49152` with q8
-KV and an adjacent spec-none control; MTP n3 is the agent profile. See
+KV and an adjacent spec-none control; MTP n3 is the agent profile. D094 fixed
+the Vulkan q8/MTP path (acceptance 0.33 -> 0.80+, f16-KV 49K lane now beats
+ROCm). See
 [D089](docs/research/major-topology/D089_Q4_K_M_PRIMARY_BASELINE_PROMOTION.md).
 
 ROCm short and 49K rows were refreshed on 2026-07-16 after the E344 Q4_K/Q5_K
@@ -32,12 +34,14 @@ are listed below.
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | ROCm | none, r3 mean | 12,288 | 6,393 / 256 | **1798.03** | 24.00 | 17.9169 | - |
 | ROCm | MTP n3, r3 mean | 12,288 | 6,393 / 256 | 1671.69 | **47.17** | **27.4421** | **79.06%** |
-| Vulkan | none | 12,288 | 6,393 / 128 | 1229.31 | 26.55 | 12.73 | - |
-| Vulkan | MTP n3 | 12,288 | 6,393 / 128 | **1320.21** | **50.56** | **17.26** | 64.34% |
+| Vulkan | none | 12,288 | 7,889 / 128 | **1647.76** | 28.64 | 13.76 | - |
+| Vulkan | MTP n3 | 12,288 | 7,889 / 128 | 1595.95 | **53.61** | **17.33** | 71.1% |
 | ROCm | none, r2 mean | 49,152 | 29,561 / 128 | **1778.59** | 21.98 | 5.6829 | - |
 | ROCm | MTP n3, r2 mean | 49,152 | 29,561 / 128 | 1731.71 | **39.58** | **6.2802** | **74.36%** |
-| Vulkan | none | 49,152 | 29,561 / 128 | **1432.13** | 26.36 | 5.01 | - |
-| Vulkan | MTP n3 | 49,152 | 29,561 / 128 | 1389.59 | **47.21** | **5.32** | 69.11% |
+| Vulkan | none | 49,152 | 30,723 / 128 | **1461.26** | 26.96 | 4.95 | - |
+| Vulkan | MTP n3 | 49,152 | 30,723 / 128 | 1452.57 | **48.36** | **5.34** | 70.5% |
+| Vulkan | none | 98,304 | 57,530 / 128 | **1211.62** | 25.43 | 2.43 | - |
+| Vulkan | MTP n3 | 98,304 | 57,530 / 128 | 1205.65 | **39.95** | **2.51** | 65.6% |
 | ROCm | none | 98,304 | 59,045 / 64 | **1493.21** | 19.15 | **1.4890** | - |
 | ROCm | MTP n3 | 98,304 | 59,045 / 64 | 1435.97 | **35.44** | 1.4872 | **80.00%** |
 
@@ -45,8 +49,10 @@ At 6.4k prompt tokens, current ROCm MTP loses 7.03% prompt throughput, gains
 96.54% decode throughput, and gains 53.15% aggregate throughput for a 256-token
 answer. At 29.5k prompt tokens, it loses only 2.64% prompt throughput, gains
 80.11% decode throughput, and gains 10.51% aggregate throughput. Vulkan MTP
-loses 2.97% prompt throughput and gains 79.1% decode throughput in the archived
-E332 reference.
+(validated 2026-08-07) loses 3.1% prompt throughput and gains 87.1% decode
+throughput at 7.9k tokens; at 30.7k it loses 0.6% prompt and gains 79.4%
+decode. Vulkan rows are the 2026-08-07 validated refresh (repo-snapshot
+prompts 7,889/30,723/57,530 tokens; see Q4_REFRESH_WIP_2026-08-07.md).
 
 At 59k prompt tokens, ROCm MTP loses 3.83% prompt throughput and gains 85.1%
 decode throughput. The 64-token request is exactly at the amortization
@@ -58,11 +64,11 @@ answers favor MTP.
 | Backend | Context | Actual prompt | Prompt TPS | Decode TPS | Dedicated peak | Shared peak |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | ROCm, current performance / E335 memory | 49,152 | 29,561 | 1778.59 | 21.98 | 21.21 GiB | 2.60 GiB |
-| Vulkan | 49,152 | 29,561 | 1432.13 | 26.36 | 18.09 GiB | 0.29 GiB |
+| Vulkan | 49,152 | 30,723 | 1461.26 | 26.96 | 18.09 GiB | 0.29 GiB |
 | ROCm, pre-E337 spill | 98,304 | 59,004 | 553.50 | 17.64 | 24.45 GiB | 6.25 GiB |
 | ROCm, E338 one copy, none | 98,304 | 59,045 | **1493.21** | 19.15 | 22.05 GiB | 3.20 GiB |
 | ROCm, E338 one copy, MTP n3 | 98,304 | 59,045 | 1435.97 | **35.44** | 23.96 GiB | 3.26 GiB |
-| Vulkan | 98,304 | 58,982 | 1171.17 | 24.18 | 20.06 GiB | 0.54 GiB |
+| Vulkan | 98,304 | 57,530 | 1211.62 | 25.43 | 20.06 GiB | 0.54 GiB |
 | Vulkan | 131,072 | 75,979 | 1051.67 | **23.02** | 21.38 GiB | 0.70 GiB |
 
 ## D094 refresh (2026-08-06/07, f16 KV, GUI autotune, no game)

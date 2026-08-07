@@ -85,10 +85,12 @@ NVIDIA hardware. See [Supported Backends](docs/SUPPORTED_BACKENDS.md).
 | Qwen3.6 vision projector | Yes | Yes | Yes | Use a matching `mmproj-*.gguf` |
 | DFlash | Research | Research | Research | Not a recommended production profile |
 
-D094 (2026-08-07): the Vulkan q8_0 vec/mmq numerical divergence vs ROCm was
-root-caused and fixed (CUDA-style dp4a accumulation, round-half-away q8_1
-quantize, mmq variant-B math). MTP acceptance recovered from 0.33 to 0.80+
-(52k-token drafts; target 0.53) and the f16-KV 49K lane now beats ROCm
+D094 (2026-08-07, tested on `Qwen3.6-27B-Q4_K_M.gguf` and
+`Qwen3.6-27B-Q3_K_S_mtp.gguf`, 2x RX 9070 XT): the Vulkan q8_0 vec/mmq
+numerical divergence vs ROCm was root-caused and fixed (CUDA-style dp4a
+accumulation, round-half-away q8_1 quantize, mmq variant-B math). MTP
+acceptance recovered from 0.33 to 0.80+ (52k-token drafts; target 0.53) and
+the f16-KV 49K lane now beats ROCm
 (prompt 1719.92 vs 1679.20 tok/s, decode 43.10 vs 32.33, aggregate 6.1358 vs
 5.7655 TPS). See [BENCHMARKS.md](BENCHMARKS.md) and
 [Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md).

@@ -180,3 +180,6 @@ AGENTS.local.md
 .pi/SYSTEM.md
 NUL
 build-vulkan/bin/*.dll
+
+# Q4 refresh WIP - user review pending (2026-08-07)
+build_logs/agent-workload/Q4_REFRESH_WIP_2026-08-07.md
