@@ -105,6 +105,8 @@ static void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_contex
         // Resize buffer
         if (ctx->prealloc_x != nullptr) {
             ggml_vk_destroy_buffer(ctx->prealloc_x);
+    ggml_vk_destroy_buffer(ctx->prealloc_fa_k16);
+    ggml_vk_destroy_buffer(ctx->prealloc_fa_v16);
         }
         ctx->prealloc_x = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_x);
     }
@@ -124,6 +126,20 @@ static void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_contex
             ggml_vk_destroy_buffer(ctx->prealloc_split_k);
         }
         ctx->prealloc_split_k = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_split_k);
+    }
+    if (ctx->prealloc_fa_k16 == nullptr || (ctx->prealloc_size_fa_k16 > 0 && ctx->prealloc_fa_k16->size < ctx->prealloc_size_fa_k16)) {
+        VK_LOG_MEMORY("ggml_vk_preallocate_buffers(fa_k16_size: " << ctx->prealloc_size_fa_k16 << ")");
+        if (ctx->prealloc_fa_k16 != nullptr) {
+            ggml_vk_destroy_buffer(ctx->prealloc_fa_k16);
+        }
+        ctx->prealloc_fa_k16 = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_fa_k16);
+    }
+    if (ctx->prealloc_fa_v16 == nullptr || (ctx->prealloc_size_fa_v16 > 0 && ctx->prealloc_fa_v16->size < ctx->prealloc_size_fa_v16)) {
+        VK_LOG_MEMORY("ggml_vk_preallocate_buffers(fa_v16_size: " << ctx->prealloc_size_fa_v16 << ")");
+        if (ctx->prealloc_fa_v16 != nullptr) {
+            ggml_vk_destroy_buffer(ctx->prealloc_fa_v16);
+        }
+        ctx->prealloc_fa_v16 = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_fa_v16);
     }
     if (ctx->prealloc_add_rms_partials == nullptr || (ctx->prealloc_size_add_rms_partials > 0 && ctx->prealloc_add_rms_partials->size < ctx->prealloc_size_add_rms_partials)) {
         VK_LOG_MEMORY("ggml_vk_preallocate_buffers(add_partials_size: " << ctx->prealloc_add_rms_partials << ")");
@@ -715,6 +731,8 @@ static void ggml_vk_graph_cleanup(ggml_backend_vk_context * ctx) {
     ctx->unsynced_nodes_written.clear();
     ctx->unsynced_nodes_read.clear();
     ctx->prealloc_x_need_sync = ctx->prealloc_y_need_sync = ctx->prealloc_split_k_need_sync = false;
+    ctx->prealloc_size_fa_k16 = 0;
+    ctx->prealloc_size_fa_v16 = 0;
 
     ggml_vk_command_pool_cleanup(ctx->device, ctx->compute_cmd_pool);
     if (ctx->device->async_use_transfer_queue) {
@@ -755,6 +773,8 @@ static void ggml_vk_cleanup(ggml_backend_vk_context * ctx) {
     ggml_vk_graph_cleanup(ctx);
 
     ggml_vk_destroy_buffer(ctx->prealloc_x);
+    ggml_vk_destroy_buffer(ctx->prealloc_fa_k16);
+    ggml_vk_destroy_buffer(ctx->prealloc_fa_v16);
     ggml_vk_destroy_buffer(ctx->prealloc_y);
     ggml_vk_destroy_buffer(ctx->prealloc_split_k);
     ggml_vk_destroy_buffer(ctx->prealloc_add_rms_partials);

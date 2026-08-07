@@ -2,7 +2,8 @@
 static uint32_t ggml_vk_guess_split_k(ggml_backend_vk_context * ctx, uint32_t m, uint32_t n, uint32_t k, bool disable_split_k, ggml_type src0_type, const vk_pipeline& pipeline) {
     VK_LOG_DEBUG("ggml_vk_guess_split_k(" << m << ", " << n << ", " << k << ", " << disable_split_k << ", " << ggml_type_name(src0_type) << ")");
 
-    if (disable_split_k) {
+    if (disable_split_k || getenv("GGML_VK_MM_DISABLE_SPLIT_K")) {
+        if (getenv("GGML_VK_MM_TRACE_SPLIT")) { fprintf(stderr, "MMSPLIT: m=%u n=%u k=%u split_k=1 (disabled)\n", m, n, k); }
         return 1;
     }
 
@@ -49,7 +50,7 @@ static uint32_t ggml_vk_guess_split_k(ggml_backend_vk_context * ctx, uint32_t m,
         uint32_t target_split_k = 3;
         if (ffn_down_split_k_override >= 0) {
             if (ffn_down_split_k_override < 2) {
-                return split_k;
+            return split_k;
             }
             target_split_k = std::min<uint32_t>((uint32_t) ffn_down_split_k_override, 8u);
         }
@@ -158,6 +159,7 @@ static void ggml_vk_matmul(
         uint32_t split_k, uint32_t batch, uint32_t ne02, uint32_t ne12, uint32_t broadcast2, uint32_t broadcast3,
         uint32_t padded_n) {
         VK_LOG_DEBUG("ggml_vk_matmul(a: (" << a.buffer->buffer << ", " << a.offset << ", " << a.size << "), b: (" << b.buffer->buffer << ", " << b.offset << ", " << b.size << "), d: (" << d.buffer->buffer << ", " << d.offset << ", " << d.size << "), split_k: (" << (split_k_buffer.buffer != nullptr ? split_k_buffer.buffer->buffer : VK_NULL_HANDLE) << ", " << split_k_buffer.offset << ", " << split_k_buffer.size << "), m: " << m << ", n: " << n << ", k: " << k << ", stride_a: " << stride_a << ", stride_b: " << stride_b << ", stride_d: " << stride_d << ", batch_stride_a: " << batch_stride_a << ", batch_stride_b: " << batch_stride_b << ", batch_stride_d: " << batch_stride_d << ", split_k: " << split_k << ", batch: " << batch << ", ne02: " << ne02 << ", ne12: " << ne12 << ", broadcast2: " << broadcast2 << ", broadcast3: " << broadcast3 << ", padded_n: " << padded_n << ")");
+        if (getenv("GGML_VK_MM_TRACE_SPLIT")) { fprintf(stderr, "MMSPLIT: m=%u n=%u k=%u split_k=%u q8=%d\n", (unsigned)m, (unsigned)n, (unsigned)k, split_k, split_k_buffer.buffer != nullptr); }
     if (split_k == 1) {
         ggml_pipeline_request_descriptor_sets(ctx, pipeline, CEIL_DIV(batch, ctx->device->properties.limits.maxComputeWorkGroupCount[2]));
 
@@ -525,7 +527,8 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
     }
 
     const bool qx_needs_dequant = mmp == nullptr || x_non_contig;
-    const bool qy_needs_dequant = !quantize_y && ((src1->type != f16_type && !y_f32_kernel) || y_non_contig);
+    // D094: pre-quantized Q8_1 src1 is consumed directly by MMQ kernels.
+    const bool qy_needs_dequant = !quantize_y && src1->type != GGML_TYPE_Q8_1 && ((src1->type != f16_type && !y_f32_kernel) || y_non_contig);
 
     if (qx_needs_dequant) {
         // Fall back to dequant + f16 mulmat
@@ -611,6 +614,7 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
     }
 
     const uint32_t split_k = ggml_vk_guess_split_k(ctx, ne01, ne11, ne10, disable_split_k, src0->type, pipeline);
+    if (getenv("GGML_VK_MM_TRACE_SPLIT")) { fprintf(stderr, "MMSPLIT: m=%lld n=%lld k=%lld split_k=%u disable=%d\n", (long long) ne01, (long long) ne11, (long long) ne10, split_k, disable_split_k ? 1 : 0); }
     if (route_trace && split_k > 1 && pipeline) {
         static std::mutex split_trace_mutex;
         static std::set<std::string> split_trace_seen;
@@ -949,7 +953,8 @@ static void ggml_vk_mul_mat_vec_q_f16(
     }
 
     const bool qx_needs_dequant = x_non_contig;
-    const bool qy_needs_dequant = !quantize_y && ((src1->type != GGML_TYPE_F16 && !f16_f32_kernel) || y_non_contig);
+    // D094: pre-quantized Q8_1 src1 is consumed directly by MMVQ kernels.
+    const bool qy_needs_dequant = !quantize_y && src1->type != GGML_TYPE_Q8_1 && ((src1->type != GGML_TYPE_F16 && !f16_f32_kernel) || y_non_contig);
 
     // Not implemented
     GGML_ASSERT(y_non_contig || !qy_needs_dequant);  // NOLINT
@@ -1491,7 +1496,8 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context& 
     }
 
     const bool qx_needs_dequant = mmp == nullptr || x_non_contig;
-    const bool qy_needs_dequant = !quantize_y && ((src1->type != f16_type && !y_f32_kernel) || y_non_contig);
+    // D094: pre-quantized Q8_1 src1 is consumed directly by MMQ kernels.
+    const bool qy_needs_dequant = !quantize_y && src1->type != GGML_TYPE_Q8_1 && ((src1->type != f16_type && !y_f32_kernel) || y_non_contig);
 
     if (qx_needs_dequant) {
         // Fall back to dequant + f16 mulmat
@@ -1767,7 +1773,8 @@ static void ggml_vk_mul_mat_vec_id_q_f16(ggml_backend_vk_context * ctx, vk_conte
     }
 
     const bool qx_needs_dequant = x_non_contig;
-    const bool qy_needs_dequant = !quantize_y && ((src1->type != GGML_TYPE_F16 && !f16_f32_kernel) || y_non_contig);
+    // D094: pre-quantized Q8_1 src1 is consumed directly by MMVQ kernels.
+    const bool qy_needs_dequant = !quantize_y && src1->type != GGML_TYPE_Q8_1 && ((src1->type != GGML_TYPE_F16 && !f16_f32_kernel) || y_non_contig);
 
     if (ggml_vk_device_size(src0) > ctx->device->properties.limits.maxStorageBufferRange) {
         dmmv = ggml_vk_get_64b_indexing_pipeline(ctx, dmmv);
@@ -2112,7 +2119,14 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     uint32_t workgroups_y = (uint32_t)neq2;
     uint32_t workgroups_z = (uint32_t)neq3;
 
-    const bool f32acc = !ctx->device->fp16 || dst->op_params[3] == GGML_PREC_F32;
+    bool f32acc = !ctx->device->fp16 || dst->op_params[3] == GGML_PREC_F32;
+
+    // Diagnostic knob: force f16 accumulator FA (local fork). On RDNA4 the
+    // f16acc coopmat path has roughly double the throughput of f32acc and the
+    // P/sfsh shared-memory staging is halved. f32acc=0 enables f16acc.
+    if (const char * env = getenv("GGML_VK_FA_F32ACC")) {
+        f32acc = std::atoi(env) != 0;
+    }
 
     // For scalar/coopmat1 FA, we can use the "large" size to accommodate qga.
     // For coopmat2 FA, we always use the small size (which is still pretty large for gqa).
@@ -2129,7 +2143,17 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         workgroups_y /= gqa_ratio;
     }
 
-    tuning_params = get_fa_tuning_params(ctx->device, HSK, HSV, N, KV, k->type, v->type, f32acc);
+    // D094 cycle-6 (local fork): ROCm-style pre-dequant for q8_0 KV on prefill.
+    // K/V are converted to f16 in a separate pass outside the FA kernel, so the
+    // coopmat1 kernel runs the pure-f16 path (no per-j dequant staging, which was
+    // ~32% of FA time on q8_0). Decode (N == 1) keeps q8_0 untouched (smaller
+    // KV reads are faster there). Same idea as ggml-cuda's f16_extra_data path.
+    const bool fa_preconvert = k->type == GGML_TYPE_Q8_0 && v->type == GGML_TYPE_Q8_0 && neq1 > 1 &&
+                               getenv("GGML_VK_FA_NO_PRECONVERT") == nullptr;
+    const ggml_type k_type_eff = fa_preconvert ? GGML_TYPE_F16 : k->type;
+    const ggml_type v_type_eff = fa_preconvert ? GGML_TYPE_F16 : v->type;
+
+    tuning_params = get_fa_tuning_params(ctx->device, HSK, HSV, N, KV, k_type_eff, v_type_eff, f32acc);
 
     if (tuning_params.path != FA_COOPMAT2) {
         GGML_ASSERT(k->type == v->type);
@@ -2145,6 +2169,43 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     }
     if (v->type == GGML_TYPE_F32) {
         v_stride /= 4;
+    }
+
+    size_t fa_k16_sz = 0;
+    size_t fa_v16_sz = 0;
+    size_t nbk2_eff = nbk2;
+    size_t nbk3_eff = nbk3;
+    size_t nbv2_eff = nbv2;
+    size_t nbv3_eff = nbv3;
+    if (fa_preconvert) {
+        fa_k16_sz = (size_t) nek0 * nek1 * nek2 * nek3 * sizeof(ggml_fp16_t);
+        fa_v16_sz = (size_t) nev0 * nev1 * nev2 * nev3 * sizeof(ggml_fp16_t);
+        if (fa_k16_sz > ctx->device->properties.limits.maxStorageBufferRange ||
+            fa_v16_sz > ctx->device->properties.limits.maxStorageBufferRange) {
+            GGML_ABORT("Requested FA pre-dequant buffer size is too large");
+        }
+        if (ctx->prealloc_size_fa_k16 < fa_k16_sz) {
+            if (ctx->prealloc_fa_k16_need_sync) {
+                ggml_vk_sync_buffers(ctx, subctx);
+                ctx->prealloc_fa_k16_need_sync = false;
+            }
+            ctx->prealloc_size_fa_k16 = fa_k16_sz;
+            ggml_vk_preallocate_buffers(ctx, subctx);
+        }
+        if (ctx->prealloc_size_fa_v16 < fa_v16_sz) {
+            if (ctx->prealloc_fa_v16_need_sync) {
+                ggml_vk_sync_buffers(ctx, subctx);
+                ctx->prealloc_fa_v16_need_sync = false;
+            }
+            ctx->prealloc_size_fa_v16 = fa_v16_sz;
+            ggml_vk_preallocate_buffers(ctx, subctx);
+        }
+        k_stride = nek0; // f16 elements per row (dense f16 copy)
+        v_stride = nev0;
+        nbk2_eff = (size_t) k_stride * sizeof(ggml_fp16_t) * nek1;
+        nbk3_eff = nbk2_eff * nek2;
+        nbv2_eff = (size_t) v_stride * sizeof(ggml_fp16_t) * nev1;
+        nbv3_eff = nbv2_eff * nev2;
     }
 
     const uint32_t alignment = tuning_params.block_cols;
@@ -2172,13 +2233,15 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     // Only use mask opt when the mask is fairly large. This hasn't been tuned extensively.
     bool use_mask_opt = mask && nem1 >= 32 && nem0 * nem1 > 32768 && nem0 >= tuning_params.block_cols * 16;
     vk_fa_pipeline_state fa_pipeline_state = get_fa_pipeline_state(ctx->device, tuning_params, HSK, HSV, aligned, f32acc,
-                                                                   mask != nullptr, use_mask_opt, logit_softcap != 0, k->type, v->type);
+                                                                   mask != nullptr, use_mask_opt, logit_softcap != 0, k_type_eff, v_type_eff);
 
     vk_pipeline pipeline = nullptr;
 
     {
         std::lock_guard<std::recursive_mutex> guard(ctx->device->mutex);
-        auto &pipelines = ctx->device->pipeline_flash_attn_f32_f16[k->type];
+        // Use the effective type: with fa_preconvert the q8_0 KV is staged as f16,
+        // so the pure-f16 coopmat pipeline must be selected (FaTypeK spec constant).
+        auto &pipelines = ctx->device->pipeline_flash_attn_f32_f16[k_type_eff];
         auto it = pipelines.find(fa_pipeline_state);
         if (it != pipelines.end()) {
             pipeline = it->second;
@@ -2216,13 +2279,23 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         }
     }
 
+    // Diagnostic knob: force additional KV splitting for long-prefill FA
+    // experiments (local fork). Larger split_k trades a small reduce pass for
+    // shorter per-workgroup KV loops and more independent workgroups.
+    if (const char * env = getenv("GGML_VK_FA_FORCE_SPLIT_K")) {
+        split_k = std::max(split_k, (uint32_t) std::max(1, std::atoi(env)));
+    }
+    // D094 c8 diagnostic: disable split_k entirely (isolate reduce-path issues).
+    if (getenv("GGML_VK_FA_DISABLE_SPLIT_K")) {
+        split_k = 1;
+    }
+
     if (split_k > 1) {
         // Try to evenly split KV into split_k chunks, but it needs to be a multiple
         // of "align", so recompute split_k based on that.
         split_kv = ROUNDUP_POW2(std::max(1u, KV / split_k), alignment);
         split_k = CEIL_DIV(KV, split_kv);
     }
-
     static const bool route_trace = std::getenv("GGML_VK_FA_ROUTE_TRACE") != nullptr;
     if (route_trace && pipeline) {
         static std::mutex route_trace_mutex;
@@ -2316,6 +2389,26 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     vk_subbuffer sinks_buf = sinks ? ggml_vk_tensor_subbuffer(ctx, sinks) : q_buf;
     vk_subbuffer mask_opt_buf = use_mask_opt ? ggml_vk_subbuffer(ctx, ctx->prealloc_y, 0) : q_buf;
 
+    if (fa_preconvert) {
+        // q8_0 -> f16 conversion passes (dequant_q8_0 shader, f16 output)
+        ggml_pipeline_request_descriptor_sets(ctx, ctx->device->pipeline_dequant[GGML_TYPE_Q8_0], 2);
+        const uint32_t k_nelem = (uint32_t)(nek0 * nek1 * nek2 * nek3);
+        const uint32_t v_nelem = (uint32_t)(nev0 * nev1 * nev2 * nev3);
+        const vk_subbuffer k16_buf{ ctx->prealloc_fa_k16, 0, fa_k16_sz };
+        const vk_subbuffer v16_buf{ ctx->prealloc_fa_v16, 0, fa_v16_sz };
+        const std::vector<uint32_t> pc_k = { 1, k_nelem, 0, 0, k_nelem };
+        ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_dequant[GGML_TYPE_Q8_0],
+                                  { k_buf, k16_buf }, pc_k,
+                                  { CEIL_DIV(k_nelem, 4096), 1, 1 });
+        const std::vector<uint32_t> pc_v = { 1, v_nelem, 0, 0, v_nelem };
+        ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_dequant[GGML_TYPE_Q8_0],
+                                  { v_buf, v16_buf }, pc_v,
+                                  { CEIL_DIV(v_nelem, 4096), 1, 1 });
+        ggml_vk_sync_buffers(ctx, subctx);
+        k_buf = k16_buf;
+        v_buf = v16_buf;
+    }
+
     uint32_t mask_n_head_log2 = ((sinks != nullptr) << 24) | n_head_log2;
 
     if (use_mask_opt)
@@ -2345,8 +2438,8 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
                                               (uint32_t)nev2, (uint32_t)nev3,
                                               nem1, nem2, nem3,
                                               q_stride, (uint32_t)nbq2, (uint32_t)nbq3,
-                                              k_stride, (uint32_t)nbk2, (uint32_t)nbk3,
-                                              v_stride, (uint32_t)nbv2, (uint32_t)nbv3,
+                                              k_stride, (uint32_t)nbk2_eff, (uint32_t)nbk3_eff,
+                                              v_stride, (uint32_t)nbv2_eff, (uint32_t)nbv3_eff,
                                               scale, max_bias, logit_softcap,
                                               mask_n_head_log2, m0, m1,
                                               gqa_ratio, split_kv, split_k };
@@ -2387,5 +2480,10 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
                                     {q_buf, k_buf, v_buf, mask_buf, sinks_buf, dst_buf, mask_opt_buf},
                                     pc, { workgroups_x, workgroups_y, workgroups_z });
+    }
+
+    if (fa_preconvert) {
+        ctx->prealloc_fa_k16_need_sync = true;
+        ctx->prealloc_fa_v16_need_sync = true;
     }
 }

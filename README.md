@@ -68,7 +68,7 @@ NVIDIA CUDA, Metal, SYCL, OpenCL, CANN, or other removed upstream backends.
 | Backend | Role | Status |
 | --- | --- | --- |
 | ROCm/HIP | Primary prompt-eval, long-context MTP, and RDNA4 runtime | Supported and preferred for prompt-heavy MTP work |
-| Vulkan | General AMD runtime and backend comparison | Supported; competitive for decode-heavy work |
+| Vulkan | General AMD runtime and backend comparison | Supported; competitive for decode-heavy work; q8/MTP path fixed (D094) |
 | CPU | Fallback, conversion, sanity checks, and tests | Supported |
 
 ROCm still builds HIP-compatible kernels from `ggml/src/ggml-cuda`. That is an
@@ -84,6 +84,14 @@ NVIDIA hardware. See [Supported Backends](docs/SUPPORTED_BACKENDS.md).
 | Ternary Bonsai 27B `PQ2_0` | Yes | Yes | Not yet | Native loader, CPU kernels, and HIP MMQ/MMVQ path |
 | Qwen3.6 vision projector | Yes | Yes | Yes | Use a matching `mmproj-*.gguf` |
 | DFlash | Research | Research | Research | Not a recommended production profile |
+
+D094 (2026-08-07): the Vulkan q8_0 vec/mmq numerical divergence vs ROCm was
+root-caused and fixed (CUDA-style dp4a accumulation, round-half-away q8_1
+quantize, mmq variant-B math). MTP acceptance recovered from 0.33 to 0.80+
+(52k-token drafts; target 0.53) and the f16-KV 49K lane now beats ROCm
+(prompt 1719.92 vs 1679.20 tok/s, decode 43.10 vs 32.33, aggregate 6.1358 vs
+5.7655 TPS). See [BENCHMARKS.md](BENCHMARKS.md) and
+[Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md).
 
 Q4_K_M is the primary practical Qwen model on this 2x16 GB machine. The
 one-copy ROCm scheduler and bounded Q8 Flash Attention route make its measured

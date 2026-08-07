@@ -751,6 +751,7 @@ struct vk_device_struct {
     vk_pipeline pipeline_add_id_f32;
 
     vk_pipeline pipeline_concat_f32, pipeline_concat_f16, pipeline_concat_i32;
+    vk_pipeline pipeline_concat_fast_f32, pipeline_concat_fast_f16, pipeline_concat_fast_i32;
     vk_pipeline pipeline_upscale_nearest_f32, pipeline_upscale_bilinear_f32, pipeline_upscale_bicubic_f32, pipeline_upscale_bilinear_antialias_f32;
     vk_pipeline pipeline_scale_f32;
     vk_pipeline pipeline_sqr_f32;
@@ -1977,7 +1978,9 @@ struct ggml_backend_vk_context {
     size_t semaphore_idx, event_idx;
     ggml_vk_garbage_collector gc;
     size_t prealloc_size_x, prealloc_size_y, prealloc_size_split_k, prealloc_size_add_rms_partials, prealloc_size_add_rms_partials_offset;
+    size_t prealloc_size_fa_k16, prealloc_size_fa_v16;
     vk_buffer prealloc_x, prealloc_y, prealloc_split_k, prealloc_add_rms_partials, sync_staging;
+    vk_buffer prealloc_fa_k16, prealloc_fa_v16;
     vk::Fence fence, almost_ready_fence;
     bool submit_pending {};
     bool almost_ready_fence_pending {};
@@ -1999,6 +2002,7 @@ struct ggml_backend_vk_context {
     // These are checked before writing to the buffer (and call ggml_vk_sync_buffers if set),
     // and set to true after the buffer contents are consumed.
     bool prealloc_x_need_sync, prealloc_y_need_sync, prealloc_split_k_need_sync;
+    bool prealloc_fa_k16_need_sync, prealloc_fa_v16_need_sync;
 
     vk_context_ref compute_ctx;
 

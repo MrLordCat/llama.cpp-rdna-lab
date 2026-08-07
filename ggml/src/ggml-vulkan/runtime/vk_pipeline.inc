@@ -946,11 +946,40 @@ static vk_fa_tuning_params get_fa_tuning_params_scalar(const vk_device& device, 
         result.block_cols = (D & 8) ? 64 : 32;
     }
 
+    // Local fork (D094 cycle-4): scalar/MMQ FA geometry knobs for RDNA4 tuning.
+    if (const char * env = getenv("GGML_VK_FA_SCALAR_BC")) {
+        result.block_cols = (uint32_t) std::max(1, std::atoi(env));
+    }
+    if (const char * env = getenv("GGML_VK_FA_SCALAR_RS")) {
+        result.row_split = (uint32_t) std::max(1, std::atoi(env));
+    }
+
     const uint32_t D_lsb = D ^ (D & (D-1));  // extract lowest set bit
 
     result.d_split = std::min(std::min(result.subgroup_size, 8u), D_lsb / 4);
 
+    if (const char * env = getenv("GGML_VK_FA_SCALAR_DSPLIT")) {
+        result.d_split = (uint32_t) std::max(1, std::atoi(env));
+    }
+
     result.shmem_staging = (device->vendor_id == VK_VENDOR_ID_NVIDIA && hsk < 256 && hsv < 256) ? 1 : 0;
+
+    // Local fork (D094 cycle-4): scalar/MMQ FA: stage K/V tiles through LDS
+    // (avoids per-element on-the-fly dequantize4 in the hot loop).
+    if (getenv("GGML_VK_FA_SCALAR_STAGING")) {
+        result.shmem_staging = 1;
+    }
+
+    // Local fork (D094 cycle-4): scalar/MMQ FA overrides (applied last so they
+    // win over the auto-tuning above). LDS overflow would fail pipeline
+    // creation, which is caught and reverted per run.
+    if (const char * env = getenv("GGML_VK_FA_SCALAR_BR")) {
+        result.block_rows = (uint32_t) std::max(1, std::atoi(env));
+    }
+    if (const char * env = getenv("GGML_VK_FA_SCALAR_SUBGROUP")) {
+        result.subgroup_size = (uint32_t) std::max(1, std::atoi(env));
+        result.workgroup_size = result.subgroup_size * 4;
+    }
 
     if (!reduce_block_rows && !ggml_vk_flash_attn_scalar_shmem_support(device, result, hsk, hsv, f32acc, kv_type)) {
         result.block_rows /= 2;
@@ -1002,6 +1031,27 @@ static vk_fa_tuning_params get_fa_tuning_params_coopmat1(const vk_device& device
 
     result.shmem_staging = (device->vendor_id == VK_VENDOR_ID_NVIDIA && hsk < 256 && hsv < 256) ? 1 : 0;
 
+    // Diagnostic knobs for coopmat1 FA geometry experiments (local fork).
+    // The shmem gate in ggml_vk_flash_attn() still applies, so unsupported
+    // combinations fall back to scalar FA instead of producing broken shaders.
+    if (const char * env = getenv("GGML_VK_FA_BLOCK_ROWS")) {
+        result.block_rows = std::max(coopmat_block_rows, (uint32_t) std::atoi(env));
+    }
+    if (const char * env = getenv("GGML_VK_FA_BLOCK_COLS")) {
+        result.block_cols = std::max(coopmat_block_cols, (uint32_t) std::atoi(env));
+    }
+    if (const char * env = getenv("GGML_VK_FA_ROW_SPLIT")) {
+        const uint32_t row_split = std::max(1u, (uint32_t) std::atoi(env));
+        // rows_per_thread and the shmem layout both derive from row_split, so
+        // only accept power-of-two splits that evenly divide block_rows.
+        // row_split > 4 (512-thread workgroups) crashed on the RX 9070 XT
+        // Windows driver during prefill and is intentionally capped here.
+        if (row_split <= 4 && row_split <= result.block_rows && (result.block_rows % row_split) == 0) {
+            result.row_split = row_split;
+            result.workgroup_size = row_split * result.subgroup_size;
+        }
+    }
+
     return result;
 }
 
@@ -1042,6 +1092,13 @@ static vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_
 
     FaCodePath path = device->coopmat2 ? FA_COOPMAT2 :
                       device->coopmat1_fa_support ? FA_COOPMAT1 : FA_SCALAR;
+
+    // Local fork (D094 cycle-4): A/B the scalar FA path (flash_attn.comp with
+    // MMQ int8 dot products) against coopmat1 on RDNA4. Matmul uses the same
+    // MMQ-style pipeline at 55-65 TFLOPS while coopmat FA sits at ~16.
+    if (getenv("GGML_VK_FA_FORCE_SCALAR")) {
+        path = FA_SCALAR;
+    }
 
     if (path == FA_COOPMAT1 && device->architecture == vk_device_architecture::NVIDIA_TURING) {
         // Nvidia compiler bug, see https://github.com/ggml-org/llama.cpp/pull/19075#issuecomment-3820716090
@@ -1090,6 +1147,12 @@ static vk_fa_pipeline_state get_fa_pipeline_state(const vk_device& device, const
                      (use_mask          ? 2 : 0) |
                      (use_logit_softcap ? 4 : 0) |
                      (old_amd_windows   ? 8 : 0);
+
+    // Local fork (D094 cycle-4): diagnostic - skip causal-mask work on the
+    // scalar FA path (incorrect attention; timing diagnostics only).
+    if (params.path == FA_SCALAR && getenv("GGML_VK_FA_SCALAR_NOMASK")) {
+        flags &= ~3u;
+    }
 
     const uint32_t subgroup_size = params.disable_subgroups ? 0 : params.subgroup_size;
 

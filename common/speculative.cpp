@@ -1518,11 +1518,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         chain_heads   = n_mtp_layers > 1 && !is_mem_shared;
 
         const char * device_handoff_env = std::getenv("LLAMA_MTP_DEVICE_HANDOFF");
-#if defined(GGML_USE_HIP)
+        // D094 c8: device handoff used to be HIP-only. Vulkan can use it too
+        // (lazy staging alloc works, numerics identical - measured 2026-08-05);
+        // it removes the per-step host round-trip of h_nextn in the MTP loop.
         const bool device_handoff_default = true;
-#else
-        const bool device_handoff_default = false;
-#endif
         device_handoff = n_seq == 1 && !chain_heads && !is_mem_shared &&
                 (device_handoff_env ? std::strcmp(device_handoff_env, "0") != 0 : device_handoff_default);
         if (device_handoff) {

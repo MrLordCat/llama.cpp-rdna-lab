@@ -1,5 +1,24 @@
 # Benchmarks
 
+## D094 Vulkan q8/MTP Fix (2026-08-06/07)
+
+The Vulkan q8_0 mat-vec/mmq numerical divergence vs ROCm was root-caused and
+fixed (int dp4a accumulation order, round-half-away-from-zero q8_1 quantize,
+mmq variant-B math, SPV regeneration). MTP acceptance recovered from 0.33 to
+0.80+ on 52k-token drafts (target 0.53):
+
+| Backend | Prompt (tokens) | Acceptance | tps | Config |
+| --- | ---: | ---: | ---: | --- |
+| ROCm | 52,427 | **86.0%** (80/93) | 0.29 | dual layer -ts 1,1, mtp n2 |
+| Vulkan | 52,427 | **80.4%** (78/97) | 0.60 | dual layer -ts 1,1, mtp n2 |
+| ROCm | 13,924 | **69.8%** (74/106) | 0.84 | same, game on background |
+| Vulkan | 13,924 | **64.0%** (71/111) | 1.41 | same, game on background |
+
+Vulkan acceptance now tracks ROCm (gap ~5-6 pp) and both are far above the
+0.53 target; Vulkan wall completion is 2x faster under dual-GPU layer split.
+F16-KV 49K lane (GUI autotune, no game): Vulkan 1719.92/43.10/6.1358
+prompt/decode/aggregate TPS vs ROCm 1679.20/32.33/5.7655 (Vulkan +2.4%/+33%/+6.4%).
+
 ## Primary Q4_K_M Baseline (2026-07-20)
 
 The project baseline is now `Qwen3.6-27B-Q4_K_M.gguf`. The safe production

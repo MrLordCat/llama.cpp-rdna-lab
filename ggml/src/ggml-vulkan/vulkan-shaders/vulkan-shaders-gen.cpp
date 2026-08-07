@@ -844,6 +844,11 @@ void process_shaders() {
     string_to_spv("concat_f16", "concat.comp", {{"A_TYPE", "float16_t"}, {"B_TYPE", "float16_t"}, {"D_TYPE", "float16_t"}, {"OPTIMIZATION_ERROR_WORKAROUND", "1"}});
     string_to_spv("concat_i32", "concat.comp", {{"A_TYPE", "int"}, {"B_TYPE", "int"}, {"D_TYPE", "int"}});
 
+    // Fast dim-0 contiguous concat (src1/dst contiguous); see concat_fast.comp
+    string_to_spv("concat_fast_f32", "concat_fast.comp", {{"A_TYPE", "float"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}});
+    string_to_spv("concat_fast_f16", "concat_fast.comp", {{"A_TYPE", "float16_t"}, {"B_TYPE", "float16_t"}, {"D_TYPE", "float16_t"}});
+    string_to_spv("concat_fast_i32", "concat_fast.comp", {{"A_TYPE", "int"}, {"B_TYPE", "int"}, {"D_TYPE", "int"}});
+
     string_to_spv("upscale_f32", "upscale.comp", {{"A_TYPE", "float"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}});
 
     string_to_spv("exp_f16",        "exp.comp",         {{"A_TYPE", "float16_t"},   {"D_TYPE", "float16_t"}});

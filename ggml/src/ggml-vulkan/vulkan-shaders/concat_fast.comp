@@ -1,0 +1,48 @@
+#version 450
+
+#include "types.glsl"
+#include "generic_binary_head.glsl"
+
+// Fast path for CONCAT along dim 0 where src1 and dst are contiguous.
+// One thread handles a (row, block-of-4-columns) tile of dst. Rows are
+// decomposed once per thread; within a row only linear increments are used
+// (no per-element index math). src0 may be a non-contiguous view (conv
+// states): its row base uses nb strides, then nb00 steps per column.
+layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
+
+void main() {
+    const uint gid = gl_GlobalInvocationID.z * 262144 + gl_GlobalInvocationID.y * 512 + gl_GlobalInvocationID.x;
+
+    const uint blocks_per_row = (p.ne20 + 3u) >> 2;
+    const uint n_rows = p.ne21 * p.ne22 * p.ne23;
+    if (gid >= n_rows * blocks_per_row) {
+        return;
+    }
+
+    const uint row = gid / blocks_per_row;
+    const uint block = gid % blocks_per_row;
+
+    // decompose row into (i1, i2, i3)
+    uint t = row;
+    const uint i1 = t % p.ne21;
+    t = t / p.ne21;
+    const uint i2 = t % p.ne22;
+    const uint i3 = t / p.ne22;
+
+    // row base of src0 (elements, may be strided)
+    const uint src0_row = i1 * p.nb01 + i2 * p.nb02 + i3 * p.nb03;
+    // row base of src1 (elements, contiguous)
+    const uint src1_row = i1 * p.ne10 + i2 * (p.ne10 * p.ne11) + i3 * (p.ne10 * p.ne11 * p.ne12);
+    // row base of dst (elements, contiguous)
+    const uint dst_row = row * p.ne20;
+
+    const uint i0_start = block * 4u;
+    const uint i0_end = min(i0_start + 4u, p.ne20);
+    for (uint i0 = i0_start; i0 < i0_end; ++i0) {
+        if (i0 < p.ne00) {
+            data_d[get_doffset() + dst_row + i0] = data_a[get_aoffset() + src0_row + i0 * p.nb00];
+        } else {
+            data_d[get_doffset() + dst_row + i0] = data_b[get_boffset() + src1_row + (i0 - p.ne00)];
+        }
+    }
+}

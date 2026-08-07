@@ -3655,7 +3655,8 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
     int * tile_y = data_mul_mat_q + mmq_x;
     int * tile_x = tile_y + GGML_PAD(mmq_x*MMQ_TILE_Y_K, nwarps*warp_size);
 
-    static_assert(!use_dp4a || type == GGML_TYPE_Q3_K, "The small-N DP4A route is Q3_K-only.");
+    static_assert(!use_dp4a || type == GGML_TYPE_Q3_K || type == GGML_TYPE_Q8_0,
+        "The small-N DP4A route is Q3_K-only (Q8_0 enabled for D094 c8 experiments).");
 
     constexpr vec_dot_mmq_t vec_dot = mmq_select_vec_dot<type, mmq_x, mmq_y, need_check, use_dp4a>();
     constexpr mmq_write_back_t write_back =
@@ -3806,8 +3807,11 @@ static __global__ void mul_mat_q(
         const uint3 ntx, const bool use_rdna4_moe_mmq_staging, const bool use_q3k_padded_storage) {
 
     if constexpr (use_dp4a) {
-        static_assert(type == GGML_TYPE_Q3_K && (mmq_x == 4 || mmq_x == 8),
-            "Only the Q3_K x4/x8 small-N DP4A specializations are supported.");
+        static_assert((type == GGML_TYPE_Q3_K || type == GGML_TYPE_Q8_0),
+            "Only the Q3_K/Q8_0 small-N DP4A specializations are supported (D094).");
+        if constexpr (type != GGML_TYPE_Q3_K && type != GGML_TYPE_Q8_0) {
+            NO_DEVICE_CODE;
+        }
     } else {
         // Skip unused template specializations for faster compilation:
         if (mmq_x > get_mmq_x_max_device() || mmq_x % mmq_get_granularity_device(mmq_x) != 0) {
@@ -4344,10 +4348,18 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
 
     const dim3 block_dims(warp_size, nwarps, 1);
 
-    const int nbytes_shared = mmq_get_nbytes_shared<type>(mmq_x, mmq_y, cc, warp_size, nwarps, use_rdna4_moe_mmq_staging);
+    // D094 c8 experiment: force the DP4A variant for Q8_0 (mirrors ROCm mma
+    // numerics comparison; dp4a layout/vec_dot exist for Q8_0).
+    const bool force_dp4a = type == GGML_TYPE_Q8_0 && std::getenv("GGML_CUDA_FORCE_DP4A") != nullptr;
 
-    CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, mmq_x, false>), nbytes_shared);
-    CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, mmq_x,  true>), nbytes_shared);
+    const int nbytes_shared = mmq_get_nbytes_shared<type>(mmq_x, mmq_y, cc, warp_size, nwarps, use_rdna4_moe_mmq_staging, force_dp4a);
+
+    CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, mmq_x, false, false>), nbytes_shared);
+    CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, mmq_x,  true, false>), nbytes_shared);
+    if constexpr (type == GGML_TYPE_Q8_0) {
+        CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, mmq_x, false,  true>), nbytes_shared);
+        CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, mmq_x,  true,  true>), nbytes_shared);
+    }
 
     const int nty  = (args.nrows_x   + mmq_y - 1) / mmq_y;
     const int ntx  = (args.ncols_max + mmq_x - 1) / mmq_x;
@@ -4369,20 +4381,56 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
     if (!args.use_stream_k) {
         if (args.nrows_x % mmq_y == 0) {
             constexpr bool need_check = false;
-            mul_mat_q<type, mmq_x, need_check><<<block_nums_xy_tiling, block_dims, nbytes_shared, stream>>>
-                (args.x, args.y, args.ids_dst, args.expert_bounds, args.dst, nullptr,
-                 blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
-                 channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
-                 sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-                 ntx_fd, use_rdna4_moe_mmq_staging, args.q3k_padded_storage);
+            if constexpr (type == GGML_TYPE_Q8_0) {
+                if (force_dp4a) {
+                    mul_mat_q<type, mmq_x, need_check, true><<<block_nums_xy_tiling, block_dims, nbytes_shared, stream>>>
+                        (args.x, args.y, args.ids_dst, args.expert_bounds, args.dst, nullptr,
+                         blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
+                         channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
+                         sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
+                         ntx_fd, use_rdna4_moe_mmq_staging, args.q3k_padded_storage);
+                } else {
+                    mul_mat_q<type, mmq_x, need_check><<<block_nums_xy_tiling, block_dims, nbytes_shared, stream>>>
+                        (args.x, args.y, args.ids_dst, args.expert_bounds, args.dst, nullptr,
+                         blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
+                         channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
+                         sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
+                         ntx_fd, use_rdna4_moe_mmq_staging, args.q3k_padded_storage);
+                }
+            } else {
+                mul_mat_q<type, mmq_x, need_check><<<block_nums_xy_tiling, block_dims, nbytes_shared, stream>>>
+                    (args.x, args.y, args.ids_dst, args.expert_bounds, args.dst, nullptr,
+                     blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
+                     channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
+                     sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
+                     ntx_fd, use_rdna4_moe_mmq_staging, args.q3k_padded_storage);
+            }
         } else {
             constexpr bool need_check = true;
-            mul_mat_q<type, mmq_x, need_check><<<block_nums_xy_tiling, block_dims, nbytes_shared, stream>>>
-                (args.x, args.y, args.ids_dst, args.expert_bounds, args.dst, nullptr,
-                 blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
-                 channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
-                 sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-                 ntx_fd, use_rdna4_moe_mmq_staging, args.q3k_padded_storage);
+            if constexpr (type == GGML_TYPE_Q8_0) {
+                if (force_dp4a) {
+                    mul_mat_q<type, mmq_x, need_check, true><<<block_nums_xy_tiling, block_dims, nbytes_shared, stream>>>
+                        (args.x, args.y, args.ids_dst, args.expert_bounds, args.dst, nullptr,
+                         blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
+                         channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
+                         sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
+                         ntx_fd, use_rdna4_moe_mmq_staging, args.q3k_padded_storage);
+                } else {
+                    mul_mat_q<type, mmq_x, need_check><<<block_nums_xy_tiling, block_dims, nbytes_shared, stream>>>
+                        (args.x, args.y, args.ids_dst, args.expert_bounds, args.dst, nullptr,
+                         blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
+                         channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
+                         sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
+                         ntx_fd, use_rdna4_moe_mmq_staging, args.q3k_padded_storage);
+                }
+            } else {
+                mul_mat_q<type, mmq_x, need_check><<<block_nums_xy_tiling, block_dims, nbytes_shared, stream>>>
+                    (args.x, args.y, args.ids_dst, args.expert_bounds, args.dst, nullptr,
+                     blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
+                     channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
+                     sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
+                     ntx_fd, use_rdna4_moe_mmq_staging, args.q3k_padded_storage);
+            }
         }
         return;
     }

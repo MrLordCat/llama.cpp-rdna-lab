@@ -1774,8 +1774,10 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     bool use_mul_mat_vec_q = ggml_is_quantized(src0->type) && !bad_padding_clear
         && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32
         && src1->ne[1] <= MMVQ_MAX_BATCH_SIZE;
+    // D094: accept pre-quantized Q8_1 src1 (experiment-2)
+    const bool src1_f32_or_q8_1 = src1->type == GGML_TYPE_F32 || src1->type == GGML_TYPE_Q8_1;
     bool use_mul_mat_q     = ggml_is_quantized(src0->type) && !bad_padding_clear
-        && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
+        && src1_f32_or_q8_1 && dst->type == GGML_TYPE_F32;
 
     bool any_gpus_with_slow_fp16 = false;
 

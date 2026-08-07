@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-04 09:11:00",
+  "updated_at": "2026-08-04 19:00:57",
   "builds": [
     {
       "id": "bld-20260508073132-4d3cb594",
@@ -388,6 +388,23 @@
       "created_at": "2026-08-04 07:50:42",
       "updated_at": "2026-08-04 08:46:17",
       "status": "archived",
+      "notes": "Imported from existing build directory",
+      "bench_best_non_mtp_tps": null,
+      "bench_best_mtp_tps": null,
+      "bench_last_run_at": ""
+    },
+    {
+      "id": "bld-20260804190057-4bc3c538",
+      "name": "build-vulkan-dbg",
+      "backend": "vulkan",
+      "source_type": "fork",
+      "source_ref": "ab1dec500",
+      "build_dir": "D:\\GitHub\\llama.cpp-with-GUI\\build-vulkan-dbg",
+      "server_bin": "D:\\GitHub\\llama.cpp-with-GUI\\build-vulkan-dbg\\bin\\llama-server.exe",
+      "toolchain": {},
+      "created_at": "2026-08-04 19:00:57",
+      "updated_at": "2026-08-04 19:00:57",
+      "status": "ready",
       "notes": "Imported from existing build directory",
       "bench_best_non_mtp_tps": null,
       "bench_best_mtp_tps": null,

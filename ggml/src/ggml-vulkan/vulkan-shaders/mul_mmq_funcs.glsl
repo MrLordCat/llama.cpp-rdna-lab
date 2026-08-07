@@ -113,6 +113,22 @@ ACC_TYPE mmq_dot_product(const uint ib_a) {
 #endif
 
 #if defined(DATA_A_Q8_0)
+// Round to fp16 precision (10-bit mantissa) using bit manipulation only, so
+// the shader compiles in both fp32 and fp16 generation variants.
+float f16_round(const float x) {
+    const uint bits = floatBitsToUint(x);
+    const uint sign = bits & 0x80000000u;
+    uint mant = bits & 0x007FFFFFu;
+    const uint exp  = bits & 0x7F800000u;
+    // round-to-nearest-even on the low 13 bits (f32 mantissa 23 - f16 10)
+    mant += 0x0FFFu + ((mant >> 13) & 1u);
+    mant &= ~0x1FFFu;
+    if (mant >= 0x00800000u) {
+        mant = 0;
+    }
+    return uintBitsToFloat(sign | exp | mant);
+}
+
 // 2-byte loads for Q8_0 blocks (34 bytes)
 void block_a_to_shmem(const uint buf_ib, const uint ib, const uint iqs) {
     buf_a[buf_ib].qs[iqs] = pack32(i16vec2(data_a_packed16[ib].qs[iqs * 2],
@@ -132,6 +148,9 @@ void block_a_to_registers(const uint reg_ib, const uint buf_ib) {
 }
 
 ACC_TYPE mmq_dot_product(const uint ib_a) {
+    // D094 c9r variant B: exact CUDA dp4a semantics (vec_dot_q8_0_q8_1_impl):
+    // int32 sum over 32 elems (8 iqs), then one f32 dequant d8_0*d8_1*sumi
+    // in that exact multiply order. No f16 rounding (mfma-emulation was wrong).
     int32_t q_sum = 0;
     [[unroll]] for (uint iqs = 0; iqs < 8; iqs++) {
         const int32_t qs_a = cache_a[ib_a].qs[iqs];
@@ -140,7 +159,7 @@ ACC_TYPE mmq_dot_product(const uint ib_a) {
         q_sum += dotPacked4x8EXT(qs_a, qs_b);
     }
 
-    return ACC_TYPE(float(q_sum) * float(cache_a[ib_a].dm) * float(cache_b.ds.x));
+    return ACC_TYPE(float(cache_a[ib_a].dm) * float(cache_b.ds.x) * float(q_sum));
 }
 #endif
 

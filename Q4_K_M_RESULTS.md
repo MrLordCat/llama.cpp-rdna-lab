@@ -10,6 +10,13 @@ prompt geometry and E345 Q6_K decode policy. The 98K production row remains the
 E337/E338 bounded-Q8 and one-copy scheduler measurement. Vulkan rows are the
 unchanged E332 reference measurements. No foreground GPU workload was active.
 
+Updated 2026-08-07 (D094): Vulkan q8/MTP path fixed. The numerical divergence
+in the Vulkan q8_0 vec/mmq path (CUDA-style dp4a accumulation order,
+round-half-away quantize, mmq variant-B math) was resolved; MTP acceptance
+recovered from 0.33 to 0.80+ (target 0.53) and Vulkan now beats ROCm on the
+f16-KV 49K autotune lane. Fresh GUI autotune rows (f16 KV, ctx 49152, no game)
+are listed below.
+
 ## Test system
 
 - 2x AMD Radeon RX 9070 XT 16 GB
@@ -57,6 +64,17 @@ answers favor MTP.
 | ROCm, E338 one copy, MTP n3 | 98,304 | 59,045 | 1435.97 | **35.44** | 23.96 GiB | 3.26 GiB |
 | Vulkan | 98,304 | 58,982 | 1171.17 | 24.18 | 20.06 GiB | 0.54 GiB |
 | Vulkan | 131,072 | 75,979 | 1051.67 | **23.02** | 21.38 GiB | 0.70 GiB |
+
+## D094 refresh (2026-08-06/07, f16 KV, GUI autotune, no game)
+
+| Backend | Context | KV | Prompt TPS | Decode TPS | Aggregate TPS | Note |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Vulkan | 49,152 | f16 | **1719.92** | **43.10** | **6.1358** | +7.8% prompt vs 2026-08-05 (1595.06) |
+| ROCm | 49,152 | f16 | 1679.20 | 32.33 | 5.7655 | same lane, same day |
+
+Vulkan is now ahead of ROCm on this lane: prompt +2.4%, decode +33%, aggregate
++6.4%. The gain is graph-level (concat fast path is env-gated; FA prealloc and
+q8_0-KV pre-dequant benefit q8-KV lanes); accuracy fixes carry no speed cost.
 
 The current 49K performance row is E353; its Dedicated/Shared peaks are the
 matched-placement E335 sampler values because E353 did not run the WDDM memory

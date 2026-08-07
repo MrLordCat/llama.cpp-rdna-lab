@@ -97,6 +97,21 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
         }
         return nullptr;
     case GGML_OP_CONCAT:
+        // Opt-in fast dim-0 path (measured neutral on this hardware): src1
+        // and dst contiguous, uniform types -> linear copy. Enabled with
+        // GGML_VK_CONCAT_FAST=1. See D094 cycle-2 note.
+        if (getenv("GGML_VK_CONCAT_FAST") && ggml_get_op_params_i32(dst, 0) == 0 && ggml_is_contiguous(src1) && ggml_is_contiguous(dst) &&
+            src0->type == src1->type && src1->type == dst->type) {
+            if (src0->type == GGML_TYPE_F32) {
+                return ctx->device->pipeline_concat_fast_f32;
+            }
+            if (src0->type == GGML_TYPE_F16) {
+                return ctx->device->pipeline_concat_fast_f16;
+            }
+            if (src0->type == GGML_TYPE_I32) {
+                return ctx->device->pipeline_concat_fast_i32;
+            }
+        }
         if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
             return ctx->device->pipeline_concat_f32;
         }

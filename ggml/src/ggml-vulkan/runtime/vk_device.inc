@@ -1272,6 +1272,15 @@ static void ggml_vk_init(ggml_backend_vk_context * ctx, size_t idx) {
     ctx->prealloc_size_x = 0;
     ctx->prealloc_size_y = 0;
     ctx->prealloc_size_split_k = 0;
+    // D094 c8 fix: FA preconvert staging buffers were missing init here;
+    // `new ggml_backend_vk_context` leaves them uninitialized -> garbage
+    // sizes could be passed to vkAllocateMemory (crash after reboot).
+    ctx->prealloc_size_fa_k16 = 0;
+    ctx->prealloc_size_fa_v16 = 0;
+    ctx->prealloc_fa_k16 = nullptr;
+    ctx->prealloc_fa_v16 = nullptr;
+    ctx->prealloc_fa_k16_need_sync = false;
+    ctx->prealloc_fa_v16_need_sync = false;
     // Fixed size of 1KB, for deterministic behavior
     ctx->prealloc_size_add_rms_partials = 1024;
 

@@ -184,7 +184,7 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
 
 void ggml_cuda_mul_mat_q(
         ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst) {
-    GGML_ASSERT(        src1->type == GGML_TYPE_F32);
+    GGML_ASSERT(        src1->type == GGML_TYPE_F32 || src1->type == GGML_TYPE_Q8_1 || src1->type == GGML_TYPE_Q8_0); // D094: pre-quantized accepted
     GGML_ASSERT(        dst->type  == GGML_TYPE_F32);
     GGML_ASSERT(!ids || ids->type  == GGML_TYPE_I32); // Optional, used for batched GGML_MUL_MAT_ID.
 
@@ -269,7 +269,23 @@ void ggml_cuda_mul_mat_q(
                 }
             }
             const auto timing_start = trace_src1_quant_timing ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
-            if (use_native_fp4) {
+            if (src1->type == GGML_TYPE_Q8_1 || src1->type == GGML_TYPE_Q8_0) {
+                // D094 experiment: pre-quantized input, use as-is (no GPU quantize).
+                // Do NOT touch src1_q8_1.ptr: pool_alloc would free a foreign pointer.
+                // Row stride in q8_0 blocks (load_tiles_q8_0 strides by i*stride):
+                // src1 nb1 is in bytes, block_q8_0 is 34 bytes.
+                const char * src1_q8_1_pre = (const char *) src1_d;
+                const int64_t s11_pre = (int64_t) (src1->nb[1] / (ggml_blck_size(GGML_TYPE_Q8_0) ? 34 : 34));
+                const int64_t s12_pre = (int64_t) (ne11 * (ne10_padded / 32) * 34 / 4);
+                const mmq_args args_pre = {
+                    src0_d, src0->type, (const int *) src1_q8_1_pre, nullptr, nullptr, dst_d,
+                    ne00, ne01, ne1, s01, ne11, s1,
+                    ne02, ne12, s02, s12_pre, s2,
+                    ne03, ne13, s03, s12_pre * ne12, s3,
+                    use_stream_k, ne1, q3k_padded_storage};
+                ggml_cuda_mul_mat_q_switch_type(ctx, args_pre, stream);
+                return;
+            } else if (use_native_fp4) {
                 static_assert(sizeof(block_fp4_mmq) == 4 * sizeof(block_q8_1));
                 quantize_mmq_fp4_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded,
                                         ne11, ne12, ne13, stream);

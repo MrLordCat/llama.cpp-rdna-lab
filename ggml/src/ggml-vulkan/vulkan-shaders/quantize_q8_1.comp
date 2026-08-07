@@ -78,13 +78,21 @@ void quantize(const uint wgid) {
 #endif
 
     const float d = amax / 127.0;
-    const float d_inv = d != 0.0 ? 1.0 / d : 0.0;
-    vals = round(vals * d_inv);
+    // D094 c8: match CUDA mmq quantize_q8_1 (d_inv = 127.0/amax directly).
+    // 1.0/(amax/127.0) introduces a second rounding that flips roundf on
+    // half-integer boundaries and diverges q8_1 x from ROCm on large K.
+    const float d_inv = amax != 0.0 ? 127.0 / amax : 0.0;
+    // D094 c8: match CUDA roundf (round-half-away-from-zero); GLSL round()
+    // is round-half-even and flips q8_1 x on .5 boundaries, diverging from
+    // ROCm on large K.
+    // round-half-away-from-zero (CUDA roundf); mix already yields integers,
+    // so no second round() call is needed (avoids redundant rounding ops).
+    vals = mix(floor(vals * d_inv + 0.5), ceil(vals * d_inv - 0.5), lessThan(vals * d_inv, vec4(0.0)));
 
 #ifndef QBLOCK_X4
-    data_b[ib].qs[iqs] = pack32(i8vec4(round(vals)));
+    data_b[ib].qs[iqs] = pack32(i8vec4(vals));
 #else
-    data_b[ibx4_outer].qs[ibx4_inner * 8 + iqs] = pack32(i8vec4(round(vals)));
+    data_b[ibx4_outer].qs[ibx4_inner * 8 + iqs] = pack32(i8vec4(vals));
 #endif
 
 #ifndef USE_SUBGROUPS

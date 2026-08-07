@@ -10,6 +10,7 @@ of normal E### benchmarking: use it to rank designs before editing backend code.
 | Decision | D089 Q4_K_M primary baseline promotion |
 | Latest gate | [D091 Q4_K_M ROCm 98K WDDM placement](D091_Q4_K_M_ROCM98K_WDDM_PLACEMENT_GATE.md), closed: corrected device order recovered MTP n2 prompt `947.46 -> 1426.54 tok/s` (`+50.56%`) |
 | Vulkan recovery | [D093 current-driver Q4_K_M wn32 recovery](D093_VULKAN_Q4KM_AMD_WN32_RECOVERY.md), accepted: backend-default `wn32` restored 59K prompt evaluation `401.19 -> 1171.94 tok/s` (`2.92x`) on driver `32.0.31035.1003` |
+| Prompt-eval supremacy program | [D094 Q4_K_M Vulkan-vs-ROCm prompt-eval program](D094_Q4KM_VULKAN_PROMPT_SUPREMACY_PROGRAM.md), open, cycle 1 done: `GGML_VK_ALLOW_GRAPHICS_QUEUE=1` accepted (`1241.3` vs `1201.5`, +3.31% r3); all other launch-level gates closed negative (ts, low-tile, KV types, FA geometry); FA = 40% not KV-byte-bound, matmul ~46% at dequant ceiling; remaining gap `1.1375x`; cycle 2 = source work (T205 fused GDN/CONCAT first); Gate A (98k/49k re-measure with gfxq) still open |
 | Model | `models/Qwen3.6-27B-Q4_K_M.gguf` (MTP-enabled) |
 | Safe lane | ROCm `ctx=49152,b=8192,ub=1024,q8_0/q8_0,-dev ROCm1,ROCm0,-sm layer,-ts 1,1`, cold/no-reuse/no-warmup |
 | Control | spec-none `1778.59 prompt / 21.98 decode tok/s`, `5.6829` aggregate TPS |
