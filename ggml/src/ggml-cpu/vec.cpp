@@ -8,6 +8,28 @@ ggml_fp16_t ggml_table_gelu_f16[1 << 16];
 // precomputed quick gelu table for f16 (128 KB)
 ggml_fp16_t ggml_table_gelu_quick_f16[1 << 16];
 
+void ggml_vec_dot_f8_e4m3_f32(int n, float * GGML_RESTRICT s, size_t bs, const uint8_t * GGML_RESTRICT x, size_t bx, const float * GGML_RESTRICT y, size_t by, int nrc) {
+    assert(nrc == 1);
+    GGML_UNUSED(bs);
+    GGML_UNUSED(bx);
+    GGML_UNUSED(by);
+    GGML_UNUSED(nrc);
+
+    // D098 G2 CPU reference: keep this deliberately simple. The ROCm route
+    // is compared against the repository's exact byte decoder in bounded
+    // chunks, without adding a second E4M3 interpretation.
+    float sum = 0.0f;
+    for (int i = 0; i < n; i += 64) {
+        const int count = n - i < 64 ? n - i : 64;
+        float decoded[64];
+        ggml_fp8_e4m3_to_fp32_row(x + i, decoded, count);
+        for (int j = 0; j < count; ++j) {
+            sum += decoded[j] * y[i + j];
+        }
+    }
+    *s = sum;
+}
+
 void ggml_vec_dot_f32(int n, float * GGML_RESTRICT s, size_t bs, const float * GGML_RESTRICT x, size_t bx, const float * GGML_RESTRICT y, size_t by, int nrc) {
    assert(nrc == 1);
    GGML_UNUSED(nrc);

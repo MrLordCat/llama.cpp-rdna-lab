@@ -564,7 +564,8 @@ void ggml_compute_forward_dup(
             } break;
         default:
             {
-                if (ggml_is_quantized(src0->type) && dst->type == GGML_TYPE_F32) {
+                if ((ggml_is_quantized(src0->type) || src0->type == GGML_TYPE_F8_E4M3) &&
+                    dst->type == GGML_TYPE_F32) {
                     ggml_compute_forward_dup_from_q(params, dst);
                     break;
                 }

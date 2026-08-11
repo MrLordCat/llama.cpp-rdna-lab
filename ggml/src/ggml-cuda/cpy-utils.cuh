@@ -2,6 +2,7 @@
 
 #include "ggml-common.h"
 #include "convert.cuh"
+#include "fp8.cuh"
 
 static __device__ __forceinline__ int best_index_int8(int n, const int8_t * val, float x) {
     if (x <= val[0]) return 0;
@@ -215,3 +216,13 @@ template<typename src_t, typename dst_t>
 static __device__ void cpy_1_scalar(const char * cxi, char * cdsti) {
     *(dst_t *) cdsti = ggml_cuda_cast<dst_t>(*(const src_t *) cxi);
 }
+
+#if defined(GGML_USE_HIP)
+static __device__ void cpy_1_f32_f8_e4m3(const char * cxi, char * cdsti) {
+    *(uint8_t *) cdsti = ggml_cuda_fp32_to_f8_e4m3(*(const float *) cxi);
+}
+
+static __device__ void cpy_1_f8_e4m3_f32(const char * cxi, char * cdsti) {
+    *(float *) cdsti = ggml_cuda_f8_e4m3_to_fp32(*(const uint8_t *) cxi);
+}
+#endif // defined(GGML_USE_HIP)

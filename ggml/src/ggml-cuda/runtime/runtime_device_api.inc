@@ -369,6 +369,12 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 ) {
                     return true;
                 }
+#if defined(GGML_USE_HIP)
+                if ((src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_F8_E4M3) ||
+                    (src0_type == GGML_TYPE_F8_E4M3 && src1_type == GGML_TYPE_F32)) {
+                    return true;
+                }
+#endif // defined(GGML_USE_HIP)
                 if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_Q8_0) {
                     return true;
                 }

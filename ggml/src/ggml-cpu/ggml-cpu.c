@@ -390,6 +390,13 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .vec_dot_type             = GGML_TYPE_BF16,
         .nrows                    = 1,
     },
+    [GGML_TYPE_F8_E4M3] = {
+        // D098 G1/G2: CPU CPY and FlashAttention reference for HIP gates.
+        .from_float               = (ggml_from_float_t) ggml_fp32_to_fp8_e4m3_row,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f8_e4m3_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
     [GGML_TYPE_TQ1_0] = {
         .from_float               = quantize_row_tq1_0,
         .vec_dot                  = ggml_vec_dot_tq1_0_q8_K,
@@ -2780,6 +2787,7 @@ struct ggml_cplan ggml_graph_plan(
                 case GGML_OP_DUP:
                     {
                         if (ggml_is_quantized(node->type) ||
+                            node->type == GGML_TYPE_F8_E4M3 ||
                             // F16 -> BF16 and BF16 -> F16 copies go through intermediate F32
                             (node->src[0]->type == GGML_TYPE_F16  && node->src[1] && node->src[1]->type == GGML_TYPE_BF16) ||
                             (node->src[0]->type == GGML_TYPE_BF16 && node->src[1] && node->src[1]->type == GGML_TYPE_F16) ||

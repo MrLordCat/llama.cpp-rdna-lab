@@ -1,5 +1,6 @@
 #include "convert.cuh"
 #include "dequantize.cuh"
+#include "fp8.cuh"
 
 #include <cstdint>
 #include <cstdlib>
@@ -824,6 +825,10 @@ to_bf16_cuda_t ggml_get_to_bf16_cuda(ggml_type type) {
 
 to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
     switch (type) {
+#if defined(GGML_USE_HIP)
+        case GGML_TYPE_F8_E4M3:
+            return convert_unary_cont_cuda<ggml_cuda_f8_e4m3>;
+#endif // defined(GGML_USE_HIP)
         case GGML_TYPE_Q1_0:
             return dequantize_block_cont_cuda<QK1_0, QR1_0, dequantize_q1_0>;
         case GGML_TYPE_PQ2_0:
@@ -884,6 +889,10 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
 
 to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
     switch (type) {
+#if defined(GGML_USE_HIP)
+        case GGML_TYPE_F8_E4M3:
+            return convert_unary_cont_cuda<ggml_cuda_f8_e4m3>;
+#endif // defined(GGML_USE_HIP)
         case GGML_TYPE_Q1_0:
             return dequantize_block_cont_cuda<QK1_0, QR1_0, dequantize_q1_0>;
         case GGML_TYPE_PQ2_0:
@@ -941,6 +950,10 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
 
 to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type) {
     switch (type) {
+#if defined(GGML_USE_HIP)
+        case GGML_TYPE_F8_E4M3:
+            return convert_unary_cuda<ggml_cuda_f8_e4m3>;
+#endif // defined(GGML_USE_HIP)
         case GGML_TYPE_F32:
             return convert_unary_cuda<float>;
         case GGML_TYPE_Q1_0:
@@ -991,6 +1004,10 @@ to_bf16_nc_cuda_t ggml_get_to_bf16_nc_cuda(ggml_type type) {
 
 to_fp32_nc_cuda_t ggml_get_to_fp32_nc_cuda(ggml_type type) {
     switch (type) {
+#if defined(GGML_USE_HIP)
+        case GGML_TYPE_F8_E4M3:
+            return convert_unary_cuda<ggml_cuda_f8_e4m3, float>;
+#endif // defined(GGML_USE_HIP)
         case GGML_TYPE_F16:
             return convert_unary_cuda<half, float>;
         case GGML_TYPE_Q1_0:

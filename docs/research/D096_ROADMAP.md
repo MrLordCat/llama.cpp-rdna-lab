@@ -390,11 +390,16 @@ dbg[0..1023], маска mc0_p dbg[1024+tid*4], S-до-маски dbg[2048+tid*4
 - h_nextn гоняется через host (D2H+H2D) каждый MTP-шаг, ROCm — device-to-device.
   Perf-only (acceptance не влияет). Быстрый выигрыш ~5-10% к MTP decode.
 
-### B3 [OPEN] ROCm fp8 KV тест
-- Наш fp8 KV добавлен только для Vulkan. ROCm (wmma-путь) не проверен.
+### B3 [ACTIVE] D098 native ROCm FP8 KV
+- План и gate ladder: `major-topology/D098_Q4KM_ROCM_FP8_KICKOFF.md`.
+- G1 byte-compatible HIP copy завершён (`3/3`), G2 default-off reference
+  f8->f16 FA завершён на Qwen D256 prefill/decode (`2/2`). Следующий этап —
+  G3 нативный gfx12 FP8 rocWMMA с ISA/resource proof.
+- До G4 нет speed/default claim: Vulkan, GUI и публичные пресеты не меняются.
 
 ### B4 [OPEN] Апстрим-синк
-- fp8 изменения форк-локальные; апстрим имеет fp8 KV только CUDA/HIP. Адаптация при мерже.
+- fp8 изменения форк-локальные; текущий upstream shared CUDA/HIP layer не
+  содержит `GGML_TYPE_F8_E4M3`. Адаптация потребуется при следующем мерже.
 
 ## Ресурсы
 - Инструменты: C:/VulkanSDK/1.4.350.0 (glslc, spirv-as, spirv-dis, spirv-val).

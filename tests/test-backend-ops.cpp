@@ -91,6 +91,10 @@ static void init_tensor_uniform(ggml_tensor * tensor, float min = -1.0f, float m
 
     if (tensor->type == GGML_TYPE_F32 || tensor->type == GGML_TYPE_I32) {
         ggml_backend_tensor_set(tensor, data.data(), 0, nels * sizeof(float));
+    } else if (tensor->type == GGML_TYPE_F8_E4M3) {
+        std::vector<uint8_t> data_f8(nels);
+        ggml_fp32_to_fp8_e4m3_row(data.data(), data_f8.data(), nels);
+        ggml_backend_tensor_set(tensor, data_f8.data(), 0, data_f8.size());
     } else if (ggml_is_quantized(tensor->type) || tensor->type == GGML_TYPE_F16 || tensor->type == GGML_TYPE_BF16) {
         GGML_ASSERT(nels % ggml_blck_size(tensor->type) == 0);
 
@@ -250,6 +254,10 @@ static std::vector<float> tensor_to_float(const ggml_tensor * t) {
                         tv.push_back(ggml_fp16_to_fp32(*(ggml_fp16_t*)&buf[i]));
                     } else if (t->type == GGML_TYPE_BF16) {
                         tv.push_back(ggml_bf16_to_fp32(*(ggml_bf16_t*)&buf[i]));
+                    } else if (t->type == GGML_TYPE_F8_E4M3) {
+                        float value;
+                        ggml_fp8_e4m3_to_fp32_row(&buf[i], &value, 1);
+                        tv.push_back(value);
                     } else if (t->type == GGML_TYPE_F32) {
                         tv.push_back(*(float *) &buf[i]);
                     } else if (t->type == GGML_TYPE_I64) {
@@ -2926,6 +2934,35 @@ struct test_cpy : public test_case {
             // test extended range of values to check if casting between f32 and i32 is consistent
             init_tensor_uniform(t, -150.f, 150.f);
         }
+    }
+};
+
+struct test_cpy_fp8_boundaries : public test_cpy {
+    test_cpy_fp8_boundaries()
+        : test_cpy(GGML_TYPE_F32, GGML_TYPE_F8_E4M3, {32, 1, 1, 1}) {}
+
+    std::string vars() override {
+        return test_cpy::vars() + ",fp8_boundaries=1";
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        test_cpy::initialize_tensors(ctx);
+
+        ggml_tensor * src = ggml_get_tensor(ctx, "src");
+        GGML_ASSERT(src != nullptr && src->type == GGML_TYPE_F32);
+
+        const float values[] = {
+             0.0f, -0.0f,  1.0f/1024.0f, -1.0f/1024.0f,
+             1.0f/512.0f, -1.0f/512.0f,  3.0f/512.0f, -3.0f/512.0f,
+             7.0f/512.0f, -7.0f/512.0f, 15.0f/1024.0f, -15.0f/1024.0f,
+             1.0f/64.0f,  -1.0f/64.0f,   17.0f/1024.0f, -17.0f/1024.0f,
+             1.0f, -1.0f, 1.0625f, -1.0625f,
+             1.875f, -1.875f, 1.9375f, -1.9375f,
+             239.0f, -239.0f, 240.0f, -240.0f,
+             241.0f, -241.0f, INFINITY, -INFINITY,
+        };
+        static_assert(sizeof(values)/sizeof(values[0]) == 32);
+        ggml_backend_tensor_set(src, values, 0, sizeof(values));
     }
 };
 
@@ -7860,6 +7897,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_cpy(type_src, type_dst, {256, 2, 3, 4}, {0, 2, 1, 3})); // cpy by rows
         }
     }
+    // D098 G1: the ROCm backend implements these two conversions explicitly;
+    // unsupported backends skip them through supports_op.
+    test_cases.emplace_back(new test_cpy(GGML_TYPE_F32, GGML_TYPE_F8_E4M3, {256, 4, 4, 4}));
+    test_cases.emplace_back(new test_cpy(GGML_TYPE_F8_E4M3, GGML_TYPE_F32, {256, 4, 4, 4}));
+    test_cases.emplace_back(new test_cpy_fp8_boundaries());
     for (ggml_type type_src : {GGML_TYPE_F16, GGML_TYPE_F32}) {
         for (ggml_type type_dst : {GGML_TYPE_F16, GGML_TYPE_F32}) {
             test_cases.emplace_back(new test_cpy(type_src, type_dst, {256, 2, 3, 4}, {1, 0, 2, 3})); // cpy not-contiguous
@@ -8711,6 +8753,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 512, 16, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
     // Qwen3.6 decode shape used by the RDNA4 grouped-head vector FA path.
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
+    // D098 G2: ROCm FP8 reference route, prefill and decode. Unsupported
+    // backends skip these through supports_op; HIP requires the explicit
+    // GGML_ROCM_FATTN_F8_REFERENCE gate.
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 512, 16, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3));
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3));
 
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {   10, 5, 4, 3}));
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {30000, 1, 1, 1}));

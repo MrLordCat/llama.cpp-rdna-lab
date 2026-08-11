@@ -448,6 +448,24 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_BF16:
             break;
+#if defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
+        case GGML_TYPE_F8_E4M3:
+            // D098 G2: fail closed unless the explicit reference route is
+            // requested. G2 converts K/V to f16 before the established WMMA
+            // body; native FP8 WMMA is a separate G3 dispatch.
+            if (std::getenv("GGML_TRACE_FATTN_PATH") != nullptr) {
+                GGML_LOG_INFO(
+                    "%s: D098 F8 reference cc=%d rdna4=%d enabled=%d K=[%lld,%lld,%lld,%lld] Q=[%lld,%lld,%lld,%lld]\n",
+                    __func__, cc, GGML_CUDA_CC_IS_RDNA4(cc) ? 1 : 0,
+                    std::getenv("GGML_ROCM_FATTN_F8_REFERENCE") != nullptr ? 1 : 0,
+                    (long long) K->ne[0], (long long) K->ne[1], (long long) K->ne[2], (long long) K->ne[3],
+                    (long long) Q->ne[0], (long long) Q->ne[1], (long long) Q->ne[2], (long long) Q->ne[3]);
+            }
+            if (!GGML_CUDA_CC_IS_RDNA4(cc) || std::getenv("GGML_ROCM_FATTN_F8_REFERENCE") == nullptr) {
+                return BEST_FATTN_KERNEL_NONE;
+            }
+            break;
+#endif // defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
         default:
             return BEST_FATTN_KERNEL_NONE;
     }
@@ -455,6 +473,19 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     if (mask && mask->ne[2] != 1) {
         return BEST_FATTN_KERNEL_NONE;
     }
+
+#if defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
+    if (K->type == GGML_TYPE_F8_E4M3) {
+        // The reference path intentionally avoids the vector/tile selectors,
+        // whose template dispatch does not yet own an F8 type. The WMMA body
+        // receives f16 buffers from launch_fattn's existing conversion path.
+        if (K->ne[1] % FATTN_KQ_STRIDE != 0 || Q->ne[0] == 40 || Q->ne[0] == 72 ||
+            Q->ne[0] == 512 || Q->ne[0] == 576) {
+            return BEST_FATTN_KERNEL_NONE;
+        }
+        return BEST_FATTN_KERNEL_WMMA_F16;
+    }
+#endif // defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
 
     // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes:
     const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && K->ne[1] % FATTN_KQ_STRIDE == 0;

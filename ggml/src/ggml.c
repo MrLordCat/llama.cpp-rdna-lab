@@ -517,24 +517,27 @@ static inline uint8_t ggml_fp32_to_fp8_e4m3(float f) {
     if (f > 240.0f) {
         f = 240.0f;
     }
-    if (f < 1.0f / 512.0f) {
-        // subnormal: encode man = round(f * 512)
+    uint32_t bits;
+    memcpy(&bits, &f, sizeof(bits));
+    const uint32_t exp32 = (bits >> 23) & 0xFF;
+    if (exp32 < 121) {
+        // Subnormal zone [0, 2^-6): value = man * 2^-9 = man / 512.
         uint32_t man = (uint32_t) llroundf(f * 512.0f);
         man = man > 7 ? 7 : man;
         return (uint8_t)(sign | man);
     }
-    // find exponent: value = (1 + man/8) * 2^(e-7)
-    int e = 0;
-    frexpf(f, &e); // f = norm * 2^e, norm in [0.5, 1)
-    e = e - 1; // adjust: (1+m/8) in [1, 1.875), exp = e-7 where 2^(e-7) = 2^(frexp_e-1)
-    // exp field = e + 7 where 2^(e) = 2^(frexp_e-1): exp_field = frexp_e - 1 + 7 = frexp_e + 6
-    uint32_t exp_field = (uint32_t)(e + 7);
+    // Match the Vulkan bit encoder: round the FP32 mantissa to three bits and
+    // fold a carry into the E4M3 exponent.
+    uint32_t exp_field = exp32 - 120;
     if (exp_field > 14) {
-        exp_field = 14;
+        return (uint8_t)(sign | (14 << 3) | 7);
     }
-    float scaled = f / ldexpf(1.0f, (int) exp_field - 7);
-    uint32_t man = (uint32_t) llroundf((scaled - 1.0f) * 8.0f);
-    man = man > 7 ? 7 : man;
+    uint32_t man = ((bits & 0x7FFFFF) + 0x80000) >> 20;
+    exp_field += man >> 3;
+    man &= 7;
+    if (exp_field > 14) {
+        return (uint8_t)(sign | (14 << 3) | 7);
+    }
     return (uint8_t)(sign | (exp_field << 3) | man);
 }
 
