@@ -85,7 +85,9 @@ class InferenceTabWidget(QWidget):
         n_predict_layout.addWidget(QLabel("Tokens:"))
         self.n_predict_spin = QSpinBox()
         self.n_predict_spin.setRange(-1, 8192)
-        self.n_predict_spin.setValue(128)
+        # D096-N: thinking models (Qwen3.6) spend 150-600+ tokens on reasoning
+        # before the answer; the old 128-token default produced empty answers.
+        self.n_predict_spin.setValue(1024)
         n_predict_layout.addWidget(self.n_predict_spin)
         col1.addLayout(n_predict_layout)
 
@@ -315,7 +317,7 @@ class InferenceTabWidget(QWidget):
         self.model_path_edit.setText(settings.value("inference/model_path", ""))
         self.prompt_edit.setPlainText(settings.value("inference/prompt", ""))
 
-        self.n_predict_spin.setValue(int(settings.value("inference/n_predict", 128)))
+        self.n_predict_spin.setValue(int(settings.value("inference/n_predict", 1024)))
         self.temp_spin.setValue(float(settings.value("inference/temp", 0.8)))
         self.top_p_spin.setValue(float(settings.value("inference/top_p", 0.9)))
         self.top_k_spin.setValue(int(settings.value("inference/top_k", 40)))
