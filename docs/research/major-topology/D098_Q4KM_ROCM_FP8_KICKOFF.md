@@ -2,10 +2,12 @@
 
 Date: 2026-08-11
 
-Status: active on `master`. Plan locked; G1 device conversion, G2 reference
-FlashAttention, G3a native FP8 KQ rocWMMA and G3b native FP8 V are
-correctness-complete. G4/G5 gates are next. No ROCm FP8 performance claim
-exists yet.
+Status: active on `master`. G1 device conversion, G2 reference FlashAttention,
+G3a native FP8 KQ and G3b native FP8 V are correctness-complete. G4 speed
+gate measured: native FP8 KQ is at parity with q8_0, but the native FP8 V
+phase costs ~6% (prefill and decode) because of the P re-quantization and
+fp32 VKQ accumulators. The full-native route is therefore not yet a win;
+G4 remains open with the V-phase cost as the target.
 
 ## Objective
 
@@ -169,6 +171,32 @@ subnormal rounding.
   pull the FP8 body.
 - Regression: G1 CPY `3/3`, G2 reference `2/2`, G3a native KQ `2/2`; without
   any env gate all six F8 FA shapes stay `NOT SUPPORTED` (fail-closed).
+
+### G4: speed gates (measured, gate not passed for the V phase)
+
+Server smoke and A/B on the 12K lane (24576 chars, ctx 16384, spec=none,
+no MTP, `-dev ROCm1,ROCm0 -sm layer -ts 1,1`, seed 42, no background game,
+adjacent runs in one session, quick tasks):
+
+| run | KV/FA path | prompt ptps | decode tps |
+|-----|------------|-------------|------------|
+| r1  | q8_0 (baseline)            | 1760.8 | 23.30 |
+| r2  | f8_e4m3, native KQ+V      | 1629.5 | 22.04 |
+| r3  | q8_0 (control)            | 1742.9 | 23.63 |
+| r4  | f8_e4m3, native KQ only   | 1764.3 | 23.35 |
+
+- The native FP8 KQ phase is at parity with q8_0 (r4 vs r1/r3). All of the
+  ~6% prefill and ~5-7% decode cost sits in the native FP8 V phase (P->E4M3
+  re-quantization, fp32 VKQ accumulators, fp32 LDS store/load traffic).
+- Smoke (8K ctx, f8 KV + full native, spec=none) completed both quick tasks
+  with valid output; `GGML_TRACE_FATTN_PATH` confirmed `native_kq=1
+  native_v=1` on the D=256 path and K/V cache `f8_e4m3`.
+- Blocking fix landed: `SET_ROWS` on ROCm did not accept `F8_E4M3`, so the
+  server aborted while writing K rows (`cache_k_l3`). Added a f32->E4M3
+  SET_ROWS path and the `supports_op` admission (HIP-only).
+- Gate conclusion: full-native FP8 does not win yet; keep it opt-in.
+  Candidate next step: cut the V-phase cost (drop the separate P_f8 tile,
+  fold the pre-scale into the P store, halve the VKQ-part store traffic).
 
 ### G3: native RDNA4 FP8 FlashAttention (full)
 
