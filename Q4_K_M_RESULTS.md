@@ -34,10 +34,11 @@ are listed below.
 ## Current Vulkan q8 vs FP8 refresh (2026-08-11)
 
 All rows use the same binary, `Vulkan1,Vulkan0`, layer split `1,1`, one slot,
-`b8192/ub1024`, FlashAttention, cold/no-reuse/no-prime execution and 128 output
-tokens. These diagnosis rows use depth 2 and the same historical hybrid
-last-8-f16 policy for q8 and FP8. `GGML_VK_FA_F8_P5=1` affects only FP8; q8
-ignores it. The D097 section below contains the current 98K FP8 default.
+`b8192/ub1024`, FlashAttention and cold/no-reuse/no-prime execution. The
+12K/49K rows and 98K spec-none rows use 128 output tokens. The current 98K MTP
+rows use the D097 256-token adjacent bracket: q8 is the center of its two
+controls and FP8 uses the production last-12-f16 policy.
+`GGML_VK_FA_F8_P5=1` affects only FP8; q8 ignores it.
 
 | Context | KV | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance | Main KV MiB |
 | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -51,29 +52,34 @@ ignores it. The D097 section below contains the current 98K FP8 default.
 | 49,152 | f8_e4m3 P5 + last8 f16 | MTP n2 | 30,723 / 128 | **1679.76** | **44.51** | **6.0176** | **67.59%** | **2304** |
 | 98,304 | q8_0 | none | 57,530 / 128 | 1314.53 | **25.07** | 2.6090 | - | 3264 |
 | 98,304 | f8_e4m3 P5 | none | 57,530 / 128 | **1480.18** | 21.98 | **2.8522** | - | **3072** |
-| 98,304 | q8_0 + last8 f16 | MTP n2 | 57,530 / 128 | 1440.02 | **37.79** | 2.9407 | **68.87%** | 4704 |
-| 98,304 | f8_e4m3 P5 + last8 f16 | MTP n2 | 57,530 / 128 | **1465.98** | 32.40 | **2.9494** | 51.61% | **4608** |
+| 98,304 | q8_0 + last8 f16 (r2 center) | MTP n2 | 57,530 / 256 | 1422.71 | **41.96** | 5.4736 | 72.60% | **4704** |
+| 98,304 | **f8_e4m3 P5 + last12 f16** | MTP n2 | 57,530 / 256 | **1510.95** | 41.79 | **5.7618** | **73.79%** | 5376 |
 
 FP8 spec-none prompt throughput improves by `+7.1%`, `+10.4%` and `+12.6%`
 at 12K/49K/98K. Its spec-none decode changes by `-1.5%`, `-5.9%` and `-12.3%`,
 but prompt-heavy aggregate TPS still improves by `+3.0%`, `+6.8%` and `+9.3%`.
-With MTP, FP8 improves aggregate TPS by `+4.6%` at 12K and `+1.5%` at 49K.
-In the historical matched-N8 98K row, aggregate wall TPS is effectively tied
-(`+0.3%`) while FP8 acceptance falls by 17.26 percentage points and decode by
-14.3%; that row motivated D097 and is not the current FP8 long-context policy.
+With MTP, FP8 improves aggregate TPS by `+4.6%` at 12K, `+1.5%` at 49K and
+`+5.27%` at 98K under the current context-scoped policy. At 98K FP8 last12
+improves acceptance by `+1.19` percentage points and matches decode within
+`-0.41%` of the adjacent q8 control center. The superseded matched-N8 FP8 row
+is retained only in the D097 diagnosis section below.
 
 FP8 reduces the main KV allocation by 5.88% in spec-none. With the matched
-last-8-f16 MTP policy, the reduction is 2.04% because half of this model's 16
-full-attention KV layers intentionally use f16. Artifacts use the prefix
-`d095-refresh-vk-q4km-{12k,49k,98k}-{q8,f8}-{none,mtp2}-r1`.
+last-8-f16 MTP policy at 12K/49K, the reduction is 2.04% because half of this
+model's 16 full-attention KV layers intentionally use f16. The current 98K
+last12 recovery instead costs 5376 versus 4704 MiB (`+14.29%`) because quality
+is prioritized at that context. D095 artifacts use
+`d095-refresh-vk-q4km-{12k,49k,98k}-{q8,f8}-{none,mtp2}-r1`; current 98K MTP
+artifacts use the D097 prefixes documented below.
 
 ## D097 98K FP8 MTP acceptance recovery (2026-08-11)
 
-The 128-token refresh row above diagnosed the problem; it is no longer the
-recommended 98K FP8 MTP policy. Raw E4M3 is not more precise than q8_0 for this
-KV distribution: it has three mantissa bits and no block scale, while q8_0 has
-an int8 payload plus a scale per 32 values. A real-KV scout measured raw-E4M3
-attention-logit MSE about 29.9x higher than q8_0.
+The superseded 128-token FP8 last8 refresh diagnosed the problem and remains in
+the D095/D097 research artifacts, not in the current headline table above. Raw
+E4M3 is not more precise than q8_0 for this KV distribution: it has three
+mantissa bits and no block scale, while q8_0 has an int8 payload plus a scale
+per 32 values. A real-KV scout measured raw-E4M3 attention-logit MSE about
+29.9x higher than q8_0.
 
 The fixed 57,530-token/256-output adjacent bracket is:
 

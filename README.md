@@ -139,11 +139,10 @@ same model, backend, and lane.
 ### Q4_K_M Vulkan q8 vs native FP8
 
 The current dual-Vulkan refresh uses `Vulkan1,Vulkan0`, layer split `1,1`,
-`b8192/ub1024`, 128 output tokens, and identical cold repo-snapshot prompts.
-MTP refresh rows use depth 2 and the historical hybrid last-8-f16 KV policy
-for both quantized formats. FP8 uses the native P5 FlashAttention route. D097
-supersedes only the 98K FP8 MTP default with last-12 f16; the refresh rows are
-retained as the matched diagnosis baseline.
+`b8192/ub1024` and identical cold repo-snapshot prompts. The 12K/49K rows and
+98K spec-none rows use 128 output tokens. The current 98K MTP rows use the D097
+256-token adjacent bracket: q8 is the center of its two controls and FP8 uses
+the production last-12-f16 policy. FP8 uses the native P5 FlashAttention route.
 
 | Context | KV | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
 | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
@@ -157,17 +156,16 @@ retained as the matched diagnosis baseline.
 | 49,152 | f8_e4m3 P5 + last8 f16 | MTP n2 | 30,723 / 128 | **1679.76** | **44.51** | **6.0176** | **67.59%** |
 | 98,304 | q8_0 | none | 57,530 / 128 | 1314.53 | **25.07** | 2.6090 | - |
 | 98,304 | f8_e4m3 P5 | none | 57,530 / 128 | **1480.18** | 21.98 | **2.8522** | - |
-| 98,304 | q8_0 + last8 f16 | MTP n2 | 57,530 / 128 | 1440.02 | **37.79** | 2.9407 | **68.87%** |
-| 98,304 | f8_e4m3 P5 + last8 f16 | MTP n2 | 57,530 / 128 | **1465.98** | 32.40 | **2.9494** | 51.61% |
+| 98,304 | q8_0 + last8 f16 (r2 center) | MTP n2 | 57,530 / 256 | 1422.71 | **41.96** | 5.4736 | 72.60% |
+| 98,304 | **f8_e4m3 P5 + last12 f16** | MTP n2 | 57,530 / 256 | **1510.95** | 41.79 | **5.7618** | **73.79%** |
 
 FP8 is the faster prompt-heavy profile: spec-none prompt throughput rises by
 7.1%/10.4%/12.6% at 12K/49K/98K and main KV allocation falls by 5.88%.
-At 12K and 49K MTP it also improves aggregate TPS. The historical 98K N=8 row
-exposes the precision regression fixed by D097. The current 98K FP8 MTP default
-uses last-12 f16: in a 256-token adjacent bracket it reached `1510.95` prompt
-tok/s, `41.79` decode tok/s, `5.7618` aggregate and `73.79%` acceptance versus
-the q8 control center `1422.71/41.96/5.4736`, `72.60%`. This restores acceptance
-and gives `+6.20%` prompt at the explicit cost of 5376 versus 4704 MiB main KV.
+With MTP it improves aggregate TPS at all three contexts. At 98K the current
+last-12 policy reaches `73.79%` acceptance versus the q8 center's `72.60%`,
+while improving prompt by `+6.20%` and aggregate TPS by `+5.27%`. The cost is
+5376 versus 4704 MiB main KV. The superseded FP8 last8 result
+(`1465.98/32.40/2.9494`, 51.61%) remains only in the D097 diagnosis record.
 Full methodology, memory rows, corrected historical KV labels, and artifacts are in
 [Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md).
 

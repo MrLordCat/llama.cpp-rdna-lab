@@ -19,7 +19,7 @@ the faster default-off M6 q8-bridge profile are documented in
 
 ## D095 Vulkan Q4_K_M q8/FP8 Refresh (2026-08-11)
 
-The current dual-Vulkan matrix uses `Vulkan1,Vulkan0`, layer split `1,1`,
+The D095 diagnostic matrix uses `Vulkan1,Vulkan0`, layer split `1,1`,
 `b8192/ub1024`, 128 output tokens, cold/no-reuse/no-prime execution and matched
 repo-snapshot prompts. Native P5 FP8 raises spec-none prompt throughput over q8
 by `+7.1%/+10.4%/+12.6%` at 12K/49K/98K while reducing the main KV allocation
@@ -28,9 +28,10 @@ by 5.88%. Prompt-heavy aggregate TPS rises `+3.0%/+6.8%/+9.3%`.
 With matched hybrid last-8-f16 MTP n2, FP8 improves aggregate TPS by 4.6% at
 12K and 1.5% at 49K. The historical 98K N8 row ties wall TPS (`2.9494` vs
 `2.9407`) but drops FP8 acceptance to 51.61% versus q8 68.87%; D097 above
-supersedes that policy. The complete 12-row diagnosis table, KV memory values,
-methodology and artifacts are in
-[Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md). Audit note: the older 2026-08-07
+supersedes that policy. The headline table in
+[Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md) now substitutes the current 98K q8
+control center and FP8 last12 result; the old N8 row remains only in the
+diagnosis record. Audit note: the older 2026-08-07
 Vulkan rows were actually q4_0 KV despite being described as q8; the current
 table is explicitly typed and supersedes them for KV-format decisions.
 
