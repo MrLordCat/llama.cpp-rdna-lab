@@ -203,7 +203,7 @@ def build_prompt(root: Path, ctx: int, base_ctx: int, base_char_budget: int, min
         file_count += 1
 
     prompt = (
-        "Ниже большой срез текущего репозитория llama.cpp-with-GUI. "
+        "Ниже большой срез текущего репозитория llama.cpp-rdna-lab. "
         "Проанализируй структуру, long-context/performance риски и предложи 2 практичных шага оптимизации. "
         "Дай компактный ответ по пунктам.\n"
         "===== REPO SNAPSHOT BEGIN ====="

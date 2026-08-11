@@ -76,7 +76,7 @@ class GuiApiServer:
                 try:
                     path = urlparse(self.path).path
                     if path == "/api/ping":
-                        self._send(HTTPStatus.OK, {"ok": True, "service": "llama-gui-api"})
+                        self._send(HTTPStatus.OK, {"ok": True, "service": "rdna-llm-studio-api"})
                         return
                     if path == "/api/state":
                         data = api.call_ui(api._state_snapshot)

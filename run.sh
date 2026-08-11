@@ -1,9 +1,9 @@
 #!/bin/bash
-# Quick start script for llama.cpp GUI on Linux/macOS
+# Quick start script for RDNA LLM Studio on Linux/macOS
 
 cd "$(dirname "$0")" || exit 1
 
-echo "🚀 Starting LLaMA.cpp GUI..."
+echo "🚀 Starting RDNA LLM Studio..."
 
 # Use python3 on Linux (python may not exist)
 PYTHON_CMD="python3"

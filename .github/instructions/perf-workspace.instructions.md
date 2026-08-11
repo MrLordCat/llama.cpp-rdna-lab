@@ -1,5 +1,5 @@
 ---
-description: "Use when doing llama.cpp-with-GUI TPS, performance, ROCm, Vulkan, RDNA4, Qwen, benchmark, autotune, or research documentation work."
+description: "Use when doing llama.cpp-rdna-lab TPS, performance, ROCm, Vulkan, RDNA4, Qwen, benchmark, autotune, or research documentation work."
 ---
 # Performance Workspace Instructions
 

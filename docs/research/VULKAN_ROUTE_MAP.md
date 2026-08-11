@@ -1,4 +1,4 @@
-# Vulkan Route Map - llama.cpp-with-GUI
+# Vulkan Route Map - llama.cpp-rdna-lab
 
 This document maps the current Vulkan backend routes in this fork. It is meant
 to sit next to `docs/research/ROCM_ROUTE_MAP.md`: ROCm is the preferred RX 9070

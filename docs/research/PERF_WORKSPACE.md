@@ -1,6 +1,6 @@
 # Performance Workspace
 
-This workspace layer is for fast, reproducible TPS work on `llama.cpp-with-GUI`.
+This workspace layer is for fast, reproducible TPS work on `llama.cpp-rdna-lab`.
 It does not replace `AGENTS.md`; it points agents to the shortest safe path for
 local ROCm/Vulkan performance research.
 
@@ -11,7 +11,7 @@ generic production/performance work. Keep an adjacent spec-none control for
 MTP n3. The older Q3_K_S P002/P003 workflows remain model-specific secondary
 programs, not interchangeable baseline rows.
 
-Open this repository in VS Code via `llama.cpp-with-GUI.code-workspace` from the
+Open this repository in VS Code via `llama.cpp-rdna-lab.code-workspace` from the
 repo root. The workspace file provides the folder, search/watcher exclusions,
 file associations, and extension recommendations; `.vscode/tasks.json` provides
 the runnable benchmark/check tasks.

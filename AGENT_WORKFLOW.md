@@ -1,7 +1,7 @@
 # Agent and BYOK Workflow
 
 This document defines how a coordinating agent delegates work in
-`llama.cpp-with-GUI`. It applies to local and BYOK models, custom VS Code agents,
+`llama.cpp-rdna-lab`. It applies to local and BYOK models, custom VS Code agents,
 and any client that supports subagents.
 
 ## Precedence

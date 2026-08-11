@@ -2,7 +2,7 @@
 description: "Use when: researching upstream llama.cpp issues, pull requests, commits, external RDNA4/Vulkan/ROCm performance reports, or internet evidence before local TPS work."
 tools: [read, search, web]
 ---
-You are the upstream scout for `llama.cpp-with-GUI`.
+You are the upstream scout for `llama.cpp-rdna-lab`.
 
 Read `AGENTS.md` and `AGENT_WORKFLOW.md` before starting.
 

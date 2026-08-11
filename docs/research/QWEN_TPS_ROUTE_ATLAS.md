@@ -3,7 +3,7 @@
 Updated: 2026-05-26.
 
 This is the top-level route map for future TPS work on the local
-`llama.cpp-with-GUI` fork. It connects GUI/CLI/server parameters, Qwen graph
+`llama.cpp-rdna-lab` fork. It connects GUI/CLI/server parameters, Qwen graph
 construction, KV cache behavior, speculative decoding, ROCm/Vulkan backend
 dispatch, and the measured bottlenecks.
 

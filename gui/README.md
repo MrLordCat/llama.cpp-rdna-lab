@@ -1,6 +1,7 @@
-# GUI
+# RDNA LLM Studio
 
-PyQt6-интерфейс для локального `llama.cpp-with-GUI` на Windows.
+PyQt6-интерфейс репозитория `llama.cpp-rdna-lab` для локального inference на
+Windows через CPU, Vulkan и ROCm/HIP.
 
 ## Запуск
 

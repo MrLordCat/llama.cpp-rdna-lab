@@ -50,7 +50,7 @@ class DownloadThread(QThread):
             
             # Setup headers - important for HuggingFace
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) llama-cpp-gui/1.0'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) rdna-llm-studio/1.0'
             }
             if downloaded_size > 0:
                 headers['Range'] = f'bytes={downloaded_size}-'

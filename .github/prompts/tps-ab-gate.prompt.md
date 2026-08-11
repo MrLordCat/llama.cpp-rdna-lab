@@ -1,5 +1,5 @@
 ---
-description: "Run a focused TPS A/B gate for a llama.cpp-with-GUI performance hypothesis."
+description: "Run a focused TPS A/B gate for a llama.cpp-rdna-lab performance hypothesis."
 agent: "tps-research"
 argument-hint: "Hypothesis ID, baseline label, candidate change, lane"
 ---

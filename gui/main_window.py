@@ -1,4 +1,4 @@
-"""Main window - Refactored LlamaCppGUI coordinator"""
+"""Main window for RDNA LLM Studio."""
 
 import os
 from pathlib import Path
@@ -35,17 +35,19 @@ class LlamaCppGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self._shutdown_requested = False
-        self.setWindowTitle("llama.cpp GUI - AMD Radeon RX 9070 XT Edition")
+        self.setWindowTitle("RDNA LLM Studio — Vulkan / ROCm")
         self.setGeometry(100, 100, 1400, 900)
         
         # Initialize settings
+        # Keep the legacy settings namespace so existing user profiles migrate
+        # automatically across the public rebrand.
         self.settings = QSettings("llama-cpp-gui", "llama-cpp-gui")
         self.project_manager = ProjectManager(settings=self.settings)
         
         # Find project root
         self.project_root = self.project_manager.project_root
         if not self.project_root:
-            QMessageBox.critical(self, "Error", "Could not find llama.cpp project root")
+            QMessageBox.critical(self, "Error", "Could not find the llama.cpp-rdna-lab repository root")
             sys.exit(1)
         
         # Initialize directories

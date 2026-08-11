@@ -1,4 +1,4 @@
-# DFlash Integration Preparation (Port Plan for llama.cpp-with-GUI)
+# DFlash Integration Preparation (Port Plan for llama.cpp-rdna-lab)
 
 Date: 2026-05-22
 Scope: preparation and documentation only (no runtime DFlash code merged yet)

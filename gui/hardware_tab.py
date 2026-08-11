@@ -1,5 +1,5 @@
 """
-Hardware information tab for llama.cpp GUI
+Hardware information tab for RDNA LLM Studio
 
 Shows:
 - System hardware information (CPU, GPU, RAM)

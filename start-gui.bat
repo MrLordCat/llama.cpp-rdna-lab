@@ -1,7 +1,7 @@
 @echo off
-REM Запуск GUI для llama.cpp
+REM Запуск RDNA LLM Studio
 echo ========================================
-echo    LLaMA.cpp GUI Launcher
+echo    RDNA LLM Studio Launcher
 echo ========================================
 echo.
 

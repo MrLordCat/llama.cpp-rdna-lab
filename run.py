@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Quick launcher for llama.cpp GUI with automatic dependency checking
+Quick launcher for RDNA LLM Studio with automatic dependency checking
 Run this script to start the GUI with automatic dependency installation
 """
 
@@ -31,7 +31,7 @@ suppress_windows_error_dialogs()
 from dependency_checker import init_dependencies
 
 def main():
-    print("\n🚀 LLaMA.cpp GUI Launcher\n")
+    print("\n🚀 RDNA LLM Studio Launcher\n")
     
     # Initialize and check dependencies
     if not init_dependencies():
@@ -48,6 +48,9 @@ def main():
         from main_window import LlamaCppGUI
         
         app = QApplication(sys.argv)
+        app.setApplicationName("RDNA LLM Studio")
+        app.setApplicationDisplayName("RDNA LLM Studio")
+        app.setOrganizationName("llama.cpp-rdna-lab")
         app.setStyle("Fusion")  # Modern style
         apply_modern_theme(app)
         

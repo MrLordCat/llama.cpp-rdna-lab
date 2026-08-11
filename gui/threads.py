@@ -1,5 +1,5 @@
 """
-Background worker threads for llama.cpp GUI
+Background worker threads for RDNA LLM Studio
 
 Provides thread implementations for:
 - Running llama-server in background

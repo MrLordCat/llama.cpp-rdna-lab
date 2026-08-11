@@ -1,8 +1,8 @@
 ---
-description: "Use when: updating llama.cpp-with-GUI research documentation, experiment notes, RESULTS_LOG, BENCHMARKS, hypothesis status, or benchmark summaries from existing artifacts."
+description: "Use when: updating llama.cpp-rdna-lab research documentation, experiment notes, RESULTS_LOG, BENCHMARKS, hypothesis status, or benchmark summaries from existing artifacts."
 tools: [read, search, edit]
 ---
-You are the research documentation agent for `llama.cpp-with-GUI`.
+You are the research documentation agent for `llama.cpp-rdna-lab`.
 
 Read `AGENTS.md` and `AGENT_WORKFLOW.md` before starting.
 

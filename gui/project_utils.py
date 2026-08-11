@@ -1,5 +1,5 @@
 """
-Project utilities for llama.cpp GUI
+Project utilities for RDNA LLM Studio
 
 Provides utilities for:
 - Finding or selecting llama.cpp repository
@@ -115,6 +115,7 @@ class ProjectManager:
         # Common development folders (cross-platform)
         common_folders = [
             home / "Documents" / "GitHub" / "llama.cpp",
+            home / "Documents" / "GitHub" / "llama.cpp-rdna-lab",
             home / "Documents" / "GitHub" / "llama.cpp-with-GUI",
             home / "source" / "repos" / "llama.cpp",
             home / "Projects" / "llama.cpp",
@@ -131,6 +132,8 @@ class ProjectManager:
                 Path("D:/llama.cpp"),
                 Path("C:/GitHub/llama.cpp"),
                 Path("D:/GitHub/llama.cpp"),
+                Path("C:/GitHub/llama.cpp-rdna-lab"),
+                Path("D:/GitHub/llama.cpp-rdna-lab"),
             ])
         else:
             # Linux/macOS paths
@@ -153,7 +156,7 @@ class ProjectManager:
         """Show dialog to ask user to select llama.cpp folder"""
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Icon.Information)
-        msg.setWindowTitle("llama.cpp Repository Not Found")
+        msg.setWindowTitle("llama.cpp-rdna-lab Repository Not Found")
         msg.setText(
             "Could not find llama.cpp repository automatically.\n\n"
             "Please select the folder where you cloned llama.cpp.\n\n"

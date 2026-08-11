@@ -2,7 +2,7 @@
 
 ## Project identity
 
-This is `llama.cpp-with-GUI`, a local fork for Windows and two AMD Radeon RX
+This is `llama.cpp-rdna-lab`, a local fork for Windows and two AMD Radeon RX
 9070 XT GPUs. It combines a PyQt6 GUI, long-context benchmark/autotune tooling,
 MTP/DFlash and local ggml performance work. Do not treat it as a clean upstream
 checkout.

@@ -47,7 +47,7 @@ Validated reduced build command on Windows/ROCm:
 cmake -B build-rocm-fa-reduced -G Ninja `
   -DGGML_HIP=ON `
   -DGGML_HIP_ROCWMMA_FATTN=ON `
-  -DGGML_HIP_ROCWMMA_INCLUDE_DIR="C:/Users/Chris/Documents/GitHub/llama.cpp-with-GUI/third_party/rocwmma/rocWMMA-rocm-7.1.0/library/include" `
+  -DGGML_HIP_ROCWMMA_INCLUDE_DIR="${PWD}/third_party/rocwmma/rocWMMA-rocm-7.1.0/library/include" `
   -DGGML_HIP_QWEN_FA_REDUCED=ON `
   -DGGML_OPENMP=OFF `
   -DAMDGPU_TARGETS=gfx1201 `

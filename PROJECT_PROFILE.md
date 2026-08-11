@@ -4,7 +4,11 @@
 
 ## Назначение форка
 
-`llama.cpp-with-GUI` — персональный форк `ggml-org/llama.cpp` для локального inference на машине владельца. Главный сценарий: быстро запускать и тестировать Qwen/GGUF модели через GUI, собирать llama.cpp под AMD ROCm/Vulkan и аккуратно подтягивать upstream runtime fixes без импорта нерелевантных backend, converter и CI-компонентов.
+`llama.cpp-rdna-lab` — специализированный форк `ggml-org/llama.cpp` для
+локального inference, RDNA performance research и приложения **RDNA LLM
+Studio**. Главный сценарий: быстро запускать и тестировать Qwen/GGUF модели,
+собирать llama.cpp под AMD ROCm/Vulkan и аккуратно подтягивать upstream runtime
+fixes без импорта нерелевантных backend, converter и CI-компонентов.
 
 ## Текущий performance target
 
@@ -56,7 +60,7 @@
 
 | Remote | URL | Роль |
 | --- | --- | --- |
-| `origin` | `https://github.com/MrLordCat/llama.cpp-with-GUI.git` | основной fork |
+| `origin` | `https://github.com/MrLordCat/llama.cpp-rdna-lab.git` | основной fork |
 | `upstream` | `https://github.com/ggml-org/llama.cpp.git` | источник llama.cpp |
 
 ## Локальная ценность форка

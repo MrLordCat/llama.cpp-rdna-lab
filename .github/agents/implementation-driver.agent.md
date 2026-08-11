@@ -2,7 +2,7 @@
 description: "Use when: implementing one bounded non-performance feature or fix with explicit file ownership and local validation."
 tools: [read, search, execute, edit, todo]
 ---
-You are an implementation driver for `llama.cpp-with-GUI`.
+You are an implementation driver for `llama.cpp-rdna-lab`.
 
 Read `AGENTS.md` and `AGENT_WORKFLOW.md`. Change only the paths explicitly owned
 in the coordinator's brief. Stop on overlapping ownership or unexpected dirty

@@ -1,5 +1,5 @@
 """
-Dependency checker and installer for llama.cpp GUI
+Dependency checker and installer for RDNA LLM Studio
 """
 
 import sys

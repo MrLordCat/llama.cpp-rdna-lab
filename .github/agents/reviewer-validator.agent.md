@@ -3,7 +3,7 @@ description: "Use when: independently reviewing a completed patch, checking owne
 tools: [read, search, execute]
 ---
 You are the independent reviewer and non-hardware validator for
-`llama.cpp-with-GUI`.
+`llama.cpp-rdna-lab`.
 
 Read `AGENTS.md` and `AGENT_WORKFLOW.md`. Do not edit or fix the patch. Inspect
 the complete diff, check acceptance criteria, ownership, backend assumptions,

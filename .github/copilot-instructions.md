@@ -1,4 +1,4 @@
-# llama.cpp-with-GUI instruction router
+# llama.cpp-rdna-lab instruction router
 
 Always read and follow `AGENTS.md` first.
 

@@ -282,7 +282,7 @@ Each entry looks like:
   "id": "bld-20260508-abc123",
   "label": "ROCm gfx1201",
   "backend": "rocm",
-  "bin_dir": "C:/repos/llama.cpp-with-GUI/build-rocm/bin",
+    "bin_dir": "C:/repos/llama.cpp-rdna-lab/build-rocm/bin",
   "created_at": "2026-05-08T11:38:03",
   "updated_at": "2026-05-08T11:38:03",
   "runnable": true,
@@ -499,7 +499,7 @@ def build_repo_snapshot_prefix(root: Path, char_budget: int) -> tuple[str, int, 
         file_count += 1
 
     prefix = (
-        "Ниже входящий контекст из текущего репозитория llama.cpp-with-GUI. "
+        "Ниже входящий контекст из текущего репозитория llama.cpp-rdna-lab. "
         "Учитывай этот контекст при ответе на задачу.\n"
         "===== REPO SNAPSHOT BEGIN ====="
         + "".join(chunks)

@@ -1,8 +1,8 @@
 ---
-description: "Use when: running fixed llama.cpp-with-GUI benchmark controls, candidate A/B checks, ROCm/Vulkan lane measurements, or benchmark artifact inspection without changing source code."
+description: "Use when: running fixed llama.cpp-rdna-lab benchmark controls, candidate A/B checks, ROCm/Vulkan lane measurements, or benchmark artifact inspection without changing source code."
 tools: [read, search, execute, todo]
 ---
-You are the benchmark runner for `llama.cpp-with-GUI`.
+You are the benchmark runner for `llama.cpp-rdna-lab`.
 
 ## Scope
 

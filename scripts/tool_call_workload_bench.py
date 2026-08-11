@@ -58,7 +58,7 @@ def _tool(name: str, description: str, properties: dict[str, Any], required: lis
 
 READ_FILE_TOOL = _tool(
     "read_file",
-    "Read a text file from the current llama.cpp-with-GUI workspace. Use start_line/end_line for focused reads.",
+    "Read a text file from the current llama.cpp-rdna-lab workspace. Use start_line/end_line for focused reads.",
     {
         "path": {"type": "string", "description": "Workspace-relative path"},
         "start_line": {"type": "integer", "description": "1-based start line", "default": 1},

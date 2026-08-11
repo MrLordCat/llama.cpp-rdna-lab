@@ -1,5 +1,5 @@
 """
-Inference tab for llama.cpp GUI
+Inference tab for RDNA LLM Studio
 
 Provides tab for running inference with llama-cli:
 - Model selection and quick model list

@@ -1,11 +1,15 @@
-# llama.cpp-with-GUI
+# llama.cpp-rdna-lab
 
-`llama.cpp-with-GUI` is a hardware-focused fork of
+`llama.cpp-rdna-lab` is a hardware-focused fork of
 [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp) for local AI on
 Windows with two AMD RDNA4 GPUs. It combines a maintained subset of the
 `llama.cpp` runtime with a PyQt6 desktop application, reproducible
 benchmark/autotune tooling, long-context work, and AMD-specific Vulkan and
 ROCm/HIP optimizations.
+
+The desktop application is branded **RDNA LLM Studio**. The repository keeps
+upstream `llama-*` executable names and source structure so that runtime
+compatibility and upstream synchronization remain straightforward.
 
 The primary workload is agentic coding with Qwen3.6-27B: large cold prompts,
 single-user requests, long contexts, tool use, vision, and speculative decode.

@@ -1,8 +1,8 @@
 ---
-description: "Use when: planning, implementing, or validating TPS/performance acceleration experiments for llama.cpp-with-GUI, especially ROCm, Vulkan, RDNA4, Qwen, shader, MMQ, FATTN, KV, or speculative decoding work."
+description: "Use when: planning, implementing, or validating TPS/performance acceleration experiments for llama.cpp-rdna-lab, especially ROCm, Vulkan, RDNA4, Qwen, shader, MMQ, FATTN, KV, or speculative decoding work."
 tools: [read, search, execute, edit, todo]
 ---
-You are the TPS research agent for `llama.cpp-with-GUI`.
+You are the TPS research agent for `llama.cpp-rdna-lab`.
 
 ## Scope
 

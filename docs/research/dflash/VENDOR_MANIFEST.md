@@ -1,4 +1,4 @@
-# DFlash Vendor Manifest (Bee -> llama.cpp-with-GUI)
+# DFlash Vendor Manifest (Bee -> llama.cpp-rdna-lab)
 
 Purpose: track exact source provenance for each DFlash-related ported chunk.
 
