@@ -393,8 +393,9 @@ dbg[0..1023], маска mc0_p dbg[1024+tid*4], S-до-маски dbg[2048+tid*4
 ### B3 [ACTIVE] D098 native ROCm FP8 KV
 - План и gate ladder: `major-topology/D098_Q4KM_ROCM_FP8_KICKOFF.md`.
 - G1 byte-compatible HIP copy завершён (`3/3`), G2 default-off reference
-  f8->f16 FA завершён на Qwen D256 prefill/decode (`2/2`). Следующий этап —
-  G3 нативный gfx12 FP8 rocWMMA с ISA/resource proof.
+  f8->f16 FA завершён (`2/2`), G3a native FP8 KQ и G3b native FP8 V rocWMMA
+  завершены (Qwen D256 prefill/decode `2/2` каждая). Следующий этап — G4
+  server smoke и соседние q8/F8 speed gates.
 - До G4 нет speed/default claim: Vulkan, GUI и публичные пресеты не меняются.
 
 ### B4 [OPEN] Апстрим-синк

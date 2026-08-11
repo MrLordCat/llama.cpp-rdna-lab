@@ -28,6 +28,23 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+
+// D098: portable env set/clear used by the backend dispatch gates.
+static void test_set_env(const char * name, const char * value) {
+    if (value == nullptr) {
+#ifdef _WIN32
+        _putenv_s(name, "");
+#else
+        unsetenv(name);
+#endif
+    } else {
+#ifdef _WIN32
+        _putenv_s(name, value);
+#else
+        setenv(name, value, 1);
+#endif
+    }
+}
 #include <cstring>
 #include <ctime>
 #include <future>
@@ -1131,6 +1148,10 @@ struct test_case {
 
     virtual ggml_tensor * build_graph(ggml_context * ctx) = 0;
 
+    // D098: called right before supports_op queries, letting a test select
+    // its own backend dispatch env (e.g. the ROCm FP8 gates).
+    virtual void select_dispatch_env() {}
+
     virtual double max_nmse_err() {
         return 1e-7;
     }
@@ -1312,6 +1333,10 @@ struct test_case {
             ggml_free(ctx);
             return test_status_t::SKIPPED;
         }
+
+        // D098: backend dispatch gates are env-selected; each test chooses its
+        // own route before supports_op is queried.
+        select_dispatch_env();
 
         // check if the backends support the ops
         bool supported = true;
@@ -6991,6 +7016,66 @@ enum llm_norm_type {
     LLM_NORM_RMS,
 };
 
+// D098 G3b: the E4M3 re-quantized P*V route. The softmax-P E4M3 rounding is
+// part of the native gfx12 contract, so the comparison allowance is
+// documented at 2x the reference path threshold.
+struct test_flash_attn_ext_f8_native_v : public test_flash_attn_ext {
+    test_flash_attn_ext_f8_native_v(int64_t hsk, int64_t hsv, int64_t nh,
+            std::array<int64_t, 2> nr23, int64_t kv, int64_t nb, bool mask)
+        : test_flash_attn_ext(hsk, hsv, nh, nr23, kv, nb, mask, false, 0, 0,
+              GGML_PREC_F32, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3) {}
+
+    std::string vars() override {
+        return test_flash_attn_ext::vars() + ",native_v=1";
+    }
+
+    double max_nmse_err() override {
+        return 1e-3;
+    }
+
+    void select_dispatch_env() override {
+        test_set_env("GGML_ROCM_FATTN_F8_NATIVE_KQ", "1");
+        test_set_env("GGML_ROCM_FATTN_F8_NATIVE_V", "1");
+        test_set_env("GGML_ROCM_FATTN_F8_REFERENCE", nullptr);
+    }
+};
+
+// D098 G3a: native FP8 KQ with V on the f16 reference leg, strict 5e-4.
+struct test_flash_attn_ext_f8_native_kq : public test_flash_attn_ext {
+    test_flash_attn_ext_f8_native_kq(int64_t hsk, int64_t hsv, int64_t nh,
+            std::array<int64_t, 2> nr23, int64_t kv, int64_t nb, bool mask)
+        : test_flash_attn_ext(hsk, hsv, nh, nr23, kv, nb, mask, false, 0, 0,
+              GGML_PREC_F32, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3) {}
+
+    std::string vars() override {
+        return test_flash_attn_ext::vars() + ",native_kq=1";
+    }
+
+    void select_dispatch_env() override {
+        test_set_env("GGML_ROCM_FATTN_F8_NATIVE_KQ", "1");
+        test_set_env("GGML_ROCM_FATTN_F8_NATIVE_V", nullptr);
+        test_set_env("GGML_ROCM_FATTN_F8_REFERENCE", nullptr);
+    }
+};
+
+// D098 G2: the f16-leg reference route keeps the strict 5e-4 contract.
+struct test_flash_attn_ext_f8_reference : public test_flash_attn_ext {
+    test_flash_attn_ext_f8_reference(int64_t hsk, int64_t hsv, int64_t nh,
+            std::array<int64_t, 2> nr23, int64_t kv, int64_t nb, bool mask)
+        : test_flash_attn_ext(hsk, hsv, nh, nr23, kv, nb, mask, false, 0, 0,
+              GGML_PREC_F32, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3) {}
+
+    std::string vars() override {
+        return test_flash_attn_ext::vars() + ",reference=1";
+    }
+
+    void select_dispatch_env() override {
+        test_set_env("GGML_ROCM_FATTN_F8_REFERENCE", "1");
+        test_set_env("GGML_ROCM_FATTN_F8_NATIVE_KQ", nullptr);
+        test_set_env("GGML_ROCM_FATTN_F8_NATIVE_V", nullptr);
+    }
+};
+
 struct llama_hparams {
     uint32_t n_vocab;
     uint32_t n_embd;
@@ -8753,11 +8838,17 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 512, 16, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
     // Qwen3.6 decode shape used by the RDNA4 grouped-head vector FA path.
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
-    // D098 G2: ROCm FP8 reference route, prefill and decode. Unsupported
-    // backends skip these through supports_op; HIP requires the explicit
-    // GGML_ROCM_FATTN_F8_REFERENCE gate.
-    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 512, 16, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3));
-    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3));
+    // D098 G2: ROCm FP8 reference route, prefill and decode. Each test picks
+    // its own dispatch env before supports_op (see select_dispatch_env).
+    test_cases.emplace_back(new test_flash_attn_ext_f8_reference(256, 256, 4, {6, 1}, 512, 16, true));
+    test_cases.emplace_back(new test_flash_attn_ext_f8_reference(256, 256, 4, {6, 1}, 512, 1, true));
+    // D098 G3a: native FP8 KQ, V on the f16 reference leg.
+    test_cases.emplace_back(new test_flash_attn_ext_f8_native_kq(256, 256, 4, {6, 1}, 512, 16, true));
+    test_cases.emplace_back(new test_flash_attn_ext_f8_native_kq(256, 256, 4, {6, 1}, 512, 1, true));
+    // D098 G3b: the E4M3 re-quantized P changes the reference contract; the
+    // fp8 x fp8 P*V route is compared with a documented 2x NMSE allowance.
+    test_cases.emplace_back(new test_flash_attn_ext_f8_native_v(256, 256, 4, {6, 1}, 512, 16, true));
+    test_cases.emplace_back(new test_flash_attn_ext_f8_native_v(256, 256, 4, {6, 1}, 512, 1, true));
 
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {   10, 5, 4, 3}));
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {30000, 1, 1, 1}));

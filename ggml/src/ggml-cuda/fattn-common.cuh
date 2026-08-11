@@ -139,6 +139,24 @@ static inline bool ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(
 #endif
 }
 
+// D098 G3b: additionally run the P*V phase on gfx12 FP8 WMMA. Requires the
+// native KQ gate and the same Qwen-shape ownership as G3a; the K/V alias
+// rejection is inherited from the KQ policy.
+static inline bool ggml_cuda_flash_attn_ext_use_rdna4_f8_native_v(
+        const int device, const ggml_tensor * dst) {
+#if defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
+    if (!ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(device, dst)) {
+        return false;
+    }
+    const char * env = getenv("GGML_ROCM_FATTN_F8_NATIVE_V");
+    return env != nullptr && strcmp(env, "0") != 0;
+#else
+    GGML_UNUSED(device);
+    GGML_UNUSED(dst);
+    return false;
+#endif
+}
+
 static inline ggml_cuda_flash_attn_ext_chunked_extra_data
 ggml_cuda_flash_attn_ext_get_chunked_extra_data(const ggml_tensor * dst) {
     GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);

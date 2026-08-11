@@ -3,8 +3,8 @@
 Date: 2026-08-11
 
 Status: active on `master`. Plan locked; G1 device conversion, G2 reference
-FlashAttention and G3a native FP8 KQ rocWMMA are correctness-complete. G3b
-(native FP8 V phase) and G4/G5 gates are next. No ROCm FP8 performance claim
+FlashAttention, G3a native FP8 KQ rocWMMA and G3b native FP8 V are
+correctness-complete. G4/G5 gates are next. No ROCm FP8 performance claim
 exists yet.
 
 ## Objective
@@ -146,12 +146,29 @@ by the production Qwen shape (D=256, GQA=6, K/V F8, no K/V alias).
   P now uses a dedicated f16 B-fragment while only the Q*K^T phase consumes
   `float8_t`.
 
-### G3b: native FP8 V phase
+### G3b: native FP8 V phase (landed)
 
-Extend the gfx12 body to the P*V phase with FP8 V (raw cache read, no f16
-conversion) and fp32 accumulation; P must be re-quantized to E4M3 for the
-`fp8 x fp8` MMA. Re-verify the softmax/output contracts, the 32 KiB shared
-memory fence and the VGPR/SGPR/occupancy record for the full kernel.
+Extend the gfx12 body to the P*V phase: V is consumed raw from the F8 KV
+cache, P is re-quantized to E4M3 and the MMA runs `fp8 x fp8 -> fp32` with
+fp32 VKQ accumulators. Softmax values fall below the E4M3 subnormal floor
+(`2^-9`), so P is pre-scaled by 128 into the normal range and the VKQ merge
+compensates; this keeps the P error at the format's `2^-4` instead of the
+subnormal rounding.
+
+- Gate: `GGML_ROCM_FATTN_F8_NATIVE_V=1` (requires the native KQ gate).
+- The E4M3 P re-quantization is a new precision contract: the focused
+  `FLASH_ATTN_EXT` comparisons run with a documented `1e-3` NMSE allowance
+  (2x the strict `5e-4` of the f16-leg paths). Measured error is `~7e-4`.
+- Correctness: masked prefill `KV=512,N=16` and decode `KV=512,N=1` pass
+  `2/2`; reference and native-KQ routes still pass `2/2` each with the
+  strict allowance (single `test-backend-ops` run now covers all six F8
+  cases, each test selects its own env gate before `supports_op`).
+- Shared memory stays at `29568 B` (`KQ_or_V 16896` + `P_f8 4224` +
+  `VKQ f16 8448`) under the 32 KiB RDNA4 fence; native kernels are
+  instantiated only for the D=256/16-column shape so non-Qwen forms never
+  pull the FP8 body.
+- Regression: G1 CPY `3/3`, G2 reference `2/2`, G3a native KQ `2/2`; without
+  any env gate all six F8 FA shapes stay `NOT SUPPORTED` (fail-closed).
 
 ### G3: native RDNA4 FP8 FlashAttention (full)
 

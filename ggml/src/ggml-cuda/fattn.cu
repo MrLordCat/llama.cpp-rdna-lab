@@ -450,21 +450,22 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             break;
 #if defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
         case GGML_TYPE_F8_E4M3: {
-            // D098 G2: fail closed unless the explicit reference route is
-            // requested. G2 converts K/V to f16 before the established WMMA
-            // body. G3a keeps V on that reference leg but computes Q*K with
-            // native gfx12 FP8 WMMA.
+            // D098 G2/G3: fail closed unless an explicit route is requested.
+            // G2 converts K/V to f16 before the established WMMA body. G3a
+            // computes Q*K with native gfx12 FP8 WMMA; G3b additionally runs
+            // the P*V phase on FP8.
             const bool reference_enabled = std::getenv("GGML_ROCM_FATTN_F8_REFERENCE") != nullptr;
             const bool native_kq_enabled = ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(device, dst);
+            const bool native_v_enabled  = ggml_cuda_flash_attn_ext_use_rdna4_f8_native_v(device, dst);
             if (std::getenv("GGML_TRACE_FATTN_PATH") != nullptr) {
                 GGML_LOG_INFO(
-                    "%s: D098 F8 cc=%d rdna4=%d reference=%d native_kq=%d K=[%lld,%lld,%lld,%lld] Q=[%lld,%lld,%lld,%lld]\n",
+                    "%s: D098 F8 cc=%d rdna4=%d reference=%d native_kq=%d native_v=%d K=[%lld,%lld,%lld,%lld] Q=[%lld,%lld,%lld,%lld]\n",
                     __func__, cc, GGML_CUDA_CC_IS_RDNA4(cc) ? 1 : 0,
-                    reference_enabled ? 1 : 0, native_kq_enabled ? 1 : 0,
+                    reference_enabled ? 1 : 0, native_kq_enabled ? 1 : 0, native_v_enabled ? 1 : 0,
                     (long long) K->ne[0], (long long) K->ne[1], (long long) K->ne[2], (long long) K->ne[3],
                     (long long) Q->ne[0], (long long) Q->ne[1], (long long) Q->ne[2], (long long) Q->ne[3]);
             }
-            if (!GGML_CUDA_CC_IS_RDNA4(cc) || (!reference_enabled && !native_kq_enabled)) {
+            if (!GGML_CUDA_CC_IS_RDNA4(cc) || (!reference_enabled && !native_kq_enabled && !native_v_enabled)) {
                 return BEST_FATTN_KERNEL_NONE;
             }
             break;
@@ -669,7 +670,8 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
             break;
         case BEST_FATTN_KERNEL_WMMA_F16:
             need_f16_K = !ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(device, dst);
-            need_f16_V = !ggml_cuda_flash_attn_ext_use_rdna4_q8_v_direct_wmma(device, dst);
+            need_f16_V = !ggml_cuda_flash_attn_ext_use_rdna4_q8_v_direct_wmma(device, dst) &&
+                         !ggml_cuda_flash_attn_ext_use_rdna4_f8_native_v(device, dst);
             break;
         case BEST_FATTN_KERNEL_MMA_F16:
             need_f16_K = true;
