@@ -187,6 +187,25 @@ adjacent runs in one session, quick tasks):
 | r2  | f8_e4m3, native KQ+V      | 1629.5 | 22.04 | -8.0% |
 | r6  | f8_e4m3, native KQ+V (rep)| 1620.0 | 22.00 | -8.5% |
 
+Second session (V-phase optimization bisect, same lane and flags):
+
+| run | KV/FA path | prompt ptps | decode tps | vs f16 |
+|-----|------------|-------------|------------|--------|
+| r8  | f16 (fresh control)      | 1728.2 | 24.48 |  0.0% |
+| r9  | f8 KQ+V, P-in-softmax + f16 VKQ store | 1529.0 | 20.94 | -11.5% |
+| r10 | f8 KQ+V, P-in-softmax, fp32 VKQ store (kept) | 1635.5 | 22.11 | -5.4% |
+
+- Converting the fp32 VKQ accumulators to f16 before the LDS store costs
+  ~6.5% (r9 vs r10): the extra registers (f16 copies of the accumulators)
+  and conversion instructions hurt more than the halved LDS store traffic
+  helps. On this kernel registers are the scarce resource, not LDS.
+- Folding the P->E4M3 write into the softmax loop (dropping the separate
+  re-quantization pass and its barrier) is neutral-to-slightly-positive
+  (r10 1635.5 vs r2/r6 1629.5/1620.0) and is kept.
+- Remaining full-native gap to f16 on this lane: ~5.5% prefill, ~6-9%
+  decode. The bottleneck is the fp32 accumulation itself (register
+  pressure) plus the fp8 MMA operand conversion, not LDS bandwidth.
+
 - f16 is the fastest cache type on this lane; q8_0 sits ~0.5-1.5% below it.
 - The native FP8 KQ phase is at parity with q8_0 and within ~0.3% of f16
   (r4 vs r1/r5). All of the ~8% cost sits in the native FP8 V phase

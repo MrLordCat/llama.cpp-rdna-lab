@@ -150,8 +150,8 @@ static __global__ void flash_attn_ext_f16(
     // A single buffer for temporarily holding tiles of KQ and VKQ parts:
     constexpr int q8_v_tile_rows = 32;
     constexpr int mem_KQ = ncols*kqs_padded*kqar;
-    // With native FP8 V the VKQ accumulators are fp32 and the fp8 P matrix
-    // needs its own tile, so the VKQ-part store lives here in fp32 units.
+    // With native FP8 V the VKQ accumulators are fp32, so the VKQ-part store
+    // lives here in fp32 units (the P f8 tile is written in the softmax loop).
     constexpr int vkq_part_elems = VKQ_ratio*ncols*D_padded;
     constexpr int mem_VKQ_parts = native_f8_v ? vkq_part_elems*sizeof(float)/sizeof(half) : vkq_part_elems;
     constexpr int mem_V_q8 = q8_v_direct ? q8_v_tile_rows*D : 1;
@@ -332,7 +332,17 @@ static __global__ void flash_attn_ext_f16(
                         KQ_f_tmp[k0/warp_size] = 0.0f;
                     }
                     KQ_rowsum_add += KQ_f_tmp[k0/warp_size];
-                    KQ[j*(kqar*kqs_padded) + k] = KQ_f_tmp[k0/warp_size];
+                    if constexpr (native_f8_v) {
+                        // D098 G3b: write the E4M3 P directly (the fp8 x fp8
+                        // P*V MMA consumes P_f8; the f16 P tile is not needed
+                        // on this route). Pre-scale by 128 keeps softmax
+                        // values out of the E4M3 subnormal range; the VKQ
+                        // merge compensates.
+                        constexpr float p_f8_scale = 128.0f;
+                        P_f8[j*kqs_padded + k] = ggml_cuda_fp32_to_f8_e4m3(KQ_f_tmp[k0/warp_size]*p_f8_scale);
+                    } else {
+                        KQ[j*(kqar*kqs_padded) + k] = KQ_f_tmp[k0/warp_size];
+                    }
                 }
                 KQ_rowsum_add = warp_reduce_sum<warp_size>(KQ_rowsum_add);
 
@@ -393,26 +403,6 @@ static __global__ void flash_attn_ext_f16(
         }
 
         __syncthreads();
-
-        // D098 G3b: re-quantize the post-softmax P to E4M3 for the fp8 x fp8
-        // P*V MMA. P is read from the f16 KQ tile and written to P_f8. Raw
-        // softmax values fall below the E4M3 subnormal floor (2^-9); scaling
-        // by 128 keeps the working range normal, where the relative error is
-        // the format's 2^-4. The scale is compensated in the VKQ merge.
-        if constexpr (native_f8_v) {
-            constexpr float p_f8_scale = 128.0f;
-#pragma unroll
-            for (int j0 = 0; j0 < ncols; j0 += nwarps) {
-                const int j = j0 + threadIdx.y;
-#pragma unroll
-                for (int k0 = 0; k0 < FATTN_KQ_STRIDE; k0 += warp_size) {
-                    const int k = k0 + threadIdx.x;
-                    const half p = KQ[j*(kqar*kqs_padded) + k];
-                    P_f8[j*kqs_padded + k] = ggml_cuda_fp32_to_f8_e4m3(__half2float(p)*p_f8_scale);
-                }
-            }
-            __syncthreads();
-        }
 
         frag_b_v KQ_b[FATTN_KQ_STRIDE/(VKQ_ratio*16)][ncols/frag_n];
 #pragma unroll
