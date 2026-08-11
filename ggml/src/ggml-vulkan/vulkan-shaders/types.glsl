@@ -188,6 +188,70 @@ struct block_q8_0_packed16
 #define DATA_A_QUANT_LEGACY
 #endif
 
+#define QUANT_K_F8_E4M3 1
+
+struct block_f8_e4m3
+{
+    uint8_t v;
+};
+
+#if defined(DATA_A_F8_E4M3)
+#define QUANT_K QUANT_K_F8_E4M3
+#define QUANT_R 1
+#define A_TYPE block_f8_e4m3
+#endif
+
+// FP8 E4M3 helpers (1 sign, 4 exp bias 7, 3 mantissa; no inf)
+float fp8_e4m3_to_f32(uint8_t v) {
+    const uint sign = uint(v) >> 7u;
+    const uint exp  = (uint(v) >> 3u) & 0xFu;
+    const uint man  = uint(v) & 0x7u;
+    float f;
+    if (exp == 0u) {
+        f = float(man) / 512.0; // subnormal
+    } else if (exp == 15u) {
+        f = 0.0; // reserved -> NaN
+    } else {
+        f = ldexp(1.0 + float(man) / 8.0, int(exp) - 7);
+    }
+    return sign != 0u ? -f : f;
+}
+
+uint8_t f32_to_fp8_e4m3(float f) {
+    uint sign = f < 0.0 ? 0x80u : 0u;
+    f = abs(f);
+    // Keep exponent 15 reserved, matching the CPU conversion fallback.
+    if (f > 240.0) {
+        f = 240.0;
+    }
+    const uint bits = floatBitsToUint(f);
+    const uint exp32 = (bits >> 23u) & 0xFFu;
+    if (exp32 < 121u) {
+        // Subnormal zone [0, 2^-6): value = man * 2^-9 = man / 512.
+        uint man = uint(round(f * 512.0));
+        man = min(man, 7u);
+        return uint8_t(sign | man);
+    }
+    // D096-L fast encoder: bit-level E4M3 conversion. exp_field = f32 exp
+    // (bias 127) - 127 + 7 = exp32 - 120; mantissa = round-half-up of the
+    // f32 mantissa to 3 bits (half-ulp add + shift), carry folded into the
+    // exponent. Replaces the frexp/ldexp/divide version (FDiv is ~4-8x the
+    // cost of the bit ops; this runs per Q element and per P element per
+    // KV tile). Values >= 240 clamp to max normal (exp 14, man 7 = 240),
+    // matching the previous behaviour.
+    uint exp_field = exp32 - 120u;
+    if (exp_field > 14u) {
+        return uint8_t(sign | (14u << 3u) | 7u);
+    }
+    uint man = ((bits & 0x7FFFFFu) + 0x80000u) >> 20u;
+    exp_field += man >> 3u;
+    man &= 7u;
+    if (exp_field > 14u) {
+        return uint8_t(sign | (14u << 3u) | 7u);
+    }
+    return uint8_t(sign | (exp_field << 3u) | man);
+}
+
 #define QUANT_K_Q1_0 128
 #define QUANT_R_Q1_0 1
 

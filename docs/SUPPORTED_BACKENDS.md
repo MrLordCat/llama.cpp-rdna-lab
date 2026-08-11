@@ -36,3 +36,20 @@ When importing upstream changes:
 3. do not restore deleted backend directories or CMake options;
 4. update this document when the supported set changes intentionally;
 5. build at least CPU and the affected GPU backend before committing.
+
+## Local fp8 E4M3 support
+
+This fork carries a local fp8 implementation layered on the supported
+backends. See `FP8_ATTENTION.md` for the full description; the essentials:
+
+- **KV cache type `f8_e4m3`** (`--cache-type-k f8_e4m3 --cache-type-v f8_e4m3`)
+  with a bit-level Vulkan encoder (`types.glsl` `f32_to_fp8_e4m3`).
+- **Native fp8 attention paths** P2–P5 (Vulkan coopmat), selected by env
+  (`GGML_VK_FA_F8_P5` is the default for Vulkan in this fork; the kernel
+  ignores it for non-f8 KV). Plain f16-preconvert remains the fallback.
+- **Hybrid KV cache**: `LLAMA_VK_MTP_KV_LAST_F16=N` keeps the last N KV
+  layers in f16 under MTP + f8 KV. Default N=8 is set automatically by
+  `common.cpp` when MTP and f8 KV are requested without an explicit env.
+- P5/hybrid are local performance work; when importing upstream Vulkan
+  changes, keep the `GGML_VK_FA_F8_*`/`LLAMA_VK_MTP_KV_LAST_F16` gates and
+  the `f32_to_fp8_e4m3` encoder intact (fail-closed paths).

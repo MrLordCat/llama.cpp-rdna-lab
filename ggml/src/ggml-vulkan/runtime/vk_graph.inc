@@ -105,8 +105,6 @@ static void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_contex
         // Resize buffer
         if (ctx->prealloc_x != nullptr) {
             ggml_vk_destroy_buffer(ctx->prealloc_x);
-    ggml_vk_destroy_buffer(ctx->prealloc_fa_k16);
-    ggml_vk_destroy_buffer(ctx->prealloc_fa_v16);
         }
         ctx->prealloc_x = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_x);
     }
@@ -140,6 +138,27 @@ static void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_contex
             ggml_vk_destroy_buffer(ctx->prealloc_fa_v16);
         }
         ctx->prealloc_fa_v16 = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_fa_v16);
+    }
+    if (ctx->prealloc_fa_mask16 == nullptr || (ctx->prealloc_size_fa_mask16 > 0 && ctx->prealloc_fa_mask16->size < ctx->prealloc_size_fa_mask16)) {
+        VK_LOG_MEMORY("ggml_vk_preallocate_buffers(fa_mask16_size: " << ctx->prealloc_size_fa_mask16 << ")");
+        if (ctx->prealloc_fa_mask16 != nullptr) {
+            ggml_vk_destroy_buffer(ctx->prealloc_fa_mask16);
+        }
+        ctx->prealloc_fa_mask16 = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_fa_mask16);
+    }
+    if (ctx->prealloc_fa_q8 == nullptr || (ctx->prealloc_size_fa_q8 > 0 && ctx->prealloc_fa_q8->size < ctx->prealloc_size_fa_q8)) {
+        VK_LOG_MEMORY("ggml_vk_preallocate_buffers(fa_q8_size: " << ctx->prealloc_size_fa_q8 << ")");
+        if (ctx->prealloc_fa_q8 != nullptr) {
+            ggml_vk_destroy_buffer(ctx->prealloc_fa_q8);
+        }
+        ctx->prealloc_fa_q8 = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_fa_q8);
+    }
+    if (ctx->prealloc_fa_qscale == nullptr || (ctx->prealloc_size_fa_qscale > 0 && ctx->prealloc_fa_qscale->size < ctx->prealloc_size_fa_qscale)) {
+        VK_LOG_MEMORY("ggml_vk_preallocate_buffers(fa_qscale_size: " << ctx->prealloc_size_fa_qscale << ")");
+        if (ctx->prealloc_fa_qscale != nullptr) {
+            ggml_vk_destroy_buffer(ctx->prealloc_fa_qscale);
+        }
+        ctx->prealloc_fa_qscale = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_fa_qscale);
     }
     if (ctx->prealloc_add_rms_partials == nullptr || (ctx->prealloc_size_add_rms_partials > 0 && ctx->prealloc_add_rms_partials->size < ctx->prealloc_size_add_rms_partials)) {
         VK_LOG_MEMORY("ggml_vk_preallocate_buffers(add_partials_size: " << ctx->prealloc_add_rms_partials << ")");
@@ -731,8 +750,13 @@ static void ggml_vk_graph_cleanup(ggml_backend_vk_context * ctx) {
     ctx->unsynced_nodes_written.clear();
     ctx->unsynced_nodes_read.clear();
     ctx->prealloc_x_need_sync = ctx->prealloc_y_need_sync = ctx->prealloc_split_k_need_sync = false;
+    ctx->prealloc_fa_k16_need_sync = ctx->prealloc_fa_v16_need_sync = ctx->prealloc_fa_mask16_need_sync = false;
+    ctx->prealloc_fa_q8_need_sync = ctx->prealloc_fa_qscale_need_sync = false;
     ctx->prealloc_size_fa_k16 = 0;
     ctx->prealloc_size_fa_v16 = 0;
+    ctx->prealloc_size_fa_mask16 = 0;
+    ctx->prealloc_size_fa_q8 = 0;
+    ctx->prealloc_size_fa_qscale = 0;
 
     ggml_vk_command_pool_cleanup(ctx->device, ctx->compute_cmd_pool);
     if (ctx->device->async_use_transfer_queue) {
@@ -775,6 +799,9 @@ static void ggml_vk_cleanup(ggml_backend_vk_context * ctx) {
     ggml_vk_destroy_buffer(ctx->prealloc_x);
     ggml_vk_destroy_buffer(ctx->prealloc_fa_k16);
     ggml_vk_destroy_buffer(ctx->prealloc_fa_v16);
+    ggml_vk_destroy_buffer(ctx->prealloc_fa_mask16);
+    ggml_vk_destroy_buffer(ctx->prealloc_fa_q8);
+    ggml_vk_destroy_buffer(ctx->prealloc_fa_qscale);
     ggml_vk_destroy_buffer(ctx->prealloc_y);
     ggml_vk_destroy_buffer(ctx->prealloc_split_k);
     ggml_vk_destroy_buffer(ctx->prealloc_add_rms_partials);

@@ -7,6 +7,21 @@ if (POLICY CMP0147)
 endif()
 
 find_package(Vulkan COMPONENTS glslc REQUIRED)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+# FindVulkan does not expose spirv-as as a component (only glslc/glslangValidator),
+# so locate it next to glslc in the Vulkan SDK.
+if (NOT Vulkan_SPIRV_AS_EXECUTABLE)
+    find_program(Vulkan_SPIRV_AS_EXECUTABLE NAMES spirv-as HINTS "${Vulkan_GLSLC_EXECUTABLE}/..")
+endif()
+if (NOT Vulkan_SPIRV_AS_EXECUTABLE)
+    message(WARNING "spirv-as not found: fp8 FA kernel (fp8_fa_cm1.spvasm) will not be built")
+endif()
+find_program(Vulkan_SPIRV_DIS_EXECUTABLE NAMES spirv-dis HINTS "${Vulkan_GLSLC_EXECUTABLE}/..")
+find_program(Vulkan_SPIRV_VAL_EXECUTABLE NAMES spirv-val HINTS "${Vulkan_GLSLC_EXECUTABLE}/..")
+if (NOT Vulkan_SPIRV_AS_EXECUTABLE OR NOT Vulkan_SPIRV_DIS_EXECUTABLE OR NOT Vulkan_SPIRV_VAL_EXECUTABLE)
+    message(FATAL_ERROR "D096 fp8 FA P2 requires spirv-as, spirv-dis and spirv-val")
+endif()
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     # Parallel build object files
@@ -203,10 +218,18 @@ if (Vulkan_FOUND)
               CONFIGURE_DEPENDS "${_ggml_vk_input_dir}/*.cpp"
                                 "${_ggml_vk_input_dir}/*.h"
                                 "${_ggml_vk_input_dir}/*.glsl")
+    list(APPEND _ggml_vk_shaders_gen_sources
+         "${CMAKE_SOURCE_DIR}/scripts/research/d096_fp8_fa_spirv_audit.py"
+         "${CMAKE_SOURCE_DIR}/scripts/research/d096_fp8_fa_spirv_transform.py")
 
     add_custom_command(
         OUTPUT ${_ggml_vk_header}
         COMMAND ${_ggml_vk_genshaders_cmd}
+            --python     ${Python3_EXECUTABLE}
+            --spirv-as   ${Vulkan_SPIRV_AS_EXECUTABLE}
+            --spirv-dis  ${Vulkan_SPIRV_DIS_EXECUTABLE}
+            --spirv-val  ${Vulkan_SPIRV_VAL_EXECUTABLE}
+            --fp8-fa-transform ${CMAKE_SOURCE_DIR}/scripts/research/d096_fp8_fa_spirv_transform.py
             --output-dir ${_ggml_vk_output_dir}
             --target-hpp ${_ggml_vk_header}
         DEPENDS ${_ggml_vk_shaders_gen_sources}
@@ -224,6 +247,42 @@ if (Vulkan_FOUND)
             DEPFILE ${_ggml_vk_target_cpp}.d
             COMMAND ${_ggml_vk_genshaders_cmd}
                 --glslc      ${Vulkan_GLSLC_EXECUTABLE}
+                --python     ${Python3_EXECUTABLE}
+                --spirv-as   ${Vulkan_SPIRV_AS_EXECUTABLE}
+                --spirv-dis  ${Vulkan_SPIRV_DIS_EXECUTABLE}
+                --spirv-val  ${Vulkan_SPIRV_VAL_EXECUTABLE}
+                --fp8-fa-transform ${CMAKE_SOURCE_DIR}/scripts/research/d096_fp8_fa_spirv_transform.py
+                --source     ${file_full}
+                --output-dir ${_ggml_vk_output_dir}
+                --target-hpp ${_ggml_vk_header}
+                --target-cpp ${_ggml_vk_target_cpp}
+            DEPENDS ${file_full}
+                    ${_ggml_vk_shaders_gen_sources}
+                    vulkan-shaders-gen
+            COMMENT "Generate vulkan shaders for ${file}"
+        )
+        target_sources(ggml-vulkan PRIVATE ${_ggml_vk_target_cpp})
+    endforeach()
+
+    # Hand-written SPIR-V assembly shaders (fp8 FA kernel): assembled with spirv-as
+    file(GLOB _ggml_vk_spvasm_files CONFIGURE_DEPENDS "${_ggml_vk_input_dir}/*.spvasm")
+
+    foreach (file_full ${_ggml_vk_spvasm_files})
+        if (NOT Vulkan_SPIRV_AS_EXECUTABLE)
+            break()
+        endif()
+        get_filename_component(file ${file_full} NAME)
+        set (_ggml_vk_target_cpp "${CMAKE_CURRENT_BINARY_DIR}/${file}.cpp")
+
+        add_custom_command(
+            OUTPUT  ${_ggml_vk_target_cpp}
+            COMMAND ${_ggml_vk_genshaders_cmd}
+                --glslc      ${Vulkan_GLSLC_EXECUTABLE}
+                --spirv-as   ${Vulkan_SPIRV_AS_EXECUTABLE}
+                --python     ${Python3_EXECUTABLE}
+                --spirv-dis  ${Vulkan_SPIRV_DIS_EXECUTABLE}
+                --spirv-val  ${Vulkan_SPIRV_VAL_EXECUTABLE}
+                --fp8-fa-transform ${CMAKE_SOURCE_DIR}/scripts/research/d096_fp8_fa_spirv_transform.py
                 --source     ${file_full}
                 --output-dir ${_ggml_vk_output_dir}
                 --target-hpp ${_ggml_vk_header}

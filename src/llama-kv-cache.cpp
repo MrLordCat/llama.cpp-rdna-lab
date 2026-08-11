@@ -152,6 +152,27 @@ llama_kv_cache::llama_kv_cache(
         }
     }
 
+    // D096-J/P: MTP draft reads only the last transformer layer's KV. With
+    // quantized KV (f8_e4m3/q8_0) draft acceptance collapses (82% f16 vs
+    // 27-56% quantized); LLAMA_VK_MTP_KV_LAST_F16=N keeps the last N KV
+    // layers' K/V in f16 while the rest of the cache stays quantized.
+    // D096-P (2026-08-10): extended from f8_e4m3-only to q8_0 as well —
+    // q8+MTP regressed to 31% acceptance after the D094 pre-dequant work
+    // and the hybrid cache restores draft quality for both quantized types.
+    const bool kv_q8 = type_k == GGML_TYPE_Q8_0 && type_v == GGML_TYPE_Q8_0;
+    const bool kv_f8 = type_k == GGML_TYPE_F8_E4M3 && type_v == GGML_TYPE_F8_E4M3;
+    int kv_last_layer_f16_n = 0;
+    if (getenv("LLAMA_VK_MTP_KV_LAST_F16") != nullptr) {
+        if (kv_q8 || kv_f8) {
+            kv_last_layer_f16_n = std::max(0, atoi(getenv("LLAMA_VK_MTP_KV_LAST_F16")));
+        }
+    }
+    const bool kv_last_layer_f16 = kv_last_layer_f16_n > 0;
+    int kv_q8_bridge_n = 0;
+    if (kv_f8 && kv_last_layer_f16 && getenv("LLAMA_VK_MTP_KV_Q8_BEFORE_F16") != nullptr) {
+        kv_q8_bridge_n = std::max(0, atoi(getenv("LLAMA_VK_MTP_KV_Q8_BEFORE_F16")));
+    }
+
     const bool qwen35_like_vk_130k =
         offload &&
         vk_host_kv_layers < 0 &&
@@ -266,6 +287,26 @@ llama_kv_cache::llama_kv_cache(
 
     const bool is_mla = hparams.is_mla();
 
+    // D096-J: last KV layers that actually exist in this cache (filter-aware).
+    // The MTP draft reads the hidden state that depends on them, so keeping
+    // the last N in f16 gives the draft head full-precision attention context.
+    std::vector<uint32_t> kv_layers;
+    for (uint32_t il = 0; il < hparams.n_layer; il++) {
+        if (hparams.has_kv(il) && (!filter || filter(il))) {
+            kv_layers.push_back(il);
+        }
+    }
+    const uint32_t kv_f16_start = kv_layers.size() > (uint32_t) kv_last_layer_f16_n
+        ? kv_layers[kv_layers.size() - (uint32_t) kv_last_layer_f16_n]
+        : (kv_layers.empty() ? 0 : kv_layers.front());
+    const uint32_t kv_quantized_count = kv_layers.size() > (uint32_t) kv_last_layer_f16_n
+        ? (uint32_t) kv_layers.size() - (uint32_t) kv_last_layer_f16_n
+        : 0;
+    kv_q8_bridge_n = std::min(kv_q8_bridge_n, (int) kv_quantized_count);
+    const uint32_t kv_q8_bridge_start = kv_q8_bridge_n > 0
+        ? kv_layers[kv_quantized_count - (uint32_t) kv_q8_bridge_n]
+        : kv_f16_start;
+
     for (uint32_t il = 0; il < hparams.n_layer; il++) {
         if (!hparams.has_kv(il)) {
             LLAMA_LOG_DEBUG("%s: layer %3d: does not have KV cache\n", __func__, il);
@@ -356,8 +397,23 @@ llama_kv_cache::llama_kv_cache(
             throw std::runtime_error("failed to create ggml context for kv cache");
         }
 
-        ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx_k, type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
-        ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx_v, type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
+        // D096-J: MTP draft reads KV of the LAST transformer layer only
+        // (nextn_predict_layers). Quantized KV there collapses draft acceptance
+        // (82% f16 vs 27-56% q8/f8). Opt-in: keep the last layer's KV in f16 so
+        // the MTP head sees full-precision attention context while the rest of
+        // the cache stays f8 (saves ~1/16 of the f8 memory win, ~48 MiB here).
+        ggml_type type_k_il = type_k;
+        ggml_type type_v_il = type_v;
+        if (kv_q8_bridge_n > 0 && il >= kv_q8_bridge_start && il < kv_f16_start) {
+            type_k_il = GGML_TYPE_Q8_0;
+            type_v_il = GGML_TYPE_Q8_0;
+        } else if (kv_last_layer_f16 && il >= kv_f16_start) {
+            type_k_il = GGML_TYPE_F16;
+            type_v_il = GGML_TYPE_F16;
+        }
+
+        ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx_k, type_k_il, n_embd_k_gqa, kv_size, n_stream) : nullptr;
+        ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx_v, type_v_il, n_embd_v_gqa, kv_size, n_stream) : nullptr;
 
         has_k && ggml_format_name(k, "cache_k_l%d", il);
         has_v && ggml_format_name(v, "cache_v_l%d", il);
@@ -423,11 +479,18 @@ llama_kv_cache::llama_kv_cache(
     {
         const size_t memory_size_k = size_k_bytes();
         const size_t memory_size_v = size_v_bytes();
+        const std::string q8_bridge_suffix = kv_q8_bridge_n > 0
+            ? ", previous " + std::to_string(kv_q8_bridge_n) + " layers q8_0"
+            : "";
+        const std::string hybrid_suffix = kv_last_layer_f16
+            ? " (last " + std::to_string(kv_last_layer_f16_n) + " layers f16" + q8_bridge_suffix + ")"
+            : "";
 
-        LLAMA_LOG_INFO("%s: size = %7.2f MiB (%6u cells, %3d layers, %2u/%u seqs), K (%s): %7.2f MiB, V (%s): %7.2f MiB\n", __func__,
+        LLAMA_LOG_INFO("%s: size = %7.2f MiB (%6u cells, %3d layers, %2u/%u seqs), K (%s): %7.2f MiB, V (%s): %7.2f MiB%s\n", __func__,
                 (float)(memory_size_k + memory_size_v) / (1024.0f * 1024.0f), kv_size, (int) layers.size(), n_seq_max, n_stream,
                 ggml_type_name(type_k), (float)memory_size_k / (1024.0f * 1024.0f),
-                ggml_type_name(type_v), (float)memory_size_v / (1024.0f * 1024.0f));
+                ggml_type_name(type_v), (float)memory_size_v / (1024.0f * 1024.0f),
+                hybrid_suffix.c_str());
     }
 
     const char * LLAMA_ATTN_ROT_DISABLE = getenv("LLAMA_ATTN_ROT_DISABLE");

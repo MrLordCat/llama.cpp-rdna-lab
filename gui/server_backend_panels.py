@@ -41,6 +41,12 @@ ROCM_Q4KM_LONG_CONTEXT_CHOICE = (
     "ROCm1,ROCm0 - Q4_K_M 131K+ split (27:37)", "ROCm1,ROCm0", "layer", "27,37"
 )
 ROCM_Q4KM_LONG_CONTEXT_MIN = 131072
+VULKAN_BALANCED_DUAL_CHOICE = (
+    "Vulkan1,Vulkan0 — layer split (recommended)", "Vulkan1,Vulkan0", "layer", "1,1"
+)
+VULKAN_DISPLAY_FIRST_CHOICE = (
+    "Vulkan0,Vulkan1 — layer split (display-first diagnostics)", "Vulkan0,Vulkan1", "layer", "1,1"
+)
 
 ROCM_DEVICE_CHOICES = [
     ("All GPUs — layer split (default order)", None,          "layer", None),
@@ -55,8 +61,8 @@ VULKAN_DEVICE_CHOICES = [
     ("All GPUs — layer split (default order)",        None,              "layer", None),
     ("Vulkan0 only — diagnostics",                    "Vulkan0",         "none",  None),
     ("Vulkan1 only — diagnostics",                    "Vulkan1",         "none",  None),
-    ("Vulkan1,Vulkan0 — layer split (reverse order)", "Vulkan1,Vulkan0", "layer", "1,1"),
-    ("Vulkan0,Vulkan1 — layer split (MTP recommended)", "Vulkan0,Vulkan1", "layer", "1,1"),
+    VULKAN_BALANCED_DUAL_CHOICE,
+    VULKAN_DISPLAY_FIRST_CHOICE,
 ]
 
 
@@ -219,13 +225,15 @@ class _VulkanPanel(QWidget):
         self.device_combo = QComboBox()
         for choice in self.DEVICE_CHOICES:
             self.device_combo.addItem(choice[0])
-        self.device_combo.setCurrentIndex(4)
+        self.device_combo.setCurrentIndex(self.DEVICE_CHOICES.index(VULKAN_BALANCED_DUAL_CHOICE))
         self.device_combo.setToolTip(
             "Which GPUs the server uses.\n"
-            "For MTP runs, Vulkan0,Vulkan1 currently preserves prompt throughput\n"
-            "while output tensors remain on Vulkan1. The reverse order is kept\n"
-            "for explicit A/B tests. KV stays with its split model layers."
+            "Vulkan1,Vulkan0 is the measured Q4/FP8 order: GPU1 handles the\n"
+            "first stage while display-loaded GPU0 is second. Vulkan0,Vulkan1\n"
+            "is retained for explicit diagnostics. KV follows its split layers."
         )
+        self._user_overrode_device = False
+        self.device_combo.currentIndexChanged.connect(self._mark_device_overridden)
         dev_row.addWidget(self.device_combo, 1)
         layout.addLayout(dev_row)
 
@@ -254,6 +262,8 @@ class _VulkanPanel(QWidget):
         )
         layout.addWidget(self.large_matmul_check)
 
+        # D096-M: native fp8 attention (P5) is always enabled on Vulkan; the
+        # kernel ignores it for non-f8 KV types, so no separate checkbox needed.
         spec_row = QHBoxLayout()
         spec_row.addWidget(QLabel("Spec prefill window (tokens):"))
         self.spec_window_spin = QSpinBox()
@@ -289,6 +299,7 @@ class _VulkanPanel(QWidget):
             out["GGML_VK_AMD_LARGE_MATMUL_VARIANT"] = "wn32"
         else:
             out["GGML_VK_DISABLE_AMD_LARGE_MATMUL"] = "1"
+        out["GGML_VK_FA_F8_P5"] = "1"  # D096-M: native fp8 attention, default for f8 KV
         if self.output_gpu1_check.isChecked():
             out["LLAMA_OUTPUT_DEVICE"] = "Vulkan1"
         if self.kv_gpu1_check.isChecked():
@@ -300,28 +311,40 @@ class _VulkanPanel(QWidget):
     def to_settings(self) -> dict:
         return {
             "device_index": self.device_combo.currentIndex(),
+            "device_user_overridden": self._user_overrode_device,
             "output_gpu1": self.output_gpu1_check.isChecked(),
             "kv_gpu1": self.kv_gpu1_check.isChecked(),
             "large_matmul": self.large_matmul_check.isChecked(),
             "spec_window": self.spec_window_spin.value(),
             "spec_window_default_256": True,
-            "device_order_v2": True,
+            "device_order_v3": True,
         }
 
     def from_settings(self, data: dict) -> None:
-        idx = int(data.get("device_index", 4))
-        if idx == 3 and not data.get("device_order_v2", False):
-            idx = 4
+        idx = int(data.get("device_index", self.DEVICE_CHOICES.index(VULKAN_BALANCED_DUAL_CHOICE)))
+        # v2 labeled the display-first dual order as recommended. Move managed legacy dual
+        # selections to the measured GPU1-first default once; users can still
+        # select the display-first diagnostic profile afterwards.
+        if not data.get("device_order_v3", False) and idx in (3, 4):
+            idx = self.DEVICE_CHOICES.index(VULKAN_BALANCED_DUAL_CHOICE)
         if 0 <= idx < self.device_combo.count():
             self.device_combo.setCurrentIndex(idx)
+        self._user_overrode_device = bool(data.get("device_user_overridden", False))
         self.output_gpu1_check.setChecked(bool(data.get("output_gpu1", True)))
         self.kv_gpu1_check.setChecked(bool(data.get("kv_gpu1", False)))
         self.large_matmul_check.setChecked(bool(data.get("large_matmul", True)))
+        # fp8_p5 legacy setting is ignored: P5 is always on for Vulkan now
         spec_window = int(data.get("spec_window", 256))
         if spec_window == 8192 and not data.get("spec_window_default_256", False):
             spec_window = 256
         self.spec_window_spin.setValue(spec_window)
 
+    def _mark_device_overridden(self, *_args) -> None:
+        self._user_overrode_device = True
+
+    def apply_model_recommendation(self, _model_name: str, _ctx_size: int) -> None:
+        if not self._user_overrode_device:
+            self.device_combo.setCurrentIndex(self.DEVICE_CHOICES.index(VULKAN_BALANCED_DUAL_CHOICE))
 
 class _CpuPanel(QWidget):
     """CPU-only launch parameters."""
@@ -421,6 +444,8 @@ class BackendPanels(QTabWidget):
     def apply_model_recommendation(self, model_name: str, ctx_size: int) -> None:
         if self.current_backend() == BACKEND_ROCM:
             self.panels[BACKEND_ROCM].apply_model_recommendation(model_name, ctx_size)
+        elif self.current_backend() == BACKEND_VULKAN:
+            self.panels[BACKEND_VULKAN].apply_model_recommendation(model_name, ctx_size)
 
     # -- persistence -----------------------------------------------------------
     def to_settings(self) -> dict:

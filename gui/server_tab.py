@@ -295,13 +295,17 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_kv_type_combo = QComboBox()
         self.server_kv_type_combo.addItems([
             "f16", "bf16", "f32", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl",
+            "f8_e4m3",
         ])
         self.server_kv_type_combo.setCurrentText("f16")
         self.server_kv_type_combo.setToolTip(
             "KV cache quantization types:\n"
             "f16: default half-precision\n"
-            "bf16: bfloat16, recommended for Qwen3.5/3.6\n"
-            "q8_0/q5_x/q4_x/iq4_nl: quantized KV cache."
+            "bf16: bfloat16 reference/high-precision option\n"
+            "q8_0/q5_x/q4_x/iq4_nl: quantized KV cache.\n"
+            "f8_e4m3: native Vulkan P5 path; raw payload is ~6% smaller than q8_0\n"
+            "and 2x smaller than f16, but E4M3 is less accurate than block-scaled q8_0.\n"
+            "Requires Flash Attention; MTP automatically uses an f16 tail (N8, or N12 at 98K+)."
         )
 
         self.server_prompt_cache_ram_spinbox = QSpinBox()
@@ -336,6 +340,14 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         )
         self.server_conversation_cache_check.toggled.connect(self._on_conversation_cache_toggled)
 
+        self.server_kv_policy_label = QLabel("")
+        self.server_kv_policy_label.setWordWrap(True)
+        self.server_kv_policy_label.setVisible(False)
+        self.server_kv_policy_label.setToolTip(
+            "The hybrid KV tail is selected inside llama-server. Set\n"
+            "LLAMA_VK_MTP_KV_LAST_F16 explicitly before launching to override it."
+        )
+
         self._grid_pair(resources_grid, 0, 0, "GPU Layers:", self.server_gpu_layers_spinbox)
         self._grid_pair(resources_grid, 0, 1, "Context:", self.server_context_spinbox)
         self._grid_pair(resources_grid, 1, 0, "KV Cache:", self.server_kv_type_combo)
@@ -343,6 +355,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self._grid_pair(resources_grid, 2, 0, "Checkpoints:", self.server_ctx_checkpoints_spinbox)
         self._grid_pair(resources_grid, 2, 1, "Interval:", self.server_checkpoint_interval_spinbox)
         resources_grid.addWidget(self.server_conversation_cache_check, 3, 0, 1, 4)
+        resources_grid.addWidget(self.server_kv_policy_label, 4, 0, 1, 4)
         resources_grid.setColumnStretch(4, 1)
         resources_group.setLayout(resources_grid)
         res_spec_row.addWidget(resources_group, 1, Qt.AlignmentFlag.AlignTop)
@@ -359,6 +372,9 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_spec_type_combo = QComboBox()
         self.server_spec_type_combo.addItems(["None", "draft", "ngram-mod", "mtp"])
         self.server_spec_type_combo.currentTextChanged.connect(self.on_spec_type_changed)
+        self.server_spec_type_combo.currentTextChanged.connect(self._update_kv_policy_hint)
+        self.server_context_spinbox.valueChanged.connect(self._update_kv_policy_hint)
+        self.server_kv_type_combo.currentTextChanged.connect(self._update_kv_policy_hint)
         self._grid_pair(spec_type_grid, 0, 0, "Type:", self.server_spec_type_combo)
         spec_type_grid.setColumnStretch(2, 1)
         spec_layout.addLayout(spec_type_grid)
@@ -373,7 +389,8 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_spec_draft_n_max.setValue(self.MTP_DRAFT_N_MAX)
         self.server_spec_draft_n_max.setToolTip(
             "--spec-draft-n-max: max draft tokens per verify step. "
-            "2 is the safer default for long prompts; tune higher values manually."
+            "Q4_K_M uses n2 on Vulkan and n3 on the primary ROCm 49K profile. "
+            "Higher values require an adjacent acceptance/TPS A/B."
         )
         self._grid_pair(draft_grid, 0, 0, "Draft Max N:", self.server_spec_draft_n_max)
         draft_grid.setColumnStretch(2, 1)
@@ -452,6 +469,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_flash_attn_check = QCheckBox("Enable Flash Attention")
         self.server_flash_attn_check.setChecked(True)
         perf_layout.addWidget(self.server_flash_attn_check)
+        self.server_kv_type_combo.currentTextChanged.connect(self._on_kv_type_changed)
 
         self.server_no_warmup_check = QCheckBox("Skip warmup (--no-warmup)")
         self.server_no_warmup_check.setChecked(True)
@@ -789,6 +807,28 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         )
         has_no_mmap_in_extra = "--no-mmap" in extra_tokens
 
+        extra_flash_attn = None
+        for i, tok in enumerate(extra_tokens):
+            if tok.startswith("--flash-attn="):
+                extra_flash_attn = tok.split("=", 1)[1].strip().lower()
+            elif tok == "--flash-attn" and i + 1 < len(extra_tokens):
+                extra_flash_attn = extra_tokens[i + 1].strip().lower()
+
+        if kv_type == "f8_e4m3":
+            selected_backend = self.server_build_backend_combo.currentText().strip().lower()
+            if selected_backend == "auto":
+                is_vulkan_build = "vulkan" in build_dir.name.lower()
+            else:
+                is_vulkan_build = self.backend_panels.current_backend() == "vulkan"
+            if not is_vulkan_build:
+                problems.append("f8_e4m3 KV requires a Vulkan build")
+            flash_attn_effective = (
+                extra_flash_attn == "on" or
+                (extra_flash_attn is None and self.server_flash_attn_check.isChecked())
+            )
+            if not flash_attn_effective:
+                problems.append("f8_e4m3 KV requires Flash Attention enabled")
+
         def extra_has_any(*flags: str) -> bool:
             return any(tok in flags or any(tok.startswith(flag + "=") for flag in flags) for tok in extra_tokens)
 
@@ -846,6 +886,18 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
                     command.extend(["--parallel", "1"])
             elif spec_type == "ngram-mod":
                 command.extend(self._ngram_mod_args())
+
+        extra_spec_type = self._spec_type_from_tokens(extra_tokens)
+        mtp_active = (
+            (not has_spec_type_in_extra and spec_type == "mtp") or
+            extra_spec_type in {"mtp", "draft-mtp"}
+        )
+        if mtp_active and kv_type in {"q8_0", "f8_e4m3"}:
+            hybrid_n = 12 if kv_type == "f8_e4m3" and self.server_context_spinbox.value() >= 98304 else 8
+            notes.append(
+                f"{kv_type} + MTP auto policy keeps the last {hybrid_n} KV layers in f16 "
+                "unless LLAMA_VK_MTP_KV_LAST_F16 overrides it"
+            )
 
         if self.server_mode_combo.currentText() == "Embedding":
             command.append("--embeddings")
@@ -1104,12 +1156,43 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             if display and display != "Auto":
                 self.backend_panels.set_backend(self._backend_key_from_display(display))
         self._apply_backend_model_recommendation()
+        if (
+            hasattr(self, "server_spec_type_combo") and
+            self.server_spec_type_combo.currentText().strip().lower() == "mtp"
+        ):
+            self._apply_mtp_profile()
 
     def _apply_backend_model_recommendation(self, *_args) -> None:
         if not hasattr(self, "backend_panels") or not hasattr(self, "server_context_spinbox"):
             return
         model_name = Path(self.server_model_path.text().strip()).name
         self.backend_panels.apply_model_recommendation(model_name, self.server_context_spinbox.value())
+
+    def _on_kv_type_changed(self, kv_type: str) -> None:
+        # FP8 E4M3 KV is only supported with Flash Attention enabled.
+        if kv_type == "f8_e4m3":
+            self.server_flash_attn_check.setChecked(True)
+
+    def _update_kv_policy_hint(self, *_args) -> None:
+        if not hasattr(self, "server_kv_policy_label") or not hasattr(self, "server_spec_type_combo"):
+            return
+        kv_type = self.server_kv_type_combo.currentText().strip()
+        mtp_active = self.server_spec_type_combo.currentText().strip().lower() == "mtp"
+        if not mtp_active or kv_type not in {"q8_0", "f8_e4m3"}:
+            self.server_kv_policy_label.setVisible(False)
+            return
+
+        hybrid_n = 12 if kv_type == "f8_e4m3" and self.server_context_spinbox.value() >= 98304 else 8
+        if kv_type == "f8_e4m3" and hybrid_n == 12:
+            detail = "D097 long-context quality policy; 5376 MiB main KV at ctx=98K"
+        elif kv_type == "f8_e4m3":
+            detail = "native P5 prompt path with the measured short/49K hybrid tail"
+        else:
+            detail = "block-scaled q8_0 with the measured hybrid tail"
+        self.server_kv_policy_label.setText(
+            f"MTP KV policy: last {hybrid_n} layers use f16 — {detail}."
+        )
+        self.server_kv_policy_label.setVisible(True)
 
     def refresh_server_build_versions_for_backend(self, select_latest: bool):
         selected_backend_display = self.server_build_backend_combo.currentText().strip() if self.server_build_backend_combo.count() else "Auto"

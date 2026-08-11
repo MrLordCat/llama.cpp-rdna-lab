@@ -18,6 +18,10 @@ Current policy: major-topology is the primary research path. New active work sho
 
 For VS Code agent setup, fixed tasks, tool budgets, and benchmark workflow, start with `PERF_WORKSPACE.md`.
 
+FP8 KV / fp8-attention implementation reference: `docs/FP8_ATTENTION.md` (paths P1–P5,
+hybrid KV, bit-level encoder, defaults); version log: `D096_VERSIONS.md`; results:
+`RESULTS_LOG.md`; plan: `D096_ROADMAP.md`.
+
 ## Goal
 
 Find reproducible changes that can improve wall TPS in the active 130k long-context lane, not only synthetic microbenchmarks.

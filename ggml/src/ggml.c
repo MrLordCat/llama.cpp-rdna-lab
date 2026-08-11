@@ -491,6 +491,122 @@ void ggml_fp32_to_bf16_row_ref(const float * x, ggml_bf16_t * y, int64_t n) {
     }
 }
 
+// FP8 E4M3 backend-safe finite subset: exponent 15 is reserved, max finite is 240.
+static inline float ggml_fp8_e4m3_to_fp32(uint8_t v) {
+    const uint32_t sign = (v >> 7) & 1;
+    const uint32_t exp  = (v >> 3) & 0xF;
+    const uint32_t man  = v & 0x7;
+    float f;
+    if (exp == 0) {
+        f = (float) man * (1.0f / 512.0f); // subnormal: 2^-6 * man/8
+    } else if (exp == 15) {
+        f = man == 0 ? NAN : NAN; // reserved -> NaN
+    } else {
+        f = ldexpf(1.0f + (float) man / 8.0f, (int) exp - 7);
+    }
+    return sign ? -f : f;
+}
+
+static inline uint8_t ggml_fp32_to_fp8_e4m3(float f) {
+    if (isnan(f)) {
+        return 0x7F; // NaN pattern
+    }
+    const uint8_t sign = f < 0.0f ? 0x80 : 0;
+    f = fabsf(f);
+    // Reserve exponent 15 so CPU, GLSL fallback and native Vulkan paths agree.
+    if (f > 240.0f) {
+        f = 240.0f;
+    }
+    if (f < 1.0f / 512.0f) {
+        // subnormal: encode man = round(f * 512)
+        uint32_t man = (uint32_t) llroundf(f * 512.0f);
+        man = man > 7 ? 7 : man;
+        return (uint8_t)(sign | man);
+    }
+    // find exponent: value = (1 + man/8) * 2^(e-7)
+    int e = 0;
+    frexpf(f, &e); // f = norm * 2^e, norm in [0.5, 1)
+    e = e - 1; // adjust: (1+m/8) in [1, 1.875), exp = e-7 where 2^(e-7) = 2^(frexp_e-1)
+    // exp field = e + 7 where 2^(e) = 2^(frexp_e-1): exp_field = frexp_e - 1 + 7 = frexp_e + 6
+    uint32_t exp_field = (uint32_t)(e + 7);
+    if (exp_field > 14) {
+        exp_field = 14;
+    }
+    float scaled = f / ldexpf(1.0f, (int) exp_field - 7);
+    uint32_t man = (uint32_t) llroundf((scaled - 1.0f) * 8.0f);
+    man = man > 7 ? 7 : man;
+    return (uint8_t)(sign | (exp_field << 3) | man);
+}
+
+// FP8 E5M2: 1 sign, 5 exponent (bias 15), 2 mantissa; inf/nan at e=31
+static inline float ggml_fp8_e5m2_to_fp32(uint8_t v) {
+    const uint32_t sign = (v >> 7) & 1;
+    const uint32_t exp  = (v >> 2) & 0x1F;
+    const uint32_t man  = v & 0x3;
+    float f;
+    if (exp == 0) {
+        f = (float) man * (1.0f / 16384.0f); // subnormal: 2^-14 * man/4
+    } else if (exp == 31) {
+        f = man == 0 ? INFINITY : NAN;
+    } else {
+        f = ldexpf(1.0f + (float) man / 4.0f, (int) exp - 15);
+    }
+    return sign ? -f : f;
+}
+
+static inline uint8_t ggml_fp32_to_fp8_e5m2(float f) {
+    if (isnan(f)) {
+        return 0x7F; // NaN pattern
+    }
+    if (isinf(f)) {
+        return f < 0.0f ? 0xFF : 0x7F; // -inf / +inf (e=31, m=1)
+    }
+    const uint8_t sign = f < 0.0f ? 0x80 : 0;
+    f = fabsf(f);
+    if (f > 57344.0f) {
+        f = 57344.0f; // max finite E5M2
+    }
+    if (f < 1.0f / 16384.0f) {
+        uint32_t man = (uint32_t) llroundf(f * 16384.0f);
+        man = man > 3 ? 3 : man;
+        return (uint8_t)(sign | man);
+    }
+    int e = 0;
+    frexpf(f, &e);
+    uint32_t exp_field = (uint32_t)(e + 14);
+    if (exp_field > 30) {
+        exp_field = 30;
+    }
+    float scaled = f / ldexpf(1.0f, (int) exp_field - 15);
+    uint32_t man = (uint32_t) llroundf((scaled - 1.0f) * 4.0f);
+    man = man > 3 ? 3 : man;
+    return (uint8_t)(sign | (exp_field << 2) | man);
+}
+
+void ggml_fp8_e4m3_to_fp32_row(const uint8_t * x, float * y, int64_t n) {
+    for (int64_t i = 0; i < n; ++i) {
+        y[i] = ggml_fp8_e4m3_to_fp32(x[i]);
+    }
+}
+
+void ggml_fp32_to_fp8_e4m3_row(const float * x, uint8_t * y, int64_t n) {
+    for (int64_t i = 0; i < n; ++i) {
+        y[i] = ggml_fp32_to_fp8_e4m3(x[i]);
+    }
+}
+
+void ggml_fp8_e5m2_to_fp32_row(const uint8_t * x, float * y, int64_t n) {
+    for (int64_t i = 0; i < n; ++i) {
+        y[i] = ggml_fp8_e5m2_to_fp32(x[i]);
+    }
+}
+
+void ggml_fp32_to_fp8_e5m2_row(const float * x, uint8_t * y, int64_t n) {
+    for (int64_t i = 0; i < n; ++i) {
+        y[i] = ggml_fp32_to_fp8_e5m2(x[i]);
+    }
+}
+
 void ggml_fp32_to_bf16_row(const float * x, ggml_bf16_t * y, int64_t n) {
   int i = 0;
 #if defined(__AVX512BF16__)
@@ -882,6 +998,22 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .is_quantized             = false,
         .to_float                 = (ggml_to_float_t) ggml_bf16_to_fp32_row,
         .from_float_ref           = (ggml_from_float_t) ggml_fp32_to_bf16_row_ref,
+    },
+    [GGML_TYPE_F8_E4M3] = {
+        .type_name                = "f8_e4m3",
+        .blck_size                = 1,
+        .type_size                = 1,
+        .is_quantized             = false,
+        .to_float                 = (ggml_to_float_t) ggml_fp8_e4m3_to_fp32_row,
+        .from_float_ref           = (ggml_from_float_t) ggml_fp32_to_fp8_e4m3_row,
+    },
+    [GGML_TYPE_F8_E5M2] = {
+        .type_name                = "f8_e5m2",
+        .blck_size                = 1,
+        .type_size                = 1,
+        .is_quantized             = false,
+        .to_float                 = (ggml_to_float_t) ggml_fp8_e5m2_to_fp32_row,
+        .from_float_ref           = (ggml_from_float_t) ggml_fp32_to_fp8_e5m2_row,
     },
     [31] = { // GGML_TYPE_Q4_0_4_4
         .type_name                = "TYPE_Q4_0_4_4 REMOVED, use Q4_0 with runtime repacking",

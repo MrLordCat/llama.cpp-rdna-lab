@@ -123,7 +123,7 @@ materially change the numbers below.
 
 ## Current Performance
 
-Snapshot date: **2026-07-16**.
+Snapshot date: **2026-08-11**.
 
 The fixed headline tables below retain their original model-scoped contracts.
 Q3_K_S rows are historical/secondary evidence; the current primary Q4_K_M
@@ -131,6 +131,68 @@ rows are identified explicitly in the near-capacity and matched 49K sections.
 All use FlashAttention, one server slot, cold prompt processing, no
 prompt-cache reuse, and no prime pass. Compare `none` and `MTP` only inside the
 same model, backend, and lane.
+
+### Q4_K_M Vulkan q8 vs native FP8
+
+The current dual-Vulkan refresh uses `Vulkan1,Vulkan0`, layer split `1,1`,
+`b8192/ub1024`, 128 output tokens, and identical cold repo-snapshot prompts.
+MTP refresh rows use depth 2 and the historical hybrid last-8-f16 KV policy
+for both quantized formats. FP8 uses the native P5 FlashAttention route. D097
+supersedes only the 98K FP8 MTP default with last-12 f16; the refresh rows are
+retained as the matched diagnosis baseline.
+
+| Context | KV | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 12,288 | q8_0 | none | 7,889 / 128 | 1672.17 | **28.47** | 13.80 | - |
+| 12,288 | f8_e4m3 P5 | none | 7,889 / 128 | **1791.64** | 28.03 | **14.21** | - |
+| 12,288 | q8_0 + last8 f16 | MTP n2 | 7,889 / 128 | 1686.74 | 45.55 | 17.01 | 65.45% |
+| 12,288 | f8_e4m3 P5 + last8 f16 | MTP n2 | 7,889 / 128 | **1702.94** | **50.69** | **17.79** | **75.25%** |
+| 49,152 | q8_0 | none | 30,723 / 128 | 1519.42 | **27.21** | 5.1146 | - |
+| 49,152 | f8_e4m3 P5 | none | 30,723 / 128 | **1677.42** | 25.60 | **5.4627** | - |
+| 49,152 | q8_0 + last8 f16 | MTP n2 | 30,723 / 128 | 1656.10 | 43.59 | 5.9288 | 66.06% |
+| 49,152 | f8_e4m3 P5 + last8 f16 | MTP n2 | 30,723 / 128 | **1679.76** | **44.51** | **6.0176** | **67.59%** |
+| 98,304 | q8_0 | none | 57,530 / 128 | 1314.53 | **25.07** | 2.6090 | - |
+| 98,304 | f8_e4m3 P5 | none | 57,530 / 128 | **1480.18** | 21.98 | **2.8522** | - |
+| 98,304 | q8_0 + last8 f16 | MTP n2 | 57,530 / 128 | 1440.02 | **37.79** | 2.9407 | **68.87%** |
+| 98,304 | f8_e4m3 P5 + last8 f16 | MTP n2 | 57,530 / 128 | **1465.98** | 32.40 | **2.9494** | 51.61% |
+
+FP8 is the faster prompt-heavy profile: spec-none prompt throughput rises by
+7.1%/10.4%/12.6% at 12K/49K/98K and main KV allocation falls by 5.88%.
+At 12K and 49K MTP it also improves aggregate TPS. The historical 98K N=8 row
+exposes the precision regression fixed by D097. The current 98K FP8 MTP default
+uses last-12 f16: in a 256-token adjacent bracket it reached `1510.95` prompt
+tok/s, `41.79` decode tok/s, `5.7618` aggregate and `73.79%` acceptance versus
+the q8 control center `1422.71/41.96/5.4736`, `72.60%`. This restores acceptance
+and gives `+6.20%` prompt at the explicit cost of 5376 versus 4704 MiB main KV.
+Full methodology, memory rows, corrected historical KV labels, and artifacts are in
+[Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md).
+
+### Qwen3.6-35B-A3B Q4_K_M Vulkan q8 vs native FP8
+
+The local `Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` is 22.66 GB and therefore uses
+both 16 GB GPUs plus WDDM-managed residency. This first 35B checkpoint uses
+`Vulkan1,Vulkan0`, layer split `1,1`, `ctx=32768`, `b8192/ub8192`, one slot,
+FlashAttention, no warmup/reuse/prime, and two cold repo-snapshot tasks with
+21,381/21,362 prompt tokens and 128 output tokens each. Results are single-run
+diagnostic rows, not an r3 promotion.
+
+| KV | Mode | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance | Main KV MiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| q8_0 | none | 1962.97 | 61.45 | 9.73 | - | 340 |
+| **f8_e4m3 P5** | none | **2048.05** | **70.10** | **10.36** | - | **320** |
+| q8_0 + last8 f16 | MTP n2 | 317.80 | **71.04** | 1.85 | 81.25% | 580 + 64 draft |
+| **f8_e4m3 P5 + last8 f16** | MTP n2 | **325.17** | 67.36 | **1.89** | **86.02%** | **576 + 64 draft** |
+
+On the recommended `spec=none` profile, native FP8 improves prompt by 4.33%,
+decode by 14.08%, and aggregate TPS by 6.47% while reducing main KV by 5.88%.
+MTP n2 is not recommended for prompt-heavy 35B use on this machine: its target
+and draft contexts release inactive prompt-processing schedulers, and the
+`ub8192` working set triggers visible WDDM dedicated-VRAM eviction/reload on
+one GPU. Prompt throughput falls to roughly 320 tok/s even though generation
+acceptance remains high. The four observed memory drops across this benchmark
+match two scheduler lifecycles for each of the two tasks; they are not model
+reloads initiated by the benchmark harness. Artifacts use
+`d098-vk35b-32k-{q8,f8}-{none,mtp2}-r1`.
 
 ### Benchmark Launch Parameters
 
@@ -535,7 +597,8 @@ The reference builds are Windows x64 builds. A clean machine needs:
 - Visual Studio Build Tools 2022 with **Desktop development with C++**, the
   MSVC v143 toolset, and a Windows 10 or 11 SDK;
 - the current AMD display driver, including the Vulkan runtime;
-- LunarG Vulkan SDK with `glslc` for Vulkan builds;
+- full LunarG Vulkan SDK with `glslc`, `spirv-as`, `spirv-dis`, and
+  `spirv-val` for Vulkan/FP8 shader builds;
 - AMD ROCm/HIP SDK 7.1 for Windows for ROCm builds;
 - Strawberry Perl for Windows ROCm configuration and the reference MinGW
   Vulkan toolchain;
@@ -563,6 +626,9 @@ python -m pip install -r gui/requirements-gui.txt
 cmake --version
 ninja --version
 glslc --version
+spirv-as --version
+spirv-dis --version
+spirv-val --version
 ```
 
 The GUI's **Build & Setup** tab checks the configured dependencies and creates

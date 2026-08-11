@@ -93,6 +93,9 @@ layout (binding = 2) readonly buffer V_PACKED {vec4 v_data_packed[];} v_packed;
 #elif defined(A_TYPE_PACKED16)
 layout (binding = 1) readonly buffer K_PACKED16 {A_TYPE_PACKED16 k_data_packed16[];} k_packed;
 layout (binding = 2) readonly buffer V_PACKED16 {A_TYPE_PACKED16 v_data_packed16[];} v_packed;
+#elif defined(DATA_A_F8_E4M3)
+layout (binding = 1) readonly buffer K_PACKED {A_TYPE k_data_packed[];} k_packed;
+layout (binding = 2) readonly buffer V_PACKED {A_TYPE v_data_packed[];} v_packed;
 #endif
 
 #if defined(A_TYPE_PACKED32)
@@ -209,6 +212,23 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
 }
 #endif
 
+
+#if defined(DATA_A_F8_E4M3)
+#define BLOCK_BYTE_SIZE 1
+FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
+    if (binding_idx == BINDING_IDX_K) {
+        return FLOAT_TYPEV4(fp8_e4m3_to_f32(k_packed.k_data_packed[a_offset + ib    ].v),
+                            fp8_e4m3_to_f32(k_packed.k_data_packed[a_offset + ib + 1].v),
+                            fp8_e4m3_to_f32(k_packed.k_data_packed[a_offset + ib + 2].v),
+                            fp8_e4m3_to_f32(k_packed.k_data_packed[a_offset + ib + 3].v));
+    } else {
+        return FLOAT_TYPEV4(fp8_e4m3_to_f32(v_packed.v_data_packed[a_offset + ib    ].v),
+                            fp8_e4m3_to_f32(v_packed.v_data_packed[a_offset + ib + 1].v),
+                            fp8_e4m3_to_f32(v_packed.v_data_packed[a_offset + ib + 2].v),
+                            fp8_e4m3_to_f32(v_packed.v_data_packed[a_offset + ib + 3].v));
+    }
+}
+#endif
 
 #if defined(DATA_A_IQ4_NL)
 #define BLOCK_BYTE_SIZE 18

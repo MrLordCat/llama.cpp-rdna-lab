@@ -1,0 +1,86 @@
+; D096-A: minimal fp8 (E4M3) cooperative matrix probe kernel.
+; C[16x16 f32] = A[16x16 fp8] * B[16x16 fp8]  (row-major, stride 16 elements)
+;
+; Encoding (from spirv.core.grammar.json, SDK 1.4.350.0):
+;   OpCapability Float8EXT                    (4212, SPV_EXT_float8)
+;   OpCapability Float8CooperativeMatrixEXT  (4213, SPV_EXT_float8, needs Float8EXT + CooperativeMatrixKHR)
+;   %fp8 = OpTypeFloat 8 Float8E4M3EXT       (FPEncoding 4214)
+;   OpTypeCooperativeMatrixKHR %fp8 %uint_3 %uint_16 %uint_16 %uint_X
+; OpCooperativeMatrixLoadKHR/StoreKHR take (MemoryLayout=OpConstant int, Stride) - pattern taken
+; from the working flash_attn_f32_f16_f16_cm1.spv disassembly (SPIR-V 1.5, VulkanMemoryModel).
+
+               OpCapability Shader
+               OpCapability Float8EXT
+               OpCapability CooperativeMatrixKHR
+               OpCapability Float8CooperativeMatrixEXT
+               OpCapability StorageBuffer8BitAccess
+               OpCapability GroupNonUniform
+               OpCapability VulkanMemoryModel
+               OpExtension "SPV_EXT_float8"
+               OpExtension "SPV_KHR_cooperative_matrix"
+               OpMemoryModel Logical Vulkan
+               OpEntryPoint GLCompute %main "main" %a_buf %b_buf %c_buf
+               OpExecutionMode %main LocalSize 1 1 1
+               OpDecorate %a_buf DescriptorSet 0
+               OpDecorate %a_buf Binding 0
+               OpDecorate %b_buf DescriptorSet 0
+               OpDecorate %b_buf Binding 1
+               OpDecorate %c_buf DescriptorSet 0
+               OpDecorate %c_buf Binding 2
+               OpMemberDecorate %_struct_a 0 Offset 0
+               OpMemberDecorate %_struct_b 0 Offset 0
+               OpMemberDecorate %_struct_c 0 Offset 0
+               OpDecorate %_struct_a Block
+               OpDecorate %_struct_b Block
+               OpDecorate %_struct_c Block
+               OpDecorate %_arr_fp8_256 ArrayStride 1
+               OpDecorate %_arr_f32_256 ArrayStride 4
+
+       %void = OpTypeVoid
+          %fn = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+        %int = OpTypeInt 32 1
+        %f32 = OpTypeFloat 32
+        %fp8 = OpTypeFloat 8 Float8E4M3EXT
+     %uint_0 = OpConstant %uint 0
+     %uint_1 = OpConstant %uint 1
+     %uint_2 = OpConstant %uint 2
+     %uint_3 = OpConstant %uint 3
+    %uint_16 = OpConstant %uint 16
+   %uint_256 = OpConstant %uint 256
+      %int_0 = OpConstant %int 0
+      %int_1 = OpConstant %int 1
+
+; cooperative matrix types (Scope=Subgroup(3), 16x16, Use: A=0, B=1, Accum=2)
+       %cmat_a = OpTypeCooperativeMatrixKHR %fp8 %uint_3 %uint_16 %uint_16 %uint_0
+       %cmat_b = OpTypeCooperativeMatrixKHR %fp8 %uint_3 %uint_16 %uint_16 %uint_1
+       %cmat_c = OpTypeCooperativeMatrixKHR %f32 %uint_3 %uint_16 %uint_16 %uint_2
+
+; storage buffer types
+ %_arr_fp8_256 = OpTypeArray %fp8 %uint_256
+  %_struct_a = OpTypeStruct %_arr_fp8_256
+  %_struct_b = OpTypeStruct %_arr_fp8_256
+ %_arr_f32_256 = OpTypeArray %f32 %uint_256
+  %_struct_c = OpTypeStruct %_arr_f32_256
+    %_ptr_a = OpTypePointer StorageBuffer %_struct_a
+    %_ptr_b = OpTypePointer StorageBuffer %_struct_b
+    %_ptr_c = OpTypePointer StorageBuffer %_struct_c
+  %_ptr_fp8 = OpTypePointer StorageBuffer %fp8
+  %_ptr_f32 = OpTypePointer StorageBuffer %f32
+
+       %a_buf = OpVariable %_ptr_a StorageBuffer
+       %b_buf = OpVariable %_ptr_b StorageBuffer
+       %c_buf = OpVariable %_ptr_c StorageBuffer
+
+       %main = OpFunction %void None %fn
+      %entry = OpLabel
+   %a_ptr = OpAccessChain %_ptr_fp8 %a_buf %uint_0 %uint_0
+   %b_ptr = OpAccessChain %_ptr_fp8 %b_buf %uint_0 %uint_0
+   %c_ptr = OpAccessChain %_ptr_f32 %c_buf %uint_0 %uint_0
+       %a = OpCooperativeMatrixLoadKHR %cmat_a %a_ptr %int_0 %uint_16
+       %b = OpCooperativeMatrixLoadKHR %cmat_b %b_ptr %int_0 %uint_16
+      %c0 = OpCooperativeMatrixLoadKHR %cmat_c %c_ptr %int_0 %uint_16
+     %acc = OpCooperativeMatrixMulAddKHR %cmat_c %a %b %c0
+             OpCooperativeMatrixStoreKHR %c_ptr %acc %int_0 %uint_16
+             OpReturn
+             OpFunctionEnd

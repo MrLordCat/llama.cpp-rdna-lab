@@ -256,6 +256,13 @@ void quantize(uint dst_idx, uint src_idx)
 }
 #endif
 
+#if defined(DATA_A_F8_E4M3)
+void quantize(uint dst_idx, uint src_idx)
+{
+    data_q[dst_idx].v = f32_to_fp8_e4m3(data_s[src_idx]);
+}
+#endif
+
 #if defined(DATA_A_F32) || defined(DATA_A_F16)
 void quantize(uint dst_idx, uint src_idx)
 {

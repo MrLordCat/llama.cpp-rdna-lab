@@ -1,4 +1,46 @@
 // Runtime shader registry and device-specific pipeline specialization.
+
+// D096-C: kernel-side dump buffer for the fp8 native FA kernel. It must be
+// created OUTSIDE graph recording (in ggml_vk_load_shaders) with its own
+// DeviceMemory (not the VMA pool): kernel dump writes crash the device when
+// the buffer is allocated mid-graph (verified v23-v34; the probe, which
+// allocates before command recording, never crashes).
+static vk_buffer & ggml_vk_fa8_dbg_buf_ref() {
+    static vk_buffer buf;
+    return buf;
+}
+
+static void ggml_vk_fa8_dbg_buf_init(vk_device & device) {
+    vk_buffer & buf = ggml_vk_fa8_dbg_buf_ref();
+    if (buf) {
+        return;
+    }
+    vk_buffer_struct * bs = new vk_buffer_struct();
+    bs->size = 512 * 1024;
+    bs->device = device;
+    bs->buffer = device->device.createBuffer(
+        { vk::BufferCreateFlags(), bs->size,
+          vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
+          vk::SharingMode::eExclusive, 0, nullptr });
+    vk::MemoryRequirements mem_req = device->device.getBufferMemoryRequirements(bs->buffer);
+    uint32_t mt = UINT32_MAX;
+    vk::PhysicalDeviceMemoryProperties mprops = device->physical_device.getMemoryProperties();
+    for (uint32_t t = 0; t < mprops.memoryTypeCount; t++) {
+        if ((mem_req.memoryTypeBits & (1u << t)) &&
+            (mprops.memoryTypes[t].propertyFlags & vk::MemoryPropertyFlagBits::eDeviceLocal)) {
+            mt = t;
+            break;
+        }
+    }
+    if (mt == UINT32_MAX) {
+        GGML_ABORT("ggml_vulkan: fa_native dump: no device-local memory type");
+    }
+    bs->device_memory = device->device.allocateMemory({ mem_req.size, mt });
+    device->device.bindBufferMemory(bs->buffer, bs->device_memory, 0);
+    bs->memory_property_flags = vk::MemoryPropertyFlagBits::eDeviceLocal;
+    buf = vk_buffer(bs);
+}
+
 static void ggml_vk_load_shaders(vk_device& device) {
     VK_LOG_DEBUG("ggml_vk_load_shaders(" << device->name << ")");
 
@@ -424,6 +466,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
             CREATE_FA(GGML_TYPE_Q5_0,     q5_0, FA_SCALAR, _int8)
             CREATE_FA(GGML_TYPE_Q5_1,     q5_1, FA_SCALAR, _int8)
             CREATE_FA(GGML_TYPE_IQ4_NL, iq4_nl, FA_SCALAR, _int8)
+            CREATE_FA(GGML_TYPE_F8_E4M3, f8_e4m3, FA_SCALAR, )
         } else
 #endif
         {
@@ -433,6 +476,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
             CREATE_FA(GGML_TYPE_Q5_0,     q5_0, FA_SCALAR, )
             CREATE_FA(GGML_TYPE_Q5_1,     q5_1, FA_SCALAR, )
             CREATE_FA(GGML_TYPE_IQ4_NL, iq4_nl, FA_SCALAR, )
+            CREATE_FA(GGML_TYPE_F8_E4M3, f8_e4m3, FA_SCALAR, )
         }
     } else {
         CREATE_FA(GGML_TYPE_F32, f32, FA_SCALAR, _fp32)
@@ -446,6 +490,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
             CREATE_FA(GGML_TYPE_Q5_0,     q5_0, FA_SCALAR, _fp32_int8)
             CREATE_FA(GGML_TYPE_Q5_1,     q5_1, FA_SCALAR, _fp32_int8)
             CREATE_FA(GGML_TYPE_IQ4_NL, iq4_nl, FA_SCALAR, _fp32_int8)
+            CREATE_FA(GGML_TYPE_F8_E4M3, f8_e4m3, FA_SCALAR, _fp32)
         } else
 #endif
         {
@@ -455,6 +500,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
             CREATE_FA(GGML_TYPE_Q5_0,     q5_0, FA_SCALAR, _fp32)
             CREATE_FA(GGML_TYPE_Q5_1,     q5_1, FA_SCALAR, _fp32)
             CREATE_FA(GGML_TYPE_IQ4_NL, iq4_nl, FA_SCALAR, _fp32)
+            CREATE_FA(GGML_TYPE_F8_E4M3, f8_e4m3, FA_SCALAR, _fp32)
         }
     }
 #if defined(VK_KHR_cooperative_matrix) && defined(GGML_VULKAN_COOPMAT_GLSLC_SUPPORT)
@@ -467,6 +513,78 @@ static void ggml_vk_load_shaders(vk_device& device) {
         CREATE_FA(GGML_TYPE_Q5_0, q5_0, FA_COOPMAT1, _cm1)
         CREATE_FA(GGML_TYPE_Q5_1, q5_1, FA_COOPMAT1, _cm1)
         CREATE_FA(GGML_TYPE_IQ4_NL, iq4_nl, FA_COOPMAT1, _cm1)
+        CREATE_FA(GGML_TYPE_F8_E4M3, f8_e4m3, FA_COOPMAT1, _cm1)
+    }
+
+    // D096 P2: build-generated module whose S stage alone uses E4M3 WMMA.
+    if (device->coopmat1_fa_support) {
+        for (auto &fa : device->pipeline_flash_attn_f32_f16[GGML_TYPE_F8_E4M3]) {
+            if (fa.first.path == FA_F8_P2 && fa.first.f32acc) {
+                const uint32_t Br = fa.first.Br;
+                const uint32_t fa_sgs = fa.first.subgroup_size;
+                const bool fa_ds = fa.first.subgroup_size == 0;
+                ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_f8_p2", flash_attn_f32_f16_f8_p2_len, flash_attn_f32_f16_f8_p2_data, "main", 9, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), 1, true, !fa_ds, fa_ds ? 0 : fa_sgs);
+            }
+        }
+    }
+
+    // D096 P5: same fused-Q transform as P4, but V is read raw f8 from the
+    // source cache (fp8 P*V with f32 accumulator, no f16 preconvert pass).
+    if (device->coopmat1_fa_support) {
+        for (auto &fa : device->pipeline_flash_attn_f32_f16[GGML_TYPE_F8_E4M3]) {
+            if (fa.first.path == FA_F8_P5 && fa.first.f32acc) {
+                const uint32_t Br = fa.first.Br;
+                const uint32_t fa_sgs = fa.first.subgroup_size;
+                const bool fa_ds = fa.first.subgroup_size == 0;
+                ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_f8_p5", flash_attn_f32_f16_f8_p5_len, flash_attn_f32_f16_f8_p5_data, "main", 7, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), 1, true, !fa_ds, fa_ds ? 0 : fa_sgs);
+            }
+        }
+    }
+
+    // D096 P4: fused-Q transform with V read from a dense f16 preconvert buffer.
+    if (device->coopmat1_fa_support) {
+        for (auto &fa : device->pipeline_flash_attn_f32_f16[GGML_TYPE_F8_E4M3]) {
+            if (fa.first.path == FA_F8_P4 && fa.first.f32acc) {
+                const uint32_t Br = fa.first.Br;
+                const uint32_t fa_sgs = fa.first.subgroup_size;
+                const bool fa_ds = fa.first.subgroup_size == 0;
+                ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_f8_p4", flash_attn_f32_f16_f8_p4_len, flash_attn_f32_f16_f8_p4_data, "main", 7, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), 1, true, !fa_ds, fa_ds ? 0 : fa_sgs);
+            }
+        }
+    }
+
+    // D096 P3: P2's generated S-only transform with Q8 quantization fused into
+    // the canonical FA workgroup. It has only the seven canonical descriptors.
+    if (device->coopmat1_fa_support) {
+        for (auto &fa : device->pipeline_flash_attn_f32_f16[GGML_TYPE_F8_E4M3]) {
+            if (fa.first.path == FA_F8_P3 && fa.first.f32acc) {
+                const uint32_t Br = fa.first.Br;
+                const uint32_t fa_sgs = fa.first.subgroup_size;
+                const bool fa_ds = fa.first.subgroup_size == 0;
+                ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_f8_p3", flash_attn_f32_f16_f8_p3_len, flash_attn_f32_f16_f8_p3_data, "main", 7, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), 1, true, !fa_ds, fa_ds ? 0 : fa_sgs);
+            }
+        }
+    }
+
+    // D096-A2: fp8 native FA kernel - hand-written SPIR-V assembly.
+    // f32acc only (f32 accumulation hardcoded); single variant (no aligned
+    // split: the coopmat stride parameter handles arbitrary strides), so a
+    // dedicated registration is used instead of CREATE_FA.
+    if (device->coopmat1_fa_support) {
+        for (auto &fa : device->pipeline_flash_attn_f32_f16[GGML_TYPE_F8_E4M3]) {
+            if (fa.first.path == FA_F8_NATIVE && fa.first.f32acc) {
+                uint32_t Br = fa.first.Br;
+                uint32_t fa_sgs = fa.first.subgroup_size;
+                bool fa_ds = fa.first.subgroup_size == 0;
+                ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_f8_native", flash_attn_f32_f16_f8_native_len, flash_attn_f32_f16_f8_native_data, "main", 8, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), 1, true, !fa_ds, fa_ds ? 0 : fa_sgs);
+            }
+        }
+    }
+    // D096-C: the fp8 native FA dump buffer must be allocated OUTSIDE graph
+    // recording (kernel dump writes crash the device if the buffer is created
+    // mid-graph; verified v23-v34).
+    if (getenv("GGML_VK_FA_F8_DUMP")) {
+        ggml_vk_fa8_dbg_buf_init(device);
     }
 #endif
 #if defined(VK_NV_cooperative_matrix2) && defined(GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT)
@@ -1246,6 +1364,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q5_0], "dequant_q5_0", dequant_q5_0_len, dequant_q5_0_data, "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q5_1], "dequant_q5_1", dequant_q5_1_len, dequant_q5_1_data, "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q8_0], "dequant_q8_0", dequant_q8_0_len, dequant_q8_0_data, "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_F8_E4M3], "dequant_f8_e4m3", dequant_f8_e4m3_len, dequant_f8_e4m3_data, "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q2_K], "dequant_q2_k", dequant_q2_k_len, dequant_q2_k_data, "main", 2, 5 * sizeof(uint32_t), {256 * 64, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q3_K], "dequant_q3_k", dequant_q3_k_len, dequant_q3_k_data, "main", 2, 5 * sizeof(uint32_t), {256 * 64, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q4_K], "dequant_q4_k", dequant_q4_k_len, dequant_q4_k_data, "main", 2, 5 * sizeof(uint32_t), {256 * 32, 1, 1}, {}, 1);
@@ -1384,6 +1503,8 @@ static void ggml_vk_load_shaders(vk_device& device) {
     ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_Q5_1], "cpy_f32_q5_1", cpy_f32_q5_1_len, cpy_f32_q5_1_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_Q8_0], "cpy_f32_q8_0", cpy_f32_q8_0_len, cpy_f32_q8_0_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_IQ4_NL], "cpy_f32_iq4_nl", cpy_f32_iq4_nl_len, cpy_f32_iq4_nl_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_F8_E4M3], "cpy_f32_f8_e4m3", cpy_f32_f8_e4m3_len, cpy_f32_f8_e4m3_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_fa_q_f32_f8, "fa_q_f32_f8", fa_q_f32_f8_len, fa_q_f32_f8_data, "main", 3, sizeof(vk_fa_q_f32_f8_push_constants), {1, 1, 1}, {}, 1);
 
 #define SET_ROWS(itype) \
         ggml_vk_create_pipeline(device, device->pipeline_set_rows ## itype [GGML_TYPE_F32],  "set_rows_f32" #itype,  set_rows_f32 ## itype ## _len,  set_rows_f32 ## itype ## _data,  "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true); \
@@ -1395,7 +1516,8 @@ static void ggml_vk_load_shaders(vk_device& device) {
         ggml_vk_create_pipeline(device, device->pipeline_set_rows ## itype [GGML_TYPE_Q5_0], "set_rows_q5_0" #itype, set_rows_q5_0 ## itype ## _len, set_rows_q5_0 ## itype ## _data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true); \
         ggml_vk_create_pipeline(device, device->pipeline_set_rows ## itype [GGML_TYPE_Q5_1], "set_rows_q5_1" #itype, set_rows_q5_1 ## itype ## _len, set_rows_q5_1 ## itype ## _data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true); \
         ggml_vk_create_pipeline(device, device->pipeline_set_rows ## itype [GGML_TYPE_Q8_0], "set_rows_q8_0" #itype, set_rows_q8_0 ## itype ## _len, set_rows_q8_0 ## itype ## _data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true); \
-        ggml_vk_create_pipeline(device, device->pipeline_set_rows ## itype [GGML_TYPE_IQ4_NL], "set_rows_iq4_nl" #itype, set_rows_iq4_nl ## itype ## _len, set_rows_iq4_nl ## itype ## _data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true);
+        ggml_vk_create_pipeline(device, device->pipeline_set_rows ## itype [GGML_TYPE_IQ4_NL], "set_rows_iq4_nl" #itype, set_rows_iq4_nl ## itype ## _len, set_rows_iq4_nl ## itype ## _data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true); \
+        ggml_vk_create_pipeline(device, device->pipeline_set_rows ## itype [GGML_TYPE_F8_E4M3], "set_rows_f8_e4m3" #itype, set_rows_f8_e4m3 ## itype ## _len, set_rows_f8_e4m3 ## itype ## _data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true);
 
     SET_ROWS(_i32)
     SET_ROWS(_i64)

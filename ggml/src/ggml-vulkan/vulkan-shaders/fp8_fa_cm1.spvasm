@@ -1,0 +1,2618 @@
+; D096-C: fp8-native flash attention prefill kernel (coopmat1 geometry).
+; S-stage: K fp8 coopmat loads DIRECT from the KV cache (no f8->f16 dequant staging),
+;          Q converted to fp8 once with tile scale s_q (S = K_f8 * Q_f8^T * s_q).
+; V-stage: f16 coopmat (P f16 * V f16), V staged per-subgroup slices f8->f16 (LUT).
+; Semantics ported from flash_attn_cm1.comp (GLSL) + flash_attn_base.glsl.
+;
+; Push constants: vk_flash_attn_push_constants - 32 x uint32 (128 B).
+;   idx: 0 N, 1 KV, 2 ne1, 3 ne2, 4 ne3, 5 neq2, 6 neq3, 7 nek2, 8 nek3,
+;        9 nev2, 10 nev3, 11 nem1, 12 nem2, 13 nem3, 14 nb01, 15 nb02, 16 nb03,
+;        17 nb11, 18 nb12, 19 nb13, 20 nb21, 21 nb22, 22 nb23, 23 scale(f32),
+;        24 max_bias(f32), 25 logit_softcap(f32), 26 mask_n_head_log2,
+;        27 m0(f32), 28 m1(f32), 29 gqa_ratio, 30 split_kv, 31 k_num
+; Spec constants: same IDs as flash_attn_base.glsl (0-15).
+
+               OpCapability Shader
+               OpCapability Float16
+               OpCapability Float8EXT
+               OpCapability Int8
+               OpCapability CooperativeMatrixKHR
+               OpCapability Float8CooperativeMatrixEXT
+               OpCapability GroupNonUniform
+               OpCapability GroupNonUniformVote
+               OpCapability GroupNonUniformArithmetic
+               OpCapability StorageBuffer16BitAccess
+               OpCapability StorageBuffer8BitAccess
+               OpCapability VulkanMemoryModel
+               OpExtension "SPV_EXT_float8"
+               OpExtension "SPV_KHR_cooperative_matrix"
+          %glsl450 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical Vulkan
+               OpEntryPoint GLCompute %main "main" %q_buf %k_buf %v_buf %m_buf %s_buf %o_buf4 %o_buf1 %mo_buf %dbg_buf %b_wgid %b_lidx %b_sgid %b_sginv %b_numsg %sh_qf8 %sh_qq %sh_sfsh %sh_psh %sh_kvsh %sh_kstg %sh_k16 %sh_pvsh %sh_slope %sh_tmp %sh_lut %pc
+               OpExecutionModeId %main LocalSizeId %sc_wg %uint_1 %uint_1
+               OpSource GLSL 450
+
+; ===== spec constant IDs (flash_attn_base.glsl ABI) =====
+               OpDecorate %sc_wg SpecId 0
+               OpDecorate %sc_Br SpecId 1
+               OpDecorate %sc_Bc SpecId 2
+               OpDecorate %sc_HSK SpecId 3
+               OpDecorate %sc_HSV SpecId 4
+               OpDecorate %sc_Clamp SpecId 5
+               OpDecorate %sc_Dsplit SpecId 6
+               OpDecorate %sc_rsplit SpecId 7
+               OpDecorate %sc_sgsz SpecId 8
+               OpDecorate %sc_staging SpecId 9
+               OpDecorate %sc_flags SpecId 10
+               OpDecorate %sc_limocc SpecId 11
+               OpDecorate %sc_fatk SpecId 12
+               OpDecorate %sc_fatv SpecId 13
+               OpDecorate %sc_blkk SpecId 14
+               OpDecorate %sc_blkv SpecId 15
+
+; ===== buffers =====
+               OpDecorate %q_buf DescriptorSet 0
+               OpDecorate %q_buf Binding 0
+               OpDecorate %k_buf DescriptorSet 0
+               OpDecorate %k_buf Binding 1
+               OpDecorate %v_buf DescriptorSet 0
+               OpDecorate %v_buf Binding 2
+               OpDecorate %m_buf DescriptorSet 0
+               OpDecorate %m_buf Binding 3
+               OpDecorate %s_buf DescriptorSet 0
+               OpDecorate %s_buf Binding 4
+               OpDecorate %o_buf4 DescriptorSet 0
+               OpDecorate %o_buf4 Binding 5
+               OpDecorate %o_buf1 DescriptorSet 0
+               OpDecorate %o_buf1 Binding 5
+               OpDecorate %mo_buf DescriptorSet 0
+               OpDecorate %mo_buf Binding 6
+               OpDecorate %dbg_buf DescriptorSet 0
+               OpDecorate %dbg_buf Binding 7
+
+; ===== storage-buffer block layout =====
+               OpDecorate %s_q Block
+               OpMemberDecorate %s_q 0 NonWritable
+               OpMemberDecorate %s_q 0 Offset 0
+               OpDecorate %s_k Block
+               OpMemberDecorate %s_k 0 NonWritable
+               OpMemberDecorate %s_k 0 Offset 0
+               OpDecorate %s_v Block
+               OpMemberDecorate %s_v 0 NonWritable
+               OpMemberDecorate %s_v 0 Offset 0
+               OpDecorate %s_m Block
+               OpMemberDecorate %s_m 0 NonWritable
+               OpMemberDecorate %s_m 0 Offset 0
+               OpDecorate %s_s Block
+               OpMemberDecorate %s_s 0 NonWritable
+               OpMemberDecorate %s_s 0 Offset 0
+               OpDecorate %s_o4 Block
+               OpMemberDecorate %s_o4 0 NonReadable
+               OpMemberDecorate %s_o4 0 Offset 0
+               OpDecorate %s_o1 Block
+               OpMemberDecorate %s_o1 0 NonReadable
+               OpMemberDecorate %s_o1 0 Offset 0
+               OpDecorate %s_mo Block
+               OpMemberDecorate %s_mo 0 NonWritable
+               OpMemberDecorate %s_mo 0 Offset 0
+               OpDecorate %s_db Block
+               OpMemberDecorate %s_db 0 NonReadable
+               OpMemberDecorate %s_db 0 Offset 0
+
+; ===== push constants =====
+               OpDecorate %pc_t Block
+               OpMemberDecorate %pc_t 0 Offset 0
+               OpMemberDecorate %pc_t 1 Offset 4
+               OpMemberDecorate %pc_t 2 Offset 8
+               OpMemberDecorate %pc_t 3 Offset 12
+               OpMemberDecorate %pc_t 4 Offset 16
+               OpMemberDecorate %pc_t 5 Offset 20
+               OpMemberDecorate %pc_t 6 Offset 24
+               OpMemberDecorate %pc_t 7 Offset 28
+               OpMemberDecorate %pc_t 8 Offset 32
+               OpMemberDecorate %pc_t 9 Offset 36
+               OpMemberDecorate %pc_t 10 Offset 40
+               OpMemberDecorate %pc_t 11 Offset 44
+               OpMemberDecorate %pc_t 12 Offset 48
+               OpMemberDecorate %pc_t 13 Offset 52
+               OpMemberDecorate %pc_t 14 Offset 56
+               OpMemberDecorate %pc_t 15 Offset 60
+               OpMemberDecorate %pc_t 16 Offset 64
+               OpMemberDecorate %pc_t 17 Offset 68
+               OpMemberDecorate %pc_t 18 Offset 72
+               OpMemberDecorate %pc_t 19 Offset 76
+               OpMemberDecorate %pc_t 20 Offset 80
+               OpMemberDecorate %pc_t 21 Offset 84
+               OpMemberDecorate %pc_t 22 Offset 88
+               OpMemberDecorate %pc_t 23 Offset 92
+               OpMemberDecorate %pc_t 24 Offset 96
+               OpMemberDecorate %pc_t 25 Offset 100
+               OpMemberDecorate %pc_t 26 Offset 104
+               OpMemberDecorate %pc_t 27 Offset 108
+               OpMemberDecorate %pc_t 28 Offset 112
+               OpMemberDecorate %pc_t 29 Offset 116
+               OpMemberDecorate %pc_t 30 Offset 120
+               OpMemberDecorate %pc_t 31 Offset 124
+
+; ===== builtins =====
+               OpDecorate %b_wgid BuiltIn WorkgroupId
+               OpDecorate %b_lidx BuiltIn LocalInvocationIndex
+               OpDecorate %b_sgid BuiltIn SubgroupId
+               OpDecorate %b_sginv BuiltIn SubgroupLocalInvocationId
+               OpDecorate %b_numsg BuiltIn NumSubgroups
+
+; ===== array strides =====
+               OpDecorate %arr_qv4 ArrayStride 16
+               OpDecorate %arr_kfp8 ArrayStride 1
+               OpDecorate %arr_vfp8 ArrayStride 1
+               OpDecorate %arr_mf16 ArrayStride 2
+               OpDecorate %arr_sf32 ArrayStride 4
+               OpDecorate %arr_ov4 ArrayStride 8
+               OpDecorate %arr_of16 ArrayStride 2
+               OpDecorate %arr_mou ArrayStride 4
+
+; ===== basic types =====
+       %void = OpTypeVoid
+         %fn = OpTypeFunction %void
+       %bool = OpTypeBool
+   %bool_true = OpConstantTrue %bool
+   %bool_false = OpConstantFalse %bool
+     %v4bool = OpTypeVector %bool 4
+       %uint = OpTypeInt 32 0
+        %int = OpTypeInt 32 1
+      %uint8 = OpTypeInt 8 0
+        %f32 = OpTypeFloat 32
+        %f16 = OpTypeFloat 16
+        %fp8 = OpTypeFloat 8 Float8E4M3EXT
+        %v2f = OpTypeVector %f32 2
+        %v3u = OpTypeVector %uint 3
+      %v4f32 = OpTypeVector %f32 4
+      %v4f16 = OpTypeVector %f16 4
+
+; ===== pre-declared constants (required before coopmat types) =====
+     %uint_0 = OpConstant %uint 0
+     %uint_1 = OpConstant %uint 1
+     %uint_2 = OpConstant %uint 2
+     %uint_3 = OpConstant %uint 3
+    %uint_16 = OpConstant %uint 16
+
+; ===== cooperative matrix types (16x16, subgroup scope) =====
+      %cm_f32 = OpTypeCooperativeMatrixKHR %f32 %uint_3 %uint_16 %uint_16 %uint_2
+      %cm_f8a = OpTypeCooperativeMatrixKHR %fp8 %uint_3 %uint_16 %uint_16 %uint_0
+      %cm_f8b = OpTypeCooperativeMatrixKHR %fp8 %uint_3 %uint_16 %uint_16 %uint_1
+     %cm_f16a = OpTypeCooperativeMatrixKHR %f16 %uint_3 %uint_16 %uint_16 %uint_0
+     %cm_f16b = OpTypeCooperativeMatrixKHR %f16 %uint_3 %uint_16 %uint_16 %uint_1
+     %cm_f16c = OpTypeCooperativeMatrixKHR %f16 %uint_3 %uint_16 %uint_16 %uint_2
+
+; ===== push constant struct (32 x uint32, 128 B) =====
+        %pc_t = OpTypeStruct %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint %uint
+
+; ===== constants =====
+     %uint_4 = OpConstant %uint 4
+     %uint_5 = OpConstant %uint 5
+     %uint_6 = OpConstant %uint 6
+     %uint_7 = OpConstant %uint 7
+     %uint_8 = OpConstant %uint 8
+     %uint_9 = OpConstant %uint 9
+    %uint_10 = OpConstant %uint 10
+    %uint_11 = OpConstant %uint 11
+    %uint_12 = OpConstant %uint 12
+    %uint_13 = OpConstant %uint 13
+    %uint_14 = OpConstant %uint 14
+    %uint_15 = OpConstant %uint 15
+    %uint_17 = OpConstant %uint 17
+    %uint_18 = OpConstant %uint 18
+    %uint_19 = OpConstant %uint 19
+    %uint_20 = OpConstant %uint 20
+    %uint_21 = OpConstant %uint 21
+    %uint_22 = OpConstant %uint 22
+    %uint_23 = OpConstant %uint 23
+    %uint_24 = OpConstant %uint 24
+    %uint_25 = OpConstant %uint 25
+    %uint_26 = OpConstant %uint 26
+    %uint_27 = OpConstant %uint 27
+    %uint_28 = OpConstant %uint 28
+    %uint_29 = OpConstant %uint 29
+    %uint_30 = OpConstant %uint 30
+    %uint_31 = OpConstant %uint 31
+    %uint_64 = OpConstant %uint 64
+   %uint_128 = OpConstant %uint 128
+    %uint_32 = OpConstant %uint 32
+    %uint_48 = OpConstant %uint 48
+    %uint_96 = OpConstant %uint 96
+   %uint_192 = OpConstant %uint 192
+   %uint_288 = OpConstant %uint 288
+   %uint_384 = OpConstant %uint 384
+   %uint_256 = OpConstant %uint 256
+   %uint_264 = OpConstant %uint 264
+   %uint_512 = OpConstant %uint 512
+  %uint_768 = OpConstant %uint 768
+   %uint_65535 = OpConstant %uint 65535
+%uint_16777216 = OpConstant %uint 16777216
+%uint_4294967280 = OpConstant %uint 4294967280
+   %uint_1023 = OpConstant %uint 1023
+   %uint_1024 = OpConstant %uint 1024
+  %uint_2048 = OpConstant %uint 2048
+  %uint_4096 = OpConstant %uint 4096
+  %uint_6144 = OpConstant %uint 6144
+  %uint_8192 = OpConstant %uint 8192
+ %uint_16384 = OpConstant %uint 16384
+ %uint_32768 = OpConstant %uint 32768
+ %uint_36864 = OpConstant %uint 36864
+ %uint_40960 = OpConstant %uint 40960
+ %uint_49152 = OpConstant %uint 49152
+ %uint_53248 = OpConstant %uint 53248
+ %uint_33792 = OpConstant %uint 33792
+ %uint_34816 = OpConstant %uint 34816
+ %uint_65536 = OpConstant %uint 65536
+ %uint_98304 = OpConstant %uint 98304
+%uint_122880 = OpConstant %uint 122880
+ %uint_68000 = OpConstant %uint 68000
+ %uint_73728 = OpConstant %uint 73728
+%uint_114688 = OpConstant %uint 114688
+%uint_129024 = OpConstant %uint 129024
+%uint_129025 = OpConstant %uint 129025
+%uint_129026 = OpConstant %uint 129026
+%uint_129027 = OpConstant %uint 129027
+%uint_129028 = OpConstant %uint 129028
+%uint_129029 = OpConstant %uint 129029
+%uint_129030 = OpConstant %uint 129030
+%uint_129031 = OpConstant %uint 129031
+%uint_129032 = OpConstant %uint 129032
+%uint_129033 = OpConstant %uint 129033
+%uint_129034 = OpConstant %uint 129034
+%uint_129035 = OpConstant %uint 129035
+%uint_129036 = OpConstant %uint 129036
+  %uint_neg1 = OpConstant %uint 4294967295
+  %float_448 = OpConstant %f32 448
+      %fp8_0 = OpConstant %fp8 0
+      %int_0 = OpConstant %int 0
+      %int_1 = OpConstant %int 1
+      %int_2 = OpConstant %int 2
+      %int_3 = OpConstant %int 3
+      %int_4 = OpConstant %int 4
+      %int_6 = OpConstant %int 6
+      %int_7 = OpConstant %int 7
+     %float_0 = OpConstant %f32 0
+ %float_half = OpConstant %f32 0.5
+    %float_1 = OpConstant %f32 1
+    %float_8 = OpConstant %f32 8
+  %float_512 = OpConstant %f32 512
+%float_1o64 = OpConstant %f32 0.015625
+%float_negmax2 = OpConstant %f32 -1.7014118e38
+   %half_0 = OpConstant %f16 0
+   %half_1 = OpConstant %f16 1
+%half_65504 = OpConstant %f16 65504
+%half_neg65504 = OpConstant %f16 -65504
+   %v4f32_0 = OpConstantComposite %v4f32 %float_0 %float_0 %float_0 %float_0
+   %v4f16_0 = OpConstantComposite %v4f16 %half_0 %half_0 %half_0 %half_0
+  %v4f16_min = OpConstantComposite %v4f16 %half_neg65504 %half_neg65504 %half_neg65504 %half_neg65504
+  %v4f16_max = OpConstantComposite %v4f16 %half_65504 %half_65504 %half_65504 %half_65504
+   %half_ninf = OpConstant %f16 64512
+  %v4f16_ninf = OpConstantComposite %v4f16 %half_ninf %half_ninf %half_ninf %half_ninf
+    %f32_ninf = OpConstant %f32 -0x1p128
+  %v4f32_ninf = OpConstantComposite %v4f32 %f32_ninf %f32_ninf %f32_ninf %f32_ninf
+   %cmz_f32 = OpConstantComposite %cm_f32 %float_0
+   %cmz_f16 = OpConstantComposite %cm_f16c %half_0
+
+; ===== spec constant declarations =====
+       %sc_wg = OpSpecConstant %uint 256
+       %sc_Br = OpSpecConstant %uint 16
+       %sc_Bc = OpSpecConstant %uint 64
+      %sc_HSK = OpSpecConstant %uint 256
+      %sc_HSV = OpSpecConstant %uint 256
+    %sc_Clamp = OpSpecConstant %uint 0
+    %sc_Dsplit = OpSpecConstant %uint 8
+   %sc_rsplit = OpSpecConstant %uint 4
+     %sc_sgsz = OpSpecConstant %uint 64
+  %sc_staging = OpSpecConstant %uint 0
+    %sc_flags = OpSpecConstant %uint 0
+  %sc_limocc = OpSpecConstant %uint 0
+     %sc_fatk = OpSpecConstant %uint 1
+     %sc_fatv = OpSpecConstant %uint 1
+     %sc_blkk = OpSpecConstant %uint 1
+     %sc_blkv = OpSpecConstant %uint 1
+
+; ===== derived spec-constant ops =====
+%hsk_pad = OpSpecConstantOp %uint BitwiseAnd %sc_HSK %uint_4294967280
+%hsv_pad = OpSpecConstantOp %uint BitwiseAnd %sc_HSV %uint_4294967280
+%tprg = OpSpecConstantOp %uint UDiv %sc_wg %sc_rsplit
+%rpt = OpSpecConstantOp %uint UDiv %sc_Br %sc_rsplit
+%hsk_div4 = OpSpecConstantOp %uint UDiv %sc_HSK %uint_4
+%hsv_div4 = OpSpecConstantOp %uint UDiv %sc_HSV %uint_4
+%dpt_t = OpSpecConstantOp %uint IAdd %hsv_div4 %tprg
+%dpt_t2 = OpSpecConstantOp %uint ISub %dpt_t %uint_1
+%dpt = OpSpecConstantOp %uint UDiv %dpt_t2 %tprg
+%cpt = OpSpecConstantOp %uint UDiv %sc_Bc %tprg
+%hsvpt = OpSpecConstantOp %uint IMul %uint_16 %sc_rsplit
+%ntiles_t = OpSpecConstantOp %uint IAdd %sc_HSV %hsvpt
+%ntiles_t2 = OpSpecConstantOp %uint ISub %ntiles_t %uint_1
+%ntiles = OpSpecConstantOp %uint UDiv %ntiles_t2 %hsvpt
+%qstride8 = OpSpecConstantOp %uint IAdd %hsk_pad %uint_8
+%len_qf8 = OpSpecConstantOp %uint IMul %sc_Br %qstride8
+%hsk_le128 = OpSpecConstantOp %bool ULessThanEqual %sc_HSK %uint_128
+%Br_div4 = OpSpecConstantOp %uint UDiv %sc_Br %uint_4
+%Br_div4_2 = OpSpecConstantOp %uint IAdd %Br_div4 %uint_2
+%sfshstride = OpSpecConstantOp %uint Select %hsk_le128 %Br_div4_2 %Br_div4
+%len_sfsh = OpSpecConstantOp %uint IMul %sc_Bc %sfshstride
+%psh_stride = OpSpecConstantOp %uint IAdd %Br_div4 %uint_2
+%len_psh = OpSpecConstantOp %uint IMul %sc_Bc %psh_stride
+%kvsh_len = OpSpecConstantOp %uint IMul %uint_16 %sc_Bc
+%kstg_len = OpSpecConstantOp %uint IMul %sc_Bc %uint_16
+%osh_stride = OpSpecConstantOp %uint IMul %sc_rsplit %uint_4
+%pvsh_len = OpSpecConstantOp %uint IMul %uint_16 %osh_stride
+%hsktiles = OpSpecConstantOp %uint UDiv %hsk_pad %uint_16
+%bcchunks = OpSpecConstantOp %uint UDiv %sc_Bc %uint_16
+%vloads = OpSpecConstantOp %uint UDiv %uint_1024 %sc_wg
+
+; ===== shmem array types =====
+%arr_qf8sh = OpTypeArray %fp8 %len_qf8
+%arr_sfsh = OpTypeArray %v4f32 %len_sfsh
+%arr_psh = OpTypeArray %v4f16 %len_psh
+%arr_kvsh = OpTypeArray %v4f16 %kvsh_len
+%arr_kstg = OpTypeArray %fp8 %kstg_len
+%arr_pvsh = OpTypeArray %v4f16 %pvsh_len
+%arr_slope = OpTypeArray %f32 %sc_Br
+%arr_tmp = OpTypeArray %f32 %sc_rsplit
+%arr_lut = OpTypeArray %f16 %uint_256
+
+; ===== runtime arrays =====
+     %arr_qv4 = OpTypeRuntimeArray %v4f32
+    %arr_kfp8 = OpTypeRuntimeArray %fp8
+    %arr_vfp8 = OpTypeRuntimeArray %fp8
+    %arr_mf16 = OpTypeRuntimeArray %f16
+    %arr_sf32 = OpTypeRuntimeArray %f32
+     %arr_ov4 = OpTypeRuntimeArray %v4f16
+    %arr_of16 = OpTypeRuntimeArray %f16
+     %arr_mou = OpTypeRuntimeArray %uint
+
+; ===== buffer structs =====
+        %s_q = OpTypeStruct %arr_qv4
+        %s_k = OpTypeStruct %arr_kfp8
+        %s_v = OpTypeStruct %arr_vfp8
+        %s_m = OpTypeStruct %arr_mf16
+        %s_s = OpTypeStruct %arr_sf32
+       %s_o4 = OpTypeStruct %arr_ov4
+       %s_o1 = OpTypeStruct %arr_of16
+       %s_mo = OpTypeStruct %arr_mou
+       %s_db = OpTypeStruct %arr_sf32
+
+; ===== buffer pointers =====
+      %p_q = OpTypePointer StorageBuffer %s_q
+      %p_k = OpTypePointer StorageBuffer %s_k
+      %p_v = OpTypePointer StorageBuffer %s_v
+      %p_m = OpTypePointer StorageBuffer %s_m
+      %p_s = OpTypePointer StorageBuffer %s_s
+     %p_o4 = OpTypePointer StorageBuffer %s_o4
+     %p_o1 = OpTypePointer StorageBuffer %s_o1
+     %p_mo = OpTypePointer StorageBuffer %s_mo
+     %p_db = OpTypePointer StorageBuffer %s_db
+    %p_pc = OpTypePointer PushConstant %pc_t
+%p_uint_pc = OpTypePointer PushConstant %uint
+%p_v4f32_sb = OpTypePointer StorageBuffer %v4f32
+%p_fp8_sb = OpTypePointer StorageBuffer %fp8
+%p_f16_sb = OpTypePointer StorageBuffer %f16
+%p_f32_sb = OpTypePointer StorageBuffer %f32
+%p_v4f16_sb = OpTypePointer StorageBuffer %v4f16
+%p_uint_sb = OpTypePointer StorageBuffer %uint
+
+; ===== builtin pointers + variables =====
+%_ptr_Input_v3u = OpTypePointer Input %v3u
+%_ptr_Input_uint = OpTypePointer Input %uint
+   %b_wgid = OpVariable %_ptr_Input_v3u Input
+   %b_lidx = OpVariable %_ptr_Input_uint Input
+  %b_wgsize = OpSpecConstantComposite %v3u %sc_wg %uint_1 %uint_1
+   %b_sgid = OpVariable %_ptr_Input_uint Input
+  %b_sginv = OpVariable %_ptr_Input_uint Input
+  %b_numsg = OpVariable %_ptr_Input_uint Input
+
+; ===== shmem pointers + variables =====
+%p_sh_qf8 = OpTypePointer Workgroup %arr_qf8sh
+%p_sh_sfsh = OpTypePointer Workgroup %arr_sfsh
+%p_sh_psh = OpTypePointer Workgroup %arr_psh
+%p_sh_kvsh = OpTypePointer Workgroup %arr_kvsh
+%p_sh_kstg = OpTypePointer Workgroup %arr_kstg
+%arr_qq = OpTypeArray %v4f16 %uint_1024
+%p_sh_qq = OpTypePointer Workgroup %arr_qq
+%arr_k16 = OpTypeArray %v4f16 %uint_1024
+%p_sh_k16 = OpTypePointer Workgroup %arr_k16
+%p_sh_pvsh = OpTypePointer Workgroup %arr_pvsh
+%p_sh_slope = OpTypePointer Workgroup %arr_slope
+%p_sh_tmp = OpTypePointer Workgroup %arr_tmp
+%p_sh_lut = OpTypePointer Workgroup %arr_lut
+%p_sh_fp8 = OpTypePointer Workgroup %fp8
+%p_sh_v4f32 = OpTypePointer Workgroup %v4f32
+%p_sh_v4f16 = OpTypePointer Workgroup %v4f16
+%p_sh_f32 = OpTypePointer Workgroup %f32
+%p_sh_f16 = OpTypePointer Workgroup %f16
+    %sh_qf8 = OpVariable %p_sh_qf8 Workgroup
+    %sh_sfsh = OpVariable %p_sh_sfsh Workgroup
+     %sh_psh = OpVariable %p_sh_psh Workgroup
+    %sh_kvsh = OpVariable %p_sh_kvsh Workgroup
+    %sh_kstg = OpVariable %p_sh_kstg Workgroup
+     %sh_qq = OpVariable %p_sh_qq Workgroup
+     %sh_k16 = OpVariable %p_sh_k16 Workgroup
+    %sh_pvsh = OpVariable %p_sh_pvsh Workgroup
+    %sh_slope = OpVariable %p_sh_slope Workgroup
+    %sh_tmp = OpVariable %p_sh_tmp Workgroup
+     %sh_lut = OpVariable %p_sh_lut Workgroup
+
+; ===== buffer variables =====
+      %q_buf = OpVariable %p_q StorageBuffer
+      %k_buf = OpVariable %p_k StorageBuffer
+      %v_buf = OpVariable %p_v StorageBuffer
+      %m_buf = OpVariable %p_m StorageBuffer
+      %s_buf = OpVariable %p_s StorageBuffer
+     %o_buf4 = OpVariable %p_o4 StorageBuffer
+     %o_buf1 = OpVariable %p_o1 StorageBuffer
+     %mo_buf = OpVariable %p_mo StorageBuffer
+     %dbg_buf = OpVariable %p_db StorageBuffer
+         %pc = OpVariable %p_pc PushConstant
+
+; ===== function-local pointer types =====
+%p_uint_f = OpTypePointer Function %uint
+%p_f32_f = OpTypePointer Function %f32
+%p_v4f16_f = OpTypePointer Function %v4f16
+%p_cm_f32 = OpTypePointer Function %cm_f32
+%p_cm_f16c = OpTypePointer Function %cm_f16c
+%arr_Of = OpTypeArray %v4f16 %dpt
+%arr_Of2 = OpTypeArray %arr_Of %rpt
+%p_Of = OpTypePointer Function %arr_Of2
+%arr_Mf = OpTypeArray %f32 %rpt
+%p_Mf = OpTypePointer Function %arr_Mf
+%arr_eMf = OpTypeArray %f32 %rpt
+%p_eMf = OpTypePointer Function %arr_eMf
+%arr_Lf = OpTypeArray %f32 %rpt
+%p_Lf = OpTypePointer Function %arr_Lf
+%arr_mc = OpTypeArray %v4f16 %uint_1
+%p_mc = OpTypePointer Function %arr_mc
+
+; ===== entry =====
+       %main = OpFunction %void None %fn
+      %entry = OpLabel
+
+   %var_i = OpVariable %p_uint_f Function
+   %var_gqa = OpVariable %p_uint_f Function
+   %var_split = OpVariable %p_uint_f Function
+   %var_iq2 = OpVariable %p_uint_f Function
+   %var_iq3 = OpVariable %p_uint_f Function
+   %var_start = OpVariable %p_uint_f Function
+   %var_end = OpVariable %p_uint_f Function
+   %var_qstride = OpVariable %p_uint_f Function
+   %var_kstride = OpVariable %p_uint_f Function
+   %var_vstride = OpVariable %p_uint_f Function
+   %var_mstride = OpVariable %p_uint_f Function
+   %var_koff = OpVariable %p_uint_f Function
+   %var_voff = OpVariable %p_uint_f Function
+   %var_moff = OpVariable %p_uint_f Function
+   %var_qoff = OpVariable %p_uint_f Function
+   %var_sq = OpVariable %p_f32_f Function
+   %var_invsq = OpVariable %p_f32_f Function
+   %qmax_l = OpVariable %p_f32_f Function
+   %q_idx = OpVariable %p_uint_f Function
+   %q1_red = OpVariable %p_f32_f Function
+   %q1_s = OpVariable %p_uint_f Function
+   %q2_zidx = OpVariable %p_uint_f Function
+   %q2_idx = OpVariable %p_uint_f Function
+   %var_j = OpVariable %p_uint_f Function
+   %var_mo = OpVariable %p_uint_f Function
+   %var_moidx = OpVariable %p_uint_f Function
+   %var_mobits = OpVariable %p_uint_f Function
+   %var_mc = OpVariable %p_mc Function
+   %var_sf = OpVariable %p_cm_f32 Function
+   %var_d = OpVariable %p_uint_f Function
+   %var_ht = OpVariable %p_uint_f Function
+   %var_vi = OpVariable %p_uint_f Function
+   %var_pv = OpVariable %p_cm_f16c Function
+   %var_bc = OpVariable %p_uint_f Function
+   %var_Of = OpVariable %p_Of Function
+   %var_Mf = OpVariable %p_Mf Function
+   %var_Lf = OpVariable %p_Lf Function
+   %ml_red = OpVariable %p_f32_f Function
+   %ml_s = OpVariable %p_uint_f Function
+   %ks_i = OpVariable %p_uint_f Function
+
+; v110: K staged through sh_k16 (f16, per-subgroup zones) - direct global
+; fp8 load path retained only as dead fallback branch.
+; v119: kbc=false -> k_direct (global fp8 loads), the v108-109 working path
+   %kbc = OpCopyObject %bool %bool_false
+  %kbc_inv = OpLogicalNot %bool %kbc
+; Mf/Lf/Of pointers (loop-invariant, hoisted from softmax)
+   %mf0_p = OpAccessChain %p_f32_f %var_Mf %uint_0
+   %lf0_p = OpAccessChain %p_f32_f %var_Lf %uint_0
+   %of0_p = OpAccessChain %p_v4f16_f %var_Of %uint_0 %uint_0
+   %mf1_p = OpAccessChain %p_f32_f %var_Mf %uint_1
+   %lf1_p = OpAccessChain %p_f32_f %var_Lf %uint_1
+   %of1_p = OpAccessChain %p_v4f16_f %var_Of %uint_1 %uint_0
+   %mf2_p = OpAccessChain %p_f32_f %var_Mf %uint_2
+   %lf2_p = OpAccessChain %p_f32_f %var_Lf %uint_2
+   %of2_p = OpAccessChain %p_v4f16_f %var_Of %uint_2 %uint_0
+   %mf3_p = OpAccessChain %p_f32_f %var_Mf %uint_3
+   %lf3_p = OpAccessChain %p_f32_f %var_Lf %uint_3
+   %of3_p = OpAccessChain %p_v4f16_f %var_Of %uint_3 %uint_0
+; ---- thread indices ----
+        %tid = OpLoad %uint %b_lidx
+       %wgid = OpLoad %v3u %b_wgid
+        %wgx = OpCompositeExtract %uint %wgid 0
+        %wgy = OpCompositeExtract %uint %wgid 1
+        %wgz = OpCompositeExtract %uint %wgid 2
+         %sg = OpLoad %uint %b_sgid
+      %sginv = OpLoad %uint %b_sginv
+      %numsg = OpLoad %uint %b_numsg
+; tile row base (loop-invariant: sg*4)
+     %p_row = OpIMul %uint %sg %uint_4
+; Flat S transforms use us_r; logical softmax/P/O rows use row_tid.
+   %us_r = OpUMod %uint %tid %Br_div4
+    %row_tid = OpUDiv %uint %tid %tprg
+    %col_tid = OpUMod %uint %tid %tprg
+   %p_row_us = OpIMul %uint %row_tid %uint_4
+; ---- push constant loads ----
+      %pcN = OpAccessChain %p_uint_pc %pc %uint_0
+       %pN = OpLoad %uint %pcN
+     %pcKV = OpAccessChain %p_uint_pc %pc %uint_1
+       %pKV = OpLoad %uint %pcKV
+     %pcne1 = OpAccessChain %p_uint_pc %pc %uint_2
+      %pne1 = OpLoad %uint %pcne1
+     %pcne2 = OpAccessChain %p_uint_pc %pc %uint_3
+      %pne2 = OpLoad %uint %pcne2
+     %pcne3 = OpAccessChain %p_uint_pc %pc %uint_4
+      %pne3 = OpLoad %uint %pcne3
+    %pcneq2 = OpAccessChain %p_uint_pc %pc %uint_5
+     %pneq2 = OpLoad %uint %pcneq2
+    %pcneq3 = OpAccessChain %p_uint_pc %pc %uint_6
+     %pneq3 = OpLoad %uint %pcneq3
+    %pcnek2 = OpAccessChain %p_uint_pc %pc %uint_7
+     %pnek2 = OpLoad %uint %pcnek2
+    %pcnek3 = OpAccessChain %p_uint_pc %pc %uint_8
+     %pnek3 = OpLoad %uint %pcnek3
+    %pcnev2 = OpAccessChain %p_uint_pc %pc %uint_9
+     %pnev2 = OpLoad %uint %pcnev2
+    %pcnev3 = OpAccessChain %p_uint_pc %pc %uint_10
+     %pnev3 = OpLoad %uint %pcnev3
+    %pcnem1 = OpAccessChain %p_uint_pc %pc %uint_11
+     %pnem1 = OpLoad %uint %pcnem1
+    %pcnem2 = OpAccessChain %p_uint_pc %pc %uint_12
+     %pnem2 = OpLoad %uint %pcnem2
+    %pcnem3 = OpAccessChain %p_uint_pc %pc %uint_13
+     %pnem3 = OpLoad %uint %pcnem3
+    %pcnb01 = OpAccessChain %p_uint_pc %pc %uint_14
+     %pnb01 = OpLoad %uint %pcnb01
+    %pcnb02 = OpAccessChain %p_uint_pc %pc %uint_15
+     %pnb02 = OpLoad %uint %pcnb02
+    %pcnb03 = OpAccessChain %p_uint_pc %pc %uint_16
+     %pnb03 = OpLoad %uint %pcnb03
+    %pcnb11 = OpAccessChain %p_uint_pc %pc %uint_17
+     %pnb11 = OpLoad %uint %pcnb11
+    %pcnb12 = OpAccessChain %p_uint_pc %pc %uint_18
+     %pnb12 = OpLoad %uint %pcnb12
+    %pcnb13 = OpAccessChain %p_uint_pc %pc %uint_19
+     %pnb13 = OpLoad %uint %pcnb13
+    %pcnb21 = OpAccessChain %p_uint_pc %pc %uint_20
+     %pnb21 = OpLoad %uint %pcnb21
+    %pcnb22 = OpAccessChain %p_uint_pc %pc %uint_21
+     %pnb22 = OpLoad %uint %pcnb22
+    %pcnb23 = OpAccessChain %p_uint_pc %pc %uint_22
+     %pnb23 = OpLoad %uint %pcnb23
+    %pcscale = OpAccessChain %p_uint_pc %pc %uint_23
+    %pscale_u = OpLoad %uint %pcscale
+     %pscale = OpBitcast %f32 %pscale_u
+    %pcmaxb = OpAccessChain %p_uint_pc %pc %uint_24
+   %pmaxb_u = OpLoad %uint %pcmaxb
+     %pmaxb = OpBitcast %f32 %pmaxb_u
+    %pcsoft = OpAccessChain %p_uint_pc %pc %uint_25
+    %psoft_u = OpLoad %uint %pcsoft
+     %psoft = OpBitcast %f32 %psoft_u
+    %pcmnh2 = OpAccessChain %p_uint_pc %pc %uint_26
+     %pmnh2 = OpLoad %uint %pcmnh2
+; D096-C debug flag: bit 25 of mask_n_head_log2 -> dump mask/S/M/L to dbg_buf
+  %dbg_sh25 = OpShiftRightLogical %uint %pmnh2 %uint_25
+  %dbg_b2 = OpBitwiseAnd %uint %dbg_sh25 %uint_1
+  %dbg_on = OpINotEqual %bool %dbg_b2 %uint_0
+     %pcm0 = OpAccessChain %p_uint_pc %pc %uint_27
+     %pm0_u = OpLoad %uint %pcm0
+       %pm0 = OpBitcast %f32 %pm0_u
+     %pcm1 = OpAccessChain %p_uint_pc %pc %uint_28
+     %pm1_u = OpLoad %uint %pcm1
+       %pm1 = OpBitcast %f32 %pm1_u
+     %pcgqa = OpAccessChain %p_uint_pc %pc %uint_29
+      %pgqa = OpLoad %uint %pcgqa
+    %pcskv = OpAccessChain %p_uint_pc %pc %uint_30
+     %pskv = OpLoad %uint %pcskv
+     %pckn = OpAccessChain %p_uint_pc %pc %uint_31
+      %pkn = OpLoad %uint %pckn
+; ---- function variables ----
+; ---- init_indices ----
+    %kn_gt1 = OpUGreaterThan %bool %pkn %uint_1
+               OpSelectionMerge %idx_done None
+               OpBranchConditional %kn_gt1 %idx_knum %idx_noknum
+   %idx_knum = OpLabel
+    %gqa_gt1 = OpUGreaterThan %bool %pgqa %uint_1
+               OpSelectionMerge %idx_knum_done None
+               OpBranchConditional %gqa_gt1 %idx_kgqa %idx_kngqa
+   %idx_kgqa = OpLabel
+               OpStore %var_i %uint_0
+     %gqa_div = OpUDiv %uint %wgx %pkn
+               OpStore %var_gqa %gqa_div
+     %gqa_mod = OpUMod %uint %wgx %pkn
+               OpStore %var_split %gqa_mod
+               OpBranch %idx_knum_done
+   %idx_kngqa = OpLabel
+               OpStore %var_gqa %uint_0
+     %kn_mod = OpUMod %uint %wgx %pkn
+               OpStore %var_split %kn_mod
+     %kn_div = OpUDiv %uint %wgx %pkn
+               OpStore %var_i %kn_div
+               OpBranch %idx_knum_done
+   %idx_knum_done = OpLabel
+               OpBranch %idx_done
+   %idx_noknum = OpLabel
+    %gqa_gt1b = OpUGreaterThan %bool %pgqa %uint_1
+               OpSelectionMerge %idx_nok_done None
+               OpBranchConditional %gqa_gt1b %idx_gqa1 %idx_ngqa1
+   %idx_gqa1 = OpLabel
+               OpStore %var_i %uint_0
+               OpStore %var_gqa %wgx
+               OpStore %var_split %uint_0
+               OpBranch %idx_nok_done
+   %idx_ngqa1 = OpLabel
+               OpStore %var_i %wgx
+               OpStore %var_gqa %uint_0
+               OpStore %var_split %uint_0
+               OpBranch %idx_nok_done
+   %idx_nok_done = OpLabel
+               OpBranch %idx_done
+    %idx_done = OpLabel
+; D096-G: dump push constants (129024 + idx) for wg (0,0,0)
+   %pcg_x0 = OpIEqual %bool %wgx %uint_0
+   %pcg_y0 = OpIEqual %bool %wgy %uint_0
+   %pcg_z0 = OpIEqual %bool %wgz %uint_0
+   %pcg_xy = OpLogicalAnd %bool %pcg_x0 %pcg_y0
+   %pcg_xyz = OpLogicalAnd %bool %pcg_xy %pcg_z0
+   %pcg_ok = OpLogicalAnd %bool %pcg_xyz %dbg_on
+               OpSelectionMerge %pcg_done None
+               OpBranchConditional %pcg_ok %pcg_body %pcg_done
+   %pcg_body = OpLabel
+   %pcg_p0 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %uint_129024
+   %pcg_f0 = OpConvertUToF %f32 %pne1
+               OpStore %pcg_p0 %pcg_f0
+   %pcg_p1 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %uint_129025
+   %pcg_f1 = OpConvertUToF %f32 %pN
+               OpStore %pcg_p1 %pcg_f1
+   %pcg_p2 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %uint_129026
+   %pcg_f2 = OpConvertUToF %f32 %pKV
+               OpStore %pcg_p2 %pcg_f2
+   %pcg_p3 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %uint_129027
+   %pcg_f3 = OpConvertUToF %f32 %pne2
+               OpStore %pcg_p3 %pcg_f3
+   %pcg_p4 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %uint_129028
+   %pcg_f4 = OpConvertUToF %f32 %pgqa
+               OpStore %pcg_p4 %pcg_f4
+   %pcg_p5 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %uint_129029
+   %pcg_f5 = OpConvertUToF %f32 %pkn
+               OpStore %pcg_p5 %pcg_f5
+   %pcg_p6 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %uint_129030
+   %pcg_f6 = OpConvertUToF %f32 %pneq2
+               OpStore %pcg_p6 %pcg_f6
+   %pcg_p7 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %uint_129031
+   %pcg_f7 = OpConvertUToF %f32 %pnek2
+               OpStore %pcg_p7 %pcg_f7
+   %pcg_p8 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %uint_129032
+   %pcg_f8 = OpConvertUToF %f32 %pnev2
+               OpStore %pcg_p8 %pcg_f8
+   %pcg_p9 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %uint_129033
+   %pcg_f9 = OpConvertUToF %f32 %pnb12
+               OpStore %pcg_p9 %pcg_f9
+   %pcg_pa = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %uint_129034
+   %pcg_fa = OpConvertUToF %f32 %pnb22
+               OpStore %pcg_pa %pcg_fa
+   %pcg_pb = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %uint_129035
+   %pcg_fb = OpConvertUToF %f32 %pnb11
+               OpStore %pcg_pb %pcg_fb
+   %pcg_pc2 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %uint_129036
+   %pcg_fc = OpConvertUToF %f32 %pnb21
+               OpStore %pcg_pc2 %pcg_fc
+               OpBranch %pcg_done
+   %pcg_done = OpLabel
+; iq2 = wgy * gqa_ratio ; iq3 = wgz
+      %iq2 = OpIMul %uint %wgy %pgqa
+               OpStore %var_iq2 %iq2
+               OpStore %var_iq3 %wgz
+; broadcast factors: rk2=neq2/nek2, rk3=neq3/nek3, and likewise for V.
+   %rk2 = OpUDiv %uint %pneq2 %pnek2
+   %rk3 = OpUDiv %uint %pneq3 %pnek3
+   %rv2 = OpUDiv %uint %pneq2 %pnev2
+   %rv3 = OpUDiv %uint %pneq3 %pnev3
+; K/V indices: ik2=iq2/rk2, ik3=iq3/rk3, iv2=iq2/rv2, iv3=iq3/rv3.
+   %ik2 = OpUDiv %uint %iq2 %rk2
+   %ik3 = OpUDiv %uint %wgz %rk3
+   %iv2 = OpUDiv %uint %iq2 %rv2
+   %iv3 = OpUDiv %uint %wgz %rv3
+; q_stride = gqa > 1 ? nb02/4 : nb01 ; k_stride = nb11 ; v_stride = nb21 ; m_stride = gqa > 1 ? 0 : KV
+    %nb02d4 = OpUDiv %uint %pnb02 %uint_4
+     %gqa_ = OpLoad %uint %var_gqa
+  %gqa_gt1v = OpUGreaterThan %bool %pgqa %uint_1
+    %qstr = OpSelect %uint %gqa_gt1v %nb02d4 %pnb01
+               OpStore %var_qstride %qstr
+               OpStore %var_kstride %pnb11
+               OpStore %var_vstride %pnb21
+    %mstr = OpSelect %uint %gqa_gt1v %uint_0 %pKV
+               OpStore %var_mstride %mstr
+; k_offset = ik2*nb12 + ik3*nb13 ; v_offset = iv2*nb22 + iv3*nb23
+    %ik2nb12 = OpIMul %uint %ik2 %pnb12
+    %ik3nb13 = OpIMul %uint %ik3 %pnb13
+    %koff = OpIAdd %uint %ik2nb12 %ik3nb13
+               OpStore %var_koff %koff
+    %iv2nb22 = OpIMul %uint %iv2 %pnb22
+    %iv3nb23 = OpIMul %uint %iv3 %pnb23
+    %voff = OpIAdd %uint %iv2nb22 %iv3nb23
+               OpStore %var_voff %voff
+; m_offset = gqa_iq1*KV; if (nem2 != 1 || nem3 != 1) m_offset += ((iq3 % nem3)*nem2 + (iq2 % nem2))*nem1*KV
+   %moff_g = OpIMul %uint %gqa_ %pKV
+   %nem2_n1 = OpINotEqual %bool %pnem2 %uint_1
+   %nem3_n1 = OpINotEqual %bool %pnem3 %uint_1
+    %nem23 = OpLogicalOr %bool %nem2_n1 %nem3_n1
+               OpSelectionMerge %moff_done None
+               OpBranchConditional %nem23 %moff_extra %moff_plain
+   %moff_extra = OpLabel
+    %iq3m3 = OpUMod %uint %wgz %pnem3
+    %iq3m3n2 = OpIMul %uint %iq3m3 %pnem2
+    %iq2m2 = OpUMod %uint %iq2 %pnem2
+    %moff_s = OpIAdd %uint %iq3m3n2 %iq2m2
+    %moff_n1 = OpIMul %uint %moff_s %pne1
+    %moff_kv = OpIMul %uint %moff_n1 %pKV
+    %moff_t = OpIAdd %uint %moff_g %moff_kv
+               OpStore %var_moff %moff_t
+               OpBranch %moff_done
+   %moff_plain = OpLabel
+               OpStore %var_moff %moff_g
+               OpBranch %moff_done
+    %moff_done = OpLabel
+; q_offset (vec4 units) = (gqa_iq1*nb01 + (iq2*nb02 + iq3*nb03)/4) / 4
+   %gqa_nb01 = OpIMul %uint %gqa_ %pnb01
+     %iq2nb02 = OpIMul %uint %iq2 %pnb02
+     %iq3nb03 = OpIMul %uint %wgz %pnb03
+    %iq2nb02s = OpIAdd %uint %iq2nb02 %iq3nb03
+    %iq2nb02d = OpUDiv %uint %iq2nb02s %uint_4
+    %qoff_u = OpIAdd %uint %gqa_nb01 %iq2nb02d
+     %qoff = OpUDiv %uint %qoff_u %uint_4
+               OpStore %var_qoff %qoff
+; start_j = split * (split_kv / Bc) ; end_j = CEIL_DIV(min(KV, (split+1)*split_kv), Bc)
+    %skv_d = OpUDiv %uint %pskv %sc_Bc
+    %split = OpLoad %uint %var_split
+    %start = OpIMul %uint %split %skv_d
+               OpStore %var_start %start
+    %split1 = OpIAdd %uint %split %uint_1
+   %split1s = OpIMul %uint %split1 %pskv
+    %kvmin = OpExtInst %uint %glsl450 UMin %pKV %split1s
+    %end_t = OpIAdd %uint %kvmin %sc_Bc
+    %end_t2 = OpISub %uint %end_t %uint_1
+     %endj = OpUDiv %uint %end_t2 %sc_Bc
+               OpStore %var_end %endj
+; ===== LUT build: lut[byte] = fp8_to_f16(byte) =====
+   %lut_ok = OpULessThan %bool %tid %uint_256
+               OpSelectionMerge %lut_done None
+               OpBranchConditional %lut_ok %lut_build %lut_done
+   %lut_build = OpLabel
+      %bsg = OpShiftRightLogical %uint %tid %uint_7
+    %bsg_a = OpBitwiseAnd %uint %bsg %uint_1
+      %bexp = OpShiftRightLogical %uint %tid %uint_3
+    %bexp_a = OpBitwiseAnd %uint %bexp %uint_15
+      %bman = OpBitwiseAnd %uint %tid %uint_7
+    %exp_is0 = OpIEqual %bool %bexp_a %uint_0
+    %exp_is15 = OpIEqual %bool %bexp_a %uint_15
+               OpSelectionMerge %lut_dec_done None
+               OpBranchConditional %exp_is0 %lut_sub %lut_notsub
+   %lut_sub = OpLabel
+     %manf = OpConvertUToF %f32 %bman
+   %subval = OpFDiv %f32 %manf %float_512
+               OpBranch %lut_dec_done
+   %lut_notsub = OpLabel
+               OpSelectionMerge %lut_dec_done2 None
+               OpBranchConditional %exp_is15 %lut_nan %lut_norm
+   %lut_nan = OpLabel
+               OpBranch %lut_dec_done2
+   %lut_norm = OpLabel
+     %manf2 = OpConvertUToF %f32 %bman
+    %manf2d = OpFDiv %f32 %manf2 %float_8
+    %manf2s = OpFAdd %f32 %manf2d %float_1
+   %exp_int = OpBitcast %int %bexp_a
+    %exp_sh = OpISub %int %exp_int %int_7
+   %normval = OpExtInst %f32 %glsl450 Ldexp %manf2s %exp_sh
+               OpBranch %lut_dec_done2
+   %lut_dec_done2 = OpLabel
+    %lut_f2 = OpPhi %f32 %float_0 %lut_nan %normval %lut_norm
+               OpBranch %lut_dec_done
+   %lut_dec_done = OpLabel
+    %lut_f = OpPhi %f32 %subval %lut_sub %lut_f2 %lut_dec_done2
+    %sg_is1 = OpIEqual %bool %bsg_a %uint_1
+   %lut_neg = OpFNegate %f32 %lut_f
+    %lut_fs = OpSelect %f32 %sg_is1 %lut_neg %lut_f
+   %lut_f16 = OpFConvert %f16 %lut_fs
+  %lut_ptr = OpAccessChain %p_sh_f16 %sh_lut %tid
+               OpStore %lut_ptr %lut_f16
+               OpBranch %lut_done
+    %lut_done = OpLabel
+; ===== Q pass 1: s_q = max|Q| over tile =====
+               OpStore %qmax_l %float_0
+               OpStore %q_idx %tid
+               OpBranch %q1_loop
+   %q1_loop = OpLabel
+   %q1_idx = OpLoad %uint %q_idx
+   %q1_lim = OpIMul %uint %sc_Br %hsk_div4
+   %q1_ok = OpULessThan %bool %q1_idx %q1_lim
+               OpLoopMerge %q1_done %q1_inc None
+               OpBranchConditional %q1_ok %q1_body %q1_done
+   %q1_body = OpLabel
+    %q1_d = OpUMod %uint %q1_idx %hsk_div4
+    %q1_r = OpUDiv %uint %q1_idx %hsk_div4
+   %q1_rb = OpULessThan %bool %q1_r %sc_Br
+   %q1_db = OpULessThan %bool %q1_d %hsk_div4
+   %q1_ok2 = OpLogicalAnd %bool %q1_rb %q1_db
+               OpSelectionMerge %q1_skip_a None
+               OpBranchConditional %q1_ok2 %q1_rowchk %q1_skip_a
+   %q1_rowchk = OpLabel
+     %var_i_l = OpLoad %uint %var_i
+   %q1_iBr = OpIMul %uint %var_i_l %sc_Br
+    %q1_gr = OpIAdd %uint %q1_iBr %q1_r
+   %q1_rowok = OpULessThan %bool %q1_gr %pN
+               OpSelectionMerge %q1_skip None
+               OpBranchConditional %q1_rowok %q1_load %q1_skip
+   %q1_load = OpLabel
+   %q1_qstr = OpLoad %uint %var_qstride
+    %q1_off = OpLoad %uint %var_qoff
+   %q1_grq = OpIMul %uint %q1_gr %q1_qstr
+   %q1_grq4 = OpUDiv %uint %q1_grq %uint_4
+   %q1_tot = OpIAdd %uint %q1_off %q1_grq4
+   %q1_tot2 = OpIAdd %uint %q1_tot %q1_d
+    %q1_ptr = OpAccessChain %p_v4f32_sb %q_buf %uint_0 %q1_tot2
+   %q1_val = OpLoad %v4f32 %q1_ptr
+   %q1_scale = OpCompositeConstruct %v4f32 %pscale %pscale %pscale %pscale
+   %q1_scaled = OpFMul %v4f32 %q1_val %q1_scale
+   %q1_abs = OpExtInst %v4f32 %glsl450 FAbs %q1_scaled
+   %q1_m0 = OpCompositeExtract %f32 %q1_abs 0
+   %q1_m1 = OpCompositeExtract %f32 %q1_abs 1
+   %q1_m2 = OpCompositeExtract %f32 %q1_abs 2
+   %q1_m3 = OpCompositeExtract %f32 %q1_abs 3
+   %q1_mx = OpExtInst %f32 %glsl450 FMax %q1_m0 %q1_m1
+   %q1_mx2 = OpExtInst %f32 %glsl450 FMax %q1_mx %q1_m2
+   %q1_mx3 = OpExtInst %f32 %glsl450 FMax %q1_mx2 %q1_m3
+   %q1_old = OpLoad %f32 %qmax_l
+   %q1_new = OpExtInst %f32 %glsl450 FMax %q1_old %q1_mx3
+               OpStore %qmax_l %q1_new
+               OpBranch %q1_skip
+   %q1_skip_a = OpLabel
+               OpBranch %q1_inc
+   %q1_skip = OpLabel
+               OpBranch %q1_skip_a
+   %q1_inc = OpLabel
+   %q1_incv = OpIAdd %uint %q1_idx %sc_wg
+               OpStore %q_idx %q1_incv
+               OpBranch %q1_loop
+   %q1_done = OpLabel
+; reduce: subgroupMax -> tmpsh -> max over subgroups
+   %q1_lm = OpLoad %f32 %qmax_l
+   %q1_sm = OpGroupNonUniformFMax %f32 %uint_3 Reduce %q1_lm
+   %q1_sg0 = OpIEqual %bool %sginv %uint_0
+               OpSelectionMerge %q1_sgd None
+               OpBranchConditional %q1_sg0 %q1_sgw %q1_sgd
+   %q1_sgw = OpLabel
+  %q1_tmp_p = OpAccessChain %p_sh_f32 %sh_tmp %sg
+               OpStore %q1_tmp_p %q1_sm
+               OpBranch %q1_sgd
+   %q1_sgd = OpLabel
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+               OpStore %q1_red %q1_sm
+               OpStore %q1_s %uint_0
+               OpBranch %q1_red_loop
+   %q1_red_loop = OpLabel
+   %q1_ri = OpLoad %uint %q1_s
+   %q1_rlo = OpULessThan %bool %q1_ri %numsg
+               OpLoopMerge %q1_red_done %q1_red_inc None
+               OpBranchConditional %q1_rlo %q1_red_body %q1_red_done
+   %q1_red_body = OpLabel
+  %q1_tp2 = OpAccessChain %p_sh_f32 %sh_tmp %q1_ri
+   %q1_tv = OpLoad %f32 %q1_tp2
+   %q1_cur = OpLoad %f32 %q1_red
+   %q1_nm = OpExtInst %f32 %glsl450 FMax %q1_cur %q1_tv
+               OpStore %q1_red %q1_nm
+               OpBranch %q1_red_inc
+   %q1_red_inc = OpLabel
+   %q1_riv = OpIAdd %uint %q1_ri %uint_1
+               OpStore %q1_s %q1_riv
+               OpBranch %q1_red_loop
+   %q1_red_done = OpLabel
+   %q1_fin = OpLoad %f32 %q1_red
+               OpStore %var_sq %q1_fin
+   %q1_z = OpFOrdEqual %bool %q1_fin %float_0
+   %q1_inv = OpFDiv %f32 %float_1 %q1_fin
+   %q1_invs = OpSelect %f32 %q1_z %float_1 %q1_inv
+               OpStore %var_invsq %q1_invs
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+; ======================================================================
+; Q pass 2: quantize Q -> fp8 shmem (mirrors f32_to_fp8_e4m3, D095-D2 fixed)
+; ======================================================================
+; zero-fill sh_qf8 when HSK % 16 != 0 (pad region [HSK, HSK_pad))
+   %q2_pad = OpUMod %uint %sc_HSK %uint_16
+   %q2_padz = OpINotEqual %bool %q2_pad %uint_0
+               OpSelectionMerge %q2_pad_done None
+               OpBranchConditional %q2_padz %q2_pad_fill %q2_pad_done
+   %q2_pad_fill = OpLabel
+               OpStore %q2_zidx %tid
+               OpBranch %q2_zloop
+   %q2_zloop = OpLabel
+    %q2_zi = OpLoad %uint %q2_zidx
+    %q2_zlim = OpIMul %uint %sc_Br %qstride8
+    %q2_zok = OpULessThan %bool %q2_zi %q2_zlim
+               OpLoopMerge %q2_zdone %q2_zinc None
+               OpBranchConditional %q2_zok %q2_zbody %q2_zdone
+   %q2_zbody = OpLabel
+   %q2_z8 = OpUConvert %uint8 %uint_0
+   %q2_zf = OpBitcast %fp8 %q2_z8
+   %q2_zp = OpAccessChain %p_sh_fp8 %sh_qf8 %q2_zi
+               OpStore %q2_zp %q2_zf
+               OpBranch %q2_zinc
+   %q2_zinc = OpLabel
+   %q2_ziv = OpIAdd %uint %q2_zi %sc_wg
+               OpStore %q2_zidx %q2_ziv
+               OpBranch %q2_zloop
+   %q2_zdone = OpLabel
+               OpBranch %q2_pad_done
+   %q2_pad_done = OpLabel
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+; quantize loop (same iteration space as pass 1)
+               OpStore %q2_idx %tid
+               OpBranch %q2_loop
+   %q2_loop = OpLabel
+    %q2_i = OpLoad %uint %q2_idx
+    %q2_l = OpIMul %uint %sc_Br %hsk_div4
+    %q2_ok = OpULessThan %bool %q2_i %q2_l
+               OpLoopMerge %q2_done %q2_inc None
+               OpBranchConditional %q2_ok %q2_body %q2_done
+   %q2_body = OpLabel
+    %q2_d = OpUMod %uint %q2_i %hsk_div4
+    %q2_r = OpUDiv %uint %q2_i %hsk_div4
+   %q2_rb = OpULessThan %bool %q2_r %sc_Br
+   %q2_db = OpULessThan %bool %q2_d %hsk_div4
+   %q2_ok2 = OpLogicalAnd %bool %q2_rb %q2_db
+; v120: only write tokens 0..15 (12..15 zero-fill stays in bounds)
+   %q2_db16 = OpULessThan %bool %q2_d %uint_16
+   %q2_ok3 = OpLogicalAnd %bool %q2_ok2 %q2_db16
+               OpSelectionMerge %q2_skip_a None
+               OpBranchConditional %q2_ok3 %q2_rc %q2_skip_a
+   %q2_rc = OpLabel
+    %q2_iL = OpLoad %uint %var_i
+   %q2_iBr = OpIMul %uint %q2_iL %sc_Br
+; v120: token = q2_d (was q2_r), d-group = q2_r (was q2_d)
+    %q2_gr = OpIAdd %uint %q2_iBr %q2_d
+   %q2_rowok = OpULessThan %bool %q2_gr %pN
+               OpSelectionMerge %q2_skip None
+               OpBranchConditional %q2_rowok %q2_load %q2_zero
+   %q2_zero = OpLabel
+; v120: Q zero fp8 (d-major): qf8[d*264 + token*4 + k] = 0
+   %q2_zqstr = OpLoad %uint %var_qstride
+   %q2_zrow = OpIMul %uint %q2_d %qstride8
+   %q2_zcol = OpIMul %uint %q2_r %uint_4
+   %q2_zbase = OpIAdd %uint %q2_zrow %q2_zcol
+   %q2_zp0 = OpAccessChain %p_sh_fp8 %sh_qf8 %q2_zbase
+               OpStore %q2_zp0 %fp8_0
+   %q2_zb1p = OpIAdd %uint %q2_zbase %uint_1
+   %q2_zb1 = OpAccessChain %p_sh_fp8 %sh_qf8 %q2_zb1p
+               OpStore %q2_zb1 %fp8_0
+   %q2_zb2p = OpIAdd %uint %q2_zbase %uint_2
+   %q2_zb2 = OpAccessChain %p_sh_fp8 %sh_qf8 %q2_zb2p
+               OpStore %q2_zb2 %fp8_0
+   %q2_zb3p = OpIAdd %uint %q2_zbase %uint_3
+   %q2_zb3 = OpAccessChain %p_sh_fp8 %sh_qf8 %q2_zb3p
+               OpStore %q2_zb3 %fp8_0
+               OpBranch %q2_skip
+   %q2_load = OpLabel
+   %q2_qs = OpLoad %uint %var_qstride
+   %q2_qo = OpLoad %uint %var_qoff
+    %q2_gq = OpIMul %uint %q2_gr %q2_qs
+    %q2_g4 = OpUDiv %uint %q2_gq %uint_4
+   %q2_tot = OpIAdd %uint %q2_qo %q2_g4
+   %q2_r4 = OpIMul %uint %q2_r %uint_4
+   %q2_tot2 = OpIAdd %uint %q2_tot %q2_r4
+    %q2_p1 = OpAccessChain %p_v4f32_sb %q_buf %uint_0 %q2_tot2
+    %q2_v = OpLoad %v4f32 %q2_p1
+   %q2_sc = OpCompositeConstruct %v4f32 %pscale %pscale %pscale %pscale
+   %q2_vs = OpFMul %v4f32 %q2_v %q2_sc
+; v110: Q stored as f16 (full precision) - fp8 quantization of Q lost too
+; much precision on wide-range Q values (subnormal f8 -> 50% error).
+   %q2_vq = OpSelect %v4f32 %q2_rowok %q2_v %v4f32_0
+; encode 4 components
+   %q2_c0 = OpCompositeExtract %f32 %q2_vq 0
+   %q2_c1 = OpCompositeExtract %f32 %q2_vq 1
+   %q2_c2 = OpCompositeExtract %f32 %q2_vq 2
+   %q2_c3 = OpCompositeExtract %f32 %q2_vq 3
+; c0
+   %q2_s0 = OpFOrdLessThan %bool %q2_c0 %float_0
+   %q2_ab0 = OpExtInst %f32 %glsl450 FAbs %q2_c0
+   %q2_cl0 = OpExtInst %f32 %glsl450 FMin %q2_ab0 %float_448
+   %q2_nm0 = OpFOrdGreaterThanEqual %bool %q2_cl0 %float_1o64
+               OpSelectionMerge %q2_e0_done None
+               OpBranchConditional %q2_nm0 %q2_e0_norm %q2_e0_sub
+   %q2_e0_sub = OpLabel
+   %q2_sf0 = OpFMul %f32 %q2_cl0 %float_512
+   %q2_sm0 = OpExtInst %f32 %glsl450 Round %q2_sf0
+   %q2_su0 = OpConvertFToU %uint %q2_sm0
+   %q2_smc0 = OpExtInst %uint %glsl450 UMin %q2_su0 %uint_7
+               OpBranch %q2_e0_done
+   %q2_e0_norm = OpLabel
+   %q2_fi0 = OpExtInst %f32 %glsl450 Log2 %q2_cl0
+   %q2_fl0 = OpExtInst %f32 %glsl450 Floor %q2_fi0
+   %q2_fo0 = OpConvertFToS %int %q2_fl0
+   %q2_fp0 = OpIAdd %int %q2_fo0 %int_7
+   %q2_fu0 = OpBitcast %uint %q2_fp0
+   %q2_fc0 = OpExtInst %uint %glsl450 UMin %q2_fu0 %uint_14
+   %q2_pw0 = OpExtInst %f32 %glsl450 Ldexp %float_1 %q2_fo0
+   %q2_sl0 = OpFDiv %f32 %q2_cl0 %q2_pw0
+   %q2_m10 = OpFSub %f32 %q2_sl0 %float_1
+   %q2_m80 = OpFMul %f32 %q2_m10 %float_8
+   %q2_mr0 = OpExtInst %f32 %glsl450 Round %q2_m80
+   %q2_mu0 = OpConvertFToU %uint %q2_mr0
+   %q2_mc0 = OpExtInst %uint %glsl450 UMin %q2_mu0 %uint_7
+   %q2_e30 = OpShiftLeftLogical %uint %q2_fc0 %uint_3
+   %q2_bo0 = OpBitwiseOr %uint %q2_e30 %q2_mc0
+   %q2_b0s = OpSelect %uint %q2_s0 %uint_128 %uint_0
+   %q2_by0 = OpBitwiseOr %uint %q2_b0s %q2_bo0
+               OpBranch %q2_e0_done
+   %q2_e0_done = OpLabel
+   %q2_b0 = OpPhi %uint %q2_smc0 %q2_e0_sub %q2_by0 %q2_e0_norm
+; c1
+   %q2_s1 = OpFOrdLessThan %bool %q2_c1 %float_0
+   %q2_ab1 = OpExtInst %f32 %glsl450 FAbs %q2_c1
+   %q2_cl1 = OpExtInst %f32 %glsl450 FMin %q2_ab1 %float_448
+   %q2_nm1 = OpFOrdGreaterThanEqual %bool %q2_cl1 %float_1o64
+               OpSelectionMerge %q2_e1_done None
+               OpBranchConditional %q2_nm1 %q2_e1_norm %q2_e1_sub
+   %q2_e1_sub = OpLabel
+   %q2_sf1 = OpFMul %f32 %q2_cl1 %float_512
+   %q2_sm1 = OpExtInst %f32 %glsl450 Round %q2_sf1
+   %q2_su1 = OpConvertFToU %uint %q2_sm1
+   %q2_smc1 = OpExtInst %uint %glsl450 UMin %q2_su1 %uint_7
+               OpBranch %q2_e1_done
+   %q2_e1_norm = OpLabel
+   %q2_fi1 = OpExtInst %f32 %glsl450 Log2 %q2_cl1
+   %q2_fl1 = OpExtInst %f32 %glsl450 Floor %q2_fi1
+   %q2_fo1 = OpConvertFToS %int %q2_fl1
+   %q2_fp1 = OpIAdd %int %q2_fo1 %int_7
+   %q2_fu1 = OpBitcast %uint %q2_fp1
+   %q2_fc1 = OpExtInst %uint %glsl450 UMin %q2_fu1 %uint_14
+   %q2_pw1 = OpExtInst %f32 %glsl450 Ldexp %float_1 %q2_fo1
+   %q2_sl1 = OpFDiv %f32 %q2_cl1 %q2_pw1
+   %q2_m11 = OpFSub %f32 %q2_sl1 %float_1
+   %q2_m81 = OpFMul %f32 %q2_m11 %float_8
+   %q2_mr1 = OpExtInst %f32 %glsl450 Round %q2_m81
+   %q2_mu1 = OpConvertFToU %uint %q2_mr1
+   %q2_mc1 = OpExtInst %uint %glsl450 UMin %q2_mu1 %uint_7
+   %q2_e31 = OpShiftLeftLogical %uint %q2_fc1 %uint_3
+   %q2_bo1 = OpBitwiseOr %uint %q2_e31 %q2_mc1
+   %q2_b1s = OpSelect %uint %q2_s1 %uint_128 %uint_0
+   %q2_by1 = OpBitwiseOr %uint %q2_b1s %q2_bo1
+               OpBranch %q2_e1_done
+   %q2_e1_done = OpLabel
+   %q2_b1 = OpPhi %uint %q2_smc1 %q2_e1_sub %q2_by1 %q2_e1_norm
+; c2
+   %q2_s2 = OpFOrdLessThan %bool %q2_c2 %float_0
+   %q2_ab2 = OpExtInst %f32 %glsl450 FAbs %q2_c2
+   %q2_cl2 = OpExtInst %f32 %glsl450 FMin %q2_ab2 %float_448
+   %q2_nm2 = OpFOrdGreaterThanEqual %bool %q2_cl2 %float_1o64
+               OpSelectionMerge %q2_e2_done None
+               OpBranchConditional %q2_nm2 %q2_e2_norm %q2_e2_sub
+   %q2_e2_sub = OpLabel
+   %q2_sf2 = OpFMul %f32 %q2_cl2 %float_512
+   %q2_sm2 = OpExtInst %f32 %glsl450 Round %q2_sf2
+   %q2_su2 = OpConvertFToU %uint %q2_sm2
+   %q2_smc2 = OpExtInst %uint %glsl450 UMin %q2_su2 %uint_7
+               OpBranch %q2_e2_done
+   %q2_e2_norm = OpLabel
+   %q2_fi2 = OpExtInst %f32 %glsl450 Log2 %q2_cl2
+   %q2_fl2 = OpExtInst %f32 %glsl450 Floor %q2_fi2
+   %q2_fo2 = OpConvertFToS %int %q2_fl2
+   %q2_fp2 = OpIAdd %int %q2_fo2 %int_7
+   %q2_fu2 = OpBitcast %uint %q2_fp2
+   %q2_fc2 = OpExtInst %uint %glsl450 UMin %q2_fu2 %uint_14
+   %q2_pw2 = OpExtInst %f32 %glsl450 Ldexp %float_1 %q2_fo2
+   %q2_sl2 = OpFDiv %f32 %q2_cl2 %q2_pw2
+   %q2_m12 = OpFSub %f32 %q2_sl2 %float_1
+   %q2_m82 = OpFMul %f32 %q2_m12 %float_8
+   %q2_mr2 = OpExtInst %f32 %glsl450 Round %q2_m82
+   %q2_mu2 = OpConvertFToU %uint %q2_mr2
+   %q2_mc2 = OpExtInst %uint %glsl450 UMin %q2_mu2 %uint_7
+   %q2_e32 = OpShiftLeftLogical %uint %q2_fc2 %uint_3
+   %q2_bo2 = OpBitwiseOr %uint %q2_e32 %q2_mc2
+   %q2_b2s = OpSelect %uint %q2_s2 %uint_128 %uint_0
+   %q2_by2 = OpBitwiseOr %uint %q2_b2s %q2_bo2
+               OpBranch %q2_e2_done
+   %q2_e2_done = OpLabel
+   %q2_b2 = OpPhi %uint %q2_smc2 %q2_e2_sub %q2_by2 %q2_e2_norm
+; c3
+   %q2_s3 = OpFOrdLessThan %bool %q2_c3 %float_0
+   %q2_ab3 = OpExtInst %f32 %glsl450 FAbs %q2_c3
+   %q2_cl3 = OpExtInst %f32 %glsl450 FMin %q2_ab3 %float_448
+   %q2_nm3 = OpFOrdGreaterThanEqual %bool %q2_cl3 %float_1o64
+               OpSelectionMerge %q2_e3_done None
+               OpBranchConditional %q2_nm3 %q2_e3_norm %q2_e3_sub
+   %q2_e3_sub = OpLabel
+   %q2_sf3 = OpFMul %f32 %q2_cl3 %float_512
+   %q2_sm3 = OpExtInst %f32 %glsl450 Round %q2_sf3
+   %q2_su3 = OpConvertFToU %uint %q2_sm3
+   %q2_smc3 = OpExtInst %uint %glsl450 UMin %q2_su3 %uint_7
+               OpBranch %q2_e3_done
+   %q2_e3_norm = OpLabel
+   %q2_fi3 = OpExtInst %f32 %glsl450 Log2 %q2_cl3
+   %q2_fl3 = OpExtInst %f32 %glsl450 Floor %q2_fi3
+   %q2_fo3 = OpConvertFToS %int %q2_fl3
+   %q2_fp3 = OpIAdd %int %q2_fo3 %int_7
+   %q2_fu3 = OpBitcast %uint %q2_fp3
+   %q2_fc3 = OpExtInst %uint %glsl450 UMin %q2_fu3 %uint_14
+   %q2_pw3 = OpExtInst %f32 %glsl450 Ldexp %float_1 %q2_fo3
+   %q2_sl3 = OpFDiv %f32 %q2_cl3 %q2_pw3
+   %q2_m13 = OpFSub %f32 %q2_sl3 %float_1
+   %q2_m83 = OpFMul %f32 %q2_m13 %float_8
+   %q2_mr3 = OpExtInst %f32 %glsl450 Round %q2_m83
+   %q2_mu3 = OpConvertFToU %uint %q2_mr3
+   %q2_mc3 = OpExtInst %uint %glsl450 UMin %q2_mu3 %uint_7
+   %q2_e33 = OpShiftLeftLogical %uint %q2_fc3 %uint_3
+   %q2_bo3 = OpBitwiseOr %uint %q2_e33 %q2_mc3
+   %q2_b3s = OpSelect %uint %q2_s3 %uint_128 %uint_0
+   %q2_by3 = OpBitwiseOr %uint %q2_b3s %q2_bo3
+               OpBranch %q2_e3_done
+   %q2_e3_done = OpLabel
+   %q2_b3 = OpPhi %uint %q2_smc3 %q2_e3_sub %q2_by3 %q2_e3_norm
+; v120: Q store fp8 (d-major): qf8[d*qstride8 + token*4 + k]
+   %q2_qstr = OpLoad %uint %var_qstride
+   %q2_row = OpIMul %uint %q2_d %qstride8
+   %q2_col = OpIMul %uint %q2_r %uint_4
+   %q2_base = OpIAdd %uint %q2_row %q2_col
+   %q2_b0u = OpUConvert %uint8 %q2_b0
+   %q2_b1u = OpUConvert %uint8 %q2_b1
+   %q2_b2u = OpUConvert %uint8 %q2_b2
+   %q2_b3u = OpUConvert %uint8 %q2_b3
+   %q2_b0f = OpBitcast %fp8 %q2_b0u
+   %q2_b1f = OpBitcast %fp8 %q2_b1u
+   %q2_b2f = OpBitcast %fp8 %q2_b2u
+   %q2_b3f = OpBitcast %fp8 %q2_b3u
+   %q2_st0 = OpAccessChain %p_sh_fp8 %sh_qf8 %q2_base
+               OpStore %q2_st0 %q2_b0f
+   %q2_b1p = OpIAdd %uint %q2_base %uint_1
+   %q2_st1 = OpAccessChain %p_sh_fp8 %sh_qf8 %q2_b1p
+               OpStore %q2_st1 %q2_b1f
+   %q2_b2p = OpIAdd %uint %q2_base %uint_2
+   %q2_st2 = OpAccessChain %p_sh_fp8 %sh_qf8 %q2_b2p
+               OpStore %q2_st2 %q2_b2f
+   %q2_b3p = OpIAdd %uint %q2_base %uint_3
+   %q2_st3 = OpAccessChain %p_sh_fp8 %sh_qf8 %q2_b3p
+               OpStore %q2_st3 %q2_b3f
+               OpBranch %q2_skip
+   %q2_skip_a = OpLabel
+               OpBranch %q2_inc
+   %q2_skip = OpLabel
+               OpBranch %q2_skip_a
+   %q2_inc = OpLabel
+   %q2_iv = OpIAdd %uint %q2_i %sc_wg
+               OpStore %q2_idx %q2_iv
+               OpBranch %q2_loop
+   %q2_done = OpLabel
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+; ======================================================================
+; state vars + init: Of/Mf/Lf, ALiBi slope, mo_offset, mask_opt state
+; ======================================================================
+; Of[r][0] = 0 ; Lf[r] = 0 ; Mf[r] = NEG_FLT_MAX/2  (unrolled, r=0..3)
+   %ini_Op0 = OpAccessChain %p_v4f16_f %var_Of %uint_0 %uint_0
+               OpStore %ini_Op0 %v4f16_0
+   %ini_Op1 = OpAccessChain %p_v4f16_f %var_Of %uint_1 %uint_0
+               OpStore %ini_Op1 %v4f16_0
+   %ini_Op2 = OpAccessChain %p_v4f16_f %var_Of %uint_2 %uint_0
+               OpStore %ini_Op2 %v4f16_0
+   %ini_Op3 = OpAccessChain %p_v4f16_f %var_Of %uint_3 %uint_0
+               OpStore %ini_Op3 %v4f16_0
+   %ini_L0 = OpAccessChain %p_f32_f %var_Lf %uint_0
+               OpStore %ini_L0 %float_0
+   %ini_L1 = OpAccessChain %p_f32_f %var_Lf %uint_1
+               OpStore %ini_L1 %float_0
+   %ini_L2 = OpAccessChain %p_f32_f %var_Lf %uint_2
+               OpStore %ini_L2 %float_0
+   %ini_L3 = OpAccessChain %p_f32_f %var_Lf %uint_3
+               OpStore %ini_L3 %float_0
+   %ini_M0 = OpAccessChain %p_f32_f %var_Mf %uint_0
+               OpStore %ini_M0 %float_negmax2
+   %ini_M1 = OpAccessChain %p_f32_f %var_Mf %uint_1
+               OpStore %ini_M1 %float_negmax2
+   %ini_M2 = OpAccessChain %p_f32_f %var_Mf %uint_2
+               OpStore %ini_M2 %float_negmax2
+   %ini_M3 = OpAccessChain %p_f32_f %var_Mf %uint_3
+               OpStore %ini_M3 %float_negmax2
+   %m_off0 = OpLoad %uint %var_moff
+   %mo_s_t = OpIAdd %uint %pKV %uint_1023
+    %mo_s = OpUDiv %uint %mo_s_t %uint_1024
+    %mi_l = OpLoad %uint %var_i
+   %mo_b0 = OpIMul %uint %mo_s %mi_l
+   %nem2n = OpINotEqual %bool %pnem2 %uint_1
+   %nem3n = OpINotEqual %bool %pnem3 %uint_1
+  %nem23b = OpLogicalOr %bool %nem2n %nem3n
+               OpSelectionMerge %mo_adj_done None
+               OpBranchConditional %nem23b %mo_adj %mo_adj_plain
+   %mo_adj = OpLabel
+    %h1 = OpUMod %uint %wgz %pnem3
+    %h2 = OpIMul %uint %h1 %pnem2
+    %h3 = OpUMod %uint %iq2 %pnem2
+    %h4 = OpIAdd %uint %h2 %h3
+   %ced_t = OpIAdd %uint %pne1 %uint_15
+    %ced = OpUDiv %uint %ced_t %uint_16
+    %h5 = OpIMul %uint %h4 %ced
+    %h6 = OpIMul %uint %h5 %mo_s
+   %mo_a = OpIAdd %uint %mo_b0 %h6
+               OpStore %var_mo %mo_a
+               OpBranch %mo_adj_done
+   %mo_adj_plain = OpLabel
+               OpStore %var_mo %mo_b0
+               OpBranch %mo_adj_done
+   %mo_adj_done = OpLabel
+; slope init: tid < Br -> slope[tid] = (max_bias > 0) ? pow(base, exph) : 1
+   %mb_pos = OpFOrdGreaterThan %bool %pmaxb %float_0
+    %sl_ok = OpULessThan %bool %tid %sc_Br
+               OpSelectionMerge %sl_outer_done None
+               OpBranchConditional %sl_ok %sl_outer %sl_outer_done
+   %sl_outer = OpLabel
+               OpSelectionMerge %sl_done None
+               OpBranchConditional %mb_pos %sl_abi %sl_one
+   %sl_one = OpLabel
+   %sl1_p = OpAccessChain %p_sh_f32 %sh_slope %tid
+               OpStore %sl1_p %float_1
+               OpBranch %sl_done
+   %sl_abi = OpLabel
+    %sl_rg = OpUMod %uint %tid %pgqa
+     %sl_h = OpIAdd %uint %iq2 %sl_rg
+  %sl_nhl2 = OpBitwiseAnd %uint %pmnh2 %uint_65535
+   %sl_lt = OpULessThan %bool %sl_h %sl_nhl2
+  %sl_m0v = OpSelect %f32 %sl_lt %pm0 %pm1
+   %sl_e1 = OpIAdd %uint %sl_h %uint_1
+   %sl_h2x = OpIMul %uint %sl_h %uint_2
+   %sl_2h = OpISub %uint %sl_h2x %sl_nhl2
+   %sl_e2 = OpIAdd %uint %sl_2h %uint_1
+   %sl_ei = OpSelect %uint %sl_lt %sl_e1 %sl_e2
+   %sl_ef = OpConvertUToF %f32 %sl_ei
+   %sl_pw = OpExtInst %f32 %glsl450 Pow %sl_m0v %sl_ef
+   %sl2_p = OpAccessChain %p_sh_f32 %sh_slope %tid
+               OpStore %sl2_p %sl_pw
+               OpBranch %sl_done
+   %sl_done = OpLabel
+               OpBranch %sl_outer_done
+   %sl_outer_done = OpLabel
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+; j-loop init
+   %j_st = OpLoad %uint %var_start
+               OpStore %var_j %j_st
+               OpStore %var_moidx %uint_neg1
+               OpStore %var_mobits %uint_0
+   %mc0_p = OpAccessChain %p_v4f16_f %var_mc %uint_0
+               OpStore %mc0_p %v4f16_0
+               OpBranch %j_loop
+   %j_loop = OpLabel
+     %jv = OpLoad %uint %var_j
+     %je = OpLoad %uint %var_end
+    %jok = OpULessThan %bool %jv %je
+               OpLoopMerge %j_done %j_inc None
+               OpBranchConditional %jok %j_body %j_done
+   %j_body = OpLabel
+               OpStore %mc0_p %v4f16_0
+; ---------------- mask handling ----------------
+   %fl_2 = OpBitwiseAnd %uint %sc_flags %uint_2
+  %mask_en = OpINotEqual %bool %fl_2 %uint_0
+               OpSelectionMerge %mask_sec_done None
+               OpBranchConditional %mask_en %mask_sec %mask_sec_done
+   %mask_sec = OpLabel
+   %fl_1 = OpBitwiseAnd %uint %sc_flags %uint_1
+   %use_mo = OpINotEqual %bool %fl_1 %uint_0
+   %j_d16 = OpUDiv %uint %jv %uint_16
+  %moidx_l = OpLoad %uint %var_moidx
+   %mo_neq = OpINotEqual %bool %moidx_l %j_d16
+   %mo_cond = OpLogicalAnd %bool %use_mo %mo_neq
+               OpSelectionMerge %mo_upd_done None
+               OpBranchConditional %mo_cond %mo_upd %mo_upd_done
+   %mo_upd = OpLabel
+               OpStore %var_moidx %j_d16
+   %mo_off_l = OpLoad %uint %var_mo
+    %mo_idx = OpIAdd %uint %mo_off_l %j_d16
+    %mo_ptr = OpAccessChain %p_uint_sb %mo_buf %uint_0 %mo_idx
+    %mo_val = OpLoad %uint %mo_ptr
+               OpStore %var_mo %mo_val
+               OpBranch %mo_upd_done
+   %mo_upd_done = OpLabel
+   %mo_v2 = OpLoad %uint %var_mo
+   %j_m16 = OpUMod %uint %jv %uint_16
+  %j_m16x2 = OpIMul %uint %j_m16 %uint_2
+   %mo_sh = OpShiftRightLogical %uint %mo_v2 %j_m16x2
+   %mo_bs = OpBitwiseAnd %uint %mo_sh %uint_3
+               OpStore %var_mobits %mo_bs
+   %all_neg = OpIEqual %bool %mo_bs %uint_1
+               OpSelectionMerge %mo_skip_done None
+               OpBranchConditional %all_neg %j_inc %mo_skip_done
+   %mo_skip_done = OpLabel
+   %all_zero = OpIEqual %bool %mo_bs %uint_2
+               OpSelectionMerge %mload_done None
+               OpBranchConditional %all_zero %mload_done %mload_body
+   %mload_body = OpLabel
+; per-thread: c = tid/(Br/4), r = tid%(Br/4); addr = moff + (i*Br+r*4)*m_stride + (j*Bc+c)
+; v126 fix: the S slot (us_c, us_r) holds rows kv=4*us_c at token cols 4*us_r+k.
+; mask read: row = 4*us_c (kv), col = 4*us_r + k (token), vector stride = 1.
+   %ml_c = OpUDiv %uint %tid %Br_div4
+   %ml_r = OpUMod %uint %tid %Br_div4
+   %ml_r4 = OpIMul %uint %ml_r %uint_4
+   %ml_iBr = OpIMul %uint %mi_l %sc_Br
+   %ml_c4 = OpIMul %uint %ml_c %uint_4
+   %ml_row = OpIAdd %uint %ml_iBr %ml_c4
+   %ml_ms = OpLoad %uint %var_mstride
+   %ml_rs = OpIMul %uint %ml_row %ml_ms
+   %ml_jc = OpIMul %uint %jv %sc_Bc
+   %ml_c2 = OpIAdd %uint %ml_jc %ml_r4
+   %ml_ad = OpIAdd %uint %ml_rs %ml_c2
+   %ml_ab = OpIAdd %uint %m_off0 %ml_ad
+; kv bounds: !kbc || (j*Bc+c < KV)  (kbc/kbc_inv computed in entry, loop-invariant)
+   %ml_kvok = OpULessThan %bool %ml_c2 %pKV
+   %ml_ok = OpLogicalOr %bool %kbc_inv %ml_kvok
+               OpSelectionMerge %ml_skip2 None
+               OpBranchConditional %ml_ok %ml_case %ml_skip2
+   %ml_case = OpLabel
+; nem1 5-way: !nbc || row+3<nem1 -> full ; +2 ; +1 ; +0 ; else zero
+   %nbc_t = OpUMod %uint %pnem1 %sc_Br
+   %nbc_mz = OpINotEqual %bool %nbc_t %uint_0
+   %gqa_is1 = OpIEqual %bool %pgqa %uint_1
+    %nbc = OpLogicalAnd %bool %gqa_is1 %nbc_mz
+  %nbc_inv = OpLogicalNot %bool %nbc
+   %ml_r43 = OpIAdd %uint %ml_row %uint_3
+   %ml_fok = OpULessThan %bool %ml_r43 %pnem1
+   %ml_cf = OpLogicalOr %bool %nbc_inv %ml_fok
+               OpSelectionMerge %ml_casedone None
+               OpBranchConditional %ml_cf %ml_full %ml_c3
+   %ml_full = OpLabel
+   %ml_a0 = OpAccessChain %p_f16_sb %m_buf %uint_0 %ml_ab
+   %ml_v0 = OpLoad %f16 %ml_a0
+   %ml_ab1 = OpIAdd %uint %ml_ab %uint_1
+   %ml_a1 = OpAccessChain %p_f16_sb %m_buf %uint_0 %ml_ab1
+   %ml_v1 = OpLoad %f16 %ml_a1
+   %ml_ab2 = OpIAdd %uint %ml_ab1 %uint_1
+   %ml_a2 = OpAccessChain %p_f16_sb %m_buf %uint_0 %ml_ab2
+   %ml_v2 = OpLoad %f16 %ml_a2
+   %ml_ab3 = OpIAdd %uint %ml_ab2 %uint_1
+   %ml_a3 = OpAccessChain %p_f16_sb %m_buf %uint_0 %ml_ab3
+   %ml_v3 = OpLoad %f16 %ml_a3
+   %ml_vec = OpCompositeConstruct %v4f16 %ml_v0 %ml_v1 %ml_v2 %ml_v3
+   %ml_f0 = OpFConvert %f32 %ml_v0
+   %ml_f1 = OpFConvert %f32 %ml_v1
+   %ml_f2 = OpFConvert %f32 %ml_v2
+   %ml_f3 = OpFConvert %f32 %ml_v3
+   %ml_mx0 = OpExtInst %f32 %glsl450 FMax %float_negmax2 %ml_f0
+   %ml_mx1 = OpExtInst %f32 %glsl450 FMax %ml_mx0 %ml_f1
+   %ml_mx2 = OpExtInst %f32 %glsl450 FMax %ml_mx1 %ml_f2
+   %ml_mx3 = OpExtInst %f32 %glsl450 FMax %ml_mx2 %ml_f3
+               OpBranch %ml_casedone
+   %ml_c3 = OpLabel
+   %ml_r42 = OpIAdd %uint %ml_row %uint_2
+   %ml_3ok = OpULessThan %bool %ml_r42 %pnem1
+               OpSelectionMerge %ml_c3d None
+               OpBranchConditional %ml_3ok %ml_3f %ml_c2l
+   %ml_3f = OpLabel
+   %ml_b0 = OpAccessChain %p_f16_sb %m_buf %uint_0 %ml_ab
+   %ml_w0 = OpLoad %f16 %ml_b0
+   %ml_ab1b = OpIAdd %uint %ml_ab %uint_1
+   %ml_b1 = OpAccessChain %p_f16_sb %m_buf %uint_0 %ml_ab1b
+   %ml_w1 = OpLoad %f16 %ml_b1
+   %ml_ab2b = OpIAdd %uint %ml_ab1b %uint_1
+   %ml_b2 = OpAccessChain %p_f16_sb %m_buf %uint_0 %ml_ab2b
+   %ml_w2 = OpLoad %f16 %ml_b2
+   %ml_vec3 = OpCompositeConstruct %v4f16 %ml_w0 %ml_w1 %ml_w2 %half_0
+   %ml_g0 = OpFConvert %f32 %ml_w0
+   %ml_g1 = OpFConvert %f32 %ml_w1
+   %ml_g2 = OpFConvert %f32 %ml_w2
+   %ml_nx0 = OpExtInst %f32 %glsl450 FMax %float_negmax2 %ml_g0
+   %ml_nx1 = OpExtInst %f32 %glsl450 FMax %ml_nx0 %ml_g1
+   %ml_nx2 = OpExtInst %f32 %glsl450 FMax %ml_nx1 %ml_g2
+               OpBranch %ml_c3d
+   %ml_c2l = OpLabel
+   %ml_r41 = OpIAdd %uint %ml_row %uint_1
+   %ml_2ok = OpULessThan %bool %ml_r41 %pnem1
+               OpSelectionMerge %ml_c2d None
+               OpBranchConditional %ml_2ok %ml_2f %ml_c1
+   %ml_2f = OpLabel
+   %ml_c0 = OpAccessChain %p_f16_sb %m_buf %uint_0 %ml_ab
+   %ml_x0 = OpLoad %f16 %ml_c0
+   %ml_ab1c = OpIAdd %uint %ml_ab %uint_1
+   %ml_c1b = OpAccessChain %p_f16_sb %m_buf %uint_0 %ml_ab1c
+   %ml_x1 = OpLoad %f16 %ml_c1b
+   %ml_vec2 = OpCompositeConstruct %v4f16 %ml_x0 %ml_x1 %half_0 %half_0
+   %ml_h0 = OpFConvert %f32 %ml_x0
+   %ml_h1 = OpFConvert %f32 %ml_x1
+   %ml_ox0 = OpExtInst %f32 %glsl450 FMax %float_negmax2 %ml_h0
+   %ml_ox1 = OpExtInst %f32 %glsl450 FMax %ml_ox0 %ml_h1
+               OpBranch %ml_c2d
+   %ml_c1 = OpLabel
+   %ml_r40 = OpIAdd %uint %ml_row %uint_0
+   %ml_1ok = OpULessThan %bool %ml_r40 %pnem1
+               OpSelectionMerge %ml_c1d None
+               OpBranchConditional %ml_1ok %ml_1f %ml_c0l
+   %ml_1f = OpLabel
+   %ml_d0 = OpAccessChain %p_f16_sb %m_buf %uint_0 %ml_ab
+   %ml_y0 = OpLoad %f16 %ml_d0
+   %ml_vec1 = OpCompositeConstruct %v4f16 %ml_y0 %half_0 %half_0 %half_0
+   %ml_i0 = OpFConvert %f32 %ml_y0
+   %ml_px0 = OpExtInst %f32 %glsl450 FMax %float_negmax2 %ml_i0
+               OpBranch %ml_c1d
+   %ml_c0l = OpLabel
+   %ml_vec0 = OpCompositeConstruct %v4f16 %half_0 %half_0 %half_0 %half_0
+               OpBranch %ml_c1d
+   %ml_c1d = OpLabel
+   %ml_vec1b = OpPhi %v4f16 %ml_vec1 %ml_1f %ml_vec0 %ml_c0l
+   %ml_mx1b = OpPhi %f32 %ml_px0 %ml_1f %float_negmax2 %ml_c0l
+               OpBranch %ml_c2d
+   %ml_c2d = OpLabel
+   %ml_vec2b = OpPhi %v4f16 %ml_vec2 %ml_2f %ml_vec1b %ml_c1d
+   %ml_mx2b = OpPhi %f32 %ml_ox1 %ml_2f %ml_mx1b %ml_c1d
+               OpBranch %ml_c3d
+   %ml_c3d = OpLabel
+   %ml_vec3b = OpPhi %v4f16 %ml_vec3 %ml_3f %ml_vec2b %ml_c2d
+   %ml_mx3b = OpPhi %f32 %ml_nx2 %ml_3f %ml_mx2b %ml_c2d
+               OpBranch %ml_casedone
+   %ml_casedone = OpLabel
+   %ml_vecf = OpPhi %v4f16 %ml_vec %ml_full %ml_vec3b %ml_c3d
+   %ml_maxf = OpPhi %f32 %ml_mx3 %ml_full %ml_mx3b %ml_c3d
+               OpStore %mc0_p %ml_vecf
+; all_less reduce via tmpsh
+   %ml_al = OpFOrdLessThanEqual %bool %ml_maxf %float_negmax2
+   %ml_all = OpGroupNonUniformAll %bool %uint_3 %ml_al
+               OpSelectionMerge %ml_al_done None
+               OpBranchConditional %ml_all %ml_al_w %ml_al_done
+   %ml_al_w = OpLabel
+  %ml_tmp_p = OpAccessChain %p_sh_f32 %sh_tmp %sg
+               OpStore %ml_tmp_p %float_negmax2
+               OpBranch %ml_al_done
+   %ml_al_done = OpLabel
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+               OpStore %ml_red %float_negmax2
+               OpStore %ml_s %uint_0
+               OpBranch %ml_rloop
+   %ml_rloop = OpLabel
+    %ml_ri = OpLoad %uint %ml_s
+    %ml_rl = OpULessThan %bool %ml_ri %numsg
+               OpLoopMerge %ml_rdone %ml_rinc None
+               OpBranchConditional %ml_rl %ml_rb %ml_rdone
+   %ml_rb = OpLabel
+  %ml_tp2 = OpAccessChain %p_sh_f32 %sh_tmp %ml_ri
+   %ml_tv = OpLoad %f32 %ml_tp2
+   %ml_cu = OpLoad %f32 %ml_red
+   %ml_nm = OpExtInst %f32 %glsl450 FMax %ml_cu %ml_tv
+               OpStore %ml_red %ml_nm
+               OpBranch %ml_rinc
+   %ml_rinc = OpLabel
+   %ml_riv = OpIAdd %uint %ml_ri %uint_1
+               OpStore %ml_s %ml_riv
+               OpBranch %ml_rloop
+   %ml_rdone = OpLabel
+   %ml_fin = OpLoad %f32 %ml_red
+   %ml_alll = OpFOrdLessThanEqual %bool %ml_fin %float_negmax2
+               OpSelectionMerge %ml_skip2b None
+               OpBranchConditional %ml_alll %j_inc %ml_skip2b
+   %ml_skip2b = OpLabel
+               OpBranch %ml_skip2
+   %ml_skip2 = OpLabel
+               OpBranch %mload_done
+   %mload_done = OpLabel
+               OpBranch %mask_sec_done
+   %mask_sec_done = OpLabel
+; ---------------- S-stage: fp8 coopmat ----------------
+               OpStore %var_sf %cmz_f32
+               OpStore %var_d %uint_0
+               OpBranch %d_loop
+   %d_loop = OpLabel
+     %dv = OpLoad %uint %var_d
+    %dok = OpULessThan %bool %dv %hsktiles
+               OpLoopMerge %d_done %d_inc None
+               OpBranchConditional %dok %d_body %d_done
+   %d_body = OpLabel
+               OpSelectionMerge %kld_done None
+               OpBranchConditional %kbc %k_stage %k_direct
+   %k_stage = OpLabel
+               OpStore %ks_i %tid
+               OpBranch %ks_loop
+   %ks_loop = OpLabel
+    %ksv = OpLoad %uint %ks_i
+   %ksok = OpULessThan %bool %ksv %uint_1024
+               OpLoopMerge %ks_done %ks_inc None
+               OpBranchConditional %ksok %ks_body %ks_done
+   %ks_body = OpLabel
+; v110: K read as fp8 then LUT-converted to f16; store in sh_k16 with
+; per-subgroup zones: index (sg*64 + ks_r*16 + ks_c), rows = sg*16 + ks_r.
+    %ks_r = OpUDiv %uint %ksv %uint_16
+    %ks_c = OpUMod %uint %ksv %uint_16
+   %ks_jc = OpIMul %uint %jv %sc_Bc
+   %ks_vr = OpIAdd %uint %ks_jc %ks_r
+   %ks_kv = OpULessThan %bool %ks_vr %pKV
+   %ks_d16 = OpIMul %uint %dv %uint_16
+    %ks_h = OpIAdd %uint %ks_d16 %ks_c
+   %ks_hok = OpULessThan %bool %ks_h %sc_HSK
+   %ks_ok = OpLogicalAnd %bool %ks_kv %ks_hok
+               OpSelectionMerge %ks_st None
+               OpBranchConditional %ks_ok %ks_ld %ks_z
+   %ks_ld = OpLabel
+   %ks_ks = OpLoad %uint %var_kstride
+   %ks_of = OpIMul %uint %ks_vr %ks_ks
+   %ks_ko = OpLoad %uint %var_koff
+   %ks_ad = OpIAdd %uint %ks_ko %ks_of
+   %ks_ad2 = OpIAdd %uint %ks_ad %ks_h
+   %ks_pp = OpAccessChain %p_fp8_sb %k_buf %uint_0 %ks_ad2
+   %ks_vv = OpLoad %fp8 %ks_pp
+               OpBranch %ks_st
+   %ks_z = OpLabel
+               OpBranch %ks_st
+   %ks_st = OpLabel
+   %ks_b = OpPhi %fp8 %ks_vv %ks_ld %fp8_0 %ks_z
+; v118: K store fp8 (v57): kstg[ksv]
+   %ks_sp = OpAccessChain %p_sh_fp8 %sh_kstg %ksv
+               OpStore %ks_sp %ks_b
+               OpBranch %ks_inc
+   %ks_inc = OpLabel
+   %ks_iv = OpIAdd %uint %ksv %sc_wg
+               OpStore %ks_i %ks_iv
+               OpBranch %ks_loop
+   %ks_done = OpLabel
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+   %ks_sg16b = OpIMul %uint %sg %uint_16
+   %ks_bp = OpAccessChain %p_sh_fp8 %sh_kstg %ks_sg16b
+  %kmat1s = OpCooperativeMatrixLoadKHR %cm_f8a %ks_bp %int_0 %uint_16 MakePointerVisible|NonPrivatePointer %uint_2
+               OpBranch %kld_done
+   %k_direct = OpLabel
+   %kd_ks = OpLoad %uint %var_kstride
+  %kd_sg16 = OpIMul %uint %sg %uint_16
+   %kd_jc = OpIMul %uint %jv %sc_Bc
+   %kd_row = OpIAdd %uint %kd_jc %kd_sg16
+   %kd_of = OpIMul %uint %kd_row %kd_ks
+   %kd_ko = OpLoad %uint %var_koff
+   %kd_d16 = OpIMul %uint %dv %uint_16
+   %kd_ad = OpIAdd %uint %kd_ko %kd_of
+   %kd_ad2 = OpIAdd %uint %kd_ad %kd_d16
+   %kd_pp = OpAccessChain %p_fp8_sb %k_buf %uint_0 %kd_ad2
+   %kmat1 = OpCooperativeMatrixLoadKHR %cm_f8a %kd_pp %int_0 %kd_ks
+               OpBranch %kld_done
+   %kld_done = OpLabel
+  %kmatK = OpPhi %cm_f8a %kmat1s %ks_done %kmat1 %k_direct
+   %qd16 = OpIMul %uint %dv %uint_16
+   %qd_pp = OpAccessChain %p_sh_fp8 %sh_qf8 %qd16
+   %qmat1 = OpCooperativeMatrixLoadKHR %cm_f8b %qd_pp %int_1 %qstride8 MakePointerVisible|NonPrivatePointer %uint_2
+   %sf_c = OpLoad %cm_f32 %var_sf
+   %sf_n = OpCooperativeMatrixMulAddKHR %cm_f32 %kmatK %qmat1 %sf_c
+               OpStore %var_sf %sf_n
+               OpBranch %d_inc
+   %d_inc = OpLabel
+   %d_iv = OpIAdd %uint %dv %uint_1
+               OpStore %var_d %d_iv
+               OpBranch %d_loop
+   %d_done = OpLabel
+; ---------------- S unscale + softcap + mask add ----------------
+   %sf_f = OpLoad %cm_f32 %var_sf
+  %st_sg = OpIMul %uint %sg %uint_16
+   %st_o = OpIMul %uint %st_sg %sfshstride
+   %st_pp = OpAccessChain %p_sh_v4f32 %sh_sfsh %st_o
+               OpCooperativeMatrixStoreKHR %st_pp %sf_f %int_0 %sfshstride MakePointerAvailable|NonPrivatePointer %uint_2
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+   %us_c = OpUDiv %uint %tid %Br_div4
+   %us_o = OpIMul %uint %us_c %sfshstride
+  %us_o2 = OpIAdd %uint %us_o %us_r
+   %us_pp = OpAccessChain %p_sh_v4f32 %sh_sfsh %us_o2
+   %us_v = OpLoad %v4f32 %us_pp
+   %us_sq = OpCopyObject %f32 %pscale
+ %us_sqv = OpCompositeConstruct %v4f32 %us_sq %us_sq %us_sq %us_sq
+   %us_v2 = OpFMul %v4f32 %us_v %us_sqv
+   %fl_4 = OpBitwiseAnd %uint %sc_flags %uint_4
+  %sc_en = OpINotEqual %bool %fl_4 %uint_0
+               OpSelectionMerge %us_sc_done None
+               OpBranchConditional %sc_en %us_sc %us_sc_done
+   %us_sc = OpLabel
+   %us_t = OpExtInst %v4f32 %glsl450 Tanh %us_v2
+ %us_psv = OpCompositeConstruct %v4f32 %psoft %psoft %psoft %psoft
+   %us_v3 = OpFMul %v4f32 %us_t %us_psv
+               OpBranch %us_sc_done
+   %us_sc_done = OpLabel
+   %us_v4 = OpPhi %v4f32 %us_v2 %d_done %us_v3 %us_sc
+               OpStore %us_pp %us_v4
+; v124: dump S BEFORE mask-add for all tids to dbg[2048 + tid*4 .. 2051]
+; (v130: gate on wg==(0,0,0) AND pc bit 25 - previously every workgroup wrote
+; this zone, mixing heads; S-before, S-after and mask zones must come from the
+; same dispatch of wg (0,0,0))
+   %v124_x0w = OpIEqual %bool %wgx %uint_0
+   %v124_z0w = OpIEqual %bool %wgz %uint_0
+   %v124_w0w = OpIEqual %bool %wgy %uint_0
+   %v124_xz0 = OpLogicalAnd %bool %v124_x0w %v124_z0w
+   %v124_xy0 = OpLogicalAnd %bool %v124_xz0 %v124_w0w
+   %v124_gate = OpLogicalAnd %bool %v124_xy0 %dbg_on
+               OpSelectionMerge %v124_done None
+               OpBranchConditional %v124_gate %v124_body %v124_done
+   %v124_body = OpLabel
+   %v124_x0 = OpCompositeExtract %f32 %us_v4 0
+   %v124_x1 = OpCompositeExtract %f32 %us_v4 1
+   %v124_x2 = OpCompositeExtract %f32 %us_v4 2
+   %v124_x3 = OpCompositeExtract %f32 %us_v4 3
+   %v124_t4 = OpIMul %uint %tid %uint_4
+   %v124_ba = OpIAdd %uint %v124_t4 %uint_2048
+   %v124_p0 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %v124_ba
+               OpStore %v124_p0 %v124_x0
+   %v124_p1 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %v124_ba
+               OpStore %v124_p1 %v124_x1
+   %v124_p2 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %v124_ba
+               OpStore %v124_p2 %v124_x2
+   %v124_p3 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %v124_ba
+               OpStore %v124_p3 %v124_x3
+               OpBranch %v124_done
+   %v124_done = OpLabel
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+; mask add
+   %mb_l = OpLoad %uint %var_mobits
+  %mb_n2 = OpINotEqual %bool %mb_l %uint_2
+  %ma_cn = OpLogicalAnd %bool %mask_en %mb_n2
+               OpSelectionMerge %ma_done None
+               OpBranchConditional %ma_cn %ma_body %ma_done
+   %ma_body = OpLabel
+   %ma_o = OpIMul %uint %us_c %sfshstride
+  %ma_o2 = OpIAdd %uint %ma_o %us_r
+   %ma_pp = OpAccessChain %p_sh_v4f32 %sh_sfsh %ma_o2
+   %ma_v = OpLoad %v4f32 %ma_pp
+   %ma_mv = OpLoad %v4f16 %mc0_p
+   %ma_mf = OpFConvert %v4f32 %ma_mv
+; v126: slope rows match the S slot: kv = 4*us_c + k (was 4*us_r + k)
+   %ma_r4 = OpIMul %uint %us_c %uint_4
+   %ma_s0 = OpAccessChain %p_sh_f32 %sh_slope %ma_r4
+   %ma_v0 = OpLoad %f32 %ma_s0
+   %ma_s1p = OpIAdd %uint %ma_r4 %uint_1
+   %ma_s1 = OpAccessChain %p_sh_f32 %sh_slope %ma_s1p
+   %ma_v1 = OpLoad %f32 %ma_s1
+   %ma_s2p = OpIAdd %uint %ma_r4 %uint_2
+   %ma_s2 = OpAccessChain %p_sh_f32 %sh_slope %ma_s2p
+   %ma_v2 = OpLoad %f32 %ma_s2
+   %ma_s3p = OpIAdd %uint %ma_r4 %uint_3
+   %ma_s3 = OpAccessChain %p_sh_f32 %sh_slope %ma_s3p
+   %ma_v3 = OpLoad %f32 %ma_s3
+   %ma_sl = OpCompositeConstruct %v4f32 %ma_v0 %ma_v1 %ma_v2 %ma_v3
+   %ma_pr = OpFMul %v4f32 %ma_sl %ma_mf
+   %ma_v2b = OpFAdd %v4f32 %ma_v %ma_pr
+; masked positions -> -inf outright (S could be NaN from dirty fp8 cache rows)
+   %ma_mn = OpFOrdEqual %v4bool %ma_mf %v4f32_ninf
+   %ma_sel = OpSelect %v4f32 %ma_mn %v4f32_ninf %ma_v2b
+               OpStore %ma_pp %ma_sel
+               OpBranch %ma_done
+   %ma_done = OpLabel
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+; D096 v121: dump final S (post mask-add) for wg=0,0,0:
+;   dbg[tid*4 + i] = sh_sfsh[col_tid*64 + row_tid][i]  (tid covers 16x16)
+   %v121_x = OpIEqual %bool %wgx %uint_0
+   %v121_z = OpIEqual %bool %wgz %uint_0
+   %v121_w = OpIEqual %bool %wgy %uint_0
+   %v121_xz = OpLogicalAnd %bool %v121_x %v121_z
+   %v121_okw = OpLogicalAnd %bool %v121_xz %v121_w
+; v128: also require the dump gate (pc bit 25) - only the armed call writes
+   %v121_ok = OpLogicalAnd %bool %v121_okw %dbg_on
+               OpSelectionMerge %v121_done None
+               OpBranchConditional %v121_ok %v121_body %v121_done
+   %v121_body = OpLabel
+; v129: dump the S slot actually used by mask-add (us_c*sfshstride + us_r = tid).
+; The old col_tid*64+row_tid indexing was from the pre-v115 layout and read
+; wrong slots, which made the "S after mask" zone (dbg[0..1023]) misleading.
+   %v121_o2 = OpCopyObject %uint %tid
+   %v121_pp = OpAccessChain %p_sh_v4f32 %sh_sfsh %v121_o2
+   %v121_v = OpLoad %v4f32 %v121_pp
+   %v121_t4 = OpIMul %uint %tid %uint_4
+   %v121_x0 = OpCompositeExtract %f32 %v121_v 0
+   %v121_a0 = OpIAdd %uint %v121_t4 %uint_0
+   %v121_p0 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %v121_a0
+               OpStore %v121_p0 %v121_x0
+   %v121_x1 = OpCompositeExtract %f32 %v121_v 1
+   %v121_a1 = OpIAdd %uint %v121_t4 %uint_1
+   %v121_p1 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %v121_a1
+               OpStore %v121_p1 %v121_x1
+   %v121_x2 = OpCompositeExtract %f32 %v121_v 2
+   %v121_a2 = OpIAdd %uint %v121_t4 %uint_2
+   %v121_p2 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %v121_a2
+               OpStore %v121_p2 %v121_x2
+   %v121_x3 = OpCompositeExtract %f32 %v121_v 3
+   %v121_a3 = OpIAdd %uint %v121_t4 %uint_3
+   %v121_p3 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %v121_a3
+               OpStore %v121_p3 %v121_x3
+; v123: dump the mask vector applied by mask-add (mc0_p) for ALL tids to dbg[1024 + tid*4 .. 1027]
+   %v123_mv = OpLoad %v4f16 %mc0_p
+   %v123_mf = OpFConvert %v4f32 %v123_mv
+   %v123_m0 = OpCompositeExtract %f32 %v123_mf 0
+   %v123_m1 = OpCompositeExtract %f32 %v123_mf 1
+   %v123_m2 = OpCompositeExtract %f32 %v123_mf 2
+   %v123_m3 = OpCompositeExtract %f32 %v123_mf 3
+   %v123_t4 = OpIMul %uint %tid %uint_4
+   %v123_ba = OpIAdd %uint %v123_t4 %uint_1024
+   %v123_q0 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %v123_ba
+               OpStore %v123_q0 %v123_m0
+   %v123_q1 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %v123_ba
+               OpStore %v123_q1 %v123_m1
+   %v123_q2 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %v123_ba
+               OpStore %v123_q2 %v123_m2
+   %v123_q3 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %v123_ba
+               OpStore %v123_q3 %v123_m3
+               OpBranch %v121_done
+   %v121_done = OpLabel
+; ---------------- softmax ----------------
+; kv_col = col_tid ; skip = kbc && (j*Bc + col_tid >= KV)
+   %sm_kvc = OpIMul %uint %jv %sc_Bc
+    %sm_kv = OpIAdd %uint %sm_kvc %col_tid
+   %sm_ge = OpUGreaterThanEqual %bool %sm_kv %pKV
+   %sm_sk = OpLogicalAnd %bool %kbc %sm_ge
+   %sm_o = OpIMul %uint %col_tid %sfshstride
+   %sm_o2 = OpIAdd %uint %sm_o %row_tid
+   %sm_pp = OpAccessChain %p_sh_v4f32 %sh_sfsh %sm_o2
+   %sm_v = OpLoad %v4f32 %sm_pp
+   %sm_c0 = OpCompositeExtract %f32 %sm_v 0
+   %sm_c1 = OpCompositeExtract %f32 %sm_v 1
+   %sm_c2 = OpCompositeExtract %f32 %sm_v 2
+   %sm_c3 = OpCompositeExtract %f32 %sm_v 3
+; NaN guard in M reduction: dirty fp8 cache rows decode to NaN on the
+; coopmat path; a NaN would poison the subgroupMax (M = NaN -> all P = NaN)
+   %sm_n0 = OpFOrdEqual %bool %sm_c0 %sm_c0
+   %sm_n1 = OpFOrdEqual %bool %sm_c1 %sm_c1
+   %sm_n2 = OpFOrdEqual %bool %sm_c2 %sm_c2
+   %sm_n3 = OpFOrdEqual %bool %sm_c3 %sm_c3
+   %sm_i0 = OpLogicalNot %bool %sm_n0
+   %sm_i1 = OpLogicalNot %bool %sm_n1
+   %sm_i2 = OpLogicalNot %bool %sm_n2
+   %sm_i3 = OpLogicalNot %bool %sm_n3
+   %sm_m0 = OpLogicalOr %bool %sm_sk %sm_i0
+   %sm_m1 = OpLogicalOr %bool %sm_sk %sm_i1
+   %sm_m2 = OpLogicalOr %bool %sm_sk %sm_i2
+   %sm_m3 = OpLogicalOr %bool %sm_sk %sm_i3
+   %sm_s0 = OpSelect %f32 %sm_m0 %float_negmax2 %sm_c0
+   %sm_s1 = OpSelect %f32 %sm_m1 %float_negmax2 %sm_c1
+   %sm_s2 = OpSelect %f32 %sm_m2 %float_negmax2 %sm_c2
+   %sm_s3 = OpSelect %f32 %sm_m3 %float_negmax2 %sm_c3
+   %sm_sgx0 = OpGroupNonUniformFMax %f32 %uint_3 Reduce %sm_s0
+   %sm_sgx1 = OpGroupNonUniformFMax %f32 %uint_3 Reduce %sm_s1
+   %sm_sgx2 = OpGroupNonUniformFMax %f32 %uint_3 Reduce %sm_s2
+   %sm_sgx3 = OpGroupNonUniformFMax %f32 %uint_3 Reduce %sm_s3
+; r = 0
+
+  %mold0 = OpLoad %f32 %mf0_p
+   %mnew0 = OpExtInst %f32 %glsl450 FMax %sm_sgx0 %mold0
+               OpStore %mf0_p %mnew0
+   %em0_s = OpFSub %f32 %mold0 %mnew0
+   %em0 = OpExtInst %f32 %glsl450 Exp %em0_s
+
+   %lf0_v = OpLoad %f32 %lf0_p
+   %lf0_n = OpFMul %f32 %em0 %lf0_v
+               OpStore %lf0_p %lf0_n
+
+   %of0_v = OpLoad %v4f16 %of0_p
+   %em0h = OpFConvert %f16 %em0
+   %of0_n = OpVectorTimesScalar %v4f16 %of0_v %em0h
+               OpStore %of0_p %of0_n
+; r = 1
+
+  %mold1 = OpLoad %f32 %mf1_p
+   %mnew1 = OpExtInst %f32 %glsl450 FMax %sm_sgx1 %mold1
+               OpStore %mf1_p %mnew1
+   %em1_s = OpFSub %f32 %mold1 %mnew1
+   %em1 = OpExtInst %f32 %glsl450 Exp %em1_s
+
+   %lf1_v = OpLoad %f32 %lf1_p
+   %lf1_n = OpFMul %f32 %em1 %lf1_v
+               OpStore %lf1_p %lf1_n
+
+   %of1_v = OpLoad %v4f16 %of1_p
+   %em1h = OpFConvert %f16 %em1
+   %of1_n = OpVectorTimesScalar %v4f16 %of1_v %em1h
+               OpStore %of1_p %of1_n
+; r = 2
+
+  %mold2 = OpLoad %f32 %mf2_p
+   %mnew2 = OpExtInst %f32 %glsl450 FMax %sm_sgx2 %mold2
+               OpStore %mf2_p %mnew2
+   %em2_s = OpFSub %f32 %mold2 %mnew2
+   %em2 = OpExtInst %f32 %glsl450 Exp %em2_s
+
+   %lf2_v = OpLoad %f32 %lf2_p
+   %lf2_n = OpFMul %f32 %em2 %lf2_v
+               OpStore %lf2_p %lf2_n
+
+   %of2_v = OpLoad %v4f16 %of2_p
+   %em2h = OpFConvert %f16 %em2
+   %of2_n = OpVectorTimesScalar %v4f16 %of2_v %em2h
+               OpStore %of2_p %of2_n
+; r = 3
+
+  %mold3 = OpLoad %f32 %mf3_p
+   %mnew3 = OpExtInst %f32 %glsl450 FMax %sm_sgx3 %mold3
+               OpStore %mf3_p %mnew3
+   %em3_s = OpFSub %f32 %mold3 %mnew3
+   %em3 = OpExtInst %f32 %glsl450 Exp %em3_s
+
+   %lf3_v = OpLoad %f32 %lf3_p
+   %lf3_n = OpFMul %f32 %em3 %lf3_v
+               OpStore %lf3_p %lf3_n
+
+   %of3_v = OpLoad %v4f16 %of3_p
+   %em3h = OpFConvert %f16 %em3
+   %of3_n = OpVectorTimesScalar %v4f16 %of3_v %em3h
+               OpStore %of3_p %of3_n
+; P store: mfvec = (Mf[0..3]); Pf = f16(exp(S - mfvec)); Lf += Pf ; Psh[col*psh_stride + sg]
+   %mfv0 = OpLoad %f32 %mf0_p
+   %mfv1 = OpLoad %f32 %mf1_p
+   %mfv2 = OpLoad %f32 %mf2_p
+   %mfv3 = OpLoad %f32 %mf3_p
+  %mfvec = OpCompositeConstruct %v4f32 %mfv0 %mfv1 %mfv2 %mfv3
+   %p_o = OpIMul %uint %col_tid %psh_stride
+   %p_o2 = OpIAdd %uint %p_o %row_tid
+   %p_pp = OpAccessChain %p_sh_v4f16 %sh_psh %p_o2
+               OpSelectionMerge %p_done None
+               OpBranchConditional %sm_sk %p_zero %p_calc
+   %p_zero = OpLabel
+               OpStore %p_pp %v4f16_0
+               OpBranch %p_done
+   %p_calc = OpLabel
+   %p_sv = OpLoad %v4f32 %sm_pp
+; D096-F: guard NaN S (dirty fp8 rows) before exp: NaN would poison P/L/O
+   %p_nx0 = OpCompositeExtract %f32 %p_sv 0
+   %p_n0 = OpFOrdEqual %bool %p_nx0 %p_nx0
+   %p_nx1 = OpCompositeExtract %f32 %p_sv 1
+   %p_n1 = OpFOrdEqual %bool %p_nx1 %p_nx1
+   %p_nx2 = OpCompositeExtract %f32 %p_sv 2
+   %p_n2 = OpFOrdEqual %bool %p_nx2 %p_nx2
+   %p_nx3 = OpCompositeExtract %f32 %p_sv 3
+   %p_n3 = OpFOrdEqual %bool %p_nx3 %p_nx3
+   %p_i0 = OpLogicalNot %bool %p_n0
+   %p_i1 = OpLogicalNot %bool %p_n1
+   %p_i2 = OpLogicalNot %bool %p_n2
+   %p_i3 = OpLogicalNot %bool %p_n3
+   %p_nv0 = OpSelect %f32 %p_i0 %float_negmax2 %p_nx0
+   %p_nv1 = OpSelect %f32 %p_i1 %float_negmax2 %p_nx1
+   %p_nv2 = OpSelect %f32 %p_i2 %float_negmax2 %p_nx2
+   %p_nv3 = OpSelect %f32 %p_i3 %float_negmax2 %p_nx3
+   %p_sv2 = OpCompositeConstruct %v4f32 %p_nv0 %p_nv1 %p_nv2 %p_nv3
+   %p_sm = OpFSub %v4f32 %p_sv2 %mfvec
+   %p_e = OpExtInst %v4f32 %glsl450 Exp %p_sm
+   %p_pf = OpFConvert %v4f16 %p_e
+; NaN guard: masked positions (mask == -inf) get P = 0 even if S is NaN
+   %p_mv = OpLoad %v4f16 %mc0_p
+   %p_mn = OpFOrdEqual %v4bool %p_mv %v4f16_ninf
+   %p_pf2 = OpSelect %v4f16 %p_mn %v4f16_0 %p_pf
+   %p_c0 = OpCompositeExtract %f16 %p_pf2 0
+   %p_c1 = OpCompositeExtract %f16 %p_pf2 1
+   %p_c2 = OpCompositeExtract %f16 %p_pf2 2
+   %p_c3 = OpCompositeExtract %f16 %p_pf2 3
+   %p_f0 = OpFConvert %f32 %p_c0
+   %p_f1 = OpFConvert %f32 %p_c1
+   %p_f2 = OpFConvert %f32 %p_c2
+   %p_f3 = OpFConvert %f32 %p_c3
+   %p_l0 = OpLoad %f32 %lf0_p
+   %p_l0n = OpFAdd %f32 %p_l0 %p_f0
+               OpStore %lf0_p %p_l0n
+   %p_l1 = OpLoad %f32 %lf1_p
+   %p_l1n = OpFAdd %f32 %p_l1 %p_f1
+               OpStore %lf1_p %p_l1n
+   %p_l2 = OpLoad %f32 %lf2_p
+   %p_l2n = OpFAdd %f32 %p_l2 %p_f2
+               OpStore %lf2_p %p_l2n
+   %p_l3 = OpLoad %f32 %lf3_p
+   %p_l3n = OpFAdd %f32 %p_l3 %p_f3
+               OpStore %lf3_p %p_l3n
+               OpStore %p_pp %p_pf2
+               OpBranch %p_done
+   %p_done = OpLabel
+; D096 v131: the old v80 P-dump below is REMOVED - it unconditionally wrote
+; dbg[0]=1 (breaking the S-after zone) and dbg[2048+wgy*2048+p_o2*4] (breaking
+; the S-before zone) on EVERY dispatch, making v121/v124 reads meaningless.
+; Its block is replaced by a direct branch to keep the merge label.
+               OpBranch %pdbg_done
+   %pdbg_done = OpLabel
+; ---------------- V-stage ----------------
+               OpStore %var_ht %uint_0
+               OpBranch %ht_loop
+   %ht_loop = OpLabel
+    %htv = OpLoad %uint %var_ht
+   %htok = OpULessThan %bool %htv %ntiles
+               OpLoopMerge %ht_done %ht_inc None
+               OpBranchConditional %htok %ht_body %ht_done
+   %ht_body = OpLabel
+               OpStore %var_vi %uint_0
+               OpBranch %vs_loop
+   %vs_loop = OpLabel
+    %viv = OpLoad %uint %var_vi
+   %viok = OpULessThan %bool %viv %vloads
+               OpLoopMerge %vs_done %vs_inc None
+               OpBranchConditional %viok %vs_body %vs_done
+   %vs_body = OpLabel
+   %vs_i2 = OpIMul %uint %viv %sc_wg
+   %vs_i3 = OpIAdd %uint %vs_i2 %tid
+   %vs_r = OpUDiv %uint %vs_i3 %uint_16
+   %vs_c = OpUMod %uint %vs_i3 %uint_16
+   %vs_jc = OpIMul %uint %jv %sc_Bc
+   %vs_vr = OpIAdd %uint %vs_jc %vs_r
+   %vs_kv = OpULessThan %bool %vs_vr %pKV
+   %vs_h64 = OpIMul %uint %htv %uint_64
+   %vs_c4 = OpIMul %uint %vs_c %uint_4
+   %vs_vc = OpIAdd %uint %vs_h64 %vs_c4
+   %vs_hsv = OpULessThan %bool %vs_vc %sc_HSV
+   %vs_ok = OpLogicalAnd %bool %vs_kv %vs_hsv
+; v109: always zero-fill invalid rows/cols (kbc staging diagnostic removed)
+   %vs_fn = OpCopyObject %bool %vs_ok
+               OpSelectionMerge %vs_cd None
+               OpBranchConditional %vs_fn %vs_ld %vs_z
+   %vs_ld = OpLabel
+   %vs_ks = OpLoad %uint %var_vstride
+   %vs_of = OpIMul %uint %vs_vr %vs_ks
+   %vs_ad = OpIAdd %uint %vs_of %vs_vc
+   %vs_ko = OpLoad %uint %var_voff
+   %vs_ad2 = OpIAdd %uint %vs_ko %vs_ad
+   %vs_b0 = OpAccessChain %p_fp8_sb %v_buf %uint_0 %vs_ad2
+   %vs_w0 = OpLoad %fp8 %vs_b0
+   %vs_u0 = OpBitcast %uint8 %vs_w0
+   %vs_ui0 = OpUConvert %uint %vs_u0
+   %vs_lp0 = OpAccessChain %p_sh_f16 %sh_lut %vs_ui0
+   %vs_h0 = OpLoad %f16 %vs_lp0
+   %vs_ad3 = OpIAdd %uint %vs_ad2 %uint_1
+   %vs_b1 = OpAccessChain %p_fp8_sb %v_buf %uint_0 %vs_ad3
+   %vs_w1 = OpLoad %fp8 %vs_b1
+   %vs_u1 = OpBitcast %uint8 %vs_w1
+   %vs_ui1 = OpUConvert %uint %vs_u1
+   %vs_lp1 = OpAccessChain %p_sh_f16 %sh_lut %vs_ui1
+   %vs_h1 = OpLoad %f16 %vs_lp1
+   %vs_ad4 = OpIAdd %uint %vs_ad2 %uint_2
+   %vs_b2 = OpAccessChain %p_fp8_sb %v_buf %uint_0 %vs_ad4
+   %vs_w2 = OpLoad %fp8 %vs_b2
+   %vs_u2 = OpBitcast %uint8 %vs_w2
+   %vs_ui2 = OpUConvert %uint %vs_u2
+   %vs_lp2 = OpAccessChain %p_sh_f16 %sh_lut %vs_ui2
+   %vs_h2 = OpLoad %f16 %vs_lp2
+   %vs_ad5 = OpIAdd %uint %vs_ad2 %uint_3
+   %vs_b3 = OpAccessChain %p_fp8_sb %v_buf %uint_0 %vs_ad5
+   %vs_w3 = OpLoad %fp8 %vs_b3
+   %vs_u3 = OpBitcast %uint8 %vs_w3
+   %vs_ui3 = OpUConvert %uint %vs_u3
+   %vs_lp3 = OpAccessChain %p_sh_f16 %sh_lut %vs_ui3
+   %vs_h3 = OpLoad %f16 %vs_lp3
+  %vs_h4 = OpCompositeConstruct %v4f16 %vs_h0 %vs_h1 %vs_h2 %vs_h3
+               OpBranch %vs_cd
+   %vs_z = OpLabel
+               OpBranch %vs_cd
+   %vs_cd = OpLabel
+   %vs_h5 = OpPhi %v4f16 %vs_h4 %vs_ld %v4f16_0 %vs_z
+; D096 v109: correct kvsh layout for stride-16 coopmat loads.
+; Slot = (vs_r>>4)*256 + htv*64 + (vs_r%16)*4 + vs_c/4 ; v4 components = d cols (vs_c*4+k).
+; Load base = bcv*256 + htv*64 + sg*16 (sg rows), stride 16 -> element (r,c) at slot r*4+c/4.
+   %vs_rs4 = OpUDiv %uint %vs_r %uint_16
+   %vs_z256 = OpIMul %uint %vs_rs4 %uint_256
+   %vs_ht64 = OpIMul %uint %htv %uint_64
+   %vs_rm16 = OpUMod %uint %vs_r %uint_16
+   %vs_rm4 = OpIMul %uint %vs_rm16 %uint_4
+   %vs_cd4 = OpUDiv %uint %vs_c %uint_4
+   %vs_k1 = OpIAdd %uint %vs_z256 %vs_ht64
+   %vs_k2 = OpIAdd %uint %vs_k1 %vs_rm4
+   %vs_ki = OpIAdd %uint %vs_k2 %vs_cd4
+   %vs_kp = OpAccessChain %p_sh_v4f16 %sh_kvsh %vs_ki
+               OpStore %vs_kp %vs_h5
+               OpBranch %vs_inc
+   %vs_inc = OpLabel
+   %vs_iv = OpIAdd %uint %viv %uint_1
+               OpStore %var_vi %vs_iv
+               OpBranch %vs_loop
+   %vs_done = OpLabel
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+; PV accumulation over bc_chunk
+               OpStore %var_pv %cmz_f16
+               OpStore %var_bc %uint_0
+               OpBranch %bc_loop
+   %bc_loop = OpLabel
+    %bcv = OpLoad %uint %var_bc
+   %bcok = OpULessThan %bool %bcv %bcchunks
+               OpLoopMerge %bc_done %bc_inc None
+               OpBranchConditional %bcok %bc_body %bc_done
+   %bc_body = OpLabel
+   %bc_b1 = OpIMul %uint %bcv %uint_16
+   %bc_b2 = OpIMul %uint %bc_b1 %psh_stride
+   %bc_pp = OpAccessChain %p_sh_v4f16 %sh_psh %bc_b2
+   %bc_k = OpCooperativeMatrixLoadKHR %cm_f16a %bc_pp %int_1 %psh_stride MakePointerVisible|NonPrivatePointer %uint_2
+   %bc_q1 = OpIMul %uint %bcv %uint_256
+; v109: V tile = (bc zone, htv subtile, sg rows). htv is the outer d-tile.
+   %bc_ht = OpLoad %uint %var_ht
+   %bc_qh = OpIMul %uint %bc_ht %uint_64
+   %bc_q1b = OpIAdd %uint %bc_q1 %bc_qh
+   %bc_q2 = OpIMul %uint %sg %uint_16
+   %bc_q = OpIAdd %uint %bc_q1b %bc_q2
+   %bc_qp = OpAccessChain %p_sh_v4f16 %sh_kvsh %bc_q
+   %bc_qm = OpCooperativeMatrixLoadKHR %cm_f16b %bc_qp %int_0 %uint_16 MakePointerVisible|NonPrivatePointer %uint_2
+   %bc_pv = OpLoad %cm_f16c %var_pv
+   %bc_pvn = OpCooperativeMatrixMulAddKHR %cm_f16c %bc_k %bc_qm %bc_pv
+               OpStore %var_pv %bc_pvn
+               OpBranch %bc_inc
+   %bc_inc = OpLabel
+   %bc_iv = OpIAdd %uint %bcv %uint_1
+               OpStore %var_bc %bc_iv
+               OpBranch %bc_loop
+   %bc_done = OpLabel
+; store PV -> pvsh ; O-accumulate
+   %pv_sg = OpIMul %uint %sg %uint_4
+   %pv_pp = OpAccessChain %p_sh_v4f16 %sh_pvsh %pv_sg
+   %pv_v = OpLoad %cm_f16c %var_pv
+               OpCooperativeMatrixStoreKHR %pv_pp %pv_v %int_0 %osh_stride MakePointerAvailable|NonPrivatePointer %uint_2
+; barrier between PV store and O-accumulate (cross-subgroup pvsh visibility)
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+   %oa_c4 = OpIMul %uint %col_tid %uint_4
+   %oa_h64 = OpIMul %uint %htv %uint_64
+   %oa_h64p = OpIAdd %uint %oa_h64 %uint_64
+   %oa_ge = OpUGreaterThanEqual %bool %oa_c4 %oa_h64
+   %oa_lt = OpULessThan %bool %oa_c4 %oa_h64p
+   %oa_r1 = OpLogicalAnd %bool %oa_ge %oa_lt
+   %oa_hsv = OpULessThan %bool %oa_c4 %sc_HSV
+   %oa_ok = OpLogicalAnd %bool %oa_r1 %oa_hsv
+               OpSelectionMerge %oa_done None
+               OpBranchConditional %oa_ok %oa_body %oa_done
+   %oa_body = OpLabel
+   %oa_lh = OpISub %uint %oa_c4 %oa_h64
+   %oa_l4 = OpUDiv %uint %oa_lh %uint_4
+   %oa_r0 = OpIAdd %uint %p_row_us %uint_0
+   %oa_r16 = OpIMul %uint %oa_r0 %uint_16
+   %oa_i = OpIAdd %uint %oa_r16 %oa_l4
+   %oa_pp = OpAccessChain %p_sh_v4f16 %sh_pvsh %oa_i
+   %oa_v = OpLoad %v4f16 %oa_pp
+   %oa_o0 = OpLoad %v4f16 %of0_p
+   %oa_o0n = OpFAdd %v4f16 %oa_o0 %oa_v
+               OpStore %of0_p %oa_o0n
+   %oa_r1b = OpIAdd %uint %p_row_us %uint_1
+   %oa_r16b = OpIMul %uint %oa_r1b %uint_16
+   %oa_ib = OpIAdd %uint %oa_r16b %oa_l4
+   %oa_ppb = OpAccessChain %p_sh_v4f16 %sh_pvsh %oa_ib
+   %oa_vb = OpLoad %v4f16 %oa_ppb
+   %oa_o1 = OpLoad %v4f16 %of1_p
+   %oa_o1n = OpFAdd %v4f16 %oa_o1 %oa_vb
+               OpStore %of1_p %oa_o1n
+   %oa_r2 = OpIAdd %uint %p_row_us %uint_2
+   %oa_r16c = OpIMul %uint %oa_r2 %uint_16
+   %oa_ic = OpIAdd %uint %oa_r16c %oa_l4
+   %oa_ppc = OpAccessChain %p_sh_v4f16 %sh_pvsh %oa_ic
+   %oa_vc = OpLoad %v4f16 %oa_ppc
+   %oa_o2 = OpLoad %v4f16 %of2_p
+   %oa_o2n = OpFAdd %v4f16 %oa_o2 %oa_vc
+               OpStore %of2_p %oa_o2n
+   %oa_r3 = OpIAdd %uint %p_row_us %uint_3
+   %oa_r16d = OpIMul %uint %oa_r3 %uint_16
+   %oa_id = OpIAdd %uint %oa_r16d %oa_l4
+   %oa_ppd = OpAccessChain %p_sh_v4f16 %sh_pvsh %oa_id
+   %oa_vd = OpLoad %v4f16 %oa_ppd
+   %oa_o3 = OpLoad %v4f16 %of3_p
+   %oa_o3n = OpFAdd %v4f16 %oa_o3 %oa_vd
+               OpStore %of3_p %oa_o3n
+               OpBranch %oa_done
+   %oa_done = OpLabel
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+               OpBranch %ht_inc
+   %ht_inc = OpLabel
+   %ht_iv = OpIAdd %uint %htv %uint_1
+               OpStore %var_ht %ht_iv
+               OpBranch %ht_loop
+   %ht_done = OpLabel
+               OpBranch %j_inc
+   %j_inc = OpLabel
+   %j_iv = OpIAdd %uint %jv %uint_1
+               OpStore %var_j %j_iv
+               OpBranch %j_loop
+   %j_done = OpLabel
+; D096 v81: dump Of[0][0], Lf[0], Mf[0] after all P*V/OA work.
+   %odbg_okx = OpIEqual %bool %wgx %uint_0
+   %odbg_okz = OpIEqual %bool %wgz %uint_0
+   %odbg_ok = OpLogicalAnd %bool %odbg_okx %odbg_okz
+               OpSelectionMerge %odbg_done None
+                      OpBranchConditional %odbg_ok %odbg_body %odbg_done
+  %odbg_body = OpLabel
+  %odbg_w = OpIMul %uint %wgy %uint_2048
+  %odbg_obase = OpIAdd %uint %uint_16384 %odbg_w
+  %odbg_t4 = OpIMul %uint %tid %uint_4
+  %odbg_oa = OpIAdd %uint %odbg_obase %odbg_t4
+  %odbg_oh = OpLoad %v4f16 %of0_p
+  %odbg_of = OpFConvert %v4f32 %odbg_oh
+  %odbg_x0 = OpCompositeExtract %f32 %odbg_of 0
+  %odbg_p0 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %odbg_oa
+               OpStore %odbg_p0 %odbg_x0
+  %odbg_a1 = OpIAdd %uint %odbg_oa %uint_1
+  %odbg_x1 = OpCompositeExtract %f32 %odbg_of 1
+  %odbg_p1 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %odbg_a1
+               OpStore %odbg_p1 %odbg_x1
+  %odbg_a2 = OpIAdd %uint %odbg_oa %uint_2
+  %odbg_x2 = OpCompositeExtract %f32 %odbg_of 2
+  %odbg_p2 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %odbg_a2
+               OpStore %odbg_p2 %odbg_x2
+  %odbg_a3 = OpIAdd %uint %odbg_oa %uint_3
+  %odbg_x3 = OpCompositeExtract %f32 %odbg_of 3
+  %odbg_p3 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %odbg_a3
+               OpStore %odbg_p3 %odbg_x3
+               OpBranch %odbg_done
+  %odbg_done = OpLabel
+; ======================================================================
+; epilogue: L reduce, sinks, Lfrcp, output store
+; ======================================================================
+; Lf = subgroupAdd
+   %lf_r0 = OpLoad %f32 %lf0_p
+   %lf_s0 = OpGroupNonUniformFAdd %f32 %uint_3 Reduce %lf_r0
+               OpStore %lf0_p %lf_s0
+   %lf_r1 = OpLoad %f32 %lf1_p
+   %lf_s1 = OpGroupNonUniformFAdd %f32 %uint_3 Reduce %lf_r1
+               OpStore %lf1_p %lf_s1
+   %lf_r2 = OpLoad %f32 %lf2_p
+   %lf_s2 = OpGroupNonUniformFAdd %f32 %uint_3 Reduce %lf_r2
+               OpStore %lf2_p %lf_s2
+   %lf_r3 = OpLoad %f32 %lf3_p
+   %lf_s3 = OpGroupNonUniformFAdd %f32 %uint_3 Reduce %lf_r3
+               OpStore %lf3_p %lf_s3
+; sinks: (pmnh2 & SINK_ENABLE_BIT) != 0
+   %sk_b = OpBitwiseAnd %uint %pmnh2 %uint_16777216
+  %sk_cn = OpINotEqual %bool %sk_b %uint_0
+               OpSelectionMerge %sk_done None
+               OpBranchConditional %sk_cn %sk_body %sk_done
+   %sk_body = OpLabel
+   %sk_r0 = OpIAdd %uint %p_row_us %uint_0
+   %sk_rg0 = OpUMod %uint %sk_r0 %pgqa
+    %sk_h0 = OpIAdd %uint %iq2 %sk_rg0
+   %sk_p0 = OpAccessChain %p_f32_sb %s_buf %uint_0 %sk_h0
+   %sk_s0 = OpLoad %f32 %sk_p0
+   %sk_m0 = OpLoad %f32 %mf0_p
+   %sk_g0 = OpFOrdGreaterThan %bool %sk_s0 %sk_m0
+               OpSelectionMerge %sk_c0d None
+               OpBranchConditional %sk_g0 %sk_ms0 %sk_vs0
+   %sk_ms0 = OpLabel
+   %sk_d0 = OpFSub %f32 %sk_m0 %sk_s0
+   %sk_e0 = OpExtInst %f32 %glsl450 Exp %sk_d0
+   %sk_e0h = OpFConvert %f16 %sk_e0
+   %sk_o0 = OpLoad %v4f16 %of0_p
+   %sk_o0n = OpVectorTimesScalar %v4f16 %sk_o0 %sk_e0h
+               OpStore %of0_p %sk_o0n
+               OpBranch %sk_c0d
+   %sk_vs0 = OpLabel
+   %sk_d0b = OpFSub %f32 %sk_s0 %sk_m0
+   %sk_e0b = OpExtInst %f32 %glsl450 Exp %sk_d0b
+               OpBranch %sk_c0d
+   %sk_c0d = OpLabel
+   %sk_msv0 = OpPhi %f32 %sk_e0 %sk_ms0 %float_1 %sk_vs0
+   %sk_vsv0 = OpPhi %f32 %float_1 %sk_ms0 %sk_e0b %sk_vs0
+   %sk_l0 = OpLoad %f32 %lf0_p
+   %sk_l0a = OpFMul %f32 %sk_l0 %sk_msv0
+   %sk_l0b = OpFAdd %f32 %sk_l0a %sk_vsv0
+               OpStore %lf0_p %sk_l0b
+   %sk_r1 = OpIAdd %uint %p_row_us %uint_1
+   %sk_rg1 = OpUMod %uint %sk_r1 %pgqa
+    %sk_h1 = OpIAdd %uint %iq2 %sk_rg1
+   %sk_p1 = OpAccessChain %p_f32_sb %s_buf %uint_0 %sk_h1
+   %sk_s1 = OpLoad %f32 %sk_p1
+   %sk_m1 = OpLoad %f32 %mf1_p
+   %sk_g1 = OpFOrdGreaterThan %bool %sk_s1 %sk_m1
+               OpSelectionMerge %sk_c1d None
+               OpBranchConditional %sk_g1 %sk_ms1 %sk_vs1
+   %sk_ms1 = OpLabel
+   %sk_d1 = OpFSub %f32 %sk_m1 %sk_s1
+   %sk_e1 = OpExtInst %f32 %glsl450 Exp %sk_d1
+   %sk_e1h = OpFConvert %f16 %sk_e1
+   %sk_o1 = OpLoad %v4f16 %of1_p
+   %sk_o1n = OpVectorTimesScalar %v4f16 %sk_o1 %sk_e1h
+               OpStore %of1_p %sk_o1n
+               OpBranch %sk_c1d
+   %sk_vs1 = OpLabel
+   %sk_d1b = OpFSub %f32 %sk_s1 %sk_m1
+   %sk_e1b = OpExtInst %f32 %glsl450 Exp %sk_d1b
+               OpBranch %sk_c1d
+   %sk_c1d = OpLabel
+   %sk_msv1 = OpPhi %f32 %sk_e1 %sk_ms1 %float_1 %sk_vs1
+   %sk_vsv1 = OpPhi %f32 %float_1 %sk_ms1 %sk_e1b %sk_vs1
+   %sk_l1 = OpLoad %f32 %lf1_p
+   %sk_l1a = OpFMul %f32 %sk_l1 %sk_msv1
+   %sk_l1b = OpFAdd %f32 %sk_l1a %sk_vsv1
+               OpStore %lf1_p %sk_l1b
+   %sk_r2 = OpIAdd %uint %p_row_us %uint_2
+   %sk_rg2 = OpUMod %uint %sk_r2 %pgqa
+    %sk_h2 = OpIAdd %uint %iq2 %sk_rg2
+   %sk_p2 = OpAccessChain %p_f32_sb %s_buf %uint_0 %sk_h2
+   %sk_s2 = OpLoad %f32 %sk_p2
+   %sk_m2 = OpLoad %f32 %mf2_p
+   %sk_g2 = OpFOrdGreaterThan %bool %sk_s2 %sk_m2
+               OpSelectionMerge %sk_c2d None
+               OpBranchConditional %sk_g2 %sk_ms2 %sk_vs2
+   %sk_ms2 = OpLabel
+   %sk_d2 = OpFSub %f32 %sk_m2 %sk_s2
+   %sk_e2 = OpExtInst %f32 %glsl450 Exp %sk_d2
+   %sk_e2h = OpFConvert %f16 %sk_e2
+   %sk_o2 = OpLoad %v4f16 %of2_p
+   %sk_o2n = OpVectorTimesScalar %v4f16 %sk_o2 %sk_e2h
+               OpStore %of2_p %sk_o2n
+               OpBranch %sk_c2d
+   %sk_vs2 = OpLabel
+   %sk_d2b = OpFSub %f32 %sk_s2 %sk_m2
+   %sk_e2b = OpExtInst %f32 %glsl450 Exp %sk_d2b
+               OpBranch %sk_c2d
+   %sk_c2d = OpLabel
+   %sk_msv2 = OpPhi %f32 %sk_e2 %sk_ms2 %float_1 %sk_vs2
+   %sk_vsv2 = OpPhi %f32 %float_1 %sk_ms2 %sk_e2b %sk_vs2
+   %sk_l2 = OpLoad %f32 %lf2_p
+   %sk_l2a = OpFMul %f32 %sk_l2 %sk_msv2
+   %sk_l2b = OpFAdd %f32 %sk_l2a %sk_vsv2
+               OpStore %lf2_p %sk_l2b
+   %sk_r3 = OpIAdd %uint %p_row_us %uint_3
+   %sk_rg3 = OpUMod %uint %sk_r3 %pgqa
+    %sk_h3 = OpIAdd %uint %iq2 %sk_rg3
+   %sk_p3 = OpAccessChain %p_f32_sb %s_buf %uint_0 %sk_h3
+   %sk_s3 = OpLoad %f32 %sk_p3
+   %sk_m3 = OpLoad %f32 %mf3_p
+   %sk_g3 = OpFOrdGreaterThan %bool %sk_s3 %sk_m3
+               OpSelectionMerge %sk_c3d None
+               OpBranchConditional %sk_g3 %sk_ms3 %sk_vs3
+   %sk_ms3 = OpLabel
+   %sk_d3 = OpFSub %f32 %sk_m3 %sk_s3
+   %sk_e3 = OpExtInst %f32 %glsl450 Exp %sk_d3
+   %sk_e3h = OpFConvert %f16 %sk_e3
+   %sk_o3 = OpLoad %v4f16 %of3_p
+   %sk_o3n = OpVectorTimesScalar %v4f16 %sk_o3 %sk_e3h
+               OpStore %of3_p %sk_o3n
+               OpBranch %sk_c3d
+   %sk_vs3 = OpLabel
+   %sk_d3b = OpFSub %f32 %sk_s3 %sk_m3
+   %sk_e3b = OpExtInst %f32 %glsl450 Exp %sk_d3b
+               OpBranch %sk_c3d
+   %sk_c3d = OpLabel
+   %sk_msv3 = OpPhi %f32 %sk_e3 %sk_ms3 %float_1 %sk_vs3
+   %sk_vsv3 = OpPhi %f32 %float_1 %sk_ms3 %sk_e3b %sk_vs3
+   %sk_l3 = OpLoad %f32 %lf3_p
+   %sk_l3a = OpFMul %f32 %sk_l3 %sk_msv3
+   %sk_l3b = OpFAdd %f32 %sk_l3a %sk_vsv3
+               OpStore %lf3_p %sk_l3b
+               OpBranch %sk_done
+   %sk_done = OpLabel
+; Lfrcp + Of scale + clamp
+   %rc_l0 = OpLoad %f32 %lf0_p
+   %rc_z0 = OpFOrdEqual %bool %rc_l0 %float_0
+   %rc_i0 = OpFDiv %f32 %float_1 %rc_l0
+   %rc_r0 = OpSelect %f32 %rc_z0 %float_0 %rc_i0
+   %rc_h0 = OpFConvert %f16 %rc_r0
+   %rc_o0 = OpLoad %v4f16 %of0_p
+   %rc_s0 = OpVectorTimesScalar %v4f16 %rc_o0 %rc_h0
+   %rc_c0 = OpExtInst %v4f16 %glsl450 FClamp %rc_s0 %v4f16_min %v4f16_max
+               OpStore %of0_p %rc_c0
+   %rc_l1 = OpLoad %f32 %lf1_p
+   %rc_z1 = OpFOrdEqual %bool %rc_l1 %float_0
+   %rc_i1 = OpFDiv %f32 %float_1 %rc_l1
+   %rc_r1 = OpSelect %f32 %rc_z1 %float_0 %rc_i1
+   %rc_h1 = OpFConvert %f16 %rc_r1
+   %rc_o1 = OpLoad %v4f16 %of1_p
+   %rc_s1 = OpVectorTimesScalar %v4f16 %rc_o1 %rc_h1
+   %rc_c1 = OpExtInst %v4f16 %glsl450 FClamp %rc_s1 %v4f16_min %v4f16_max
+               OpStore %of1_p %rc_c1
+   %rc_l2 = OpLoad %f32 %lf2_p
+   %rc_z2 = OpFOrdEqual %bool %rc_l2 %float_0
+   %rc_i2 = OpFDiv %f32 %float_1 %rc_l2
+   %rc_r2 = OpSelect %f32 %rc_z2 %float_0 %rc_i2
+   %rc_h2 = OpFConvert %f16 %rc_r2
+   %rc_o2 = OpLoad %v4f16 %of2_p
+   %rc_s2 = OpVectorTimesScalar %v4f16 %rc_o2 %rc_h2
+   %rc_c2 = OpExtInst %v4f16 %glsl450 FClamp %rc_s2 %v4f16_min %v4f16_max
+               OpStore %of2_p %rc_c2
+   %rc_l3 = OpLoad %f32 %lf3_p
+   %rc_z3 = OpFOrdEqual %bool %rc_l3 %float_0
+   %rc_i3 = OpFDiv %f32 %float_1 %rc_l3
+   %rc_r3 = OpSelect %f32 %rc_z3 %float_0 %rc_i3
+   %rc_h3 = OpFConvert %f16 %rc_r3
+   %rc_o3 = OpLoad %v4f16 %of3_p
+   %rc_s3 = OpVectorTimesScalar %v4f16 %rc_o3 %rc_h3
+   %rc_c3 = OpExtInst %v4f16 %glsl450 FClamp %rc_s3 %v4f16_min %v4f16_max
+               OpStore %of3_p %rc_c3
+; D096 v82: dump normalized Of[0][0], reduced Lf[0], and Lfrcp[0].
+   %ndbg_okx = OpIEqual %bool %wgx %uint_0
+   %ndbg_okz = OpIEqual %bool %wgz %uint_0
+   %ndbg_ok = OpLogicalAnd %bool %ndbg_okx %ndbg_okz
+                      OpSelectionMerge %ndbg_done None
+                      OpBranchConditional %ndbg_ok %ndbg_body %ndbg_done
+   %ndbg_body = OpLabel
+   %ndbg_w = OpIMul %uint %wgy %uint_2048
+   %ndbg_obase = OpIAdd %uint %uint_49152 %ndbg_w
+   %ndbg_t4 = OpIMul %uint %tid %uint_4
+   %ndbg_oa = OpIAdd %uint %ndbg_obase %ndbg_t4
+   %ndbg_oh = OpLoad %v4f16 %of0_p
+   %ndbg_of = OpFConvert %v4f32 %ndbg_oh
+   %ndbg_x0 = OpCompositeExtract %f32 %ndbg_of 0
+   %ndbg_p0 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %ndbg_oa
+                      OpStore %ndbg_p0 %ndbg_x0
+   %ndbg_a1 = OpIAdd %uint %ndbg_oa %uint_1
+   %ndbg_x1 = OpCompositeExtract %f32 %ndbg_of 1
+   %ndbg_p1 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %ndbg_a1
+                      OpStore %ndbg_p1 %ndbg_x1
+   %ndbg_a2 = OpIAdd %uint %ndbg_oa %uint_2
+   %ndbg_x2 = OpCompositeExtract %f32 %ndbg_of 2
+   %ndbg_p2 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %ndbg_a2
+                      OpStore %ndbg_p2 %ndbg_x2
+   %ndbg_a3 = OpIAdd %uint %ndbg_oa %uint_3
+   %ndbg_x3 = OpCompositeExtract %f32 %ndbg_of 3
+   %ndbg_p3 = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %ndbg_a3
+                      OpStore %ndbg_p3 %ndbg_x3
+                      OpBranch %ndbg_done
+   %ndbg_done = OpLabel
+; output store (k_num == 1 by routing)
+   %og1 = OpIMul %uint %gqa_ %pne1
+   %og2 = OpIMul %uint %og1 %sc_HSV
+   %og3 = OpIMul %uint %wgz %pne2
+   %og4 = OpIMul %uint %og3 %pne1
+   %og5 = OpIMul %uint %og4 %sc_HSV
+   %og6 = OpIAdd %uint %og2 %og5
+  %ooff = OpUDiv %uint %og6 %uint_4
+   %gqa2 = OpUGreaterThan %bool %pgqa %uint_1
+               OpSelectionMerge %out_done None
+               OpBranchConditional %gqa2 %out_gqa %out_plain
+   %out_gqa = OpLabel
+; r=0
+   %qg0 = OpULessThan %bool %p_row_us %pN
+               OpSelectionMerge %qg0_done None
+               OpBranchConditional %qg0 %qg0s %qg0_done
+   %qg0s = OpLabel
+   %qg0d = OpULessThan %bool %col_tid %hsv_div4
+               OpSelectionMerge %qg0_d2 None
+               OpBranchConditional %qg0d %qg0ds %qg0_d2
+   %qg0ds = OpLabel
+   %qg0iq = OpIAdd %uint %iq2 %p_row_us
+   %qg0h = OpIMul %uint %qg0iq %sc_HSV
+   %qg0h4 = OpUDiv %uint %qg0h %uint_4
+   %qg0i = OpIAdd %uint %qg0h4 %col_tid
+   %qg0a = OpIAdd %uint %ooff %qg0i
+   %qg0p = OpAccessChain %p_v4f16_sb %o_buf4 %uint_0 %qg0a
+   %qg0v = OpLoad %v4f16 %of0_p
+               OpStore %qg0p %qg0v
+               OpBranch %qg0_d2
+   %qg0_d2 = OpLabel
+               OpBranch %qg0_done
+   %qg0_done = OpLabel
+; r=1
+   %qg1r = OpIAdd %uint %p_row_us %uint_1
+   %qg1 = OpULessThan %bool %qg1r %pN
+               OpSelectionMerge %qg1_done None
+               OpBranchConditional %qg1 %qg1s %qg1_done
+   %qg1s = OpLabel
+   %qg1d = OpULessThan %bool %col_tid %hsv_div4
+               OpSelectionMerge %qg1_d2 None
+               OpBranchConditional %qg1d %qg1ds %qg1_d2
+   %qg1ds = OpLabel
+   %qg1iq = OpIAdd %uint %iq2 %qg1r
+   %qg1h = OpIMul %uint %qg1iq %sc_HSV
+   %qg1h4 = OpUDiv %uint %qg1h %uint_4
+   %qg1i = OpIAdd %uint %qg1h4 %col_tid
+   %qg1a = OpIAdd %uint %ooff %qg1i
+   %qg1p = OpAccessChain %p_v4f16_sb %o_buf4 %uint_0 %qg1a
+   %qg1v = OpLoad %v4f16 %of1_p
+               OpStore %qg1p %qg1v
+               OpBranch %qg1_d2
+   %qg1_d2 = OpLabel
+               OpBranch %qg1_done
+   %qg1_done = OpLabel
+; r=2
+   %qg2r = OpIAdd %uint %p_row_us %uint_2
+   %qg2 = OpULessThan %bool %qg2r %pN
+               OpSelectionMerge %qg2_done None
+               OpBranchConditional %qg2 %qg2s %qg2_done
+   %qg2s = OpLabel
+   %qg2d = OpULessThan %bool %col_tid %hsv_div4
+               OpSelectionMerge %qg2_d2 None
+               OpBranchConditional %qg2d %qg2ds %qg2_d2
+   %qg2ds = OpLabel
+   %qg2iq = OpIAdd %uint %iq2 %qg2r
+   %qg2h = OpIMul %uint %qg2iq %sc_HSV
+   %qg2h4 = OpUDiv %uint %qg2h %uint_4
+   %qg2i = OpIAdd %uint %qg2h4 %col_tid
+   %qg2a = OpIAdd %uint %ooff %qg2i
+   %qg2p = OpAccessChain %p_v4f16_sb %o_buf4 %uint_0 %qg2a
+   %qg2v = OpLoad %v4f16 %of2_p
+               OpStore %qg2p %qg2v
+               OpBranch %qg2_d2
+   %qg2_d2 = OpLabel
+               OpBranch %qg2_done
+   %qg2_done = OpLabel
+; r=3
+   %qg3r = OpIAdd %uint %p_row_us %uint_3
+   %qg3 = OpULessThan %bool %qg3r %pN
+               OpSelectionMerge %qg3_done None
+               OpBranchConditional %qg3 %qg3s %qg3_done
+   %qg3s = OpLabel
+   %qg3d = OpULessThan %bool %col_tid %hsv_div4
+               OpSelectionMerge %qg3_d2 None
+               OpBranchConditional %qg3d %qg3ds %qg3_d2
+   %qg3ds = OpLabel
+   %qg3iq = OpIAdd %uint %iq2 %qg3r
+   %qg3h = OpIMul %uint %qg3iq %sc_HSV
+   %qg3h4 = OpUDiv %uint %qg3h %uint_4
+   %qg3i = OpIAdd %uint %qg3h4 %col_tid
+   %qg3a = OpIAdd %uint %ooff %qg3i
+   %qg3p = OpAccessChain %p_v4f16_sb %o_buf4 %uint_0 %qg3a
+   %qg3v = OpLoad %v4f16 %of3_p
+               OpStore %qg3p %qg3v
+               OpBranch %qg3_d2
+   %qg3_d2 = OpLabel
+               OpBranch %qg3_done
+   %qg3_done = OpLabel
+               OpBranch %out_done
+   %out_plain = OpLabel
+   %pi_l = OpLoad %uint %var_i
+; r=0
+   %op0g = OpIMul %uint %pi_l %sc_Br
+   %op0gr = OpIAdd %uint %op0g %p_row_us
+   %op0 = OpULessThan %bool %op0gr %pN
+               OpSelectionMerge %op0_done None
+               OpBranchConditional %op0 %op0s %op0_done
+   %op0s = OpLabel
+   %op0d = OpULessThan %bool %col_tid %hsv_div4
+               OpSelectionMerge %op0_d2 None
+               OpBranchConditional %op0d %op0ds %op0_d2
+   %op0ds = OpLabel
+   %op0iq = OpIMul %uint %iq2 %sc_HSV
+   %op0grh = OpIMul %uint %op0gr %pne1
+   %op0gh = OpIMul %uint %op0grh %sc_HSV
+   %op0s2 = OpIAdd %uint %op0iq %op0gh
+   %op0h4 = OpUDiv %uint %op0s2 %uint_4
+   %op0i = OpIAdd %uint %op0h4 %col_tid
+   %op0a = OpIAdd %uint %ooff %op0i
+   %op0p = OpAccessChain %p_v4f16_sb %o_buf4 %uint_0 %op0a
+   %op0v = OpLoad %v4f16 %of0_p
+               OpStore %op0p %op0v
+; D096-F marker: r=0 reached (98304 + wgy*1024 + tid*4)
+   %mr0_a = OpIMul %uint %wgy %uint_1024
+   %mr0_b = OpIAdd %uint %mr0_a %uint_98304
+   %mr0_c = OpIMul %uint %tid %uint_4
+   %mr0_d = OpIAdd %uint %mr0_b %mr0_c
+   %mr0_v = OpConvertUToF %f32 %wgy
+   %mr0_p = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %mr0_d
+               OpStore %mr0_p %mr0_v
+; D096-G: store address (114688 + wgy*512 + tid*4 + r)
+   %ad0_a = OpIMul %uint %wgy %uint_512
+   %ad0_b = OpIAdd %uint %ad0_a %uint_114688
+   %ad0_c = OpIMul %uint %tid %uint_4
+   %ad0_d = OpIAdd %uint %ad0_b %ad0_c
+   %ad0_v = OpConvertUToF %f32 %op0a
+   %ad0_p = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %ad0_d
+               OpStore %ad0_p %ad0_v
+               OpBranch %op0_d2
+   %op0_d2 = OpLabel
+               OpBranch %op0_done
+   %op0_done = OpLabel
+; r=1
+   %p_row_us1 = OpIAdd %uint %p_row_us %uint_1
+   %op1g = OpIMul %uint %pi_l %sc_Br
+   %op1gr = OpIAdd %uint %op1g %p_row_us1
+   %op1 = OpULessThan %bool %op1gr %pN
+               OpSelectionMerge %op1_done None
+               OpBranchConditional %op1 %op1s %op1_done
+   %op1s = OpLabel
+   %op1d = OpULessThan %bool %col_tid %hsv_div4
+               OpSelectionMerge %op1_d2 None
+               OpBranchConditional %op1d %op1ds %op1_d2
+   %op1ds = OpLabel
+   %op1iq = OpIMul %uint %iq2 %sc_HSV
+   %op1grh = OpIMul %uint %op1gr %pne1
+   %op1gh = OpIMul %uint %op1grh %sc_HSV
+   %op1s2 = OpIAdd %uint %op1iq %op1gh
+   %op1h4 = OpUDiv %uint %op1s2 %uint_4
+   %op1i = OpIAdd %uint %op1h4 %col_tid
+   %op1a = OpIAdd %uint %ooff %op1i
+   %op1p = OpAccessChain %p_v4f16_sb %o_buf4 %uint_0 %op1a
+   %op1v = OpLoad %v4f16 %of1_p
+               OpStore %op1p %op1v
+; D096-F marker: r=1 reached (+1)
+   %mr1_a = OpIMul %uint %wgy %uint_1024
+   %mr1_b = OpIAdd %uint %mr1_a %uint_98304
+   %mr1_c = OpIMul %uint %tid %uint_4
+   %mr1_e = OpIAdd %uint %mr1_b %mr1_c
+   %mr1_d = OpIAdd %uint %mr1_e %uint_1
+   %mr1_v = OpConvertUToF %f32 %wgy
+   %mr1_p = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %mr1_d
+               OpStore %mr1_p %mr1_v
+; D096-G: store address (+1)
+   %ad1_a = OpIMul %uint %wgy %uint_512
+   %ad1_b = OpIAdd %uint %ad1_a %uint_114688
+   %ad1_c = OpIMul %uint %tid %uint_4
+   %ad1_e = OpIAdd %uint %ad1_b %ad1_c
+   %ad1_d = OpIAdd %uint %ad1_e %uint_1
+   %ad1_v = OpConvertUToF %f32 %op1a
+   %ad1_p = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %ad1_d
+               OpStore %ad1_p %ad1_v
+               OpBranch %op1_d2
+   %op1_d2 = OpLabel
+               OpBranch %op1_done
+   %op1_done = OpLabel
+; r=2
+   %p_row_us2 = OpIAdd %uint %p_row_us %uint_2
+   %op2g = OpIMul %uint %pi_l %sc_Br
+   %op2gr = OpIAdd %uint %op2g %p_row_us2
+   %op2 = OpULessThan %bool %op2gr %pN
+               OpSelectionMerge %op2_done None
+               OpBranchConditional %op2 %op2s %op2_done
+   %op2s = OpLabel
+   %op2d = OpULessThan %bool %col_tid %hsv_div4
+               OpSelectionMerge %op2_d2 None
+               OpBranchConditional %op2d %op2ds %op2_d2
+   %op2ds = OpLabel
+   %op2iq = OpIMul %uint %iq2 %sc_HSV
+   %op2grh = OpIMul %uint %op2gr %pne1
+   %op2gh = OpIMul %uint %op2grh %sc_HSV
+   %op2s2 = OpIAdd %uint %op2iq %op2gh
+   %op2h4 = OpUDiv %uint %op2s2 %uint_4
+   %op2i = OpIAdd %uint %op2h4 %col_tid
+   %op2a = OpIAdd %uint %ooff %op2i
+   %op2p = OpAccessChain %p_v4f16_sb %o_buf4 %uint_0 %op2a
+   %op2v = OpLoad %v4f16 %of2_p
+               OpStore %op2p %op2v
+; D096-F marker: r=2 reached (+2)
+   %mr2_a = OpIMul %uint %wgy %uint_1024
+   %mr2_b = OpIAdd %uint %mr2_a %uint_98304
+   %mr2_c = OpIMul %uint %tid %uint_4
+   %mr2_e = OpIAdd %uint %mr2_b %mr2_c
+   %mr2_d = OpIAdd %uint %mr2_e %uint_2
+   %mr2_v = OpConvertUToF %f32 %wgy
+   %mr2_p = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %mr2_d
+               OpStore %mr2_p %mr2_v
+; D096-G: store address (+2)
+   %ad2_a = OpIMul %uint %wgy %uint_512
+   %ad2_b = OpIAdd %uint %ad2_a %uint_114688
+   %ad2_c = OpIMul %uint %tid %uint_4
+   %ad2_e = OpIAdd %uint %ad2_b %ad2_c
+   %ad2_d = OpIAdd %uint %ad2_e %uint_2
+   %ad2_v = OpConvertUToF %f32 %op2a
+   %ad2_p = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %ad2_d
+               OpStore %ad2_p %ad2_v
+               OpBranch %op2_d2
+   %op2_d2 = OpLabel
+               OpBranch %op2_done
+   %op2_done = OpLabel
+; r=3
+   %p_row_us3 = OpIAdd %uint %p_row_us %uint_3
+   %op3g = OpIMul %uint %pi_l %sc_Br
+   %op3gr = OpIAdd %uint %op3g %p_row_us3
+   %op3 = OpULessThan %bool %op3gr %pN
+               OpSelectionMerge %op3_done None
+               OpBranchConditional %op3 %op3s %op3_done
+   %op3s = OpLabel
+   %op3d = OpULessThan %bool %col_tid %hsv_div4
+               OpSelectionMerge %op3_d2 None
+               OpBranchConditional %op3d %op3ds %op3_d2
+   %op3ds = OpLabel
+   %op3iq = OpIMul %uint %iq2 %sc_HSV
+   %op3grh = OpIMul %uint %op3gr %pne1
+   %op3gh = OpIMul %uint %op3grh %sc_HSV
+   %op3s2 = OpIAdd %uint %op3iq %op3gh
+   %op3h4 = OpUDiv %uint %op3s2 %uint_4
+   %op3i = OpIAdd %uint %op3h4 %col_tid
+   %op3a = OpIAdd %uint %ooff %op3i
+   %op3p = OpAccessChain %p_v4f16_sb %o_buf4 %uint_0 %op3a
+   %op3v = OpLoad %v4f16 %of3_p
+               OpStore %op3p %op3v
+; D096-F marker: r=3 reached (+3)
+   %mr3_a = OpIMul %uint %wgy %uint_1024
+   %mr3_b = OpIAdd %uint %mr3_a %uint_98304
+   %mr3_c = OpIMul %uint %tid %uint_4
+   %mr3_e = OpIAdd %uint %mr3_b %mr3_c
+   %mr3_d = OpIAdd %uint %mr3_e %uint_3
+   %mr3_v = OpConvertUToF %f32 %wgy
+   %mr3_p = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %mr3_d
+               OpStore %mr3_p %mr3_v
+; D096-G: store address (+3)
+   %ad3_a = OpIMul %uint %wgy %uint_512
+   %ad3_b = OpIAdd %uint %ad3_a %uint_114688
+   %ad3_c = OpIMul %uint %tid %uint_4
+   %ad3_e = OpIAdd %uint %ad3_b %ad3_c
+   %ad3_d = OpIAdd %uint %ad3_e %uint_3
+   %ad3_v = OpConvertUToF %f32 %op3a
+   %ad3_p = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %ad3_d
+               OpStore %ad3_p %ad3_v
+               OpBranch %op3_d2
+   %op3_d2 = OpLabel
+               OpBranch %op3_done
+   %op3_done = OpLabel
+               OpBranch %out_done
+   %out_done = OpLabel
+; D096-F: end-of-kernel marker (122880 + wgy*8)
+   %mrk_a = OpIMul %uint %wgy %uint_8
+   %mrk_b = OpIAdd %uint %mrk_a %uint_122880
+   %mrk_v = OpConvertUToF %f32 %wgy
+   %mrk_p = OpAccessChain %p_f32_sb %dbg_buf %uint_0 %mrk_b
+               OpStore %mrk_p %mrk_v
+               OpReturn
+               OpFunctionEnd

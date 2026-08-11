@@ -10,3 +10,9 @@
 
 Для этой dual-RX 9070 XT системы основной Vulkan порядок устройств:
 `Vulkan1,Vulkan0`. Актуальные batch, ubatch и split берите из autotune history.
+
+Для Qwen3.6-27B Q4_K_M базовый ROCm KV — `q8_0`, MTP n3. На Vulkan preset
+использует native P5 `f8_e4m3`, MTP n2 и FlashAttention. Имя FP8 не означает,
+что raw E4M3 точнее block-scaled q8_0: на длинном MTP сервер автоматически
+держит последние 8 KV-слоёв в f16, а при `ctx >= 98304` — последние 12
+(D097). Явный `LLAMA_VK_MTP_KV_LAST_F16` переопределяет эту политику.

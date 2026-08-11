@@ -1,16 +1,16 @@
 # Qwen3.6-27B Q4_K_M Results
 
-Status (2026-08-07): this is now the primary production and performance model
-for the fork. The safe default research lane is dual-ROCm `ctx=49152` with q8
-KV and an adjacent spec-none control; MTP n3 is the agent profile. D094 fixed
-the Vulkan q8/MTP path (acceptance 0.33 -> 0.80+, f16-KV 49K lane now beats
-ROCm). See
+Status (2026-08-11): this is the primary production and performance model for
+the fork. The safe default research lane remains dual-ROCm `ctx=49152` with q8
+KV and an adjacent spec-none control. The current Vulkan refresh below compares
+q8_0 with native P5 `f8_e4m3` at 12K, 49K and 98K, both spec-none and MTP n2.
+See
 [D089](docs/research/major-topology/D089_Q4_K_M_PRIMARY_BASELINE_PROMOTION.md).
 
 ROCm short and 49K rows were refreshed on 2026-07-16 after the E344 Q4_K/Q5_K
 prompt geometry and E345 Q6_K decode policy. The 98K production row remains the
-E337/E338 bounded-Q8 and one-copy scheduler measurement. Vulkan rows are the
-unchanged E332 reference measurements. No foreground GPU workload was active.
+E337/E338 bounded-Q8 and one-copy scheduler measurement. No foreground GPU
+workload was active during the 2026-08-11 Vulkan refresh.
 
 Updated 2026-08-07 (D094): Vulkan q8/MTP path fixed. The numerical divergence
 in the Vulkan q8_0 vec/mmq path (CUDA-style dp4a accumulation order,
@@ -25,10 +25,80 @@ are listed below.
 - `Qwen3.6-27B-Q4_K_M.gguf` (15.932 GiB)
 - Windows 11, ROCm/HIP 7.1 and Vulkan
 - dual-GPU layer split, one server slot, full GPU offload
-- FlashAttention, `b8192/ub1024`, q8_0 K/V cache
+- FlashAttention, `b8192/ub1024`
+- current Vulkan matrix: q8_0/q8_0 and f8_e4m3/f8_e4m3 KV
+- MTP n2 refresh rows: last 8 full-attention KV layers are f16; current 98K
+	FP8 MTP automatically uses last 12 after D097
 - cold prompts, no cache reuse, no warmup, seed 42
 
-## Performance
+## Current Vulkan q8 vs FP8 refresh (2026-08-11)
+
+All rows use the same binary, `Vulkan1,Vulkan0`, layer split `1,1`, one slot,
+`b8192/ub1024`, FlashAttention, cold/no-reuse/no-prime execution and 128 output
+tokens. These diagnosis rows use depth 2 and the same historical hybrid
+last-8-f16 policy for q8 and FP8. `GGML_VK_FA_F8_P5=1` affects only FP8; q8
+ignores it. The D097 section below contains the current 98K FP8 default.
+
+| Context | KV | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance | Main KV MiB |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 12,288 | q8_0 | none | 7,889 / 128 | 1672.17 | **28.47** | 13.80 | - | 408 |
+| 12,288 | f8_e4m3 P5 | none | 7,889 / 128 | **1791.64** | 28.03 | **14.21** | - | **384** |
+| 12,288 | q8_0 + last8 f16 | MTP n2 | 7,889 / 128 | 1686.74 | 45.55 | 17.01 | 65.45% | 588 |
+| 12,288 | f8_e4m3 P5 + last8 f16 | MTP n2 | 7,889 / 128 | **1702.94** | **50.69** | **17.79** | **75.25%** | **576** |
+| 49,152 | q8_0 | none | 30,723 / 128 | 1519.42 | **27.21** | 5.1146 | - | 1632 |
+| 49,152 | f8_e4m3 P5 | none | 30,723 / 128 | **1677.42** | 25.60 | **5.4627** | - | **1536** |
+| 49,152 | q8_0 + last8 f16 | MTP n2 | 30,723 / 128 | 1656.10 | 43.59 | 5.9288 | 66.06% | 2352 |
+| 49,152 | f8_e4m3 P5 + last8 f16 | MTP n2 | 30,723 / 128 | **1679.76** | **44.51** | **6.0176** | **67.59%** | **2304** |
+| 98,304 | q8_0 | none | 57,530 / 128 | 1314.53 | **25.07** | 2.6090 | - | 3264 |
+| 98,304 | f8_e4m3 P5 | none | 57,530 / 128 | **1480.18** | 21.98 | **2.8522** | - | **3072** |
+| 98,304 | q8_0 + last8 f16 | MTP n2 | 57,530 / 128 | 1440.02 | **37.79** | 2.9407 | **68.87%** | 4704 |
+| 98,304 | f8_e4m3 P5 + last8 f16 | MTP n2 | 57,530 / 128 | **1465.98** | 32.40 | **2.9494** | 51.61% | **4608** |
+
+FP8 spec-none prompt throughput improves by `+7.1%`, `+10.4%` and `+12.6%`
+at 12K/49K/98K. Its spec-none decode changes by `-1.5%`, `-5.9%` and `-12.3%`,
+but prompt-heavy aggregate TPS still improves by `+3.0%`, `+6.8%` and `+9.3%`.
+With MTP, FP8 improves aggregate TPS by `+4.6%` at 12K and `+1.5%` at 49K.
+In the historical matched-N8 98K row, aggregate wall TPS is effectively tied
+(`+0.3%`) while FP8 acceptance falls by 17.26 percentage points and decode by
+14.3%; that row motivated D097 and is not the current FP8 long-context policy.
+
+FP8 reduces the main KV allocation by 5.88% in spec-none. With the matched
+last-8-f16 MTP policy, the reduction is 2.04% because half of this model's 16
+full-attention KV layers intentionally use f16. Artifacts use the prefix
+`d095-refresh-vk-q4km-{12k,49k,98k}-{q8,f8}-{none,mtp2}-r1`.
+
+## D097 98K FP8 MTP acceptance recovery (2026-08-11)
+
+The 128-token refresh row above diagnosed the problem; it is no longer the
+recommended 98K FP8 MTP policy. Raw E4M3 is not more precise than q8_0 for this
+KV distribution: it has three mantissa bits and no block scale, while q8_0 has
+an int8 payload plus a scale per 32 values. A real-KV scout measured raw-E4M3
+attention-logit MSE about 29.9x higher than q8_0.
+
+The fixed 57,530-token/256-output adjacent bracket is:
+
+| KV policy | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance | Main KV MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| q8 last8, control A | 1430.89 | 42.09 | 5.5039 | 72.60% | 4704 |
+| **FP8 P5 last12** | **1510.95** | 41.79 | **5.7618** | **73.79%** | 5376 |
+| FP8/q8 bridge M6 + last8 | 1427.45 | **47.05** | 5.5687 | **90.61%** | **4680** |
+| q8 last8, control B | 1414.53 | 41.83 | 5.4432 | 72.60% | 4704 |
+
+FP8 last12 beats the q8 control center by `+6.20%` prompt and `+5.27%`
+aggregate, matches decode within `-0.41%`, and raises acceptance by `+1.19`
+percentage points. It costs `+672 MiB` main KV versus q8. Therefore only
+FP8+MTP with `ctx >= 98304` automatically selects last12; q8 and shorter FP8
+contexts remain last8. `LLAMA_VK_MTP_KV_LAST_F16` remains the explicit
+override/rollback. The M6 bridge is retained as a default-off generation-heavy
+research profile, not the general default. See
+[D097](docs/research/major-topology/D097_Q4KM_VULKAN_FP8_LONG_ACCEPTANCE.md).
+
+## Historical cross-backend performance
+
+Audit correction (2026-08-11): the 2026-08-07 Vulkan rows below were described
+as q8_0, but their canonical CSV and server logs show q4_0/q4_0 KV. They remain
+historical reference numbers; the explicitly typed table above supersedes them
+for current q8/FP8 decisions. ROCm rows below are q8_0/q8_0.
 
 | Backend | Mode | Context | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -48,11 +118,13 @@ are listed below.
 At 6.4k prompt tokens, current ROCm MTP loses 7.03% prompt throughput, gains
 96.54% decode throughput, and gains 53.15% aggregate throughput for a 256-token
 answer. At 29.5k prompt tokens, it loses only 2.64% prompt throughput, gains
-80.11% decode throughput, and gains 10.51% aggregate throughput. Vulkan MTP
-(validated 2026-08-07) loses 3.1% prompt throughput and gains 87.1% decode
-throughput at 7.9k tokens; at 30.7k it loses 0.6% prompt and gains 79.4%
-decode. Vulkan rows are the 2026-08-07 validated refresh (repo-snapshot
-prompts 7,889/30,723/57,530 tokens; see Q4_REFRESH_WIP_2026-08-07.md).
+80.11% decode throughput, and gains 10.51% aggregate throughput. Historical
+Vulkan q4_0 MTP (validated 2026-08-07) loses 3.1% prompt throughput and gains
+87.1% decode throughput at 7.9k tokens; at 30.7k it loses 0.6% prompt and gains
+79.4% decode. Those Vulkan rows use repo-snapshot prompts
+7,889/30,723/57,530 tokens; see `Q4_REFRESH_WIP_2026-08-07.md` in the ignored
+benchmark artifact directory. The current q8/FP8 table above replaces them for
+KV-format decisions.
 
 At 59k prompt tokens, ROCm MTP loses 3.83% prompt throughput and gains 85.1%
 decode throughput. The 64-token request is exactly at the amortization
@@ -64,12 +136,12 @@ answers favor MTP.
 | Backend | Context | Actual prompt | Prompt TPS | Decode TPS | Dedicated peak | Shared peak |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | ROCm, current performance / E335 memory | 49,152 | 29,561 | 1778.59 | 21.98 | 21.21 GiB | 2.60 GiB |
-| Vulkan | 49,152 | 30,723 | 1461.26 | 26.96 | 18.09 GiB | 0.29 GiB |
+| Vulkan, historical q4_0 KV | 49,152 | 30,723 | 1461.26 | 26.96 | 18.09 GiB | 0.29 GiB |
 | ROCm, pre-E337 spill | 98,304 | 59,004 | 553.50 | 17.64 | 24.45 GiB | 6.25 GiB |
 | ROCm, E338 one copy, none | 98,304 | 59,045 | **1493.21** | 19.15 | 22.05 GiB | 3.20 GiB |
 | ROCm, E338 one copy, MTP n3 | 98,304 | 59,045 | 1435.97 | **35.44** | 23.96 GiB | 3.26 GiB |
-| Vulkan | 98,304 | 57,530 | 1211.62 | 25.43 | 20.06 GiB | 0.54 GiB |
-| Vulkan | 131,072 | 75,979 | 1051.67 | **23.02** | 21.38 GiB | 0.70 GiB |
+| Vulkan, historical q4_0 KV | 98,304 | 57,530 | 1211.62 | 25.43 | 20.06 GiB | 0.54 GiB |
+| Vulkan, historical q8_0 KV | 131,072 | 75,979 | 1051.67 | **23.02** | 21.38 GiB | 0.70 GiB |
 
 ## D094 refresh (2026-08-06/07, f16 KV, GUI autotune, no game)
 

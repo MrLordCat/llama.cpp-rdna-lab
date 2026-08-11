@@ -1,0 +1,71 @@
+#version 450
+
+#include "types.glsl"
+
+// One workgroup quantizes one 16-token Q tile for one head and one batch.
+// A single tile scale keeps all HSK chunks in the subsequent fp8 cooperative
+// accumulation on the same scale.
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer Q_SRC { float data_q[]; };
+layout(binding = 1) writeonly buffer Q_DST { A_TYPE data_q8[]; };
+layout(binding = 2) writeonly buffer Q_SCALE { float data_q_scale[]; };
+
+layout(push_constant) uniform parameter {
+    uint HSK;
+    uint N;
+    uint heads;
+    uint batches;
+    uint nb01;
+    uint nb02;
+    uint nb03;
+    float attention_scale;
+} p;
+
+shared float tile_max[256];
+
+void main() {
+    const uint tile  = gl_WorkGroupID.x;
+    const uint head  = gl_WorkGroupID.y;
+    const uint batch = gl_WorkGroupID.z;
+    const uint tid   = gl_LocalInvocationID.x;
+    const uint row0  = tile * 16;
+
+    float local_max = 0.0;
+    for (uint linear = tid; linear < 16 * p.HSK; linear += gl_WorkGroupSize.x) {
+        const uint row = row0 + linear / p.HSK;
+        const uint d   = linear % p.HSK;
+        if (row < p.N) {
+            const uint src = d + row * p.nb01 + head * p.nb02 + batch * p.nb03;
+            local_max = max(local_max, abs(data_q[src]));
+        }
+    }
+
+    tile_max[tid] = local_max;
+    barrier();
+    for (uint offset = 128; offset > 0; offset >>= 1) {
+        if (tid < offset) {
+            tile_max[tid] = max(tile_max[tid], tile_max[tid + offset]);
+        }
+        barrier();
+    }
+
+    // The local E4M3 encoder reserves exponent 15; 240 is its largest finite
+    // representable value (exp=14, mantissa=7).
+    const float quant_scale = tile_max[0] > 0.0 ? 240.0 / tile_max[0] : 1.0;
+    const uint tiles = (p.N + 15) / 16;
+    const uint scale_index = (batch * p.heads + head) * tiles + tile;
+    if (tid == 0) {
+        data_q_scale[scale_index] = p.attention_scale / quant_scale;
+    }
+
+    for (uint linear = tid; linear < 16 * p.HSK; linear += gl_WorkGroupSize.x) {
+        const uint row = row0 + linear / p.HSK;
+        const uint d   = linear % p.HSK;
+        if (row < p.N) {
+            const uint src = d + row * p.nb01 + head * p.nb02 + batch * p.nb03;
+            const uint dst = d + row * p.HSK + head * p.N * p.HSK + batch * p.heads * p.N * p.HSK;
+            data_q8[dst].v = f32_to_fp8_e4m3(data_q[src] * quant_scale);
+        }
+    }
+}

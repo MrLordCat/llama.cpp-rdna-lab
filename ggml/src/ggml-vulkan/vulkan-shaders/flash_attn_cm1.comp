@@ -5,6 +5,9 @@
 
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
+#if defined(D096_FP8_S_FUSED_BASE)
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#endif
 
 #extension GL_KHR_shader_subgroup_basic : enable
 #extension GL_KHR_shader_subgroup_arithmetic : enable
@@ -32,13 +35,39 @@ layout (binding = 2) readonly buffer V {float16_t data_v[];};
 layout (binding = 2) readonly buffer VV4 {f16vec4 data_vv4[];};
 layout (binding = 3) readonly buffer M {float16_t data_m[];};
 
+// D096 P2 transform base. glslc cannot express fp8 cooperative matrices, so
+// this build-only variant exposes f16 placeholder descriptors and operations.
+// scripts/research/d096_fp8_fa_spirv_transform.py changes only these S-stage
+// loads to SPV_EXT_float8; mask, softmax, P*V and output stay canonical.
+#if defined(D096_FP8_S_BASE)
+layout (binding = 7) readonly buffer Q8_BASE {float16_t data_q8_base[];};
+layout (binding = 8) readonly buffer Q_SCALE {float data_q_scale[];};
+#endif
+
 shared float tmpsh[row_split];
 
 const uint32_t qstride = HSK_pad / 4 + 2; // in units of f16vec4
+#if defined(D096_FP8_S_FUSED_BASE)
+// Build-only P3 storage. GLSL writes encoded E4M3 bytes here; the SPIR-V
+// transform redirects only the cooperative Q load from the one-element f16
+// placeholder to this uint8 array and retypes that load to float8.
+shared uint8_t Q8f[Br * HSK_pad];
+shared float16_t Qf_p3_dummy[1];
+#else
 shared f16vec4 Qf[Br * qstride];
+#endif
 
 const uint psh_stride = Br / 4 + 2;
 shared f16vec4 Psh[Bc * psh_stride];
+
+#if defined(D096_FP8_PV_F8)
+// Build-only P5 storage. GLSL writes encoded E4M3 P bytes here; the SPIR-V
+// transform redirects the cooperative P load from the f16 placeholder to this
+// uint8 array and retypes both the P and V loads to float8 (PV runs in fp8
+// with an f32 accumulator).
+shared uint8_t Psh8[Bc * Br];
+shared float16_t Psh_dummy[1];
+#endif
 
 // Avoid padding for hsk==256 to make it fit in 48KB shmem.
 const uint32_t sfshstride = (HSK <= 128) ? (Br / 4 + 2) : Br / 4;
@@ -52,6 +81,9 @@ shared f16vec4 kvsh[(kvsh_stride >= vsh_stride) ? (Bc * kvsh_stride) : (Bc * vsh
 
 const uint32_t osh_stride = row_split * MatBr / 4;
 shared f16vec4 pvsh[MatBc * osh_stride];
+#if defined(D096_FP8_PV_F8)
+shared ACC_TYPEV4 pvsh32[MatBc * osh_stride];
+#endif
 
 shared ACC_TYPE slope[Br];
 
@@ -71,6 +103,43 @@ void main() {
 
 #define tile_row(r) (row_tid * rows_per_thread + (r))
 
+    float q_dequant_scale_p3 = p.scale;
+
+    // P3 quantizes the current 16-token Q tile inside the canonical FA
+    // workgroup. A subgroup reduction avoids the standalone global prepass.
+#if defined(D096_FP8_S_FUSED_BASE)
+    float q_local_max = 0.0;
+    uint32_t q_offset = gqa_iq1*p.nb01 + (iq2*p.nb02+iq3*p.nb03) / 4;
+    [[unroll]] for (uint32_t linear = tid; linear < Br * HSK; linear += gl_WorkGroupSize.x) {
+        const uint32_t r = linear / HSK;
+        const uint32_t d = linear % HSK;
+        if (i * Br + r < N) {
+            const float qv = data_q[q_offset + (i * Br + r) * q_stride + d];
+            q_local_max = max(q_local_max, abs(qv));
+        }
+    }
+    q_local_max = subgroupMax(q_local_max);
+    if (gl_SubgroupInvocationID == 0) {
+        tmpsh[gl_SubgroupID] = q_local_max;
+    }
+    barrier();
+    float q_tile_max = 0.0;
+    [[unroll]] for (uint32_t s = 0; s < gl_NumSubgroups; ++s) {
+        q_tile_max = max(q_tile_max, tmpsh[s]);
+    }
+    const float q_quant_scale = q_tile_max > 0.0 ? 240.0 / q_tile_max : 1.0;
+    q_dequant_scale_p3 = p.scale / q_quant_scale;
+    [[unroll]] for (uint32_t linear = tid; linear < Br * HSK_pad; linear += gl_WorkGroupSize.x) {
+        const uint32_t r = linear / HSK_pad;
+        const uint32_t d = linear % HSK_pad;
+        float qv = 0.0;
+        if (d < HSK && i * Br + r < N) {
+            qv = data_q[q_offset + (i * Br + r) * q_stride + d];
+        }
+        Q8f[linear] = f32_to_fp8_e4m3(qv * q_quant_scale);
+    }
+    barrier();
+#elif !defined(D096_FP8_S_BASE)
     // Zero-initialize shared memory for Q/K when HSK is not a multiple of 16 (HSK_pad > HSK).
     if ((HSK % 16) != 0) {
         [[unroll]] for (uint i = 0; i < Br * qstride; i += gl_WorkGroupSize.x) {
@@ -92,8 +161,13 @@ void main() {
         }
     }
     barrier();
+#endif
 
+#if defined(D096_FP8_PV_F8)
+    ACC_TYPEV4 Of[rows_per_thread][d_per_thread];
+#else
     f16vec4 Of[rows_per_thread][d_per_thread];
+#endif
     [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
         [[unroll]] for (uint32_t d = 0; d < d_per_thread; ++d) {
             Of[r][d] = f16vec4(0.0);
@@ -127,9 +201,14 @@ void main() {
     // mo_offset will point to the tile starting at row i*Br and col 0
     uint32_t mo_offset = mo_stride * i;
 
-#if BLOCK_SIZE > 1
+#if BLOCK_SIZE > 1 || defined(DATA_A_F8_E4M3)
     uint32_t k_offset = (ik2*p.nb12 + ik3*p.nb13) / BLOCK_BYTE_SIZE;
+#if defined(D096_FP8_V_F16)
+    // P4: V is a dense f16 preconvert buffer, so the batch offset is in f16 elements.
+    uint32_t v_offset = (iv2*p.nb22 + iv3*p.nb23) / 2;
+#else
     uint32_t v_offset = (iv2*p.nb22 + iv3*p.nb23) / BLOCK_BYTE_SIZE;
+#endif
 #else
     uint32_t k_offset = (ik2*p.nb12 + ik3*p.nb13) / 2;
     uint32_t v_offset = (iv2*p.nb22 + iv3*p.nb23) / 2;
@@ -227,7 +306,7 @@ void main() {
                 if (idx + gl_WorkGroupSize.x <= Bc * HSK_pad / 4 || c < Bc) {
                     f16vec4 K_Tf = f16vec4(0);
                     if ((!KV_bounds_check || j * Bc + c < KV) && (HSK == HSK_pad || d < HSK / 4)) {
-#if BLOCK_SIZE > 1
+#if BLOCK_SIZE > 1 || defined(DATA_A_F8_E4M3)
                         uint coord = (j * Bc + c) * k_stride * BLOCK_SIZE + 4 * d;
                         uint ib = coord / BLOCK_SIZE;
                         uint iqs = (coord % BLOCK_SIZE);
@@ -251,12 +330,29 @@ void main() {
         coopmat<float16_t, gl_ScopeSubgroup, 16, MatBr, gl_MatrixUseB> QMat;
 
         [[unroll]] for (uint32_t d = 0; d < HSK_pad / 16; ++d) {
+    #if defined(D096_FP8_S_BASE) || defined(D096_FP8_S_FUSED_BASE)
+            // Placeholder f16 loads with the exact raw-f8 element coordinates.
+            // The transform changes their component type to E4M3 without
+            // touching the loop, accumulator, store or any downstream stage.
+            const uint k_coord = k_offset + (j * Bc + gl_SubgroupID * MatBc) * k_stride + d * 16;
+            coopMatLoad(KMat, data_k, k_coord, k_stride, gl_CooperativeMatrixLayoutRowMajor);
+
+#if defined(D096_FP8_S_BASE)
+            const uint q8_coord = ((iq3 * p.neq2 + iq2) * p.N + i * Br) * HSK + d * 16;
+            coopMatLoad(QMat, data_q8_base, q8_coord, HSK, gl_CooperativeMatrixLayoutColumnMajor);
+#else
+            // The P3 transform redirects this dummy pointer to Q8f. Keeping a
+            // normal f16 cooperative load in the build-only module lets glslc
+            // generate the rest of canonical FA unchanged.
+            coopMatLoad(QMat, Qf_p3_dummy, d * 16, HSK_pad, gl_CooperativeMatrixLayoutColumnMajor);
+#endif
+    #else
             // If SHMEM_STAGING is set, a Bc * HSK_pad size tile of K is loaded to shmem
             // If not, f16 K is loaded directly from global memory if aligned, otherwise
             // staged through a Bc * MatBr size staging buffer.
             // If K is not type f16, then it is always staged for dequantization.
             if (SHMEM_STAGING == 0) {
-#if BLOCK_SIZE == 1
+#if BLOCK_SIZE == 1 && !defined(DATA_A_F8_E4M3)
             if (KV_bounds_check || d * 16 + 16 > HSK) {
 #endif
             barrier();
@@ -266,7 +362,7 @@ void main() {
                 if (idx + tid < Bc * MatBr / 4) {
                     f16vec4 K_Tf = f16vec4(0);
                     if ((!KV_bounds_check || j * Bc + row < KV) && (HSK == HSK_pad || d * 16 + col_vec * 4 < HSK)) {
-#if BLOCK_SIZE > 1
+#if BLOCK_SIZE > 1 || defined(DATA_A_F8_E4M3)
                         uint coord = (j * Bc + row) * k_stride * BLOCK_SIZE + d * 16 + col_vec * 4;
                         uint ib = coord / BLOCK_SIZE;
                         uint iqs = (coord % BLOCK_SIZE);
@@ -280,18 +376,18 @@ void main() {
                 }
             }
             barrier();
-#if BLOCK_SIZE == 1
+#if BLOCK_SIZE == 1 && !defined(DATA_A_F8_E4M3)
             }
 #endif
 
-#if BLOCK_SIZE == 1
+#if BLOCK_SIZE == 1 && !defined(DATA_A_F8_E4M3)
             if (KV_bounds_check || d * 16 + 16 > HSK)
 #endif
             {
                 uint coord = (gl_SubgroupID * MatBc) * kvsh_stride;
                 coopMatLoad(KMat, kvsh, coord, kvsh_stride, gl_CooperativeMatrixLayoutRowMajor);
             }
-#if BLOCK_SIZE == 1
+#if BLOCK_SIZE == 1 && !defined(DATA_A_F8_E4M3)
             else {
                 const uint coord = k_offset / 4 + (j * Bc + gl_SubgroupID * MatBc) * k_stride / 4 + d * 16 / 4;
                 coopMatLoad(KMat, data_kv4, coord, k_stride / 4, gl_CooperativeMatrixLayoutRowMajor);
@@ -303,6 +399,7 @@ void main() {
             }
 
             coopMatLoad(QMat, Qf, d * 16 / 4, qstride, gl_CooperativeMatrixLayoutColumnMajor);
+#endif
 
             SfMat = coopMatMulAdd(KMat, QMat, SfMat);
         }
@@ -310,6 +407,22 @@ void main() {
         uint coord = gl_SubgroupID * MatBc * sfshstride;
         coopMatStore(SfMat, sfsh, coord, sfshstride, gl_CooperativeMatrixLayoutRowMajor);
         barrier();
+
+#if defined(D096_FP8_S_BASE)
+        // Q8 = Q * quant_scale; restore attention scaling once after the full
+        // HSK reduction. The prepass stores p.scale / quant_scale per tile.
+        const float q_dequant_scale = data_q_scale[(iq3 * p.neq2 + iq2) * Tr + i];
+#elif defined(D096_FP8_S_FUSED_BASE)
+    const float q_dequant_scale = q_dequant_scale_p3;
+#endif
+#if defined(D096_FP8_S_BASE) || defined(D096_FP8_S_FUSED_BASE)
+        [[unroll]] for (uint32_t idx = 0; idx < Bc * Br / 4; idx += gl_WorkGroupSize.x) {
+            if (idx + tid < Bc * Br / 4) {
+                sfsh[idx + tid] *= ACC_TYPE(q_dequant_scale);
+            }
+        }
+        barrier();
+#endif
 
         if (LOGIT_SOFTCAP) {
             [[unroll]] for (uint32_t idx = 0; idx < Bc * Br / 4; idx += gl_WorkGroupSize.x) {
@@ -339,6 +452,9 @@ void main() {
         }
 
         float eMf[rows_per_thread];
+#if defined(D096_FP8_PV_F8)
+        float p_rowmax[rows_per_thread];
+#endif
         [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
             const uint r_vec  = tile_row(r) / 4;
             const uint r_comp = tile_row(r) % 4;
@@ -354,6 +470,9 @@ void main() {
 
             // Compute max across the row
             rowmaxf = subgroupMax(rowmaxf);
+#if defined(D096_FP8_PV_F8)
+            p_rowmax[r] = rowmaxf;
+#endif
 
             // M = max(rowmax, Mold)
             // P = e^(S - M)
@@ -367,7 +486,11 @@ void main() {
         [[unroll]] for (uint32_t d0 = 0; d0 < HSV / 4; d0 += threads_per_rowgroup) {
             const uint d_local = d0 / threads_per_rowgroup;
             [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
+#if defined(D096_FP8_PV_F8)
+                Of[r][d_local] = ACC_TYPE(eMf[r]) * Of[r][d_local];
+#else
                 Of[r][d_local] = float16_t(eMf[r]) * Of[r][d_local];
+#endif
             }
         }
 
@@ -378,14 +501,38 @@ void main() {
             [[unroll]] for (uint32_t r = 0; r < rows_per_thread; r += 4) {
                 const uint row = tile_row(r);
                 if (KV_bounds_check && j * Bc + col >= KV) {
+#if defined(D096_FP8_PV_F8)
                     Psh[col * psh_stride + row / 4] = f16vec4(0.0f);
+                    Psh8[col * Br + row + 0] = uint8_t(0);
+                    Psh8[col * Br + row + 1] = uint8_t(0);
+                    Psh8[col * Br + row + 2] = uint8_t(0);
+                    Psh8[col * Br + row + 3] = uint8_t(0);
+#else
+                    Psh[col * psh_stride + row / 4] = f16vec4(0.0f);
+#endif
                 } else {
                     const vec4 mfvec = vec4(Mf[r], Mf[r + 1], Mf[r + 2], Mf[r + 3]);
+#if defined(D096_FP8_PV_F8)
+                    // P5: scale P so every row's maximum encodes as 1.0 in
+                    // E4M3 (best 3-bit mantissa resolution); the row max is
+                    // already known from the M update above.
+                    const vec4 pfscl = exp(mfvec - vec4(p_rowmax[r], p_rowmax[r + 1], p_rowmax[r + 2], p_rowmax[r + 3]));
+                    const vec4 pfv = pfscl * exp(vec4(sfsh[row / 4 + col * sfshstride]) - mfvec);
+                    [[unroll]] for (uint32_t vec_idx = 0; vec_idx < 4; ++vec_idx) {
+                        Lf[r + vec_idx] += pfv[vec_idx];
+                    }
+                    Psh[col * psh_stride + row / 4] = f16vec4(pfv);
+                    Psh8[col * Br + row + 0] = f32_to_fp8_e4m3(pfv.x);
+                    Psh8[col * Br + row + 1] = f32_to_fp8_e4m3(pfv.y);
+                    Psh8[col * Br + row + 2] = f32_to_fp8_e4m3(pfv.z);
+                    Psh8[col * Br + row + 3] = f32_to_fp8_e4m3(pfv.w);
+#else
                     const f16vec4 Pf = f16vec4(exp(vec4(sfsh[row / 4 + col * sfshstride]) - mfvec));
                     [[unroll]] for (uint32_t vec_idx = 0; vec_idx < 4; ++vec_idx) {
                         Lf[r + vec_idx] += Pf[vec_idx];
                     }
                     Psh[col * psh_stride + row / 4] = Pf;
+#endif
                 }
             }
         }
@@ -397,7 +544,7 @@ void main() {
                 if (idx + gl_WorkGroupSize.x <= Bc * HSV_pad / 4 || c < Bc) {
                     f16vec4 V_Tf = f16vec4(0);
                     if ((!KV_bounds_check || j * Bc + c < KV) && (HSV == HSV_pad || d < HSV / 4)) {
-#if BLOCK_SIZE > 1
+#if (BLOCK_SIZE > 1 || defined(DATA_A_F8_E4M3)) && !defined(D096_FP8_V_F16)
                         uint coord = (j * Bc + c) * v_stride * BLOCK_SIZE + 4 * d;
                         uint ib = coord / BLOCK_SIZE;
                         uint iqs = (coord % BLOCK_SIZE);
@@ -419,8 +566,12 @@ void main() {
         [[unroll]] for (uint32_t hsv_tile = 0; hsv_tile < num_hsv_tiles; ++hsv_tile) {
             const uint hsv_offset = (hsv_tile * row_split + gl_SubgroupID) * 16;
 
+#if defined(D096_FP8_PV_F8)
+            // P5: PV accumulates in f32; the transform retypes P/V loads to fp8.
+            coopmat<float, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator> PVMat = coopmat<float, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator>(0);
+#else
             coopmat<float16_t, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator> PVMat = coopmat<float16_t, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator>(0);
-
+#endif
             // Preload V tiles for [Bc, 16 * num subgroups]
             const uint v_rows = Bc;
             const uint v_total = v_rows * v_cols;
@@ -431,7 +582,7 @@ void main() {
             // staged through a Bc * MatBr size staging buffer.
             // If V is not type f16, then it is always staged for dequantization.
             if (SHMEM_STAGING == 0) {
-#if BLOCK_SIZE == 1
+#if (BLOCK_SIZE == 1 && !defined(DATA_A_F8_E4M3)) || defined(D096_FP8_V_F16)
             // For f16, only preload if not aligned
             if (KV_bounds_check) {
 #endif
@@ -448,7 +599,7 @@ void main() {
                 const uint iqs = coord % BLOCK_SIZE;
 
                 if (!KV_bounds_check || (v_row < KV && v_col < HSV)) {
-#if BLOCK_SIZE > 1
+#if (BLOCK_SIZE > 1 || defined(DATA_A_F8_E4M3)) && !defined(D096_FP8_V_F16)
                     kvsh[row * vsh_stride + col] = dequantize4(ib, iqs, v_offset, BINDING_IDX_V);
 #else
                     kvsh[row * vsh_stride + col] = data_vv4[(v_offset + v_row * v_stride + v_col) / 4];
@@ -458,7 +609,7 @@ void main() {
                 }
             }
 
-#if BLOCK_SIZE == 1
+#if (BLOCK_SIZE == 1 && !defined(DATA_A_F8_E4M3)) || defined(D096_FP8_V_F16)
             }
 #endif
             }
@@ -471,7 +622,16 @@ void main() {
                     coopMatLoad(KMat, Psh, bc_chunk * MatBc * psh_stride, psh_stride, gl_CooperativeMatrixLayoutColumnMajor);
 
                     if (SHMEM_STAGING == 0) {
-#if BLOCK_SIZE == 1
+#if defined(D096_FP8_PV_F8)
+                    // P5: single f16 placeholder V tile read as elements from
+                    // the data_v half array (row stride = v_stride halves);
+                    // the transform retypes this descriptor to raw fp8 and the
+                    // same offsets become fp8 bytes.
+                    const uint v_tile_row = j * Bc + bc_chunk * MatBc;
+                    const uint v_tile_offset = v_offset + v_tile_row * v_stride + hsv_offset;
+                    coopMatLoad(QMat, data_v, v_tile_offset, v_stride, gl_CooperativeMatrixLayoutRowMajor);
+#else
+#if (BLOCK_SIZE == 1 && !defined(DATA_A_F8_E4M3)) || defined(D096_FP8_V_F16)
                     if (!KV_bounds_check) {
                         // F16 values can be loaded directly from global memory
                         const uint v_tile_row = j * Bc + bc_chunk * MatBc;
@@ -483,6 +643,7 @@ void main() {
                         const uint v_tile_offset = bc_chunk * MatBr * v_cols + gl_SubgroupID * (MatBc / 4);
                         coopMatLoad(QMat, kvsh, v_tile_offset, vsh_stride, gl_CooperativeMatrixLayoutRowMajor);
                     }
+#endif
                     } else {
                         const uint v_tile_offset = bc_chunk * MatBc * kvsh_stride + (hsv_tile * row_split + gl_SubgroupID) * (MatBc / 4);
                         coopMatLoad(QMat, kvsh, v_tile_offset, kvsh_stride, gl_CooperativeMatrixLayoutRowMajor);
@@ -492,7 +653,11 @@ void main() {
                 }
 
                 // Store PVMat to pvsh and load into Of
+#if defined(D096_FP8_PV_F8)
+                coopMatStore(PVMat, pvsh32, o_offset, osh_stride, gl_CooperativeMatrixLayoutRowMajor);
+#else
                 coopMatStore(PVMat, pvsh, o_offset, osh_stride, gl_CooperativeMatrixLayoutRowMajor);
+#endif
             }
 
             barrier();
@@ -513,7 +678,11 @@ void main() {
 
                     if (hsv_col >= hsv_base && hsv_col < hsv_base + hsv_per_tile && hsv_col < HSV) {
                         const uint local_hsv = (hsv_col - hsv_base) / 4;
+#if defined(D096_FP8_PV_F8)
+                        Of[r][d_local] += pvsh32[row * osh_stride + local_hsv];
+#else
                         Of[r][d_local] += pvsh[row * osh_stride + local_hsv];
+#endif
                     }
                 }
             }
@@ -539,7 +708,11 @@ void main() {
                         const uint d = d0 + col_tid;
                         if (d >= HSV/4) break;
                         const uint d_local = d0 / threads_per_rowgroup;
+#if defined(D096_FP8_PV_F8)
+                        gqaStore(tile_row(r), d, f16vec4(Of[r][d_local]), o_offset, iq2, N);
+#else
                         gqaStore(tile_row(r), d, Of[r][d_local], o_offset, iq2, N);
+#endif
                     }
                 }
             }
@@ -589,7 +762,11 @@ void main() {
 
                 [[unroll]] for (uint32_t d0 = 0; d0 < HSV / 4; d0 += threads_per_rowgroup) {
                     const uint d_local = d0 / threads_per_rowgroup;
+#if defined(D096_FP8_PV_F8)
+                    Of[r][d_local] *= ACC_TYPE(ms);
+#else
                     Of[r][d_local] *= float16_t(ms);
+#endif
                 }
             } else {
                 vs = exp(sink - Mf[r]);
@@ -607,9 +784,17 @@ void main() {
     [[unroll]] for (uint32_t d0 = 0; d0 < HSV / 4; d0 += threads_per_rowgroup) {
         const uint d_local = d0 / threads_per_rowgroup;
         [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
+#if defined(D096_FP8_PV_F8)
+            Of[r][d_local] *= ACC_TYPE(Lfrcp[r]);
+#else
             Of[r][d_local] *= float16_t(Lfrcp[r]);
+#endif
 #if defined(FLOAT_TYPE_MAX)
+#if defined(D096_FP8_PV_F8)
+            Of[r][d_local] = clamp(Of[r][d_local], -65504.0f, 65504.0f);
+#else
             Of[r][d_local] = clamp(Of[r][d_local], -FLOAT_TYPE_MAX, FLOAT_TYPE_MAX);
+#endif
 #endif
         }
     }
@@ -623,7 +808,11 @@ void main() {
                     const uint d = d0 + col_tid;
                     if (d >= HSV / 4) break;
                     const uint d_local = d0 / threads_per_rowgroup;
+#if defined(D096_FP8_PV_F8)
+                    gqaStore(tile_row(r), d, f16vec4(Of[r][d_local]), o_offset, iq2, N);
+#else
                     gqaStore(tile_row(r), d, Of[r][d_local], o_offset, iq2, N);
+#endif
                 }
             }
         }

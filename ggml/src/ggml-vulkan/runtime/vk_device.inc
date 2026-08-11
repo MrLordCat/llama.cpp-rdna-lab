@@ -1277,10 +1277,13 @@ static void ggml_vk_init(ggml_backend_vk_context * ctx, size_t idx) {
     // sizes could be passed to vkAllocateMemory (crash after reboot).
     ctx->prealloc_size_fa_k16 = 0;
     ctx->prealloc_size_fa_v16 = 0;
+    ctx->prealloc_size_fa_mask16 = 0;
     ctx->prealloc_fa_k16 = nullptr;
     ctx->prealloc_fa_v16 = nullptr;
+    ctx->prealloc_fa_mask16 = nullptr;
     ctx->prealloc_fa_k16_need_sync = false;
     ctx->prealloc_fa_v16_need_sync = false;
+    ctx->prealloc_fa_mask16_need_sync = false;
     // Fixed size of 1KB, for deterministic behavior
     ctx->prealloc_size_add_rms_partials = 1024;
 

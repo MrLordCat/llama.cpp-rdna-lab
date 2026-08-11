@@ -372,6 +372,10 @@ extern "C" {
     GGML_API ggml_fp16_t ggml_fp32_to_fp16(float);
     GGML_API void        ggml_fp16_to_fp32_row(const ggml_fp16_t *, float *, int64_t);
     GGML_API void        ggml_fp32_to_fp16_row(const float *, ggml_fp16_t *, int64_t);
+    GGML_API void        ggml_fp8_e4m3_to_fp32_row(const uint8_t *, float *, int64_t);
+    GGML_API void        ggml_fp32_to_fp8_e4m3_row(const float *, uint8_t *, int64_t);
+    GGML_API void        ggml_fp8_e5m2_to_fp32_row(const uint8_t *, float *, int64_t);
+    GGML_API void        ggml_fp32_to_fp8_e5m2_row(const float *, uint8_t *, int64_t);
 
     // google brain half-precision bfloat16
     typedef struct { uint16_t bits; } ggml_bf16_t;
@@ -423,13 +427,13 @@ extern "C" {
         // GGML_TYPE_Q4_0_8_8 = 33,
         GGML_TYPE_TQ1_0   = 34,
         GGML_TYPE_TQ2_0   = 35,
-        // GGML_TYPE_IQ4_NL_4_4 = 36,
-        // GGML_TYPE_IQ4_NL_4_8 = 37,
-        // GGML_TYPE_IQ4_NL_8_8 = 38,
+        // 36-38 are reserved after removal of obsolete experimental formats.
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
-        // 42-47 are reserved after removal of obsolete experimental formats.
+        // 42-43 and 46-47 are reserved after removal of experimental formats.
+        GGML_TYPE_F8_E4M3 = 44, // FP8 E4M3 backend-safe finite subset (1 byte)
+        GGML_TYPE_F8_E5M2 = 45, // FP8 E5M2 (1 byte)
         GGML_TYPE_PQ2_0   = 48, // Prism packed 2-bit, 128-value blocks (GGUF type 142)
         GGML_TYPE_COUNT   = 49,
     };

@@ -183,3 +183,14 @@ build-vulkan/bin/*.dll
 
 # Q4 refresh WIP - user review pending (2026-08-07)
 build_logs/agent-workload/Q4_REFRESH_WIP_2026-08-07.md
+
+# Local FP8 research scratch and generated probe outputs
+/q1.json
+/q2.json
+/q3.json
+/q4.json
+/q5.json
+/long1.json
+/examples/vk_fp8_probe/*.spv
+/examples/vk_fp8_probe/results/
+/ggml/src/ggml-vulkan/vulkan-shaders/fp8_fa_cm1_tail*.spvasm

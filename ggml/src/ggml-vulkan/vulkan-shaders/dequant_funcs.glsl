@@ -4,6 +4,31 @@
 
 #include "types.glsl"
 
+#if defined(DATA_A_F8_E4M3)
+FLOAT_TYPE dequantize1(uint ib, uint iqs, uint a_offset) {
+    return FLOAT_TYPE(fp8_e4m3_to_f32(data_a[a_offset + ib].v));
+}
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(1.0, 0.0);
+}
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    return vec2(fp8_e4m3_to_f32(data_a[a_offset + ib].v),
+                fp8_e4m3_to_f32(data_a[a_offset + ib + 1].v));
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    return vec4(fp8_e4m3_to_f32(data_a[a_offset + ib    ].v),
+                fp8_e4m3_to_f32(data_a[a_offset + ib + 1].v),
+                fp8_e4m3_to_f32(data_a[a_offset + ib + 2].v),
+                fp8_e4m3_to_f32(data_a[a_offset + ib + 3].v));
+}
+vec4 dequantize4_2aligned(uint ib, uint iqs, uint a_offset) {
+    return vec4(fp8_e4m3_to_f32(data_a[a_offset + ib    ].v),
+                fp8_e4m3_to_f32(data_a[a_offset + ib + 1].v),
+                fp8_e4m3_to_f32(data_a[a_offset + ib + 2].v),
+                fp8_e4m3_to_f32(data_a[a_offset + ib + 3].v));
+}
+#endif
+
 #if defined(DATA_A_F32)
 FLOAT_TYPE dequantize1(uint ib, uint iqs, uint a_offset) {
     return data_a[a_offset + ib];

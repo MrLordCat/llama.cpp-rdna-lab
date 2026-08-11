@@ -38,8 +38,13 @@ class ServerPresetsMixin:
                     widget.setEnabled(uses_draft_n)
 
     def _apply_mtp_profile(self):
-        """Apply the measured E266 ROCm MTP profile."""
-        self.server_spec_draft_n_max.setValue(self.MTP_DRAFT_N_MAX)
+        """Apply the measured backend/model MTP draft budget."""
+        backend = self.backend_panels.current_backend() if hasattr(self, "backend_panels") else ""
+        model_name = Path(self.server_model_path.text().strip()).name.lower().replace("-", "_").replace(".", "_")
+        is_qwen36_q4km = "qwen3_6" in model_name and "27b" in model_name and "q4_k_m" in model_name
+        # D089 production ROCm profile uses n3; D095/D097 Vulkan uses n2.
+        draft_n = 3 if backend == "rocm" and is_qwen36_q4km else self.MTP_DRAFT_N_MAX
+        self.server_spec_draft_n_max.setValue(draft_n)
 
     def _apply_ngram_mod_profile(self):
         """Apply the measured E226 ROCm repeated/session ngram profile."""
@@ -125,9 +130,18 @@ class ServerPresetsMixin:
         if not model_path:
             return {"matched": False, "reason": "empty-model-path"}
         model_name = Path(model_path).name
+        backend_key = self.backend_panels.current_backend() if hasattr(self, "backend_panels") else ""
 
         match = None
         for preset in self._model_presets:
+            preset_backend = str(preset.get("backend", "")).strip().lower()
+            if preset_backend and preset_backend != backend_key:
+                continue
+            preset_backends = preset.get("backends")
+            if isinstance(preset_backends, list):
+                allowed_backends = {str(value).strip().lower() for value in preset_backends}
+                if backend_key not in allowed_backends:
+                    continue
             pattern = preset.get("pattern")
             if not pattern:
                 continue
@@ -137,6 +151,14 @@ class ServerPresetsMixin:
                     break
             except re.error:
                 continue
+
+        if match:
+            match = dict(match)
+            backend_overrides = match.get("backend_overrides", {})
+            if isinstance(backend_overrides, dict):
+                override = backend_overrides.get(backend_key)
+                if isinstance(override, dict):
+                    match.update(override)
 
         if not match:
             # No preset for this model — clear stale spec state from a previous
@@ -157,6 +179,13 @@ class ServerPresetsMixin:
         # Reset spec type to None before applying preset to avoid stale MTP/spec state
         self.server_spec_type_combo.setCurrentText("None")
         self.on_spec_type_changed()
+
+        # Optional preset-owned launch fields must not leak from the previously
+        # applied model. A missing key means the neutral value, not "keep the
+        # old model's hidden launch argument".
+        self.server_no_mmap_check.setChecked(False)
+        self.server_disable_thinking_check.setChecked(False)
+        self.server_extra_args.clear()
 
         if "ctx" in match:
             self.server_context_spinbox.setValue(int(match["ctx"]))
@@ -207,6 +236,7 @@ class ServerPresetsMixin:
             6: "q4_1",
             7: "q4_0",
             8: "iq4_nl",
+            9: "f8_e4m3",
         }
         kv_value = match.get("kv_cache")
         if isinstance(kv_value, int) and kv_value in kv_map:

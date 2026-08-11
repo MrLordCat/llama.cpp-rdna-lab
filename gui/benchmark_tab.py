@@ -46,6 +46,7 @@ from server_backend_panels import (
     ROCM_DEVICE_CHOICES,
     ROCM_Q4KM_LONG_CONTEXT_CHOICE,
     ROCM_Q4KM_LONG_CONTEXT_MIN,
+    VULKAN_BALANCED_DUAL_CHOICE,
     VULKAN_DEVICE_CHOICES,
     device_choice_args,
     is_qwen36_q4km_model,
@@ -257,7 +258,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
     # the selected ctx; Max 130K keeps the legacy short-prompt KV-stress semantics.
     AUTOTUNE_LANES = [
         ("Screen 12K — fast preset hunt",             12288,  24576),
-        ("Long ctx 49K — ~32K actual prompt",         49152,  147456),
+        ("Long ctx 49K — safety-capped prompt",      49152,  147456),
         ("Long ctx 98K — safety-capped prompt",       98304,  294912),
         ("Max 130K — KV stress (short prompt)",       131072, 24576),
         ("Custom",                                    0,      0),
@@ -393,6 +394,19 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
                     self.device_combo.setCurrentIndex(self._recommended_device_choice_index())
                     self.settings.setValue("benchmark/devices", self.device_combo.currentText())
                 self.settings.setValue(device_default_migration, True)
+
+            vulkan_order_migration = "benchmark/vulkan_device_order_migrated_v2"
+            if not self.settings.value(vulkan_order_migration, False, type=bool):
+                backend_key = self._backend_key_from_display(
+                    self.build_backend_combo.currentText().strip()
+                ).lower()
+                legacy_vulkan_default = str(device_text).startswith("Vulkan0,Vulkan1")
+                if backend_key == "vulkan" and (
+                    not device_text or str(device_text).lower().startswith("auto") or legacy_vulkan_default
+                ):
+                    self.device_combo.setCurrentIndex(self._recommended_device_choice_index())
+                    self.settings.setValue("benchmark/devices", self.device_combo.currentText())
+                self.settings.setValue(vulkan_order_migration, True)
             self.scale_prompt_check.setChecked(
                 self.settings.value("benchmark/scale_prompt", False, type=bool)
             )
@@ -441,6 +455,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
 
             for name, checkbox in self.autotune_kv_checks.items():
                 self.settings.setValue(f"benchmark/autotune/kv/{name}", checkbox.isChecked())
+            self.settings.setValue("benchmark/fp8_p5", True)  # D096-M: always on
 
             for name, checkbox in self.autotune_spec_checks.items():
                 self.settings.setValue(f"benchmark/autotune/spec/{name}", checkbox.isChecked())
@@ -556,6 +571,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.device_combo = QComboBox()
         self.device_combo.setToolTip(
             "GPU selection for bench/autotune server runs (-dev/-sm/-ts).\n"
+            "Vulkan recommendation is Vulkan1,Vulkan0; ROCm is ROCm1,ROCm0.\n"
             "Auto = backend default. Applies to both Single Bench and Auto-tune;\n"
             "ignored by Auto-tune when the single-vs-dual sweep is enabled."
         )
@@ -602,7 +618,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.ctx_spin = QSpinBox()
         self.ctx_spin.setMinimum(8192)
         self.ctx_spin.setMaximum(131072)
-        self.ctx_spin.setValue(131072)
+        self.ctx_spin.setValue(49152)
         self.ctx_spin.setSingleStep(8192)
         single_layout.addWidget(self.ctx_spin, 3, 1)
 
@@ -610,7 +626,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.batch_spin = QSpinBox()
         self.batch_spin.setMinimum(32)
         self.batch_spin.setMaximum(8192)
-        self.batch_spin.setValue(512)
+        self.batch_spin.setValue(8192)
         self.batch_spin.setSingleStep(32)
         single_layout.addWidget(self.batch_spin, 4, 1)
 
@@ -618,21 +634,26 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.ubatch_spin = QSpinBox()
         self.ubatch_spin.setMinimum(32)
         self.ubatch_spin.setMaximum(8192)
-        self.ubatch_spin.setValue(128)
+        self.ubatch_spin.setValue(1024)
         self.ubatch_spin.setSingleStep(32)
         single_layout.addWidget(self.ubatch_spin, 5, 1)
 
         single_layout.addWidget(QLabel("KV K/V:"), 6, 0)
         self.kv_combo = QComboBox()
-        self.kv_combo.addItems(["q8_0", "q4_0", "f16", "bf16", "f32"])
-        self.kv_combo.setCurrentText("q4_0")
+        self.kv_combo.addItems(["q8_0", "q4_0", "f16", "bf16", "f32", "f8_e4m3"])
+        self.kv_combo.setCurrentText("q8_0")
+        self.kv_combo.setToolTip(
+            "q8_0 is the primary Q4 baseline. f8_e4m3 uses native Vulkan P5 and\n"
+            "is faster for prompt evaluation, but raw E4M3 is less precise than\n"
+            "block-scaled q8_0; MTP automatically uses N8/N12 f16 tail layers."
+        )
         single_layout.addWidget(self.kv_combo, 6, 1)
 
         single_layout.addWidget(QLabel("Max tokens:"), 7, 0)
         self.max_tokens_spin = QSpinBox()
         self.max_tokens_spin.setMinimum(8)
         self.max_tokens_spin.setMaximum(1024)
-        self.max_tokens_spin.setValue(16)
+        self.max_tokens_spin.setValue(128)
         single_layout.addWidget(self.max_tokens_spin, 7, 1)
 
         single_layout.addWidget(QLabel("MTP draft N:"), 8, 0)
@@ -641,11 +662,25 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.mtp_draft_spin.setValue(self.MTP_DRAFT_N_MAX)
         self.mtp_draft_spin.setToolTip(
             "--spec-draft-n-max, used when Spec is mtp/ngram-mtp.\n"
-            "2 is the safer default for big prompts; try 4/8 only when tuning short-context decode."
+            "Validated Q4 defaults: Vulkan n2, primary ROCm 49K n3.\n"
+            "Higher values require an adjacent acceptance/TPS A/B."
         )
         single_layout.addWidget(self.mtp_draft_spin, 8, 1)
         single_layout.setColumnStretch(1, 1)
         single_page_layout.addLayout(single_layout)
+
+        self.single_kv_policy_label = QLabel("")
+        self.single_kv_policy_label.setWordWrap(True)
+        self.single_kv_policy_label.setVisible(False)
+        self.single_kv_policy_label.setToolTip(
+            "Hybrid quantized-KV policy selected by llama-server for MTP.\n"
+            "LLAMA_VK_MTP_KV_LAST_F16 remains an explicit environment override."
+        )
+        single_page_layout.addWidget(self.single_kv_policy_label)
+        self.spec_combo.currentTextChanged.connect(self._update_single_bench_policy_hint)
+        self.ctx_spin.valueChanged.connect(self._update_single_bench_policy_hint)
+        self.kv_combo.currentTextChanged.connect(self._update_single_bench_policy_hint)
+        self._update_single_bench_policy_hint()
 
         self.scale_prompt_check = QCheckBox("Long-prompt mode: scale prompt to ctx (~80% fill)")
         self.scale_prompt_check.setChecked(False)
@@ -830,8 +865,9 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         kv_flow = FlowLayout(kv_chip_host)
         self.autotune_kv_checks: dict[str, QPushButton] = {}
         for kv_name, enabled, hint in [
-            ("q4_0", True, "Main KV cache for the current 130K target"),
-            ("q8_0", False, "Higher-quality KV cache opt-in"),
+            ("q8_0", True, "Primary Q4_K_M KV baseline"),
+            ("q4_0", False, "Legacy Q3/extra-headroom KV lane"),
+            ("f8_e4m3", False, "Native Vulkan P5: faster prompt path; lower raw precision than block-scaled q8_0, needs FA"),
             ("f16", False, "FP16 KV (usually slower/heavier)"),
             ("bf16", False, "BF16 KV (usually slower/heavier)"),
             ("f32", False, "FP32 KV (debug/reference only)"),
@@ -871,9 +907,9 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.at_mtp_draft_input.setMaximumWidth(120)
         self.at_mtp_draft_input.setToolTip(
             "--spec-draft-n-max for mtp/ngram-mtp sweep configs.\n"
-            "One value (e.g. 8) or a comma list (e.g. 2,4,8) — a list sweeps\n"
+            "One value (e.g. 2) or a comma list (e.g. 2,3,4) — a list sweeps\n"
             "every draft budget in the same autotune run (multiplies the grid).\n"
-            "2 is the safer default for big prompts; 4/8 for short-ctx decode."
+            "Validated Q4 points are Vulkan n2 and primary ROCm 49K n3."
         )
         mtp_draft_row.addWidget(self.at_mtp_draft_input)
         mtp_draft_row.addStretch()
@@ -1994,7 +2030,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         return f"{head}, ... ({len(values)} total)"
 
     def _selected_autotune_kv_values(self) -> list[str]:
-        ordered = ["q4_0", "q8_0", "f16", "bf16", "f32"]
+        ordered = ["q4_0", "q8_0", "f8_e4m3", "f16", "bf16", "f32"]
         return [name for name in ordered if name in self.autotune_kv_checks and self.autotune_kv_checks[name].isChecked()]
 
     def _selected_autotune_spec_values(self) -> list[str]:
@@ -2065,12 +2101,22 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             choices.append((choice[0], device_choice_args(choice)))
 
         previous = self.device_combo.currentText()
+        backend_key = self._backend_key_from_display(
+            self.build_backend_combo.currentText().strip()
+        ).lower()
+        initialize_recommendation = (
+            backend_key in {"rocm", "vulkan"} and
+            not getattr(self, "_device_recommendation_initialized", False)
+        )
         self._device_choices = choices
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
         for display, _args in choices:
             self.device_combo.addItem(display)
         idx = self.device_combo.findText(previous)
+        if initialize_recommendation:
+            idx = self._recommended_device_choice_index()
+            self._device_recommendation_initialized = True
         self.device_combo.setCurrentIndex(idx if idx >= 0 else self._recommended_device_choice_index())
         self.device_combo.blockSignals(False)
 
@@ -2098,7 +2144,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
                 self._active_device_profile_context() if ctx_size is None else ctx_size,
             ))
         elif backend_key == "vulkan":
-            recommended_args = ["-dev", "Vulkan0,Vulkan1", "-sm", "layer", "-ts", "1,1"]
+            recommended_args = device_choice_args(VULKAN_BALANCED_DUAL_CHOICE)
         else:
             return 0
 
@@ -2316,7 +2362,11 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
     def _bench_env_overrides(self) -> dict[str, str]:
         backend_key = self._backend_key_from_display(self.build_backend_combo.currentText().strip()).lower()
         if backend_key == "vulkan":
-            return self._vulkan_runtime_env()
+            out = self._vulkan_runtime_env()
+            # D096-M: native fp8 attention is the default for f8_e4m3 KV; the
+            # kernel ignores it for other KV types.
+            out["GGML_VK_FA_F8_P5"] = "1"
+            return out
         return {}
 
     @staticmethod
@@ -2325,6 +2375,21 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             digits = 0 if value >= 100000 else 1
             return f"{value / 1000:.{digits}f}K"
         return str(value)
+
+    def _update_single_bench_policy_hint(self, *_args) -> None:
+        if not hasattr(self, "single_kv_policy_label"):
+            return
+        spec_mode = self.spec_combo.currentText().strip().lower()
+        kv_type = self.kv_combo.currentText().strip()
+        if spec_mode not in {"mtp", "ngram-mtp"} or kv_type not in {"q8_0", "f8_e4m3"}:
+            self.single_kv_policy_label.setVisible(False)
+            return
+        hybrid_n = 12 if kv_type == "f8_e4m3" and self.ctx_spin.value() >= 98304 else 8
+        detail = "D097 98K+ acceptance recovery" if hybrid_n == 12 else "measured default"
+        self.single_kv_policy_label.setText(
+            f"MTP KV policy: {kv_type}, last {hybrid_n} layers f16 ({detail})."
+        )
+        self.single_kv_policy_label.setVisible(True)
 
     @staticmethod
     def _set_dynamic_property(widget: QWidget, name: str, value: str) -> None:

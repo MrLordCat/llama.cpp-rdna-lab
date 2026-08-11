@@ -194,6 +194,7 @@ class BenchHistoryMixin:
             "q4_1": 6,
             "q4_0": 7,
             "iq4_nl": 8,
+            "f8_e4m3": 9,
         }
         return kv_map.get(kv_name.strip().lower(), 3)
 
@@ -626,7 +627,9 @@ class BenchHistoryMixin:
         run_time = str(row_data.get("timestamp", "")).strip() or "-"
         aggregate_tps = str(row_data.get("aggregate_tps", "")).strip() or "0"
 
-        default_name = f"History Default {model_name}"
+        history_backend = str(row_data.get("backend", "")).strip().lower()
+        backend_suffix = f" [{history_backend.upper()}]" if history_backend in {"rocm", "vulkan", "cpu"} else ""
+        default_name = f"History Default{backend_suffix} {model_name}"
         default_preset = {
             "pattern": re.escape(model_name),
             "name": default_name,
@@ -643,6 +646,10 @@ class BenchHistoryMixin:
                 f"spec={spec_mode or '-'}, extra={extra_preset or '-'}"
             ),
         }
+        if history_backend in {"rocm", "vulkan", "cpu"}:
+            # Prevent a Vulkan best run from silently becoming the ROCm/CPU
+            # launch preset (and vice versa).
+            default_preset["backend"] = history_backend
         if extra_args:
             default_preset["extra_args"] = extra_args
 

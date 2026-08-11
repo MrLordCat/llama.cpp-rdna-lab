@@ -1,5 +1,39 @@
 # Benchmarks
 
+## D097 Vulkan FP8 98K Acceptance Recovery (2026-08-11)
+
+The long-run FP8 acceptance loss was a precision-policy problem, not a P5
+kernel regression. Raw E4M3 has only three mantissa bits; q8_0's per-32 scale
+makes its captured attention-logit MSE about 29.9x lower. With the old matched
+last-8-f16 policy, repeated 256-token controls were deterministic: FP8 accepted
+`140/230` drafts (60.87%) versus q8 `151/208` (72.60%).
+
+The accepted context-scoped fix uses last-12 f16 only for FP8+MTP at
+`ctx >= 98304`. Against the center of adjacent q8 controls it measured
+`1510.95/41.79/5.7618` prompt/decode/aggregate TPS and 73.79% acceptance:
+`+6.20%` prompt, `-0.41%` decode, `+5.27%` aggregate and `+1.19` acceptance
+points. Main KV is 5376 MiB versus q8's 4704 MiB. q8 and shorter FP8 contexts
+stay at last8; `LLAMA_VK_MTP_KV_LAST_F16` remains a rollback. Full sweep and
+the faster default-off M6 q8-bridge profile are documented in
+[D097](docs/research/major-topology/D097_Q4KM_VULKAN_FP8_LONG_ACCEPTANCE.md).
+
+## D095 Vulkan Q4_K_M q8/FP8 Refresh (2026-08-11)
+
+The current dual-Vulkan matrix uses `Vulkan1,Vulkan0`, layer split `1,1`,
+`b8192/ub1024`, 128 output tokens, cold/no-reuse/no-prime execution and matched
+repo-snapshot prompts. Native P5 FP8 raises spec-none prompt throughput over q8
+by `+7.1%/+10.4%/+12.6%` at 12K/49K/98K while reducing the main KV allocation
+by 5.88%. Prompt-heavy aggregate TPS rises `+3.0%/+6.8%/+9.3%`.
+
+With matched hybrid last-8-f16 MTP n2, FP8 improves aggregate TPS by 4.6% at
+12K and 1.5% at 49K. The historical 98K N8 row ties wall TPS (`2.9494` vs
+`2.9407`) but drops FP8 acceptance to 51.61% versus q8 68.87%; D097 above
+supersedes that policy. The complete 12-row diagnosis table, KV memory values,
+methodology and artifacts are in
+[Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md). Audit note: the older 2026-08-07
+Vulkan rows were actually q4_0 KV despite being described as q8; the current
+table is explicitly typed and supersedes them for KV-format decisions.
+
 ## D094 Vulkan q8/MTP Fix (2026-08-06/07)
 
 The Vulkan q8_0 mat-vec/mmq numerical divergence vs ROCm was root-caused and
