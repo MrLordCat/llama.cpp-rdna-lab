@@ -178,25 +178,31 @@ Server smoke and A/B on the 12K lane (24576 chars, ctx 16384, spec=none,
 no MTP, `-dev ROCm1,ROCm0 -sm layer -ts 1,1`, seed 42, no background game,
 adjacent runs in one session, quick tasks):
 
-| run | KV/FA path | prompt ptps | decode tps |
-|-----|------------|-------------|------------|
-| r1  | q8_0 (baseline)            | 1760.8 | 23.30 |
-| r2  | f8_e4m3, native KQ+V      | 1629.5 | 22.04 |
-| r3  | q8_0 (control)            | 1742.9 | 23.63 |
-| r4  | f8_e4m3, native KQ only   | 1764.3 | 23.35 |
+| run | KV/FA path | prompt ptps | decode tps | vs f16 |
+|-----|------------|-------------|------------|--------|
+| r5  | f16 (baseline)            | 1770.3 | 24.20 |  0.0% |
+| r1  | q8_0                       | 1760.8 | 23.30 | -0.5% |
+| r4  | f8_e4m3, native KQ only   | 1764.3 | 23.35 | -0.3% |
+| r3  | q8_0 (control)            | 1742.9 | 23.63 | -1.5% |
+| r2  | f8_e4m3, native KQ+V      | 1629.5 | 22.04 | -8.0% |
+| r6  | f8_e4m3, native KQ+V (rep)| 1620.0 | 22.00 | -8.5% |
 
-- The native FP8 KQ phase is at parity with q8_0 (r4 vs r1/r3). All of the
-  ~6% prefill and ~5-7% decode cost sits in the native FP8 V phase (P->E4M3
-  re-quantization, fp32 VKQ accumulators, fp32 LDS store/load traffic).
+- f16 is the fastest cache type on this lane; q8_0 sits ~0.5-1.5% below it.
+- The native FP8 KQ phase is at parity with q8_0 and within ~0.3% of f16
+  (r4 vs r1/r5). All of the ~8% cost sits in the native FP8 V phase
+  (P->E4M3 re-quantization, fp32 VKQ accumulators, fp32 LDS store/load
+  traffic): full-native loses ~8-8.5% prefill and ~9% decode to f16.
 - Smoke (8K ctx, f8 KV + full native, spec=none) completed both quick tasks
   with valid output; `GGML_TRACE_FATTN_PATH` confirmed `native_kq=1
   native_v=1` on the D=256 path and K/V cache `f8_e4m3`.
 - Blocking fix landed: `SET_ROWS` on ROCm did not accept `F8_E4M3`, so the
   server aborted while writing K rows (`cache_k_l3`). Added a f32->E4M3
   SET_ROWS path and the `supports_op` admission (HIP-only).
-- Gate conclusion: full-native FP8 does not win yet; keep it opt-in.
-  Candidate next step: cut the V-phase cost (drop the separate P_f8 tile,
-  fold the pre-scale into the P store, halve the VKQ-part store traffic).
+- Gate conclusion: the project goal is closing on the f16 speed. KQ-only
+  already delivers that (within noise); the V phase must lose its ~8%
+  overhead before full-native can be promoted. Candidate next step: cut the
+  V-phase cost (drop the separate P_f8 tile, fold the pre-scale into the P
+  store, halve the VKQ-part store traffic).
 
 ### G3: native RDNA4 FP8 FlashAttention (full)
 
