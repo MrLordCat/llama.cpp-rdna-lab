@@ -449,22 +449,26 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         case GGML_TYPE_BF16:
             break;
 #if defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
-        case GGML_TYPE_F8_E4M3:
+        case GGML_TYPE_F8_E4M3: {
             // D098 G2: fail closed unless the explicit reference route is
             // requested. G2 converts K/V to f16 before the established WMMA
-            // body; native FP8 WMMA is a separate G3 dispatch.
+            // body. G3a keeps V on that reference leg but computes Q*K with
+            // native gfx12 FP8 WMMA.
+            const bool reference_enabled = std::getenv("GGML_ROCM_FATTN_F8_REFERENCE") != nullptr;
+            const bool native_kq_enabled = ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(device, dst);
             if (std::getenv("GGML_TRACE_FATTN_PATH") != nullptr) {
                 GGML_LOG_INFO(
-                    "%s: D098 F8 reference cc=%d rdna4=%d enabled=%d K=[%lld,%lld,%lld,%lld] Q=[%lld,%lld,%lld,%lld]\n",
+                    "%s: D098 F8 cc=%d rdna4=%d reference=%d native_kq=%d K=[%lld,%lld,%lld,%lld] Q=[%lld,%lld,%lld,%lld]\n",
                     __func__, cc, GGML_CUDA_CC_IS_RDNA4(cc) ? 1 : 0,
-                    std::getenv("GGML_ROCM_FATTN_F8_REFERENCE") != nullptr ? 1 : 0,
+                    reference_enabled ? 1 : 0, native_kq_enabled ? 1 : 0,
                     (long long) K->ne[0], (long long) K->ne[1], (long long) K->ne[2], (long long) K->ne[3],
                     (long long) Q->ne[0], (long long) Q->ne[1], (long long) Q->ne[2], (long long) Q->ne[3]);
             }
-            if (!GGML_CUDA_CC_IS_RDNA4(cc) || std::getenv("GGML_ROCM_FATTN_F8_REFERENCE") == nullptr) {
+            if (!GGML_CUDA_CC_IS_RDNA4(cc) || (!reference_enabled && !native_kq_enabled)) {
                 return BEST_FATTN_KERNEL_NONE;
             }
             break;
+        }
 #endif // defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
         default:
             return BEST_FATTN_KERNEL_NONE;
@@ -664,7 +668,7 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
             need_f16_V = true;
             break;
         case BEST_FATTN_KERNEL_WMMA_F16:
-            need_f16_K = true;
+            need_f16_K = !ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(device, dst);
             need_f16_V = !ggml_cuda_flash_attn_ext_use_rdna4_q8_v_direct_wmma(device, dst);
             break;
         case BEST_FATTN_KERNEL_MMA_F16:

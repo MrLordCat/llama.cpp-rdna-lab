@@ -107,6 +107,38 @@ static inline bool ggml_cuda_flash_attn_ext_use_rdna4_q8_chunked_wmma(
 #endif
 }
 
+static inline bool ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(
+        const int device, const ggml_tensor * dst) {
+#if defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
+    const char * env = getenv("GGML_ROCM_FATTN_F8_NATIVE_KQ");
+    if (env == nullptr || strcmp(env, "0") == 0 ||
+        !GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[device].cc)) {
+        return false;
+    }
+
+    const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+    if (Q == nullptr || K == nullptr || V == nullptr) {
+        return false;
+    }
+
+    // G3a deliberately owns only the production Qwen shape. V remains on the
+    // proven f16 reference leg; a K/V alias would make that conversion share
+    // the raw K pointer and is therefore rejected.
+    const bool V_is_K_view = V->view_src &&
+        (V->view_src == K ||
+         (V->view_src == K->view_src && V->view_offs == K->view_offs));
+    return !V_is_K_view && Q->ne[0] == 256 && V->ne[0] == 256 &&
+        K->ne[1] % FATTN_KQ_STRIDE == 0 &&
+        K->type == GGML_TYPE_F8_E4M3 && V->type == GGML_TYPE_F8_E4M3;
+#else
+    GGML_UNUSED(device);
+    GGML_UNUSED(dst);
+    return false;
+#endif
+}
+
 static inline ggml_cuda_flash_attn_ext_chunked_extra_data
 ggml_cuda_flash_attn_ext_get_chunked_extra_data(const ggml_tensor * dst) {
     GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);

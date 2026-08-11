@@ -2,9 +2,10 @@
 
 Date: 2026-08-11
 
-Status: active on `master`. Plan locked; G1 device conversion and G2 reference
-FlashAttention are correctness-complete. G3 native FP8 rocWMMA is next. No
-ROCm FP8 performance claim exists yet.
+Status: active on `master`. Plan locked; G1 device conversion, G2 reference
+FlashAttention and G3a native FP8 KQ rocWMMA are correctness-complete. G3b
+(native FP8 V phase) and G4/G5 gates are next. No ROCm FP8 performance claim
+exists yet.
 
 ## Objective
 
@@ -124,7 +125,35 @@ fail-closed default. G2 preconverts F8 K/V to f16 and exercises the established
 rocWMMA f16 body; it proves storage/layout correctness but is not a native-FP8
 speed result.
 
-### G3: native RDNA4 FP8 FlashAttention
+### G3a: native FP8 KQ WMMA (landed)
+
+First native gfx12 step: the Q*K^T phase runs `fp8 x fp8 -> fp32` on the
+`v_wmma_f32_16x16x16_fp8_fp8` instruction. Q is converted to E4M3 in the
+kernel (scale applied after the MMA), K is consumed directly from the raw F8
+KV cache, and the P*V phase stays on the proven f16 reference leg. Owned only
+by the production Qwen shape (D=256, GQA=6, K/V F8, no K/V alias).
+
+- Gate: `GGML_ROCM_FATTN_F8_NATIVE_KQ=1` (default-off; fail-closed default
+  verified with `support` mode).
+- ISA proof: a minimal gfx1201 rocWMMA `float8_t` TU compiled with the exact
+  vendored rocWMMA 7.1 emits `v_wmma_f32_16x16x16_fp8_fp8`; probe kernel
+  registers `vgpr 47 / sgpr 49` (scratch spills 2/25).
+- Correctness: masked prefill `KV=512,N=16` and decode `KV=512,N=1` both pass
+  against the independent CPU E4M3 reference (`2/2`, NMSE threshold).
+- Regression: the `GGML_ROCM_FATTN_F8_REFERENCE=1` route still passes `2/2`.
+- Compile note: the first revision reused the f16 B-fragment type for the
+  post-softmax P matrix, which made rocWMMA reject the mixed f16 x fp8 MMA;
+  P now uses a dedicated f16 B-fragment while only the Q*K^T phase consumes
+  `float8_t`.
+
+### G3b: native FP8 V phase
+
+Extend the gfx12 body to the P*V phase with FP8 V (raw cache read, no f16
+conversion) and fp32 accumulation; P must be re-quantized to E4M3 for the
+`fp8 x fp8` MMA. Re-verify the softmax/output contracts, the 32 KiB shared
+memory fence and the VGPR/SGPR/occupancy record for the full kernel.
+
+### G3: native RDNA4 FP8 FlashAttention (full)
 
 Instantiate a gfx12-only rocWMMA body using `rocwmma::float8_t` for K/V tiles
 and fp32 accumulators. Preserve the softmax and output contracts. Use CK/AITER
