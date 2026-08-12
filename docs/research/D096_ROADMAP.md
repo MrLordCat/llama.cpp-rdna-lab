@@ -652,3 +652,42 @@ dbg[0..1023], маска mc0_p dbg[1024+tid*4], S-до-маски dbg[2048+tid*4
   N8. Env `LLAMA_VK_MTP_KV_LAST_F16` полностью переопределяет политику.
 - Q8 bridge M6 даёт 90.61%/47.05 t/s при 4680 MiB, но prompt лишь +0.33%; он
   сохранён default-off как generation-heavy research profile.
+
+## Checkpoint 2026-08-12 — инвентарь нативности fp8 (Vulkan) + decode ROCm vs Vulkan
+
+### Что НЕ нативно (открытые пути, по приоритету)
+
+1. **Декод f8 (n_rows==1) — всегда FA_SCALAR** (vk_pipeline.inc:1189 «scalar is
+   faster than coopmat when N==1»; FA_F8_NATIVE требует `n_rows > 1`, строка
+   1154). Скалярный путь для f8 принудительно staging=1
+   (vk_pipeline.inc:965): K/V f8 → dequantize4 → LDS f16 → dot(). При
+   rows=1 переиспользования K-блока нет, staging — чистый LDS round-trip.
+   D095 R1 «direct scalar f8» закрыт на 12K; НЕ проверялся на 49K/98K декоде.
+2. **D3 (open)**: coopmat1 f8-native на декоде — запрет `n_rows>1`; 16× пустая
+   работа при 1 строке, но на KV=49K+ (memory-bound) A/B не мерялся.
+3. **D6 (open)**: MTP KV (слой nextn) всегда f16; дравт-префилл f8 не сделан.
+4. **D5 (open)**: V-only гибрид (K f8 + V f16 последние N слоёв).
+5. **R9 (open)**: factorable K-only B256 prebuild PASS (logit MSE −20.52%),
+   runtime sidecar (полный KV lifecycle) не реализован; gate: превысить N=8
+   1605.79/55.49, acc 85.5%.
+
+### Лишняя работа (кандидаты)
+
+- Скалярный f8-декод: gmem f8 → dequant → LDS write f16 → LDS read → dot
+  (staging при rows=1 бесполезен — K используется 1 раз).
+- Preconvert-f16 fallback (dequant_f8_e4m3.comp) — нужен как fallback, не лишний.
+- fp8_fa_cm1.spvasm (ручной клон) — диагностический архив, не production.
+
+### Decode ROCm vs Vulkan (Qwen3.6-27B-Q4_K_M, spec=none, 12K lane)
+
+| backend | f16 | q8_0 | f8_e4m3 |
+|---|---|---|---|
+| Vulkan | 29.5 t/s | 30.2 t/s | 30.4 t/s |
+| ROCm   | 24.2-24.5 | 23.3-23.6 | 22.0-22.1 |
+
+ROCm decode на 20-25% ниже Vulkan (f16: 24.2 vs 29.5). Причины (гипотезы по
+коду): (1) ROCm декод идёт через wmma-кернел с ncols=16 — для 1 строки Q
+15/16 вычислений впустую + полные KQ/V циклы с барьерами; (2) Vulkan имеет
+специализированный скалярный N==1 путь (d_split, MMQ int8 dot, staging).
+ROCm MTP decode: свежие числа отсутствуют (последние MTP-замеры — Vulkan
+49K n=2: 51.7-55.5 t/s; 98K n=12: 41.8-42.8).
