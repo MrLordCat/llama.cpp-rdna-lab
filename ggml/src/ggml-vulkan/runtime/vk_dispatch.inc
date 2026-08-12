@@ -2197,6 +2197,14 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     const bool fa_f8_native = !fa_f8_p4 && !fa_f8_p3 && !fa_f8_p2 && !fa_f8_p5 && (k->type == GGML_TYPE_F8_E4M3) && v->type == k->type && neq1 > 1 && f32acc &&
                               getenv("GGML_VK_FA_F8_NATIVE") != nullptr;
 
+    // D096 D3 (probe): allow the native fp8 coopmat kernel on single-row
+    // decode too. 16x16x16 coopmat wastes 15/16 rows at n_rows==1, but at
+    // KV=49K+ the decode is memory-bound; A/B gate: decode >= scalar path.
+    const bool fa_f8_native_decode = !fa_f8_native && (k->type == GGML_TYPE_F8_E4M3) && v->type == k->type &&
+                                     neq1 == 1 && f32acc &&
+                                     getenv("GGML_VK_FA_F8_NATIVE") != nullptr &&
+                                     getenv("GGML_VK_FA_F8_NATIVE_DECODE") != nullptr;
+
     // D096 P1: route raw f8 K/V through the generated DATA_A_F8_E4M3 cm1
     // shader. Only K/V tile loading differs; mask, softmax, P*V and output are
     // the canonical flash_attn_cm1.comp implementation. Native fp8 WMMA remains
@@ -2212,7 +2220,7 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     // etc. Same prompt + slot delete gives identical inputs on both paths.
     static int fa_cmp_seq = 0;
     const char * fa_cmp_env = getenv("GGML_VK_FA_HALF_CMP");
-    bool fa_cmp_native = fa_f8_native;
+    bool fa_cmp_native = fa_f8_native || fa_f8_native_decode;
     if (fa_cmp_env && neq1 > 4) {
         fa_cmp_seq++;
         if (fa_cmp_seq > std::atoi(fa_cmp_env)) {

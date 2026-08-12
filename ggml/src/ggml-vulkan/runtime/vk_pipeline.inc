@@ -964,6 +964,16 @@ static vk_fa_tuning_params get_fa_tuning_params_scalar(const vk_device& device, 
 
     result.shmem_staging = ((device->vendor_id == VK_VENDOR_ID_NVIDIA && hsk < 256 && hsv < 256) || kv_type == GGML_TYPE_F8_E4M3) ? 1 : 0;
 
+    // Local fork (D096 D2): single-row (decode) f8 FA reads K/V directly -
+    // no LDS staging. At n_rows==1 the K/V block is never reused, so staging
+    // is a pure LDS round-trip; the shader dequantizes f8 in registers
+    // instead (dequantize4, SHMEM_STAGING==0 path). Measured 2026-08-12:
+    // +3.8% decode at 12K lane, parity at 49K lane. GGML_VK_FA_F8_DIRECT
+    // forces direct for all n_rows; GGML_VK_FA_SCALAR_STAGING forces staging.
+    if (kv_type == GGML_TYPE_F8_E4M3 && (n_rows == 1 || getenv("GGML_VK_FA_F8_DIRECT"))) {
+        result.shmem_staging = 0;
+    }
+
     // Local fork (D094 cycle-4): scalar/MMQ FA: stage K/V tiles through LDS
     // (avoids per-element on-the-fly dequantize4 in the hot loop).
     if (getenv("GGML_VK_FA_SCALAR_STAGING")) {
@@ -1154,6 +1164,17 @@ static vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_
     if (k_type == GGML_TYPE_F8_E4M3 && v_type == k_type && f32acc && n_rows > 1 &&
         device->coopmat1_fa_support && device->coopmat_support_16x16x16_f32acc &&
         getenv("GGML_VK_FA_F8_NATIVE") != nullptr) {
+        vk_fa_tuning_params params = get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, f32acc);
+        params.path = FA_F8_NATIVE;
+        params.shmem_staging = 0; // native kernel reads K directly from the f8 KV cache
+        return params;
+    }
+
+    // D096 D3 (probe): native fp8 coopmat on single-row decode (n_rows == 1)
+    // under GGML_VK_FA_F8_NATIVE_DECODE; measured against scalar on 49K lane.
+    if (k_type == GGML_TYPE_F8_E4M3 && v_type == k_type && f32acc && n_rows == 1 &&
+        device->coopmat1_fa_support && device->coopmat_support_16x16x16_f32acc &&
+        getenv("GGML_VK_FA_F8_NATIVE") != nullptr && getenv("GGML_VK_FA_F8_NATIVE_DECODE") != nullptr) {
         vk_fa_tuning_params params = get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, f32acc);
         params.path = FA_F8_NATIVE;
         params.shmem_staging = 0; // native kernel reads K directly from the f8 KV cache
