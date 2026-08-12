@@ -206,6 +206,32 @@ Second session (V-phase optimization bisect, same lane and flags):
   decode. The bottleneck is the fp32 accumulation itself (register
   pressure) plus the fp8 MMA operand conversion, not LDS bandwidth.
 
+### 49K lane A/B (spec-none, one fresh session, adjacent runs)
+
+30K-token prefill at KV=49152, seed 42, no MTP, `-dev ROCm1,ROCm0`:
+
+| run | KV/FA path | prompt ptps | decode tps |
+|-----|------------|-------------|------------|
+| r1  | f16 (baseline)       | 1722.5 | 23.05 |
+| r2  | f8_e4m3, native KQ+V | 1398.8 | 17.14 |
+| r3  | f8_e4m3, native KQ   | 1757.5 | 19.14 |
+| r4  | f16 (control)        | 1724.9 | 22.93 |
+
+- The 49K hypothesis (f8 wins at long context because K/V reads halve) is
+  REJECTED. Full-native loses 19% prefill and 26% decode.
+- Prefill: native KQ is at/above parity (1757.5 vs 1722.5, +2%, within
+  noise - first sign of the bandwidth effect but not a measurable win);
+  the entire prefill loss is the native V phase, which scales badly with
+  KV length (-5% at 8K, -19% at 49K).
+- Decode: both phases regress at KV=49152 (KQ-only -17%, full -26%; at
+  KV=8192 they were ~0% and -10%). The single-row decode loop is
+  latency-bound, so the extra per-iteration FP8 conversion/accumulation
+  overhead is exposed.
+- Bottom line for the ROCm wmma path: FP8 KV on gfx1201 does not beat f16
+  at any lane; only the prefill KQ phase is cost-neutral. FP8 KV remains a
+  memory-saving option (half the cache), not a speed option, on this
+  backend. No route is promoted; all FP8 routes stay opt-in.
+
 - f16 is the fastest cache type on this lane; q8_0 sits ~0.5-1.5% below it.
 - The native FP8 KQ phase is at parity with q8_0 and within ~0.3% of f16
   (r4 vs r1/r5). All of the ~8% cost sits in the native FP8 V phase
