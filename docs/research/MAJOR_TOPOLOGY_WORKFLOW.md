@@ -5,10 +5,14 @@ Status update (2026-07-20): the primary project model is now
 program described below remains valid as a secondary model-specific topology
 program. Do not carry its target math or TPS rows into Q4 experiments.
 
+Closure update (2026-08-13): the P002 D002/D028 programs are closed and the
+P003 Q3_K_S program is parked. Use this workflow only after an explicit reopen;
+D096 is the active primary research program.
+
 This document starts the post-E264 research mode. The earlier E### loop was good
-for quick gates, but the active Vulkan/ROCm Q3_K lane has exhausted nearby
+for quick gates, but the historical Vulkan/ROCm Q3_K lane exhausted nearby
 flags, batch shapes, f16 pivots, helper rewrites, and simple layout flips. The
-current global target is now dense `Qwen3.6-27B-Q3_K_S` at `ctx=131072`
+model-scoped target described here is dense `Qwen3.6-27B-Q3_K_S` at `ctx=131072`
 (~130k), where RAM-spill/residency is expected on 16 GB VRAM. The next useful
 work should be treated as an architecture program, not as another micro-probe.
 
@@ -16,7 +20,7 @@ work should be treated as an architecture program, not as another micro-probe.
 
 Current dense Qwen3.6-27B 130k objective:
 
-- Active lane: `ctx=131072,b=512,q4_0/q4_0,spec=none`, cold/no-reuse/no-prime, thinking on, `real-context-chars=24576`, `max_tokens=16`; Vulkan current best uses `ub=256` with `--no-mmap`, ROCm uses `ub=128`.
+- Historical lane: `ctx=131072,b=512,q4_0/q4_0,spec=none`, cold/no-reuse/no-prime, thinking on, `real-context-chars=24576`, `max_tokens=16`; Vulkan current best uses `ub=256` with `--no-mmap`, ROCm uses `ub=128`.
 - Required first evidence is the P002 130k quick baseline, historically recorded
   by E265 and recentered after D005/ROCm checks: Vulkan `1.7898 TPS` r3, ROCm `1.5200 TPS` r3. Do
   not promote any topology without beating the same-backend P002 quick lane or

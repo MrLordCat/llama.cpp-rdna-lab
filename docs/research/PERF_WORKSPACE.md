@@ -110,20 +110,20 @@ not make unmeasured speed claims, and the upstream scout should not edit files.
 12. Refresh canonical benchmark history when logs/schema changed:
    - `python scripts/agent_workload_bench.py --refresh-canonical-history`
 
-## Active Lanes
+## Primary and Historical Lanes
 
 Project policy primary lane:
 
-- `Qwen3.6-27B-Q3_K_S.gguf`
-- long-context cold-first lane at `ctx=131072` (~130k)
+- `Qwen3.6-27B-Q4_K_M.gguf`
+- dual-ROCm cold-first lane at `ctx=49152`
 - `--real-context-mode repo-snapshot`
 - no reuse: `--no-reuse` (`--cache-ram 0 --ctx-checkpoints 0`)
 - no v2 prime pass: `--no-v2-prime-pass`
 - thinking enabled: use `--no-disable-thinking`
-- first baseline contract: `quick:triage_diff`, `max_tokens=16`, `q4_0/q4_0`, `b512`, `real-context-chars=24576`; Vulkan current best uses `ub256`, ROCm remains `ub128` until rechecked
-- expected constraint: `ctx=131072` will often spill KV/context/working set beyond 16 GB VRAM into system RAM; keep diagnostics/server logs and treat residency/RAM-spill as part of the result
+- safe baseline contract: `b8192/ub1024`, `q8_0/q8_0`, `-dev ROCm1,ROCm0 -sm layer -ts 1,1`
+- active research program: D096 native FP8 and platform tails
 
-Current Vulkan-vs-ROCm baseline lane:
+Historical P002 Vulkan-vs-ROCm lane (reopen-only):
 
 - model: `models/Qwen3.6-27B-Q3_K_S.gguf`
 - context: `131072`
@@ -132,9 +132,9 @@ Current Vulkan-vs-ROCm baseline lane:
 - flash attention: on
 - max tokens: `16`
 - task: `quick`, `triage_diff`
-- Vulkan current target: `2.4 TPS` on the D012 lane. D012 remains the active baseline at `2.0013 TPS` r3, prompt `1053.11 tok/s`, decode `42.72 tok/s`, with q3quad/GLU opt-in stack plus `--no-mmap`; D005 split-K anchor remains `1.7898 TPS`
+- Vulkan retired target: `2.4 TPS` on the D012 lane. D012 remains the historical baseline at `2.0013 TPS` r3, prompt `1053.11 tok/s`, decode `42.72 tok/s`, with q3quad/GLU opt-in stack plus `--no-mmap`; D005 split-K anchor remains `1.7898 TPS`
 - ROCm baseline: `1.5200 TPS` r3, prompt `801.71 tok/s`, decode `29.07 tok/s`, no `HSA_OVERRIDE_GFX_VERSION` on HIP SDK 7.1
-- ROCm pause/fence: D013-D027 reject ub256/storage/cublas/no-mmap/src1/y32w2/GLU/current-MMQ/Q3Flash/vbuffer/upstream-stock/streaming-cublas, pair-only FFN SwiGLU, naive whole-FFN streaming, expanded persistent Q3_K layout, and compact signed-nibble unpack-only layout routes. Leave ROCm paused unless a stronger Q3_K/FFN dataflow proof appears; active work is Vulkan `2.4 TPS`.
+- P002 closure fence: D013-D027 reject the scoped ROCm routes and D029-D033 reject the nearest Vulkan `2.4 TPS` routes. Leave both parked unless an explicit reopen brings a genuinely new dataflow proof.
 - rollback/negative control: `GGML_VK_DISABLE_AMD_LARGE_MATMUL=1`
 - do not auto-enable `GGML_VK_AMD_LARGE_MATMUL_VARIANT=wm32-wn32`
 
@@ -206,13 +206,13 @@ diagnose the old slow route. `GGML_VK_FORCE_AMD_LARGE_MATMUL=1` remains useful
 for experiments on other devices, but it is no longer required for the local
 RX 9070 XT / AMD proprietary coopmat path.
 
-Run the Vulkan 2.4 target gate after retargeting or before a broad route design:
+Run the historical Vulkan 2.4 target gate only after explicitly reopening P002:
 
 ```bash
 python scripts/research/vulkan_2p4_target_gate.py > build_logs/agent-workload/d028-vulkan-130k-2p4-target-gate.md
 ```
 
-D028 shows the new target needs `1.1992x` wall over D012, about `1277 tok/s`
+D028 records that the retired target needs `1.1992x` wall over D012, about `1277 tok/s`
 prompt eval if decode and overhead stay flat, `1.387x` local on dense FFN, or
 `1.260x` local on all-Q3. Treat gate/up-only and down-only Vulkan routes as too
 small unless a new model beats those ceilings.

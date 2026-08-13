@@ -7,6 +7,10 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-08-13 16:42:50 | cold-first | rocm | d096-d6-rocm49k-mainf8-draftf16-close-r4 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 5.4690 | 1569.5000 | 33.9400 | 0 |
+| 2026-08-13 16:41:32 | cold-first | rocm | d096-d6-rocm49k-mainf8-draftf8-fixed-r3 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 5.4647 | 1566.5200 | 33.9000 | 0 |
+| 2026-08-13 16:34:20 | cold-first | rocm | d096-d6-rocm49k-mainf8-draftf8-r2 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 5.4563 | 1565.6800 | 33.7200 | 0 |
+| 2026-08-13 16:33:04 | cold-first | rocm | d096-d6-rocm49k-mainf8-draftf16-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 5.7928 | 1622.6300 | 40.9100 | 0 |
 | 2026-08-13 12:51:55 | cold-first | rocm | d099-rocm49k-q8-close-r3 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 8.7177 | 1739.2200 | 21.9300 | 0 |
 | 2026-08-13 12:50:57 | cold-first | rocm | d099-rocm49k-f8-r2 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 9.0811 | 1809.6200 | 22.9600 | 0 |
 | 2026-08-13 12:49:59 | cold-first | rocm | d099-rocm49k-q8-open-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 8.7257 | 1741.8000 | 21.9500 | 0 |
@@ -83,7 +87,3 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-08-12 12:56:08 | cold-first | vulkan | d096-d41-12k-q8-s1r3 | Qwen3.6-27B-Q4_K_M.gguf | 16384 | 512/512 | q8_0/q8_0 | none | 17.5757 | 1612.9800 | 28.3050 | 0 |
 | 2026-08-12 12:54:15 | cold-first | vulkan | d096-d3-12k-scalar-s1r2 | Qwen3.6-27B-Q4_K_M.gguf | 16384 | 512/512 | f8_e4m3/f8_e4m3 | none | 14.5610 | 1756.5400 | 20.3350 | 0 |
 | 2026-08-12 12:52:15 | cold-first | vulkan | d096-d3-12k-coopmat-s1r1 | Qwen3.6-27B-Q4_K_M.gguf | 16384 | 512/512 | f8_e4m3/f8_e4m3 | none | 14.1733 | 1758.4300 | 19.5950 | 0 |
-| 2026-08-12 12:30:44 | cold-first | vulkan | d096-d3-12k-scalar-r2 | Qwen3.6-27B-Q4_K_M.gguf | 16384 | 512/512 | f8_e4m3/f8_e4m3 | none | 14.2485 | 1741.5250 | 19.8200 | 0 |
-| 2026-08-12 12:28:36 | cold-first | vulkan | d096-d3-12k-nativedec-r1 | Qwen3.6-27B-Q4_K_M.gguf | 16384 | 512/512 | f8_e4m3/f8_e4m3 | none | 13.7564 | 1678.2650 | 19.1500 | 0 |
-| 2026-08-12 09:04:42 | cold-first | vulkan | d096-d5-12k-v16n8-mtp-r1 | Qwen3.6-27B-Q4_K_M.gguf | 16384 | 512/512 | f8_e4m3/f8_e4m3 | mtp | 13.4012 | 1731.8450 | 18.2450 | 0 |
-| 2026-08-12 08:48:12 | cold-first | vulkan | d096-d3-49k-nativedec-r2 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 6.6343 | 1573.1550 | 13.2650 | 0 |

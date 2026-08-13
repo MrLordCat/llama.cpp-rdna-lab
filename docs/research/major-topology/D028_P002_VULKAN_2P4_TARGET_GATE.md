@@ -2,7 +2,9 @@
 
 Date: 2026-05-27
 
-Status: active target gate; no TPS claim and no source change.
+Status: closed and parked on 2026-08-13; no TPS claim and no source change.
+The `2.4 TPS` target is retained as a historical topology gate, not an active
+project objective.
 
 ## Lane
 
@@ -10,8 +12,8 @@ Status: active target gate; no TPS claim and no source change.
 - Model: `models/Qwen3.6-27B-Q3_K_S.gguf`.
 - Contract: `ctx=131072,batch=512,ubatch=256,q4_0/q4_0,FlashAttention,spec=none,--no-mmap`.
 - Workload: `quick:triage_diff`, `real-context-chars=24576`, `max_tokens=16`, cold-first, no reuse, no v2 prime, thinking on.
-- Current baseline: D012 `d012-vulkan-130k-glu-fast-q3quad-bn256-lowtile3-confirm3`, `2.0013 TPS`, prompt `1053.1067 tok/s`, decode `42.7233 tok/s`, `7970` prompt tokens.
-- New target: `2.4 TPS` on the same lane.
+- Historical baseline: D012 `d012-vulkan-130k-glu-fast-q3quad-bn256-lowtile3-confirm3`, `2.0013 TPS`, prompt `1053.1067 tok/s`, decode `42.7233 tok/s`, `7970` prompt tokens.
+- Retired target: `2.4 TPS` on the same lane.
 
 ## Gate Artifact
 
@@ -63,10 +65,15 @@ Do not reopen ubatch, memory priority, output placement, m10240 q3quad inclusion
 lowtile2/4, down split-K 6, MMVQ disable, no-graphics queue, vector-return
 q3quad, or adjacent-only whole-FFN matching as first moves toward `2.4 TPS`.
 
-## Next Required Scout
+## Historical Reopen Scout
 
-The first useful D029 scout is a non-adjacent whole-FFN design gate, not shader
-code yet. It should quantify:
+D029-D033 subsequently rejected the nearest non-adjacent whole-FFN, all-Q3,
+Q3S, FA-stack and q3-octa families, and the P002 program was explicitly paused.
+There is therefore no required follow-up in the active queue.
+
+If the program is explicitly reopened, the first useful scout must be a new
+topology rather than shader code for a previously rejected family. It should
+quantify:
 
 - exact graph/node contract from D007's `scan_blocks=64` surface;
 - temporary activation residency and write/read traffic for the GLU output;

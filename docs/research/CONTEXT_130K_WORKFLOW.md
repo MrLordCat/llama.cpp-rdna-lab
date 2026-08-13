@@ -5,6 +5,10 @@ dual-ROCm 49K lane to the project baseline. This document remains the
 model-scoped Q3_K_S 130K workflow and a residency-stress reference; it is no
 longer the generic project entry lane.
 
+Closure update (2026-08-13): D002 and D028 are closed and P002 is parked.
+Commands and targets below are historical/reopen-only; D096 owns the active
+primary FP8/platform-tail queue.
+
 This was the active dense Qwen performance lane as of 2026-05-27.
 
 Important correction: `ctx=131072` only sets capacity. It does not mean the
@@ -25,15 +29,13 @@ baseline for live agent work.
 - Thinking: enabled, `--no-disable-thinking`
 - KV: `q4_0/q4_0`
 - Starting shape: `batch=512`; Vulkan achieved best `ubatch=256`, ROCm current baseline `ubatch=128`
-- Practical constraint for this session: do not run `ubatch > 256` on the
-	active Vulkan 130k big-prompt lane because VRAM headroom is already limited.
+- Practical constraint when this lane is reopened: do not run `ubatch > 256`
+  because VRAM headroom is already limited.
 - Speculation: off, `--spec-type none`
-- Vulkan residency knob: `--no-mmap` is part of the active D005/D012 lane; `mmap=true` can fall into a severe 130k prefill slow path.
-- Active target: move the headline from quick-smoke TPS to the real-big-prompt
-	lane. D012 solved the previous quick-smoke `2 TPS` target, but optimization
-	work now must report the large-prompt prompt-eval/decode split. ROCm is paused
-	at the D027 rejection fence until a stronger compressed-GEMM/FFN dataflow idea
-	appears.
+- Vulkan residency knob: `--no-mmap` is part of the historical D005/D012 lane; `mmap=true` can fall into a severe 130k prefill slow path.
+- Historical target contract: D012 solved the quick-smoke `2 TPS` target; any
+  explicit reopen must report the real-big-prompt prompt-eval/decode split and
+  first clear the D027/D033 rejection fences.
 
 ## Quick Smoke Baseline
 
@@ -56,7 +58,7 @@ large-prompt user-experience baseline.
 Shape evidence: Vulkan `b512/ub256` is validated on the 24k-char 130k quick
 smoke lane. D005 keeps split-K 3 for the guarded Q3_K FFN-down shape, and D012
 reaches the 2 TPS quick target with the q3quad/GLU opt-in stack.
-The next Vulkan target is `2.4 TPS`, which D028 models as `1.1992x` required
+The retired Vulkan target was `2.4 TPS`, which D028 models as `1.1992x` required
 wall speedup over D012 and about `1277 tok/s` prompt eval if decode and overhead
 stay flat. A gate/up-only FFN route is below the new bar (`1.908x` local needed);
 the next candidate should touch the whole dense FFN Q3_K route (`1.387x` local
@@ -156,9 +158,10 @@ when used only for unpack simplification: the aligned `160 B/block` layout is
 correctness-clean but slower than raw padded Q3_K (`0.8819x` global unpack and
 `0.6947x` shared-tile unpack on `1048576` blocks).
 
-ROCm pause note: do not continue ROCm by default unless the user reopens it or a
-new design first clears the D002/D013-D027 fence. The active work now returns to
-Vulkan with D012 as baseline and D028 as the `2.4 TPS` target gate.
+P002 closure note: do not continue either backend by default unless the user
+explicitly reopens the program and a new design first clears the D002/D013-D027
+and D028-D033 fences. D012 and D028 are historical baseline/target artifacts,
+not the active project queue.
 
 ## Real-Big-Prompt Lane
 

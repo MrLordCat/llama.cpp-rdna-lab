@@ -1,6 +1,9 @@
 # D096 ROADMAP — полная нативность fp8 + платформенные хвосты
 
-Статус на 2026-08-09. Цель: последовательно закрыть все пункты (время не ограничено).
+Статус на 2026-08-13: программа завершена. D002/D028 закрыты и припаркованы,
+D094 завершена, D098/D099 закрыли production native FP8 для ROCm, а финальный
+D6 gate сделал явный MTP/NextN draft FP8 корректным и независимо управляемым.
+Непродвинутые Vulkan D5/R9 варианты сохранены только как reopen-only research.
 
 ## Архитектурный разворот 2026-08-09 — один канонический FA, узкая fp8-дельта
 
@@ -379,28 +382,31 @@ dbg[0..1023], маска mc0_p dbg[1024+tid*4], S-до-маски dbg[2048+tid*4
 
 ## B. Платформенные хвосты (не fp8)
 
-### B1 [OPEN] MTP acceptance gap Vulkan vs ROCm (D094-c8k..c8o)
+### B1 [CLOSED] MTP acceptance gap Vulkan vs ROCm (D094-c8k..c8w, D095/D097)
 - eh_proj (q8_0, K=10240) в NextN-графе: N=1 vec-путь ошибка 4e-1 (мусор),
-  N>=2 MMQ 1.5e-2 (накопление порядка K-chunks). Последний подозреваемый: BK (порядок
-  K-chunks) в MMQ. Цель: acceptance 0.40 -> 0.53+ (паритет с ROCm).
-  N>=2 MMQ 1.5e-2 (накопление порядка K-chunks). Последний подозреваемый: BK (порядок
-  K-chunks) в MMQ. Цель: acceptance 0.40 -> 0.53+ (паритет с ROCm).
+  N>=2 MMQ 1.5e-2. D094-c8u установил фундаментальную арифметическую
+  асимметрию: ROCm q8_0 использует MFMA/f16, Vulkan — DP4A/int32.
+  Побитовый паритет не является production-gate. D095/D097 закрыли
+  пользовательский acceptance-gate precision-политикой (до 85.5% на 49K и
+  73.79% на 98K), поэтому дальнейшая эмуляция MFMA в Vulkan не требуется.
 
-### B2 [OPEN] MTP device handoff для Vulkan (D094-c8j)
+### B2 [CLOSED] MTP device handoff для Vulkan (D094-c8j, E282/E315)
 - h_nextn гоняется через host (D2H+H2D) каждый MTP-шаг, ROCm — device-to-device.
-  Perf-only (acceptance не влияет). Быстрый выигрыш ~5-10% к MTP decode.
+  Perf-only (acceptance не влияет). E282 подтвердил рабочий device handoff,
+  но E315 показал, что на длинном prompt он держит неограниченный NextN-граф
+  активным и снижает prompt eval примерно до 852 tok/s. Принята backend-specific
+  политика: Vulkan host handoff, ROCm event-ordered device handoff.
 
-### B3 [ACTIVE] D098 native ROCm FP8 KV
+### B3 [COMPLETE] D098/D099 native ROCm FP8 KV
 - План и gate ladder: `major-topology/D098_Q4KM_ROCM_FP8_KICKOFF.md`.
-- G1 byte-compatible HIP copy завершён (`3/3`), G2 default-off reference
-  f8->f16 FA завершён (`2/2`), G3a native FP8 KQ и G3b native FP8 V rocWMMA
-  завершены (Qwen D256 prefill/decode `2/2` каждая). Следующий этап — G4
-  server smoke и соседние q8/F8 speed gates.
-- До G4 нет speed/default claim: Vulkan, GUI и публичные пресеты не меняются.
+- D098 G1-G5 завершены; D099 production hardening завершён: gfx1201 native,
+  compile-only gfx1100, portable fallback, mixed K/V, exact aliases и `19/19`
+  focused cases. 49K FP8 сохраняет положительный adjacent q8 bracket.
 
-### B4 [OPEN] Апстрим-синк
+### B4 [MAINTENANCE] Апстрим-синк
 - fp8 изменения форк-локальные; текущий upstream shared CUDA/HIP layer не
   содержит `GGML_TYPE_F8_E4M3`. Адаптация потребуется при следующем мерже.
+  Это обязательство `UPSTREAM_SYNC.md`, а не активная research-гипотеза.
 
 ## Ресурсы
 - Инструменты: C:/VulkanSDK/1.4.350.0 (glslc, spirv-as, spirv-dis, spirv-val).
@@ -765,24 +771,38 @@ f8-типе K (не плодить 3-й режим).
 - Q8 bridge M6 даёт 90.61%/47.05 t/s при 4680 MiB, но prompt лишь +0.33%; он
   сохранён default-off как generation-heavy research profile.
 
-## Checkpoint 2026-08-12 — инвентарь нативности fp8 (Vulkan) + decode ROCm vs Vulkan
+## Checkpoint 2026-08-13 — финальный инвентарь fp8 + decode ROCm vs Vulkan
 
-### Что НЕ нативно (открытые пути, по приоритету)
+### Финальный статус ранее открытых путей
 
-1. **Default f8 decode — FA_SCALAR после GQA remap `N=6`**. Аудит
+1. **Default Vulkan f8 decode — CLOSED как production route**. FA_SCALAR после GQA remap `N=6`. Аудит
   2026-08-13 показал `Br=8, shmem_staging=1`; прежнее описание `n_rows==1`
   и «без переиспользования» было неверным для Qwen. Свежий 49K default:
   25.56 t/s против q8 27.08.
+  Scalar raw-f8 корректен; отставание от q8 — performance note, а не пробел
+  нативности. Новый small-row cooperative body требует отдельного design ID.
 2. **D3 (закрыт 2026-08-13)**: forced native coopmat decode `N=6, Br=16`
   дал 13.28 t/s, на 48.0% медленнее default scalar. Оставлен diagnostic-only.
-3. **D6 (open)**: MTP KV (слой nextn) всегда f16; дравт-префилл f8 не сделан.
-4. **D5 (open)**: V-only гибрид (K f8 + V f16 последние N слоёв).
+3. **D6 (закрыт 2026-08-13)**: target hybrid tail больше не переопределяет
+  явно заданные `--spec-draft-type-k/v`. На dual-ROCm 49K настоящий draft FP8
+  уменьшает draft KV `192 -> 96 MiB`, сохраняет acceptance `81.25%` и даёт
+  соседний паритет с draft-f16: `1566.52/33.90/5.4647` против
+  `1569.50/33.94/5.4690` prompt/decode/aggregate. f16 остаётся безопасным
+  default; полный FP8 доступен явно через `-ctkd/-ctvd f8_e4m3`.
+  Предварительный `draftf8-r2` исключён: до context split target-tail override
+  оставлял единственный draft KV-слой в f16 (192 MiB), несмотря на имя run.
+4. **D5 (закрыт, diagnostic-only)**: V-only гибрид (K f8 + V f16 последние N слоёв).
   Production hardening 2026-08-13: диапазоны `V_F16` и `LAST_F16`
   вычисляются независимо, зажимаются числом реальных KV-слоёв и безопасно
-  комбинируются с Q8 bridge; режим остаётся default-off до quality/perf gate.
-5. **R9 (open)**: factorable K-only B256 prebuild PASS (logit MSE −20.52%),
-   runtime sidecar (полный KV lifecycle) не реализован; gate: превысить N=8
-   1605.79/55.49, acc 85.5%.
+  комбинируются с Q8 bridge. Режим остаётся default-off control: P5 raw-V и
+  принятая full-K/V f16-tail policy уже закрывают speed/acceptance задачи;
+  отдельного production-преимущества для V-only tail не показано.
+5. **R9 (закрыт как неавторизованный runtime)**: factorable K-only B256
+   prebuild PASS (logit MSE −20.52%), но sidecar потребовал бы новый lifecycle
+   для SET_ROWS/copy/views/rollback. D097 уже закрыл production acceptance
+   существующей hybrid-tail политикой, а speed proof отсутствует. Reopen только
+   если текущая политика провалит новый quality gate и point proof сначала
+   превысит N=8 `1605.79/55.49`, acceptance 85.5%.
 
 ### Лишняя работа (кандидаты)
 

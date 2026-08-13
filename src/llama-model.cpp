@@ -2129,7 +2129,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 cparams.n_ubatch,
                                 1,
                                 filter,
-                                reuse);
+                                reuse,
+                                cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP);
                     } else {
                         GGML_ASSERT(!hparams.is_swa_any());
 
@@ -2146,7 +2147,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 hparams.n_swa,
                                 hparams.swa_type,
                                 filter,
-                                nullptr);
+                                nullptr,
+                                cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP);
                     }
                 }
             }

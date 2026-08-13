@@ -1,8 +1,10 @@
 # D002 P002 ROCm Low-Level Q3_K Body Gate
 
-Status: open; S002A/S002B/S002D and D013-D023 route gates are rejected as
-standalone runtime candidates. The only current source change is a correctness
-fix for Q3_K padded partial slices plus a default-off diagnostic trace.
+Status: closed and parked on 2026-08-13. S002A/S002B/S002D and D013-D027
+exhausted the scoped large-N P002 route families without a promotable runtime
+candidate. The retained source changes are the Q3_K padded-partial correctness
+fix and default-off diagnostics. D078's promoted small-N MTP DP4A route is a
+separate topology and does not reopen this program.
 
 ## Intent
 
@@ -16,7 +18,7 @@ This is not a rewrite of llama.cpp, the GUI, or the scheduler in another
 language. The C++ runtime stays the control plane. The candidate low-level body
 is a narrowly-scoped HIP/RDNA4 kernel or code-object route behind an opt-in gate.
 
-## Active Lane
+## Historical Lane
 
 - Model: `models/Qwen3.6-27B-Q3_K_S.gguf`.
 - Context: `ctx=131072`, cold-first, repo-snapshot real context.
@@ -770,8 +772,12 @@ Then write the HIP scout only for the highest-share P002 ROCm Q3_K shape.
 
 ## Decision
 
-Open D002 as the low-level-language experiment, but keep it gated. The next
-useful step is a standalone HIP/topology scout that is materially different from
-the rejected current-MMQ loader/barrier variants and the mixed D017 Q3Flash
-active-shape route. Do not rewrite broader runtime code until the scout beats the
-current same-lane point timing and projects to a real 130k lane gain.
+Close and park D002. The large-N Q3_K body program tested the available
+loader, barrier, layout, packing and mixed-route families through D027 without
+producing a runtime candidate that cleared the point and projected lane gates.
+The historical `2.0 TPS` target is not an active objective for the primary
+Q4_K_M production lane.
+
+Reopen only for a genuinely new compute body with a same-shape point proof that
+is materially different from D013-D027 and projects to a full 130k lane gain.
+Do not reopen merely to retest parameters of the rejected current-MMQ family.

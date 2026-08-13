@@ -1,6 +1,6 @@
 # Experiment Digest
 
-Updated: 2026-07-20.
+Updated: 2026-08-13.
 
 This is the compact historical base for performance work. `RESULTS_LOG.md` remains the detailed ledger; this file groups the evidence so agents can pick the next route without rereading every E/D note.
 
@@ -8,11 +8,11 @@ This is the compact historical base for performance work. `RESULTS_LOG.md` remai
 
 | Area | Current conclusion |
 | --- | --- |
-| Primary dense model | D089 promotes `Qwen3.6-27B-Q4_K_M.gguf`. Safe baseline: dual ROCm `ctx=49152,b8192/ub1024,q8/q8`, spec-none `1778.59/21.98` prompt/decode tok/s; MTP n3 `1731.71/39.58`, `6.2802` aggregate TPS, `74.36%` acceptance. Q3_K_S 130K Vulkan D012/P003 remains a secondary model-specific program, not a Q4 comparator. |
+| Primary dense model | D089 promotes `Qwen3.6-27B-Q4_K_M.gguf`. Safe baseline: dual ROCm `ctx=49152,b8192/ub1024,q8/q8`, spec-none `1778.59/21.98` prompt/decode tok/s; MTP n3 `1731.71/39.58`, `6.2802` aggregate TPS, `74.36%` acceptance. D096 is the active primary research queue. Q3_K_S 130K Vulkan D012/P003 is parked secondary evidence, not a Q4 comparator. |
 | 130k residency constraint | RX 9070 XT 16 GB is not expected to keep dense 27B + 130k KV/context/working set fully VRAM-resident. RAM-spill/residency/PCIe/startup diagnostics are part of the metric, not noise. |
 | Archived dense Vulkan 12k | E257 remains the short-context reference: `ctx=12288,b=7168,ub=1024,q4_0/q4_0,spec=none`, cold/no-reuse/no-prime, thinking on, `7.0319 TPS` r3. |
-| Vulkan post-E265 | D005/D012 show the 130k Vulkan path: split-K plus q3quad/GLU stack clears 2 TPS with documented opt-in env and `--no-mmap`; D034 identifies the current 130k slow pocket as residency-driven; D035/D036 promote guarded route defaults plus a narrow direct host-KV guard to recover default stability/decode; D037 rejects q8 KV as a speed/default replacement and keeps q8/q8 only as explicit stability opt-in. D038 improves measured q4 tool-call quality from `2/4` to `4/4` with a default server-side thinking guard; D039 extends this to BFCL-lite public data (`24/25` default vs `16/25` explicit thinking) and leaves repeated parallel-call undercoverage as the next quality target. Neither D038 nor D039 is a TPS route. D028 retargets Vulkan to `2.4 TPS`; D029 rejects activation-only/naive-streaming whole-FFN, D030 rejects nearby old all-Q3 storage/helper/Q8/tile families, D031 rejects compact Q3S layout-body work, D032 shows FA-only cannot carry, and D033 rejects q3-octa/LOAD_VEC_A=8. Next speed work needs a true Q3_K compute body/compressed-dot route; FA can stack only after Q3 reaches roughly `1.18-1.20x` local evidence. |
-| ROCm dense cold target | D002/D013-D027 remain the negative topology fence. E289 accelerates packed Q3_K decode, E292 improves packed prompt staging, and E293 restores rocWMMA FlashAttention: full-build prompt reaches `1930.26 tok/s` on 11.6k, `1761.34` on 30.1k, and `1557.94` on a 53.5k prompt at `ctx=131072`. The next topology target should start from this restored route. |
+| Vulkan post-E265 | D005/D012 show the historical 130k Vulkan path: split-K plus q3quad/GLU stack clears 2 TPS with documented opt-in env and `--no-mmap`; D034-D039 retain stability and tool-call quality outcomes. D028-D033 exhaust and close the later `2.4 TPS` topology gate. Reopen only for a genuinely new Q3_K compute-body/compressed-dot design. |
+| ROCm dense cold target | D002/D013-D027 form a closed negative topology fence. E289 accelerates packed Q3_K decode, E292 improves packed prompt staging, and E293 restores rocWMMA FlashAttention: full-build prompt reaches `1930.26 tok/s` on 11.6k, `1761.34` on 30.1k, and `1557.94` on a 53.5k prompt at `ctx=131072`. Retain this as reopen evidence, not an active topology queue. |
 | ROCm RDNA4 FlashAttention | E293 found fresh builds had lost rocWMMA and routed Qwen D256 prefill through generic tile. Full rocWMMA restores `+12.64%` prompt at 11.6k, `+28.64%` at 30.1k, and `+42.71%` at 53.5k, while decode remains neutral or improves. It is now the HIP default with a CMake OFF rollback. |
 | Practical >10 TPS | E255 A3B profile reaches `22.1407 TPS` r3, but it is a model/profile result, not dense 27B-Q3 acceleration. |
 | Benchmark history | New runs should update `BENCH_RUNS.csv`, `BENCH_RECENT.md`, and `BENCH_LANES.md` through `scripts/agent_workload_bench.py`. |

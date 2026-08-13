@@ -89,13 +89,13 @@ secondary/historical evidence and must not be used as Q4 baseline rows.
 
 ## D079-D080 Vulkan Q3_K_S 56k Prompt Baseline (2026-07-12)
 
-The active Q3 prompt-eval lane uses non-MTP `Qwen3.6-27B-Q3_K_S.gguf`,
+The parked secondary Q3 prompt-eval lane uses non-MTP `Qwen3.6-27B-Q3_K_S.gguf`,
 56,456 prompt tokens, `ctx=131072`, `b8192/ub1024`, q8/q8 KV, FlashAttention,
 `spec=none`, no warmup/reuse/prime, and thinking on. Equal dual layer split
 measured `1276.93 prompt tok/s`. Balancing the output-heavy Vulkan1 stage with
 `-dev Vulkan1,Vulkan0 -sm layer -ts 5,6` reached `1350.01 tok/s` on cold run 1
-(`+5.72%`); r3 mean was `1327.82`, with zero errors. This is the current P003
-baseline for the `2000 prompt tok/s` target.
+(`+5.72%`); r3 mean was `1327.82`, with zero errors. This is the retained P003
+baseline if the historical `2000 prompt tok/s` target is explicitly reopened.
 
 D079 perf evidence attributes 46.6% of parsed time to Q3_K matmul and 46.4% to
 q8/q8 FlashAttention. Vulkan tensor split is rejected for this program:

@@ -1,6 +1,10 @@
 # P002 Vulkan 130k Evidence Pack
 
-Status: scout evidence captured; D005 Vulkan FFN-down split-K is kept as the current default speed route; signed-nibble runtime, D003 larger-ubatch recovery, and D006 output-placement relief are rejected as speed routes. D007 rejects strict adjacent whole-FFN fusion but recovers the full Q3_K FFN block surface with a non-adjacent dependency scan.
+Status: historical evidence pack; P002 closed and parked on 2026-08-13.
+D005's retained runtime behavior is unchanged, but the D028 `2.4 TPS` research
+target and this evidence queue are no longer active. Signed-nibble runtime,
+D003 larger-ubatch recovery and D006 output-placement relief remain rejected.
+D007 retains the non-adjacent Q3_K FFN graph-surface evidence.
 
 ## Lane
 

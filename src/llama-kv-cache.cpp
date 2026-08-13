@@ -94,7 +94,8 @@ llama_kv_cache::llama_kv_cache(
                  uint32_t   n_swa,
            llama_swa_type   swa_type,
     const layer_filter_cb & filter,
-    const  layer_reuse_cb & reuse) :
+    const  layer_reuse_cb & reuse,
+                     bool   is_mtp_context) :
     model(model), hparams(model.hparams), v_trans(v_trans),
     n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa), swa_type(swa_type) {
 
@@ -152,7 +153,8 @@ llama_kv_cache::llama_kv_cache(
         }
     }
 
-    // D096-J/P: MTP draft reads only the last transformer layer's KV. With
+    // D096-J/P: the target context's MTP draft reads only the last transformer
+    // layer's KV. With
     // quantized KV (f8_e4m3/q8_0) draft acceptance collapses (82% f16 vs
     // 27-56% quantized); LLAMA_VK_MTP_KV_LAST_F16=N keeps the last N KV
     // layers' K/V in f16 while the rest of the cache stays quantized.
@@ -162,7 +164,11 @@ llama_kv_cache::llama_kv_cache(
     const bool kv_q8 = type_k == GGML_TYPE_Q8_0 && type_v == GGML_TYPE_Q8_0;
     const bool kv_f8 = type_k == GGML_TYPE_F8_E4M3 && type_v == GGML_TYPE_F8_E4M3;
     int kv_last_layer_f16_n = 0;
-    if (getenv("LLAMA_VK_MTP_KV_LAST_F16") != nullptr) {
+    // Do not apply this target-context precision tail to the separately
+    // configured MTP/NextN context. Its --spec-draft-type-k/v types must remain
+    // authoritative; f16 stays the safe default unless the user explicitly
+    // requests a quantized draft cache.
+    if (!is_mtp_context && getenv("LLAMA_VK_MTP_KV_LAST_F16") != nullptr) {
         if (kv_q8 || kv_f8) {
             kv_last_layer_f16_n = std::max(0, atoi(getenv("LLAMA_VK_MTP_KV_LAST_F16")));
         }
@@ -171,7 +177,7 @@ llama_kv_cache::llama_kv_cache(
     // quantized (f8). Halves the f16 tail reads of the full hybrid; draft
     // acceptance impact measured via LLAMA_VK_MTP_KV_V_F16 vs LAST_F16.
     int kv_last_layer_v16_n = 0;
-    if (kv_f8 && getenv("LLAMA_VK_MTP_KV_V_F16") != nullptr) {
+    if (!is_mtp_context && kv_f8 && getenv("LLAMA_VK_MTP_KV_V_F16") != nullptr) {
         kv_last_layer_v16_n = std::max(0, atoi(getenv("LLAMA_VK_MTP_KV_V_F16")));
     }
     const bool kv_last_layer_f16 = kv_last_layer_f16_n > 0;

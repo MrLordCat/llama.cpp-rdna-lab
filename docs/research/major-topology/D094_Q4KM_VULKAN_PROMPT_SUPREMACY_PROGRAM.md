@@ -1,9 +1,11 @@
 # D094: Q4_K_M long-prompt prompt-eval supremacy — Vulkan vs ROCm program
 
 Date: 2026-08-04
-Status: open design program — cycle 1 measured; one launch-level win accepted
-(`GGML_VK_ALLOW_GRAPHICS_QUEUE=1`, +3.31% on 131k), supremacy gap narrowed
-but not closed; source work required for the remaining gap
+Status: closed on 2026-08-13 after seven cycles. The program accepted
+`GGML_VK_ALLOW_GRAPHICS_QUEUE=1` (+3.31% on 131k) and q8 pre-dequant staging,
+rejected the remaining scoped launch, FA, concat and int8-coopmat candidates,
+and transferred native-FP8/MTP follow-up to D096. Vulkan prompt supremacy was
+not claimed.
 Model: `Qwen3.6-27B-Q4_K_M.gguf` (primary production model, D089)
 Hardware: dual RX 9070 XT 16 GB, Windows 11, AMD proprietary driver
 `32.0.31035.1003`, HIP SDK 7.1
@@ -376,6 +378,19 @@ q8_1 for quant matmul (E099).
 - Do not reopen tensor split, all-KV placement, or ubatch sweeps.
 - Keep every measured row label-prefixed (`d094-...`) with full lane
   contract in `BENCH_RUNS.csv`.
+
+## Closure (2026-08-13)
+
+D094 is complete as an investigation program. T201/T202 closed at the
+coopmat/dataflow level, T205 fast concat was neutral and remains default-off,
+the cycle-3 structural FA probes were rejected, cycle 4 isolated the dequant
+cost, cycle 5 rejected int8 cooperative matrices, cycle 6 promoted q8
+pre-dequant staging, and cycle 7 established the MTP q8 acceptance ceiling.
+
+The two accepted production outcomes stay enabled under their documented
+guards. Remaining FP8 precision, mixed K/V and MTP-native work is owned by
+D096; it is not an open D094 cycle. Reopen D094 only for a new broad Vulkan
+prompt topology with an adjacent ROCm control, not for another parameter sweep.
 
 ## Validation trail
 

@@ -1,5 +1,31 @@
 # Results Log
 
+## 2026-08-13 - D096 D6 independent ROCm draft-FP8 cache
+
+- Stopped the target-context `LLAMA_VK_MTP_KV_LAST_F16` precision tail from
+  overriding explicitly selected MTP/NextN draft-cache types.
+- On the adjacent dual-ROCm 49K bracket, explicit draft FP8 reduced the draft
+  KV allocation `192 -> 96 MiB`, kept acceptance identical at `81.25%`, and
+  matched draft f16 within noise: `1566.52/33.90/5.4647` versus
+  `1569.50/33.94/5.4690` prompt/decode/aggregate.
+- Excluded pre-fix `d096-d6-rocm49k-mainf8-draftf8-r2` from the comparison:
+  its log proves the shared target-tail override still kept the one-layer draft
+  cache in f16 at 192 MiB.
+- Keep draft f16 as the safe default. Full FP8 is an explicit supported mode
+  via `-ctkd f8_e4m3 -ctvd f8_e4m3`. D5 remains diagnostic-only and R9 is
+  closed without a runtime sidecar because neither has a production advantage.
+
+## 2026-08-13 - D002/D028/D094 research-program closure
+
+- Closed and parked the P002 D002 large-N ROCm body program after the
+  D013-D027 rejection fence; D078 remains a separate promoted small-N MTP
+  topology.
+- Closed and parked the D028 Vulkan `2.4 TPS` target after D029-D033 rejected
+  the nearest whole-FFN, all-Q3, Q3S, FA-stack and q3-octa families.
+- Closed D094 after seven cycles. Retained the graphics-queue and q8
+  pre-dequant wins; transferred native-FP8, mixed-K/V and MTP follow-up to the
+  active D096 roadmap. This administrative closure adds no new TPS claim.
+
 ## 2026-08-13 - D099 ROCm FP8 production hardening
 
 - Extended gfx12 native ownership by phase: KQ supports

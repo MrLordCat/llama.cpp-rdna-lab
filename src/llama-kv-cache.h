@@ -106,7 +106,8 @@ public:
                      uint32_t   n_swa,
                llama_swa_type   swa_type,
         const layer_filter_cb & filter,
-        const  layer_reuse_cb & reuse);
+            const  layer_reuse_cb & reuse,
+                     bool   is_mtp_context = false);
 
     ~llama_kv_cache() = default;
 
