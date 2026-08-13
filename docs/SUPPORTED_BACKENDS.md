@@ -48,9 +48,14 @@ backends. See `FP8_ATTENTION.md` for the full description; the essentials:
 - **Native fp8 attention paths** P2–P5 (Vulkan coopmat), selected by env
   (`GGML_VK_FA_F8_P5` is the default for Vulkan in this fork; the kernel
   ignores it for non-f8 KV). Plain f16-preconvert remains the fallback.
-- **Native ROCm RDNA4 full fp8 attention** consumes F8 K/V with gfx12 WMMA.
-  The guarded D=256 F8/F8 route is the backend default after D098 G1-G5;
-  set `GGML_ROCM_FATTN_F8_NATIVE_KQ=0` for full rollback or
+- **ROCm fp8 attention** consumes eligible F8 phases with gfx12 WMMA and uses
+  device-resident F8-to-f16 conversion everywhere else. Native KQ owns
+  D=64/80/96/112/128/256; native P*V owns D=64/128/256, while other supported
+  head sizes, mixed K/V types and pre-RDNA4 builds use the portable fallback.
+  Exact K/V aliases are raw only when both phases are native and otherwise
+  share one converted allocation. The spill-free D=256 F8/F8 route remains
+  the production default after D098/D099; set
+  `GGML_ROCM_FATTN_F8_NATIVE_KQ=0` for full rollback or
   `GGML_ROCM_FATTN_F8_NATIVE_V=0` for the KQ-only bisect.
 - **Hybrid KV cache**: `LLAMA_VK_MTP_KV_LAST_F16=N` keeps the last N KV
   layers in f16 under MTP + f8 KV. Default N=8 is set automatically by

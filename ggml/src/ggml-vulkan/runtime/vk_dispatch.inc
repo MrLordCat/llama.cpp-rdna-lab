@@ -2197,18 +2197,28 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     const bool fa_f8_native = !fa_f8_p4 && !fa_f8_p3 && !fa_f8_p2 && !fa_f8_p5 && (k->type == GGML_TYPE_F8_E4M3) && v->type == k->type && neq1 > 1 && f32acc &&
                               getenv("GGML_VK_FA_F8_NATIVE") != nullptr;
 
-    // D096 D3 (probe): allow the native fp8 coopmat kernel on single-row
-    // decode too. 16x16x16 coopmat wastes 15/16 rows at n_rows==1, but at
-    // KV=49K+ the decode is memory-bound; A/B gate: decode >= scalar path.
+    // D096 D3 (probe): allow the native fp8 coopmat kernel on single-token
+    // decode too. Qwen GQA expands that token to N=6 before tuning, leaving
+    // the Br=16 cooperative geometry under-filled. The clean 2026-08-13 49K
+    // A/B measured 13.28 t/s here versus 25.56 on the default scalar route.
     const bool fa_f8_native_decode = !fa_f8_native && (k->type == GGML_TYPE_F8_E4M3) && v->type == k->type &&
                                      neq1 == 1 && f32acc &&
                                      getenv("GGML_VK_FA_F8_NATIVE") != nullptr &&
                                      getenv("GGML_VK_FA_F8_NATIVE_DECODE") != nullptr;
+    if (fa_f8_native_decode) {
+        static std::once_flag native_decode_warning_once;
+        std::call_once(native_decode_warning_once, [] {
+            std::cerr << "ggml_vulkan: WARNING: GGML_VK_FA_F8_NATIVE_DECODE enables a diagnostic "
+                         "single-token cooperative-matrix route; on RDNA4/49K it measured about 48% "
+                         "slower than the default scalar f8 decode path" << std::endl;
+        });
+    }
 
     // D096 P1: route raw f8 K/V through the generated DATA_A_F8_E4M3 cm1
-    // shader. Only K/V tile loading differs; mask, softmax, P*V and output are
-    // the canonical flash_attn_cm1.comp implementation. Native fp8 WMMA remains
-    // a separate, higher-priority diagnostic experiment.
+    // shader during prefill. The env is also consumed by FA tuning, where it
+    // can make the direct cm1 layout fit for GQA decode instead of falling back
+    // to scalar; it is therefore a broad route probe, not an isolated scalar
+    // staging switch. Native fp8 WMMA remains a separate diagnostic experiment.
     const bool fa_f8_direct = !fa_f8_p4 && !fa_f8_p3 && !fa_f8_p2 && !fa_f8_native && !fa_f8_p5 &&
                               (k->type == GGML_TYPE_F8_E4M3) && v->type == k->type && neq1 > 1 &&
                               getenv("GGML_VK_FA_F8_DIRECT") != nullptr;
@@ -2228,6 +2238,12 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         }
     }
 
+    // D096 D4.3 (local fork): preconvert quantized prefill K/V to f16 before
+    // cooperative FA. Decode stays on the compact scalar route. A 2026-08-13
+    // audit found that the earlier 13.4 tps "direct f8" result had inherited
+    // GGML_VK_FA_F8_NATIVE_DECODE and was actually the diagnostic native
+    // cooperative route. Clean scalar f8 measured 25.45 tps at 49K versus
+    // 27.18 for f16; forced native f8 reproduced 13.28 tps.
     const bool fa_preconvert = !fa_f8_p4 && !fa_f8_p3 && !fa_f8_p2 && !fa_f8_p5 && !fa_cmp_native && !fa_f8_direct &&
                                (k->type == GGML_TYPE_Q8_0 || k->type == GGML_TYPE_F8_E4M3) &&
                                v->type == k->type && neq1 > 1 &&
@@ -2238,7 +2254,7 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     tuning_params = get_fa_tuning_params(ctx->device, HSK, HSV, N, KV, k_type_eff, v_type_eff, f32acc);
 
     if (tuning_params.path != FA_COOPMAT2) {
-        GGML_ASSERT(k->type == v->type);
+        GGML_ASSERT(k->type == v->type || (k->type == GGML_TYPE_F8_E4M3 && v->type == GGML_TYPE_F16));
     }
 
     const uint32_t q_stride = (uint32_t)(nbq1 / ggml_type_size(q->type));

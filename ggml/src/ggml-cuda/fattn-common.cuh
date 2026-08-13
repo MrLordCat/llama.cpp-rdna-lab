@@ -107,11 +107,20 @@ static inline bool ggml_cuda_flash_attn_ext_use_rdna4_q8_chunked_wmma(
 #endif
 }
 
-static inline bool ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(
+static inline bool ggml_cuda_flash_attn_ext_f8_exact_kv_alias(
+        const ggml_tensor * K, const ggml_tensor * V) {
+    return K != nullptr && V != nullptr &&
+        (V == K || (V->view_src &&
+            (V->view_src == K ||
+             (V->view_src == K->view_src && V->view_offs == K->view_offs))));
+}
+
+static inline bool ggml_cuda_flash_attn_ext_rdna4_f8_native_common(
         const int device, const ggml_tensor * dst) {
 #if defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
     const char * env = getenv("GGML_ROCM_FATTN_F8_NATIVE_KQ");
     if ((env != nullptr && strcmp(env, "0") == 0) ||
+        getenv("GGML_ROCM_FATTN_F8_REFERENCE") != nullptr ||
         !GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[device].cc)) {
         return false;
     }
@@ -123,15 +132,11 @@ static inline bool ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(
         return false;
     }
 
-    // G3a deliberately owns only the production Qwen shape. V remains on the
-    // proven f16 reference leg; a K/V alias would make that conversion share
-    // the raw K pointer and is therefore rejected.
-    const bool V_is_K_view = V->view_src &&
-        (V->view_src == K ||
-         (V->view_src == K->view_src && V->view_offs == K->view_offs));
-    return !V_is_K_view && Q->ne[0] == 256 && V->ne[0] == 256 &&
+    float logit_softcap = 0.0f;
+    memcpy(&logit_softcap, (const float *) dst->op_params + 2, sizeof(float));
+    return Q->ne[0] == K->ne[0] && Q->ne[0] == V->ne[0] &&
         K->ne[1] % FATTN_KQ_STRIDE == 0 &&
-        K->type == GGML_TYPE_F8_E4M3 && V->type == GGML_TYPE_F8_E4M3;
+        (logit_softcap == 0.0f || Q->ne[0] == 128 || Q->ne[0] == 256);
 #else
     GGML_UNUSED(device);
     GGML_UNUSED(dst);
@@ -139,19 +144,71 @@ static inline bool ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(
 #endif
 }
 
-// D098 G3b/G5: additionally run the P*V phase on gfx12 FP8 WMMA. Requires the
-// native KQ route and the same Qwen-shape ownership as G3a; the K/V alias
-// rejection is inherited from the KQ policy. Both native phases are the RDNA4
-// default after the bracketed 49K/98K speed and MTP quality gates; setting
-// either variable to 0 preserves an explicit rollback/bisect path.
+static inline bool ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(
+        const int device, const ggml_tensor * dst) {
+#if defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
+    if (!ggml_cuda_flash_attn_ext_rdna4_f8_native_common(device, dst)) {
+        return false;
+    }
+
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+    if (K->type != GGML_TYPE_F8_E4M3) {
+        return false;
+    }
+
+    switch (K->ne[0]) {
+        case 64:
+        case 80:
+        case 96:
+        case 112:
+        case 128:
+        case 256:
+            break;
+        default:
+            return false;
+    }
+
+    // An exact alias can stay raw only when both phases consume it natively.
+    // Otherwise both phases fall back and share one converted f16 allocation.
+    const char * env_v = getenv("GGML_ROCM_FATTN_F8_NATIVE_V");
+    const bool native_v_enabled = env_v == nullptr || strcmp(env_v, "0") != 0;
+    const bool native_v_shape = V->ne[0] == 64 || V->ne[0] == 128 || V->ne[0] == 256;
+    return !ggml_cuda_flash_attn_ext_f8_exact_kv_alias(K, V) ||
+        (V->type == GGML_TYPE_F8_E4M3 && native_v_enabled && native_v_shape);
+#else
+    GGML_UNUSED(device);
+    GGML_UNUSED(dst);
+    return false;
+#endif
+}
+
+// D098/D099: run the P*V phase on gfx12 FP8 WMMA independently of the KQ
+// input type. Only D64/D128/D256 have VKQ_ratio == 1 in the production four-
+// wave topology; D80/D96/D112 remain on the portable f16 V leg. The KQ
+// variable remains the master rollback; the V variable provides a phase-
+// specific bisect.
 static inline bool ggml_cuda_flash_attn_ext_use_rdna4_f8_native_v(
         const int device, const ggml_tensor * dst) {
 #if defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
-    if (!ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(device, dst)) {
+    if (!ggml_cuda_flash_attn_ext_rdna4_f8_native_common(device, dst)) {
         return false;
     }
+
     const char * env = getenv("GGML_ROCM_FATTN_F8_NATIVE_V");
-    return env == nullptr || strcmp(env, "0") != 0;
+    if ((env != nullptr && strcmp(env, "0") == 0) ||
+        dst->src[2]->type != GGML_TYPE_F8_E4M3) {
+        return false;
+    }
+
+    switch (dst->src[2]->ne[0]) {
+        case 64:
+        case 128:
+        case 256:
+            return true;
+        default:
+            return false;
+    }
 #else
     GGML_UNUSED(device);
     GGML_UNUSED(dst);
@@ -207,7 +264,7 @@ static inline ggml_cuda_flash_attn_ext_f16_extra_data ggml_cuda_flash_attn_ext_g
     GGML_ASSERT(K != nullptr);
     GGML_ASSERT(V != nullptr);
 
-    const bool V_is_K_view = V->view_src && (V->view_src == K || (V->view_src == K->view_src && V->view_offs == K->view_offs));
+    const bool V_is_K_view = ggml_cuda_flash_attn_ext_f8_exact_kv_alias(K, V);
 
     ggml_cuda_flash_attn_ext_f16_extra_data data = {};
     data.end = (uintptr_t) dst->data + ggml_nbytes(dst);
@@ -1111,7 +1168,7 @@ void launch_fattn(
     const ggml_tensor * K = dst->src[1];
     const ggml_tensor * V = dst->src[2];
 
-    const bool V_is_K_view = V->view_src && (V->view_src == K || (V->view_src == K->view_src && V->view_offs == K->view_offs));
+    const bool V_is_K_view = ggml_cuda_flash_attn_ext_f8_exact_kv_alias(K, V);
 
     const ggml_tensor * mask  = dst->src[3];
     const ggml_tensor * sinks = dst->src[4];

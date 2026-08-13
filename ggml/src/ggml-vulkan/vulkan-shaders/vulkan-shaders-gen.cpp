@@ -884,14 +884,30 @@ void process_shaders() {
                         merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}}), fp16, false, false, f16acc);
                 } else if (tname == "q4_0" || tname == "q4_1" || tname == "q5_0" || tname == "q5_1" || tname == "iq4_nl" || tname == "q8_0" || tname == "f8_e4m3" || tname == "f32") {
                     std::string data_a_key = "DATA_A_" + to_uppercase(tname);
-                    string_to_spv("flash_attn_f32_f16_" + tname, "flash_attn.comp",
-                        merge_maps(fa_base_dict, {{data_a_key, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"BLOCK_SIZE", "QUANT_K_"+to_uppercase(tname) }}), fp16, false, false, f16acc);
+                    // D096 D4.3: packed-load, branchless f8 dequant module for
+                    // scalar FA. The historical ~2x decode regression was not
+                    // caused by scalar dequant: those runs inherited the
+                    // diagnostic native cooperative-matrix decode route.
+                    // Coopmat (cm1/P5) modules keep their direct path.
+                    if (tname == "f8_e4m3") {
+                        string_to_spv("flash_attn_f32_f16_" + tname, "flash_attn.comp",
+                            merge_maps(fa_base_dict, {{data_a_key, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"BLOCK_SIZE", "QUANT_K_"+to_uppercase(tname)}, {"D096_FA_F8_INLINE", "1"}}), fp16, false, false, f16acc);
+                    } else {
+                        string_to_spv("flash_attn_f32_f16_" + tname, "flash_attn.comp",
+                            merge_maps(fa_base_dict, {{data_a_key, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"BLOCK_SIZE", "QUANT_K_"+to_uppercase(tname) }}), fp16, false, false, f16acc);
+                    }
 #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
                     if (tname != "f32" && tname != "f8_e4m3") {
                         string_to_spv("flash_attn_f32_f16_" + tname, "flash_attn.comp",
                             merge_maps(fa_base_dict, {{data_a_key, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"BLOCK_SIZE", "QUANT_K_"+to_uppercase(tname) }, {"MMQ", "1"}}), fp16, false, false, f16acc, "_int8");
                     }
 #endif
+                    // D096 D5: V-only hybrid - K stays raw f8, V is read as a
+                    // dense f16 buffer directly (no f8 V dequant in the shader).
+                    if (tname == "f8_e4m3") {
+                        string_to_spv("flash_attn_f32_f16_f8_e4m3_vf16", "flash_attn.comp",
+                            merge_maps(fa_base_dict, {{data_a_key, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"BLOCK_SIZE", "QUANT_K_F8_E4M3"}, {"D096_FP8_V_F16", "1"}}), fp16, false, false, f16acc);
+                    }
                 }
             }
         }

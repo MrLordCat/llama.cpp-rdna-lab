@@ -167,7 +167,15 @@ llama_kv_cache::llama_kv_cache(
             kv_last_layer_f16_n = std::max(0, atoi(getenv("LLAMA_VK_MTP_KV_LAST_F16")));
         }
     }
+    // D096 D5: V-only hybrid - keep the last N layers' V in f16 while K stays
+    // quantized (f8). Halves the f16 tail reads of the full hybrid; draft
+    // acceptance impact measured via LLAMA_VK_MTP_KV_V_F16 vs LAST_F16.
+    int kv_last_layer_v16_n = 0;
+    if (kv_f8 && getenv("LLAMA_VK_MTP_KV_V_F16") != nullptr) {
+        kv_last_layer_v16_n = std::max(0, atoi(getenv("LLAMA_VK_MTP_KV_V_F16")));
+    }
     const bool kv_last_layer_f16 = kv_last_layer_f16_n > 0;
+    const bool kv_last_layer_v16 = kv_last_layer_v16_n > 0;
     int kv_q8_bridge_n = 0;
     if (kv_f8 && kv_last_layer_f16 && getenv("LLAMA_VK_MTP_KV_Q8_BEFORE_F16") != nullptr) {
         kv_q8_bridge_n = std::max(0, atoi(getenv("LLAMA_VK_MTP_KV_Q8_BEFORE_F16")));
@@ -296,12 +304,16 @@ llama_kv_cache::llama_kv_cache(
             kv_layers.push_back(il);
         }
     }
-    const uint32_t kv_f16_start = kv_layers.size() > (uint32_t) kv_last_layer_f16_n
-        ? kv_layers[kv_layers.size() - (uint32_t) kv_last_layer_f16_n]
-        : (kv_layers.empty() ? 0 : kv_layers.front());
-    const uint32_t kv_quantized_count = kv_layers.size() > (uint32_t) kv_last_layer_f16_n
-        ? (uint32_t) kv_layers.size() - (uint32_t) kv_last_layer_f16_n
-        : 0;
+    const uint32_t kv_layer_count = (uint32_t) kv_layers.size();
+    const uint32_t kv_f16_count = std::min(kv_layer_count, (uint32_t) kv_last_layer_f16_n);
+    const uint32_t kv_v16_count = std::min(kv_layer_count, (uint32_t) kv_last_layer_v16_n);
+    const uint32_t kv_f16_start = kv_f16_count > 0
+        ? kv_layers[kv_layer_count - kv_f16_count]
+        : hparams.n_layer;
+    const uint32_t kv_v16_start = kv_v16_count > 0
+        ? kv_layers[kv_layer_count - kv_v16_count]
+        : hparams.n_layer;
+    const uint32_t kv_quantized_count = kv_layer_count - kv_f16_count;
     kv_q8_bridge_n = std::min(kv_q8_bridge_n, (int) kv_quantized_count);
     const uint32_t kv_q8_bridge_start = kv_q8_bridge_n > 0
         ? kv_layers[kv_quantized_count - (uint32_t) kv_q8_bridge_n]
@@ -404,10 +416,17 @@ llama_kv_cache::llama_kv_cache(
         // the cache stays f8 (saves ~1/16 of the f8 memory win, ~48 MiB here).
         ggml_type type_k_il = type_k;
         ggml_type type_v_il = type_v;
+        // The three opt-in regions may overlap. Apply them from narrowest
+        // precision guarantee to strongest: q8 bridge, V-only f16, full K/V
+        // f16. This keeps their bounds independent and makes full f16 win.
         if (kv_q8_bridge_n > 0 && il >= kv_q8_bridge_start && il < kv_f16_start) {
             type_k_il = GGML_TYPE_Q8_0;
             type_v_il = GGML_TYPE_Q8_0;
-        } else if (kv_last_layer_f16 && il >= kv_f16_start) {
+        }
+        if (kv_last_layer_v16 && il >= kv_v16_start) {
+            type_v_il = GGML_TYPE_F16;
+        }
+        if (kv_last_layer_f16 && il >= kv_f16_start) {
             type_k_il = GGML_TYPE_F16;
             type_v_il = GGML_TYPE_F16;
         }
@@ -482,9 +501,13 @@ llama_kv_cache::llama_kv_cache(
         const std::string q8_bridge_suffix = kv_q8_bridge_n > 0
             ? ", previous " + std::to_string(kv_q8_bridge_n) + " layers q8_0"
             : "";
-        const std::string hybrid_suffix = kv_last_layer_f16
-            ? " (last " + std::to_string(kv_last_layer_f16_n) + " layers f16" + q8_bridge_suffix + ")"
-            : "";
+        std::string hybrid_suffix;
+        if (kv_f16_count > 0) {
+            hybrid_suffix += " (last " + std::to_string(kv_f16_count) + " layers K/V f16" + q8_bridge_suffix + ")";
+        }
+        if (kv_v16_count > 0) {
+            hybrid_suffix += " (last " + std::to_string(kv_v16_count) + " layers V f16)";
+        }
 
         LLAMA_LOG_INFO("%s: size = %7.2f MiB (%6u cells, %3d layers, %2u/%u seqs), K (%s): %7.2f MiB, V (%s): %7.2f MiB%s\n", __func__,
                 (float)(memory_size_k + memory_size_v) / (1024.0f * 1024.0f), kv_size, (int) layers.size(), n_seq_max, n_stream,

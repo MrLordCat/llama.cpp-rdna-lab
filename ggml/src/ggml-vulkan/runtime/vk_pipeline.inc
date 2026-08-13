@@ -964,12 +964,13 @@ static vk_fa_tuning_params get_fa_tuning_params_scalar(const vk_device& device, 
 
     result.shmem_staging = ((device->vendor_id == VK_VENDOR_ID_NVIDIA && hsk < 256 && hsv < 256) || kv_type == GGML_TYPE_F8_E4M3) ? 1 : 0;
 
-    // Local fork (D096 D2): single-row (decode) f8 FA reads K/V directly -
-    // no LDS staging. At n_rows==1 the K/V block is never reused, so staging
-    // is a pure LDS round-trip; the shader dequantizes f8 in registers
-    // instead (dequantize4, SHMEM_STAGING==0 path). Measured 2026-08-12:
-    // +3.8% decode at 12K lane, parity at 49K lane. GGML_VK_FA_F8_DIRECT
-    // forces direct for all n_rows; GGML_VK_FA_SCALAR_STAGING forces staging.
+    // Local fork (D096 D2): permit direct scalar f8 reads when the tuned row
+    // count is one. Qwen single-token GQA is remapped to n_rows=6 before this
+    // function, so its default scalar route remains staged. The 2026-08-12
+    // +3.8%/49K-parity measurements were invalidated on 2026-08-13 because the
+    // runs inherited native decode. GGML_VK_FA_F8_DIRECT is a broader probe:
+    // it also changes cm1 selection and prefill, so it does not isolate scalar
+    // staging. GGML_VK_FA_SCALAR_STAGING forces staging.
     if (kv_type == GGML_TYPE_F8_E4M3 && (n_rows == 1 || getenv("GGML_VK_FA_F8_DIRECT"))) {
         result.shmem_staging = 0;
     }
@@ -1041,8 +1042,10 @@ static vk_fa_tuning_params get_fa_tuning_params_coopmat1(const vk_device& device
 
     // D096 P1: the canonical DATA_A_F8_E4M3 cm1 shader already supports
     // tile-local K/V dequantization when SHMEM_STAGING=0. Keep the historical
-    // full-tile staging default, but allow the direct-f8 experiment to avoid
-    // exceeding RDNA4's 32 KiB LDS limit without maintaining a second FA kernel.
+    // full-tile staging default, but allow the broad direct-f8 route probe to
+    // avoid RDNA4's 32 KiB LDS limit. On clean 49K Qwen GQA this changes decode
+    // from scalar Br=8/staged to cm1 Br=16/direct: decode was within 1%, while
+    // prefill regressed 17.5%, so it is not a production default.
     const bool f8_direct = kv_type == GGML_TYPE_F8_E4M3 && getenv("GGML_VK_FA_F8_DIRECT") != nullptr;
     result.shmem_staging = ((device->vendor_id == VK_VENDOR_ID_NVIDIA && hsk < 256 && hsv < 256) ||
                             (kv_type == GGML_TYPE_F8_E4M3 && !f8_direct)) ? 1 : 0;
@@ -1170,8 +1173,9 @@ static vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_
         return params;
     }
 
-    // D096 D3 (probe): native fp8 coopmat on single-row decode (n_rows == 1)
-    // under GGML_VK_FA_F8_NATIVE_DECODE; measured against scalar on 49K lane.
+    // D096 D3 (probe): native fp8 coopmat on single-token decode under
+    // GGML_VK_FA_F8_NATIVE_DECODE. Qwen GQA reaches this as n_rows=6; the clean
+    // 49K A/B rejected it at 13.28 t/s versus 25.56 for default scalar f8.
     if (k_type == GGML_TYPE_F8_E4M3 && v_type == k_type && f32acc && n_rows == 1 &&
         device->coopmat1_fa_support && device->coopmat_support_16x16x16_f32acc &&
         getenv("GGML_VK_FA_F8_NATIVE") != nullptr && getenv("GGML_VK_FA_F8_NATIVE_DECODE") != nullptr) {
@@ -1179,6 +1183,13 @@ static vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_
         params.path = FA_F8_NATIVE;
         params.shmem_staging = 0; // native kernel reads K directly from the f8 KV cache
         return params;
+    }
+
+    // D096 D5: V-only hybrid (K raw f8, V dense f16) has no coopmat1 module
+    // yet; force the scalar FA for all row counts (prefill of the hybrid
+    // layers is slower than P5 but the tail is only a few layers).
+    if (k_type == GGML_TYPE_F8_E4M3 && v_type == GGML_TYPE_F16) {
+        return get_fa_tuning_params_scalar(device, hsk, hsv, n_rows, n_kv, k_type, f32acc);
     }
 
     FaCodePath path = device->coopmat2 ? FA_COOPMAT2 :

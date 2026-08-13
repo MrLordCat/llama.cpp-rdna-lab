@@ -437,7 +437,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
             bool f32acc = fa.first.f32acc; \
             uint32_t fa_sgs = fa.first.subgroup_size; \
             bool fa_ds = fa.first.subgroup_size == 0; \
-            if (path == FAPATH) { \
+            if (path == FAPATH && fa.first.v_type == TYPE) { \
                 if (aligned) { \
                     if (f32acc) { \
                         ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_aligned_f32acc" #NAMELC, flash_attn_f32_f16_ ## NAMELC ##            SUFFIX ## _len,  flash_attn_f32_f16_ ## NAMELC ##            SUFFIX ## _data,  "main", 7, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), Bc, true, (!fa_ds && (FAPATH!=FA_COOPMAT2)), ((!fa_ds && (FAPATH!=FA_COOPMAT2)) ? fa_sgs : 0));     \
@@ -501,6 +501,25 @@ static void ggml_vk_load_shaders(vk_device& device) {
             CREATE_FA(GGML_TYPE_Q5_1,     q5_1, FA_SCALAR, _fp32)
             CREATE_FA(GGML_TYPE_IQ4_NL, iq4_nl, FA_SCALAR, _fp32)
             CREATE_FA(GGML_TYPE_F8_E4M3, f8_e4m3, FA_SCALAR, _fp32)
+        }
+    }
+
+    // D096 D5: V-only hybrid scalar FA (K raw f8 + V dense f16) must use the
+    // f8_e4m3_vf16 module (direct f16 V reads, no f8 V dequant). The regular
+    // CREATE_FA above only covers v_type == k_type states.
+    if (device->fp16) {
+        for (auto &fa : device->pipeline_flash_attn_f32_f16[GGML_TYPE_F8_E4M3]) {
+            if (fa.first.path == FA_SCALAR && fa.first.v_type == GGML_TYPE_F16) {
+                const uint32_t Br = fa.first.Br;
+                const uint32_t Bc = fa.first.Bc;
+                const uint32_t fa_sgs = fa.first.subgroup_size;
+                const bool fa_ds = fa.first.subgroup_size == 0;
+                if (fa.first.aligned) {
+                    ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_aligned_f32accf8_e4m3_vf16", flash_attn_f32_f16_f8_e4m3_vf16_len, flash_attn_f32_f16_f8_e4m3_vf16_data, "main", 7, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), Bc, true, !fa_ds, fa_ds ? 0 : fa_sgs);
+                } else {
+                    ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_f32accf8_e4m3_vf16", flash_attn_f32_f16_f8_e4m3_vf16_len, flash_attn_f32_f16_f8_e4m3_vf16_data, "main", 7, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), 1, true, !fa_ds, fa_ds ? 0 : fa_sgs);
+                }
+            }
         }
     }
 #if defined(VK_KHR_cooperative_matrix) && defined(GGML_VULKAN_COOPMAT_GLSLC_SUPPORT)

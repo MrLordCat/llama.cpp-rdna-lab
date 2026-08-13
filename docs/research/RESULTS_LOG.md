@@ -1,5 +1,22 @@
 # Results Log
 
+## 2026-08-13 - D099 ROCm FP8 production hardening
+
+- Extended gfx12 native ownership by phase: KQ supports
+  D=64/80/96/112/128/256; P*V supports D=64/128/256. D80/D96/D112 safely
+  convert V because their four-wave native merge has multiple accumulator
+  groups (and D112 also exceeds the local LDS fence in the full-native model).
+- Added portable HIP fallback for all otherwise supported F8 FA shapes,
+  compile-time exclusion of gfx12 FP8 device bodies on older targets,
+  one-sided mixed K/V types and exact-alias allocation ownership.
+- Validation: gfx1201 build, compile-only gfx1100 build, and `19/19` ROCm0
+  focused FA cases pass. The retained D256 production route is included.
+- Adjacent dual-ROCm 49K bracket: exact q8 center
+  `8.7217 aggregate / 1740.51 prompt / 21.94 decode`; FP8
+  `9.0811 / 1809.62 / 22.96`, or `+4.12%/+3.97%/+4.65%`.
+
+- Details: `docs/research/major-topology/D099_ROCM_FP8_PRODUCTION_HARDENING.md`
+
 ## 2026-07-15 - E314 ROCm IMROPE normalization fusion
 
 - Confirmed that Qwen3.6 uses interleaved MRoPE (`mode=40`), which is outside

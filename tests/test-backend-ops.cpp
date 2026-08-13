@@ -1152,6 +1152,13 @@ struct test_case {
     // its own backend dispatch env (e.g. the ROCm FP8 gates).
     virtual void select_dispatch_env() {}
 
+    // Backend-specific dispatch tests can opt out before supports_op and
+    // allocation. The comparison backend remains unrestricted.
+    virtual bool is_backend_test_applicable(ggml_backend_t backend) {
+        GGML_UNUSED(backend);
+        return true;
+    }
+
     virtual double max_nmse_err() {
         return 1e-7;
     }
@@ -1334,6 +1341,18 @@ struct test_case {
             return test_status_t::SKIPPED;
         }
 
+        if (!is_backend_test_applicable(backend1)) {
+            test_result result(ggml_backend_name(backend1), current_op_name, vars(), "test",
+                             false, false, "not applicable to backend");
+
+            if (output_printer) {
+                output_printer->print_test_result(result);
+            }
+
+            ggml_free(ctx);
+            return test_status_t::NOT_SUPPORTED;
+        }
+
         // D098: backend dispatch gates are env-selected; each test chooses its
         // own route before supports_op is queried.
         select_dispatch_env();
@@ -1505,6 +1524,11 @@ struct test_case {
             return true;
         }
 
+        if (!is_backend_test_applicable(backend)) {
+            return true;
+        }
+        select_dispatch_env();
+
         if (!ggml_backend_supports_op(backend, out)) {
             // Create test result for unsupported performance test
             test_result result(ggml_backend_name(backend), current_op_name, vars(), "perf", false, false,
@@ -1636,6 +1660,11 @@ struct test_case {
         if (!matches_filter(out, op_names_filter)) {
             return true;
         }
+
+        if (!is_backend_test_applicable(backend)) {
+            return true;
+        }
+        select_dispatch_env();
 
         bool supported = ggml_backend_supports_op(backend, out);
 
@@ -6310,9 +6339,10 @@ struct test_flash_attn_ext : public test_case {
     const ggml_type type_K;
     const ggml_type type_V;
     std::array<int32_t, 4> permute;
+    const bool kv_alias;
 
     std::string vars() override {
-        return VARS_TO_STR14(hsk, hsv, nh, nr23, kv, nb, mask, sinks, max_bias, logit_softcap, prec, type_K, type_V, permute);
+        return VARS_TO_STR15(hsk, hsv, nh, nr23, kv, nb, mask, sinks, max_bias, logit_softcap, prec, type_K, type_V, permute, kv_alias);
     }
 
     double max_nmse_err() override {
@@ -6328,9 +6358,10 @@ struct test_flash_attn_ext : public test_case {
 
     test_flash_attn_ext(int64_t hsk = 128, int64_t hsv = 128, int64_t nh = 32, std::array<int64_t, 2> nr23 = {1, 1}, int64_t kv = 96, int64_t nb = 8,
                         bool mask = true, bool sinks = false, float max_bias = 0.0f, float logit_softcap = 0.0f, ggml_prec prec = GGML_PREC_F32,
-                        ggml_type type_K = GGML_TYPE_F16, ggml_type type_V = GGML_TYPE_F16, std::array<int32_t, 4> permute = {0, 1, 2, 3})
+                                                ggml_type type_K = GGML_TYPE_F16, ggml_type type_V = GGML_TYPE_F16, std::array<int32_t, 4> permute = {0, 1, 2, 3},
+                                                bool kv_alias = false)
         : hsk(hsk), hsv(hsv), nh(nh), nr23(nr23), kv(kv), nb(nb), mask(mask), sinks(sinks), max_bias(max_bias), logit_softcap(logit_softcap), prec(prec),
-          type_K(type_K), type_V(type_V), permute(permute) {}
+                    type_K(type_K), type_V(type_V), permute(permute), kv_alias(kv_alias) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         const int64_t hsk_padded = GGML_PAD(hsk, ggml_blck_size(type_K));
@@ -6362,7 +6393,11 @@ struct test_flash_attn_ext : public test_case {
         ggml_set_name(k, "k");
 
         ggml_tensor * v = nullptr;
-        if (type_K == type_V && hsk_padded == 576 && hsv_padded == 512) {
+        if (kv_alias) {
+            GGML_ASSERT(type_K == type_V && hsk_padded == hsv_padded);
+            GGML_ASSERT((permute == std::array<int32_t, 4>{0, 1, 2, 3}));
+            v = ggml_view_4d(ctx, k, hsv_padded, kv, nh, nr23[1], k->nb[1], k->nb[2], k->nb[3], 0);
+        } else if (type_K == type_V && hsk_padded == 576 && hsv_padded == 512) {
             // TODO: this branch should become a separate test case parameter instead of hardcoding this for these head shapes
 
             // in this branch, the V cache is sub-view of the K cache. this is used by some MLA-based models
@@ -7016,13 +7051,22 @@ enum llm_norm_type {
     LLM_NORM_RMS,
 };
 
+struct test_flash_attn_ext_f8_rocm : public test_flash_attn_ext {
+    using test_flash_attn_ext::test_flash_attn_ext;
+
+    bool is_backend_test_applicable(ggml_backend_t backend) override {
+        const char * name = ggml_backend_name(backend);
+        return name != nullptr && strncmp(name, "ROCm", 4) == 0;
+    }
+};
+
 // D098 G3b: the E4M3 re-quantized P*V route. The softmax-P E4M3 rounding is
 // part of the native gfx12 contract, so the comparison allowance is
 // documented at 2x the reference path threshold.
-struct test_flash_attn_ext_f8_native_v : public test_flash_attn_ext {
+struct test_flash_attn_ext_f8_native_v : public test_flash_attn_ext_f8_rocm {
     test_flash_attn_ext_f8_native_v(int64_t hsk, int64_t hsv, int64_t nh,
             std::array<int64_t, 2> nr23, int64_t kv, int64_t nb, bool mask)
-        : test_flash_attn_ext(hsk, hsv, nh, nr23, kv, nb, mask, false, 0, 0,
+          : test_flash_attn_ext_f8_rocm(hsk, hsv, nh, nr23, kv, nb, mask, false, 0, 0,
               GGML_PREC_F32, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3) {}
 
     std::string vars() override {
@@ -7041,10 +7085,10 @@ struct test_flash_attn_ext_f8_native_v : public test_flash_attn_ext {
 };
 
 // D098 G3a: native FP8 KQ with V on the f16 reference leg, strict 5e-4.
-struct test_flash_attn_ext_f8_native_kq : public test_flash_attn_ext {
+struct test_flash_attn_ext_f8_native_kq : public test_flash_attn_ext_f8_rocm {
     test_flash_attn_ext_f8_native_kq(int64_t hsk, int64_t hsv, int64_t nh,
             std::array<int64_t, 2> nr23, int64_t kv, int64_t nb, bool mask)
-        : test_flash_attn_ext(hsk, hsv, nh, nr23, kv, nb, mask, false, 0, 0,
+          : test_flash_attn_ext_f8_rocm(hsk, hsv, nh, nr23, kv, nb, mask, false, 0, 0,
               GGML_PREC_F32, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3) {}
 
     std::string vars() override {
@@ -7059,10 +7103,10 @@ struct test_flash_attn_ext_f8_native_kq : public test_flash_attn_ext {
 };
 
 // D098 G2: the f16-leg reference route keeps the strict 5e-4 contract.
-struct test_flash_attn_ext_f8_reference : public test_flash_attn_ext {
+struct test_flash_attn_ext_f8_reference : public test_flash_attn_ext_f8_rocm {
     test_flash_attn_ext_f8_reference(int64_t hsk, int64_t hsv, int64_t nh,
             std::array<int64_t, 2> nr23, int64_t kv, int64_t nb, bool mask)
-        : test_flash_attn_ext(hsk, hsv, nh, nr23, kv, nb, mask, false, 0, 0,
+          : test_flash_attn_ext_f8_rocm(hsk, hsv, nh, nr23, kv, nb, mask, false, 0, 0,
               GGML_PREC_F32, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3) {}
 
     std::string vars() override {
@@ -7073,6 +7117,42 @@ struct test_flash_attn_ext_f8_reference : public test_flash_attn_ext {
         test_set_env("GGML_ROCM_FATTN_F8_REFERENCE", "1");
         test_set_env("GGML_ROCM_FATTN_F8_NATIVE_KQ", "0");
         test_set_env("GGML_ROCM_FATTN_F8_NATIVE_V", "0");
+    }
+};
+
+// D099: production-hardening matrix for alternate head sizes, portable
+// fallback, mixed K/V types, features and exact aliases. route=0 forces the
+// portable path, route=1 requests KQ-native/V-fallback, route=2 enables all
+// eligible native phases.
+struct test_flash_attn_ext_f8_hardened : public test_flash_attn_ext_f8_rocm {
+    const int route;
+
+    test_flash_attn_ext_f8_hardened(int64_t hsk, int64_t hsv, int64_t kv, int64_t nb,
+            ggml_type type_K, ggml_type type_V, int route,
+            bool mask = true, bool sinks = false, float max_bias = 0.0f,
+            float logit_softcap = 0.0f, bool kv_alias = false)
+          : test_flash_attn_ext_f8_rocm(hsk, hsv, 4, {2, 1}, kv, nb, mask, sinks,
+              max_bias, logit_softcap, GGML_PREC_F32, type_K, type_V,
+              {0, 1, 2, 3}, kv_alias), route(route) {}
+
+    std::string vars() override {
+        return test_flash_attn_ext::vars() + ",hardening_route=" + std::to_string(route);
+    }
+
+    double max_nmse_err() override {
+        return route == 2 && type_V == GGML_TYPE_F8_E4M3 ? 1e-3 : 5e-4;
+    }
+
+    void select_dispatch_env() override {
+        if (route == 0) {
+            test_set_env("GGML_ROCM_FATTN_F8_REFERENCE", "1");
+            test_set_env("GGML_ROCM_FATTN_F8_NATIVE_KQ", "0");
+            test_set_env("GGML_ROCM_FATTN_F8_NATIVE_V", "0");
+            return;
+        }
+        test_set_env("GGML_ROCM_FATTN_F8_REFERENCE", nullptr);
+        test_set_env("GGML_ROCM_FATTN_F8_NATIVE_KQ", "1");
+        test_set_env("GGML_ROCM_FATTN_F8_NATIVE_V", route == 2 ? "1" : "0");
     }
 };
 
@@ -8849,6 +8929,28 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // fp8 x fp8 P*V route is compared with a documented 2x NMSE allowance.
     test_cases.emplace_back(new test_flash_attn_ext_f8_native_v(256, 256, 4, {6, 1}, 512, 16, true));
     test_cases.emplace_back(new test_flash_attn_ext_f8_native_v(256, 256, 4, {6, 1}, 512, 1, true));
+
+    // D099: resource-audited native dimensions and feature coverage.
+    test_cases.emplace_back(new test_flash_attn_ext_f8_hardened( 64,  64, 256, 4, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3, 2, false));
+    test_cases.emplace_back(new test_flash_attn_ext_f8_hardened( 80,  80, 256, 4, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3, 2, true, true));
+    test_cases.emplace_back(new test_flash_attn_ext_f8_hardened( 96,  96, 256, 4, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3, 2, true, false, 1.0f));
+    test_cases.emplace_back(new test_flash_attn_ext_f8_hardened(112, 112, 256, 4, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3, 2));
+    test_cases.emplace_back(new test_flash_attn_ext_f8_hardened(128, 128, 256, 4, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3, 2, true, false, 0.0f, 2.0f));
+
+    // Portable fallbacks cover non-WMMA dimensions and unaligned KV lengths.
+    test_cases.emplace_back(new test_flash_attn_ext_f8_hardened(40, 40, 96, 2, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3, 0));
+    test_cases.emplace_back(new test_flash_attn_ext_f8_hardened(72, 72, 96, 2, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3, 0));
+
+    // Each FP8 phase can be native while the other K/V type is converted.
+    test_cases.emplace_back(new test_flash_attn_ext_f8_hardened(128, 128, 256, 4, GGML_TYPE_F8_E4M3, GGML_TYPE_F16,     2));
+    test_cases.emplace_back(new test_flash_attn_ext_f8_hardened(128, 128, 256, 4, GGML_TYPE_F16,     GGML_TYPE_F8_E4M3, 2));
+    test_cases.emplace_back(new test_flash_attn_ext_f8_hardened(128, 128, 256, 4, GGML_TYPE_F8_E4M3, GGML_TYPE_Q8_0,    2));
+    test_cases.emplace_back(new test_flash_attn_ext_f8_hardened(128, 128, 256, 4, GGML_TYPE_Q8_0,    GGML_TYPE_F8_E4M3, 2));
+
+    // Exact aliases stay raw only when both phases are native; otherwise one
+    // shared portable conversion owns K and V.
+    test_cases.emplace_back(new test_flash_attn_ext_f8_hardened(128, 128, 256, 4, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3, 2, true, false, 0, 0, true));
+    test_cases.emplace_back(new test_flash_attn_ext_f8_hardened(128, 128, 256, 4, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3, 1, true, false, 0, 0, true));
 
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {   10, 5, 4, 3}));
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {30000, 1, 1, 1}));

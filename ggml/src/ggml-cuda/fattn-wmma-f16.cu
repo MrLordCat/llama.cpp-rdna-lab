@@ -66,6 +66,12 @@ static __global__ void flash_attn_ext_f16(
                             const int32_t ne31, const int32_t ne32, const int32_t ne33,
                             const int32_t nb31, const int32_t nb32, const int64_t nb33) {
 #if defined(FLASH_ATTN_AVAILABLE) && (defined(GGML_HIP_ROCWMMA_FATTN) && defined(GGML_USE_WMMA_FATTN))
+#if defined(GGML_USE_HIP) && defined(__HIP_DEVICE_COMPILE__) && !defined(__GFX12__)
+    if constexpr (native_f8_kq || native_f8_v) {
+        NO_DEVICE_CODE;
+        return;
+    } else {
+#endif
     // Skip unused kernel variants for faster compilation:
     if (use_logit_softcap && !(D == 128 || D == 256)) {
         NO_DEVICE_CODE;
@@ -665,6 +671,9 @@ static __global__ void flash_attn_ext_f16(
         dst_meta_val.y = KQ_rowsum_j;
         dst_meta[j_dst_unrolled] = dst_meta_val;
     }
+#if defined(GGML_USE_HIP) && defined(__HIP_DEVICE_COMPILE__) && !defined(__GFX12__)
+    }
+#endif
 #else
     GGML_UNUSED_VARS(Q, K, V, mask, sinks, KV_max, dst, dst_meta, scale,
         max_bias, m0, m1, n_head_log2, logit_softcap,
@@ -886,46 +895,82 @@ void ggml_cuda_flash_attn_ext_wmma_f16_case(ggml_backend_cuda_context & ctx, ggm
 
     if constexpr (f8_native_only) {
         static_assert(D == 256 && cols_per_block == 16 && nwarps == 8,
-            "the experimental native-only body owns the D=256/cols16/warps8 shape");
+            "the native-only body owns the D=256/cols16/warps8 shape");
+        GGML_ASSERT(f8_native_v);
         fattn_kernel_t f8_kernel;
         if (logit_softcap == 0.0f) {
-            f8_kernel = flash_attn_ext_f16<
-                D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
-                float, false, false, false, true, true>;
+            if (f8_native_kq) {
+                f8_kernel = flash_attn_ext_f16<
+                    D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                    float, false, false, false, true, true>;
+            } else {
+                f8_kernel = flash_attn_ext_f16<
+                    D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                    float, false, false, false, false, true>;
+            }
         } else {
-            f8_kernel = flash_attn_ext_f16<
-                D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
-                float, true, false, false, true, true>;
+            if (f8_native_kq) {
+                f8_kernel = flash_attn_ext_f16<
+                    D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                    float, true, false, false, true, true>;
+            } else {
+                f8_kernel = flash_attn_ext_f16<
+                    D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                    float, true, false, false, false, true>;
+            }
         }
         launch_fattn<D, cols_per_block, 1>(
             ctx, dst, f8_kernel, nwarps, 0, FATTN_KQ_STRIDE,
-            false, false, false, warp_size);
+            !f8_native_kq, false, false, warp_size);
         return;
     }
 
     if constexpr (!f8_native_only) {
     fattn_kernel_t fattn_kernel;
-    if (f8_native_kq) {
-        // The gfx12 FP8 body is owned only by the Qwen D=256/16-column shape;
-        // other instantiations must never pull the FP8 kernels (their shared
-        // footprint exceeds the RDNA4 limit).
-        if constexpr (D == 256 && cols_per_block == 16) {
+    if (f8_native_kq || f8_native_v) {
+        // D099: four-wave native phases own only the resource-audited D/cols16
+        // matrix. Full native D256 is dispatched through the separate eight-
+        // wave specialization above; D112 deliberately permits KQ only.
+        if constexpr ((D == 64 || D == 80 || D == 96 || D == 112 || D == 128 || D == 256) &&
+                cols_per_block == 16) {
             if (logit_softcap == 0.0f) {
-                if (f8_native_v) {
-                    fattn_kernel = flash_attn_ext_f16<
-                        D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
-                        float, false, false, false, true, true>;
+                if constexpr (D == 64 || D == 128 || D == 256) {
+                    if (f8_native_kq && f8_native_v) {
+                        fattn_kernel = flash_attn_ext_f16<
+                            D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                            float, false, false, false, true, true>;
+                    } else if (f8_native_kq) {
+                        fattn_kernel = flash_attn_ext_f16<
+                            D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                            float, false, false, false, true, false>;
+                    } else {
+                        fattn_kernel = flash_attn_ext_f16<
+                            D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                            float, false, false, false, false, true>;
+                    }
                 } else {
+                    GGML_ASSERT(f8_native_kq && !f8_native_v);
                     fattn_kernel = flash_attn_ext_f16<
                         D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
                         float, false, false, false, true, false>;
                 }
             } else {
-                if (f8_native_v) {
-                    fattn_kernel = flash_attn_ext_f16<
-                        D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
-                        float, true, false, false, true, true>;
+                if constexpr (D == 64 || D == 128 || D == 256) {
+                    if (f8_native_kq && f8_native_v) {
+                        fattn_kernel = flash_attn_ext_f16<
+                            D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                            float, true, false, false, true, true>;
+                    } else if (f8_native_kq) {
+                        fattn_kernel = flash_attn_ext_f16<
+                            D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                            float, true, false, false, true, false>;
+                    } else {
+                        fattn_kernel = flash_attn_ext_f16<
+                            D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                            float, true, false, false, false, true>;
+                    }
                 } else {
+                    GGML_ASSERT(f8_native_kq && !f8_native_v);
                     fattn_kernel = flash_attn_ext_f16<
                         D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
                         float, true, false, false, true, false>;
@@ -933,10 +978,10 @@ void ggml_cuda_flash_attn_ext_wmma_f16_case(ggml_backend_cuda_context & ctx, ggm
             }
             launch_fattn<D, cols_per_block, 1>(
                 ctx, dst, fattn_kernel, nwarps, 0, FATTN_KQ_STRIDE,
-                false, !f8_native_v, false, warp_size);
+                !f8_native_kq, !f8_native_v, false, warp_size);
             return;
         } else {
-            GGML_ABORT("native FP8 routes own only D=256, cols_per_block=16");
+            GGML_ABORT("native FP8 route outside the D099 resource matrix");
         }
     }
 
@@ -1028,20 +1073,41 @@ void ggml_cuda_flash_attn_ext_wmma_f16(ggml_backend_cuda_context & ctx, ggml_ten
 
     if (ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(ctx.device, dst) ||
         ggml_cuda_flash_attn_ext_use_rdna4_f8_native_v(ctx.device, dst)) {
-        // G3a/G3b are admitted only for the Qwen D=256 shape and always use the
-        // fp32-accumulator 16-column body required by gfx12 FP8 WMMA.
+        // D099 native FP8 always uses the fp32-accumulator 16-column body.
         constexpr int cols_per_block = 16;
         trace_dispatch(cols_per_block);
-        GGML_ASSERT(Q->ne[0] == 256);
         // The full native FP8 body uses eight waves to halve each lane's VKQ
         // fragment count. Keeping this as a separate native-only instantiation
         // avoids pulling the four-wave-only q8 variants into the 256-thread
         // specialization. On gfx1201 this is spill-free (154-156 VGPR) and
         // wins both the 12K and 49K full-FP8 lanes.
-        if (ggml_cuda_flash_attn_ext_use_rdna4_f8_native_v(ctx.device, dst)) {
-            ggml_cuda_flash_attn_ext_wmma_f16_case<256, cols_per_block, float, 8, true>(ctx, dst);
-        } else {
-            ggml_cuda_flash_attn_ext_wmma_f16_case<256, cols_per_block, float>(ctx, dst);
+        if (Q->ne[0] == 256) {
+            if (ggml_cuda_flash_attn_ext_use_rdna4_f8_native_v(ctx.device, dst)) {
+                ggml_cuda_flash_attn_ext_wmma_f16_case<256, cols_per_block, float, 8, true>(ctx, dst);
+            } else {
+                ggml_cuda_flash_attn_ext_wmma_f16_case<256, cols_per_block, float>(ctx, dst);
+            }
+            return;
+        }
+
+        switch (Q->ne[0]) {
+            case 64:
+                ggml_cuda_flash_attn_ext_wmma_f16_case< 64, cols_per_block, float>(ctx, dst);
+                break;
+            case 80:
+                ggml_cuda_flash_attn_ext_wmma_f16_case< 80, cols_per_block, float>(ctx, dst);
+                break;
+            case 96:
+                ggml_cuda_flash_attn_ext_wmma_f16_case< 96, cols_per_block, float>(ctx, dst);
+                break;
+            case 112:
+                ggml_cuda_flash_attn_ext_wmma_f16_case<112, cols_per_block, float>(ctx, dst);
+                break;
+            case 128:
+                ggml_cuda_flash_attn_ext_wmma_f16_case<128, cols_per_block, float>(ctx, dst);
+                break;
+            default:
+                GGML_ABORT("native FP8 dispatch outside the D099 head-dimension matrix");
         }
         return;
     }

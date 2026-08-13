@@ -94,8 +94,15 @@ layout (binding = 2) readonly buffer V_PACKED {vec4 v_data_packed[];} v_packed;
 layout (binding = 1) readonly buffer K_PACKED16 {A_TYPE_PACKED16 k_data_packed16[];} k_packed;
 layout (binding = 2) readonly buffer V_PACKED16 {A_TYPE_PACKED16 v_data_packed16[];} v_packed;
 #elif defined(DATA_A_F8_E4M3)
+#if defined(D096_FA_F8_INLINE)
+// D096 D4.3: uint32 views of the raw f8 KV buffers; one aligned 4-byte load
+// covers 4 consecutive f8 values for the accepted inline bit conversion.
+layout (binding = 1) readonly buffer K_PACKED32 {uint k_data_packed32[];} k_packed32;
+layout (binding = 2) readonly buffer V_PACKED32 {uint v_data_packed32[];} v_packed32;
+#else
 layout (binding = 1) readonly buffer K_PACKED {A_TYPE k_data_packed[];} k_packed;
 layout (binding = 2) readonly buffer V_PACKED {A_TYPE v_data_packed[];} v_packed;
+#endif
 #endif
 
 #if defined(A_TYPE_PACKED32)
@@ -215,6 +222,57 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
 
 #if defined(DATA_A_F8_E4M3)
 #define BLOCK_BYTE_SIZE 1
+#if defined(D096_FA_F8_INLINE)
+// D096 D4.3: cheap inline f8 dequant for the scalar FA. The upstream
+// fp8_e4m3_to_f32 (branching + ldexp + divisions, ~10-12 ALU/element) and a
+// shared LUT (4 dependent LDS loads in the KQ/V loops) both lost to q8/f16
+// decode on RDNA4 (f8 19-21 tps vs q8 27.6 / f16 29.5 at 12K). This version
+// keeps the 1 aligned 4-byte load per 4 values (byte-wise loads dominated the
+// loop) and converts with pure bit ops: no ldexp, no division, no LDS, no
+// shared-memory init/barrier. Semantics match fp8_e4m3_to_f32: e=15 -> 0,
+// e=0 subnormal man*2^-9, else (1+man/8)*2^(e-7).
+float fp8_e4m3_to_f32_fast(uint8_t v) {
+    // Branchless E4M3->F32 keeps the scalar direct path free of divergent
+    // exp==15/exp==0 branches. The old ~2x decode regression was later traced
+    // to the forced native cooperative-matrix route, not this conversion.
+    const uint b     = uint(v);
+    const uint sign  = (b & 0x80u) << 24u;
+    const uint man   = b & 0x7u;
+    const uint exp   = (b >> 3u) & 0xFu;
+    const uint p     = (man >= 4u) ? 2u : ((man >= 2u) ? 1u : 0u);
+    const uint rem   = man - (1u << p);
+    const uint e32_sub  = 118u + p;                       // subnormal: man*2^-9
+    const uint m32_sub  = rem << (23u - p);
+    const uint e32_norm = exp + 120u;                     // (1+man/8)*2^(exp-7)
+    const uint m32_norm = man << 20u;
+    const uint is_e0    = (exp == 0u) ? 0xFFFFFFFFu : 0u;
+    const uint is_zero  = ((exp == 15u) || (exp == 0u && man == 0u)) ? 0xFFFFFFFFu : 0u;
+    const uint e32 = (e32_norm & ~is_e0) | (e32_sub & is_e0);
+    const uint m32 = (m32_norm & ~is_e0) | (m32_sub & is_e0);
+    return uintBitsToFloat((sign | (e32 << 23u) | m32) & ~is_zero);
+}
+
+FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
+    if (binding_idx == BINDING_IDX_K) {
+        // a_offset is a byte offset (BLOCK_BYTE_SIZE==1); ib is a multiple of
+        // 4 in every call site, so one aligned 4-byte load covers 4 f8 values.
+        // D4.3 audit (2026-08-13): the 13.39/13.46 tps load-width probes had
+        // inherited GGML_VK_FA_F8_NATIVE_DECODE, so they did not exercise this
+        // scalar code. Clean scalar f8 measured 25.45 tps at the 49K lane.
+        const uint bits = k_packed32.k_data_packed32[a_offset / 4 + ib];
+        return FLOAT_TYPEV4(fp8_e4m3_to_f32_fast(uint8_t((bits >>  0) & 0xFFu)),
+                            fp8_e4m3_to_f32_fast(uint8_t((bits >>  8) & 0xFFu)),
+                            fp8_e4m3_to_f32_fast(uint8_t((bits >> 16) & 0xFFu)),
+                            fp8_e4m3_to_f32_fast(uint8_t((bits >> 24) & 0xFFu)));
+    } else {
+        const uint bits = v_packed32.v_data_packed32[a_offset / 4 + ib];
+        return FLOAT_TYPEV4(fp8_e4m3_to_f32_fast(uint8_t((bits >>  0) & 0xFFu)),
+                            fp8_e4m3_to_f32_fast(uint8_t((bits >>  8) & 0xFFu)),
+                            fp8_e4m3_to_f32_fast(uint8_t((bits >> 16) & 0xFFu)),
+                            fp8_e4m3_to_f32_fast(uint8_t((bits >> 24) & 0xFFu)));
+    }
+}
+#else
 FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
     if (binding_idx == BINDING_IDX_K) {
         return FLOAT_TYPEV4(fp8_e4m3_to_f32(k_packed.k_data_packed[a_offset + ib    ].v),
@@ -228,6 +286,7 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
                             fp8_e4m3_to_f32(v_packed.v_data_packed[a_offset + ib + 3].v));
     }
 }
+#endif
 #endif
 
 #if defined(DATA_A_IQ4_NL)

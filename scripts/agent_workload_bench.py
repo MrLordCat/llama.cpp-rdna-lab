@@ -86,6 +86,24 @@ VULKAN_Q3_STATS_ENV = {
     "GGML_VK_PIPELINE_STATS": "matmul_q3_k",
 }
 
+BENCHMARK_ENV_PREFIXES = ("GGML_", "LLAMA_", "HSA_", "ROCBLAS_", "HIPBLASLT_")
+SENSITIVE_ENV_FRAGMENTS = (
+    "KEY", "TOKEN", "SECRET", "PASSWORD", "ENDPOINT", "ACCOUNT",
+    "URL", "URI", "HOST", "USER", "ORG", "PROJECT",
+)
+
+
+def collect_active_benchmark_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Return inherited performance knobs without exposing credentials."""
+    source = os.environ if env is None else env
+    active: dict[str, str] = {}
+    for key in sorted(source):
+        value = source[key]
+        if not value or not key.startswith(BENCHMARK_ENV_PREFIXES):
+            continue
+        active[key] = "<redacted>" if any(fragment in key.upper() for fragment in SENSITIVE_ENV_FRAGMENTS) else value
+    return active
+
 
 def install_graceful_stop_handlers() -> None:
     """Turn console stop events into stack unwinding so server cleanup runs."""
@@ -796,6 +814,10 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[str]:
 
     env = rocm_env()
     apply_trace_preset(env, args.trace_preset)
+    active_benchmark_env = collect_active_benchmark_env(env)
+    args.active_benchmark_env = active_benchmark_env
+    if active_benchmark_env:
+        print("Active benchmark environment:", json.dumps(active_benchmark_env, sort_keys=True))
 
     # Known issue: on some ROCm/Windows paths, forcing RDNA4 graph-opt can hang.
     # Current backend guard disables RDNA4 graph-opt by default. Treat only explicit
@@ -1307,6 +1329,7 @@ def write_diagnostics_report(
     server_diag = parse_server_log_diagnostics(server_log)
     hints = build_bottleneck_hints(rows, server_diag)
     aggregate_tps = aggregate_completion_tps(rows)
+    active_benchmark_env = getattr(args, "active_benchmark_env", collect_active_benchmark_env())
 
     payload: dict[str, Any] = {
         "label": label,
@@ -1324,6 +1347,7 @@ def write_diagnostics_report(
             "ubatch_split_policy": os.environ.get("LLAMA_UBATCH_SPLIT_POLICY", ""),
             "ubatch_shape_preferred": os.environ.get("LLAMA_UBATCH_SHAPE_PREFERRED", ""),
             "ubatch_shape_min_tail": os.environ.get("LLAMA_UBATCH_SHAPE_MIN_TAIL", ""),
+            "active_benchmark_env": active_benchmark_env,
             "tasks": args.tasks,
             "runs": args.runs,
         },
@@ -1349,6 +1373,7 @@ def write_diagnostics_report(
         f"- spec_mode: {infer_spec_mode(args.server_extra)}",
         f"- no_reuse: {args.no_reuse}",
         f"- server_extra: {args.server_extra or '-'}",
+        f"- active_benchmark_env: {json.dumps(active_benchmark_env, sort_keys=True) if active_benchmark_env else '-'}",
     ]
 
     split_policy = os.environ.get("LLAMA_UBATCH_SPLIT_POLICY", "")

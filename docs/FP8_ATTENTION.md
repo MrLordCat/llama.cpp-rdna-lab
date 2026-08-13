@@ -1,6 +1,7 @@
 # FP8 E4M3: KV cache, attention paths and defaults
 
-Актуальное состояние локальной реализации fp8 (D095/D096, 2026-08-10).
+Актуальное состояние локальной реализации fp8 (D095/D096/D098/D099,
+2026-08-13).
 Это сводный документ «как реализовано сейчас»; историю версий см. в
 `docs/research/D096_VERSIONS.md`, результаты — в `docs/research/RESULTS_LOG.md`,
 план — в `docs/research/D096_ROADMAP.md`.
@@ -37,6 +38,21 @@ fp8 в этом форке состоит из двух независимых �
 Диагностика A/B native vs fallback внутри процесса:
 `GGML_VK_FA_HALF_CMP=N` (первые N prefill-вызовов native, далее через запрос
 по чётности) — для попарного сравнения outdump-файлов.
+
+### ROCm/HIP
+
+На RDNA4 native KQ принимает F8 K для D=64/80/96/112/128/256. Native P*V
+принимает F8 V для D=64/128/256; D80/D96/D112 используют native KQ и
+portable V-to-f16, потому что штатный four-wave V merge имеет несколько
+accumulator groups. D256 сохраняет отдельный spill-free eight-wave body.
+
+Все остальные поддержанные HIP FA shapes, старые AMD targets, unaligned KV и
+one-sided mixed F8/F16 или F8/quant K/V используют device-resident
+F8-to-f16 fallback. Точный K/V alias остаётся raw только при двух native
+фазах; rollback конвертирует общий источник один раз. Полный rollback:
+`GGML_ROCM_FATTN_F8_NATIVE_KQ=0`; V-bisect:
+`GGML_ROCM_FATTN_F8_NATIVE_V=0`; forced portable reference:
+`GGML_ROCM_FATTN_F8_REFERENCE=1`.
 
 ## 3. Квантование KV в f8: битовый энкодер (D096-L)
 

@@ -387,6 +387,21 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
     const int cc = ggml_cuda_info().devices[device].cc;
 
+#if defined(GGML_USE_HIP)
+    const bool rocm_f8_kv = K->type == GGML_TYPE_F8_E4M3 || V->type == GGML_TYPE_F8_E4M3;
+    const auto f16_convertible = [](const ggml_type type) {
+        return type == GGML_TYPE_F16 || ggml_get_to_fp16_cuda(type) != nullptr;
+    };
+    const bool rocm_f8_types_supported = rocm_f8_kv &&
+        f16_convertible(K->type) && f16_convertible(V->type);
+    if (rocm_f8_kv && !rocm_f8_types_supported) {
+        return BEST_FATTN_KERNEL_NONE;
+    }
+#else
+    constexpr bool rocm_f8_kv = false;
+    constexpr bool rocm_f8_types_supported = false;
+#endif
+
     switch (K->ne[0]) {
         case  40:
         case  64:
@@ -429,68 +444,64 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     }
 
 #ifndef GGML_CUDA_FA_ALL_QUANTS
-    if (K->type != V->type) {
+    if (K->type != V->type && !rocm_f8_types_supported) {
         return BEST_FATTN_KERNEL_NONE;
     }
 #endif // GGML_CUDA_FA_ALL_QUANTS
 
-    switch (K->type) {
-        case GGML_TYPE_F32:
-        case GGML_TYPE_F16:
-            break;
-        case GGML_TYPE_Q4_1:
-        case GGML_TYPE_Q5_0:
-        case GGML_TYPE_Q5_1:
+    if (!rocm_f8_kv) {
+        switch (K->type) {
+            case GGML_TYPE_F32:
+            case GGML_TYPE_F16:
+                break;
+            case GGML_TYPE_Q4_1:
+            case GGML_TYPE_Q5_0:
+            case GGML_TYPE_Q5_1:
 #ifndef GGML_CUDA_FA_ALL_QUANTS
-            return BEST_FATTN_KERNEL_NONE;
-#endif // GGML_CUDA_FA_ALL_QUANTS
-        case GGML_TYPE_Q4_0:
-        case GGML_TYPE_Q8_0:
-        case GGML_TYPE_BF16:
-            break;
-#if defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
-        case GGML_TYPE_F8_E4M3: {
-            // D098 G2-G5: RDNA4 uses the validated native gfx12 FP8 KQ+V body
-            // by default. G2 remains an explicit reference route that converts
-            // K/V to f16; setting the native KQ/V variables to 0 provides the
-            // rollback and phase-bisect paths.
-            const bool reference_enabled = std::getenv("GGML_ROCM_FATTN_F8_REFERENCE") != nullptr;
-            const bool native_kq_enabled = ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(device, dst);
-            const bool native_v_enabled  = ggml_cuda_flash_attn_ext_use_rdna4_f8_native_v(device, dst);
-            if (std::getenv("GGML_TRACE_FATTN_PATH") != nullptr) {
-                GGML_LOG_INFO(
-                    "%s: D098 F8 cc=%d rdna4=%d reference=%d native_kq=%d native_v=%d K=[%lld,%lld,%lld,%lld] Q=[%lld,%lld,%lld,%lld]\n",
-                    __func__, cc, GGML_CUDA_CC_IS_RDNA4(cc) ? 1 : 0,
-                    reference_enabled ? 1 : 0, native_kq_enabled ? 1 : 0, native_v_enabled ? 1 : 0,
-                    (long long) K->ne[0], (long long) K->ne[1], (long long) K->ne[2], (long long) K->ne[3],
-                    (long long) Q->ne[0], (long long) Q->ne[1], (long long) Q->ne[2], (long long) Q->ne[3]);
-            }
-            if (!GGML_CUDA_CC_IS_RDNA4(cc) || (!reference_enabled && !native_kq_enabled && !native_v_enabled)) {
                 return BEST_FATTN_KERNEL_NONE;
-            }
-            break;
+#endif // GGML_CUDA_FA_ALL_QUANTS
+            case GGML_TYPE_Q4_0:
+            case GGML_TYPE_Q8_0:
+            case GGML_TYPE_BF16:
+                break;
+            default:
+                return BEST_FATTN_KERNEL_NONE;
         }
-#endif // defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
-        default:
-            return BEST_FATTN_KERNEL_NONE;
     }
 
     if (mask && mask->ne[2] != 1) {
         return BEST_FATTN_KERNEL_NONE;
     }
 
-#if defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
-    if (K->type == GGML_TYPE_F8_E4M3) {
-        // The reference path intentionally avoids the vector/tile selectors,
-        // whose template dispatch does not yet own an F8 type. The WMMA body
-        // receives f16 buffers from launch_fattn's existing conversion path.
-        if (K->ne[1] % FATTN_KQ_STRIDE != 0 || Q->ne[0] == 40 || Q->ne[0] == 72 ||
-            Q->ne[0] == 512 || Q->ne[0] == 576) {
-            return BEST_FATTN_KERNEL_NONE;
+#if defined(GGML_USE_HIP)
+    if (rocm_f8_kv) {
+        const bool reference_enabled = std::getenv("GGML_ROCM_FATTN_F8_REFERENCE") != nullptr;
+        const bool native_kq_enabled = ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(device, dst);
+        const bool native_v_enabled  = ggml_cuda_flash_attn_ext_use_rdna4_f8_native_v(device, dst);
+        if (std::getenv("GGML_TRACE_FATTN_PATH") != nullptr) {
+            GGML_LOG_INFO(
+                "%s: D099 F8 cc=%d rdna4=%d reference=%d native_kq=%d native_v=%d "
+                "K_type=%s V_type=%s K=[%lld,%lld,%lld,%lld] Q=[%lld,%lld,%lld,%lld]\n",
+                __func__, cc, GGML_CUDA_CC_IS_RDNA4(cc) ? 1 : 0,
+                reference_enabled ? 1 : 0, native_kq_enabled ? 1 : 0, native_v_enabled ? 1 : 0,
+                ggml_type_name(K->type), ggml_type_name(V->type),
+                (long long) K->ne[0], (long long) K->ne[1], (long long) K->ne[2], (long long) K->ne[3],
+                (long long) Q->ne[0], (long long) Q->ne[1], (long long) Q->ne[2], (long long) Q->ne[3]);
         }
-        return BEST_FATTN_KERNEL_WMMA_F16;
+
+        const bool wmma_shape = Q->ne[0] == 64 || Q->ne[0] == 80 || Q->ne[0] == 96 ||
+            Q->ne[0] == 112 || Q->ne[0] == 128 || Q->ne[0] == 256;
+        if (native_kq_enabled || native_v_enabled ||
+            (ggml_cuda_should_use_wmma_fattn(cc) && wmma_shape &&
+             K->ne[1] % FATTN_KQ_STRIDE == 0)) {
+            return BEST_FATTN_KERNEL_WMMA_F16;
+        }
+
+        // Unsupported native shapes and older AMD architectures use the
+        // existing tile kernel after portable K/V-to-f16 conversion.
+        return BEST_FATTN_KERNEL_TILE;
     }
-#endif // defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
+#endif // defined(GGML_USE_HIP)
 
     // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes:
     const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && K->ne[1] % FATTN_KQ_STRIDE == 0;
