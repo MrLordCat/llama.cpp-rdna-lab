@@ -643,7 +643,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.kv_combo.addItems(["q8_0", "q4_0", "f16", "bf16", "f32", "f8_e4m3"])
         self.kv_combo.setCurrentText("q8_0")
         self.kv_combo.setToolTip(
-            "q8_0 is the primary Q4 baseline. f8_e4m3 uses native Vulkan P5 and\n"
+            "q8_0 is the primary Q4 baseline. f8_e4m3 uses native Vulkan P5 or ROCm RDNA4 FP8 and\n"
             "is faster for prompt evaluation, but raw E4M3 is less precise than\n"
             "block-scaled q8_0; MTP automatically uses N8/N12 f16 tail layers."
         )
@@ -867,7 +867,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         for kv_name, enabled, hint in [
             ("q8_0", True, "Primary Q4_K_M KV baseline"),
             ("q4_0", False, "Legacy Q3/extra-headroom KV lane"),
-            ("f8_e4m3", False, "Native Vulkan P5: faster prompt path; lower raw precision than block-scaled q8_0, needs FA"),
+            ("f8_e4m3", False, "Native Vulkan P5 / ROCm RDNA4 FP8: faster prompt path; lower raw precision than block-scaled q8_0, needs FA"),
             ("f16", False, "FP16 KV (usually slower/heavier)"),
             ("bf16", False, "BF16 KV (usually slower/heavier)"),
             ("f32", False, "FP32 KV (debug/reference only)"),

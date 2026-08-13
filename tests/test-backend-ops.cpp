@@ -7053,7 +7053,7 @@ struct test_flash_attn_ext_f8_native_kq : public test_flash_attn_ext {
 
     void select_dispatch_env() override {
         test_set_env("GGML_ROCM_FATTN_F8_NATIVE_KQ", "1");
-        test_set_env("GGML_ROCM_FATTN_F8_NATIVE_V", nullptr);
+        test_set_env("GGML_ROCM_FATTN_F8_NATIVE_V", "0");
         test_set_env("GGML_ROCM_FATTN_F8_REFERENCE", nullptr);
     }
 };
@@ -7071,8 +7071,8 @@ struct test_flash_attn_ext_f8_reference : public test_flash_attn_ext {
 
     void select_dispatch_env() override {
         test_set_env("GGML_ROCM_FATTN_F8_REFERENCE", "1");
-        test_set_env("GGML_ROCM_FATTN_F8_NATIVE_KQ", nullptr);
-        test_set_env("GGML_ROCM_FATTN_F8_NATIVE_V", nullptr);
+        test_set_env("GGML_ROCM_FATTN_F8_NATIVE_KQ", "0");
+        test_set_env("GGML_ROCM_FATTN_F8_NATIVE_V", "0");
     }
 };
 

@@ -127,7 +127,7 @@ materially change the numbers below.
 
 ## Current Performance
 
-Snapshot date: **2026-08-11**.
+Snapshot date: **2026-08-13**.
 
 The fixed headline tables below retain their original model-scoped contracts.
 Q3_K_S rows are historical/secondary evidence; the current primary Q4_K_M
@@ -168,6 +168,30 @@ while improving prompt by `+6.20%` and aggregate TPS by `+5.27%`. The cost is
 (`1465.98/32.40/2.9494`, 51.61%) remains only in the D097 diagnosis record.
 Full methodology, memory rows, corrected historical KV labels, and artifacts are in
 [Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md).
+
+### Q4_K_M ROCm q8 vs native FP8
+
+D098 adds byte-compatible HIP E4M3 cache conversion and a guarded native
+gfx1201 `fp8 x fp8 -> fp32` FlashAttention body. The selected eight-wave body
+uses `154-156 VGPR`, `29568 B` LDS and no spills/scratch. Focused reference,
+KQ-only and full-native prefill/decode tests pass `6/6`.
+
+| Context | KV | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 49,152 | q8_0 center | none | 30,187 / 256 | 1686.75 | 21.83 | 8.62 | - |
+| 49,152 | **f8_e4m3 native** | none | 30,187 / 256 | **1769.37** | **22.97** | **9.05** | - |
+| 49,152 | q8_0 + last8 f16 center | MTP n2 | 30,187 / 128 | 1672.03 | 37.96 | 5.95 | 77.78% |
+| 49,152 | **f8_e4m3 native + last8 f16** | MTP n2 | 30,187 / 128 | **1751.58** | **41.98** | **6.29** | **83.16%** |
+| 98,304 | q8_0 + last8 f16 center | MTP n2 | 57,893 / 128 | 1443.54 | 33.50 | 2.905 | 79.59% |
+| 98,304 | **f8_e4m3 native + last12 f16** | MTP n2 | 57,893 / 128 | **1482.86** | **35.82** | **2.99** | **81.25%** |
+
+The 49K same-binary spec-none bracket gives full FP8 `+4.9%` prompt,
+`+5.2%` decode and `+5.0%` aggregate versus q8. MTP also passes quality:
+49K gains `+5.38 pp` acceptance and 98K gains `+1.66 pp`, with stable D091
+`ROCm1,ROCm0` placement. The guarded RDNA4 D=256 F8/F8 route is enabled by
+default; set `GGML_ROCM_FATTN_F8_NATIVE_KQ=0` for complete rollback or
+`GGML_ROCM_FATTN_F8_NATIVE_V=0` for KQ-only diagnosis. Details and artifacts:
+[D098](docs/research/major-topology/D098_Q4KM_ROCM_FP8_KICKOFF.md).
 
 ### Qwen3.6-35B-A3B Q4_K_M Vulkan q8 vs native FP8
 

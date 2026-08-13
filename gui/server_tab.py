@@ -303,7 +303,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             "f16: default half-precision\n"
             "bf16: bfloat16 reference/high-precision option\n"
             "q8_0/q5_x/q4_x/iq4_nl: quantized KV cache.\n"
-            "f8_e4m3: native Vulkan P5 path; raw payload is ~6% smaller than q8_0\n"
+            "f8_e4m3: native Vulkan P5 or ROCm RDNA4 full-FP8 path; raw payload is ~6% smaller than q8_0\n"
             "and 2x smaller than f16, but E4M3 is less accurate than block-scaled q8_0.\n"
             "Requires Flash Attention; MTP automatically uses an f16 tail (N8, or N12 at 98K+)."
         )
@@ -817,11 +817,14 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         if kv_type == "f8_e4m3":
             selected_backend = self.server_build_backend_combo.currentText().strip().lower()
             if selected_backend == "auto":
-                is_vulkan_build = "vulkan" in build_dir.name.lower()
+                build_backend = next(
+                    (name for name in ("vulkan", "rocm") if name in build_dir.name.lower()),
+                    "",
+                )
             else:
-                is_vulkan_build = self.backend_panels.current_backend() == "vulkan"
-            if not is_vulkan_build:
-                problems.append("f8_e4m3 KV requires a Vulkan build")
+                build_backend = self.backend_panels.current_backend()
+            if build_backend not in {"vulkan", "rocm"}:
+                problems.append("f8_e4m3 KV requires a Vulkan or ROCm build")
             flash_attn_effective = (
                 extra_flash_attn == "on" or
                 (extra_flash_attn is None and self.server_flash_attn_check.isChecked())
@@ -1169,7 +1172,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.backend_panels.apply_model_recommendation(model_name, self.server_context_spinbox.value())
 
     def _on_kv_type_changed(self, kv_type: str) -> None:
-        # FP8 E4M3 KV is only supported with Flash Attention enabled.
+        # Native Vulkan/ROCm FP8 E4M3 KV requires Flash Attention.
         if kv_type == "f8_e4m3":
             self.server_flash_attn_check.setChecked(True)
 
@@ -1186,7 +1189,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         if kv_type == "f8_e4m3" and hybrid_n == 12:
             detail = "D097 long-context quality policy; 5376 MiB main KV at ctx=98K"
         elif kv_type == "f8_e4m3":
-            detail = "native P5 prompt path with the measured short/49K hybrid tail"
+            detail = "native Vulkan/ROCm FP8 path with the measured short/49K hybrid tail"
         else:
             detail = "block-scaled q8_0 with the measured hybrid tail"
         self.server_kv_policy_label.setText(

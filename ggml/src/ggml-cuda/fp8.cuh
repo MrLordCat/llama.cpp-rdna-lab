@@ -38,6 +38,20 @@ static __device__ __forceinline__ uint8_t ggml_cuda_fp32_to_f8_e4m3(float f) {
     return (uint8_t) (sign | (exp_field << 3) | man);
 }
 
+// D098 G4: the native FP8 V leg quantizes softmax P after multiplying it by
+// 128. P is finite, non-negative and no larger than 128, so gfx12 OCP E4M3
+// cannot enter the exponent-15 range that differs from the repository's KV
+// storage contract. Convert two values with one packed hardware instruction;
+// keep the portable storage converter above for all persistent cache writes.
+static __device__ __forceinline__ uint16_t ggml_cuda_fp32x2_to_f8_e4m3_p(float2 f) {
+#if defined(RDNA4) && defined(FP8_AVAILABLE) && HIP_VERSION >= 60500000
+    return (uint16_t) __hip_cvt_float2_to_fp8x2(f, __HIP_SATFINITE, __HIP_E4M3);
+#else
+    return (uint16_t) ggml_cuda_fp32_to_f8_e4m3(f.x) |
+           (uint16_t) ggml_cuda_fp32_to_f8_e4m3(f.y) << 8;
+#endif
+}
+
 static __device__ __forceinline__ float ggml_cuda_f8_e4m3_to_fp32(uint8_t v) {
     // Exponent 15 is reserved by the repository format even though OCP E4M3
     // assigns finite values to most of this range.

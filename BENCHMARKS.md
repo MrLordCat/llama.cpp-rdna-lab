@@ -1,5 +1,25 @@
 # Benchmarks
 
+## D098 ROCm Native Full FP8 (2026-08-13)
+
+The guarded gfx1201 D=256 F8/F8 FlashAttention route is now native and enabled
+by default on ROCm. Serializing the packed-P conversion and VKQ merge removed
+`196` VGPR spills plus `788 B/thread` scratch; the selected eight-wave body
+uses `154-156 VGPR`, zero spills/scratch and `29568 B` LDS. Focused reference,
+native-KQ and native-KQ+V prefill/decode pass `6/6`.
+
+On the final same-binary 49K spec-none q8/FP8/q8 bracket, q8 centered at
+`1686.75/21.83/8.62` prompt/decode/aggregate and FP8 reached
+`1769.37/22.97/9.05`: `+4.9%/+5.2%/+5.0%`. MTP n2 also passed acceptance:
+49K FP8 reached `1751.58/41.98/6.29`, `83.16%` versus q8-center
+`1672.03/37.96/5.95`, `77.78%`; 98K FP8 last12 reached
+`1482.86/35.82/2.99`, `81.25%` versus q8-center `1443.54/33.50/2.905`,
+`79.59%`. D091 device order and placement stayed stable.
+
+Rollback: `GGML_ROCM_FATTN_F8_NATIVE_KQ=0`; KQ-only bisect:
+`GGML_ROCM_FATTN_F8_NATIVE_V=0`. Full evidence is in
+[D098](docs/research/major-topology/D098_Q4KM_ROCM_FP8_KICKOFF.md).
+
 ## D097 Vulkan FP8 98K Acceptance Recovery (2026-08-11)
 
 The long-run FP8 acceptance loss was a precision-policy problem, not a P5

@@ -43,13 +43,19 @@ This fork carries a local fp8 implementation layered on the supported
 backends. See `FP8_ATTENTION.md` for the full description; the essentials:
 
 - **KV cache type `f8_e4m3`** (`--cache-type-k f8_e4m3 --cache-type-v f8_e4m3`)
-  with a bit-level Vulkan encoder (`types.glsl` `f32_to_fp8_e4m3`).
+  with a bit-level Vulkan encoder (`types.glsl` `f32_to_fp8_e4m3`) and
+  byte-compatible HIP conversion on ROCm.
 - **Native fp8 attention paths** P2–P5 (Vulkan coopmat), selected by env
   (`GGML_VK_FA_F8_P5` is the default for Vulkan in this fork; the kernel
   ignores it for non-f8 KV). Plain f16-preconvert remains the fallback.
+- **Native ROCm RDNA4 full fp8 attention** consumes F8 K/V with gfx12 WMMA.
+  The guarded D=256 F8/F8 route is the backend default after D098 G1-G5;
+  set `GGML_ROCM_FATTN_F8_NATIVE_KQ=0` for full rollback or
+  `GGML_ROCM_FATTN_F8_NATIVE_V=0` for the KQ-only bisect.
 - **Hybrid KV cache**: `LLAMA_VK_MTP_KV_LAST_F16=N` keeps the last N KV
   layers in f16 under MTP + f8 KV. Default N=8 is set automatically by
   `common.cpp` when MTP and f8 KV are requested without an explicit env.
-- P5/hybrid are local performance work; when importing upstream Vulkan
-  changes, keep the `GGML_VK_FA_F8_*`/`LLAMA_VK_MTP_KV_LAST_F16` gates and
-  the `f32_to_fp8_e4m3` encoder intact (fail-closed paths).
+- P5/native ROCm/hybrid are local performance work; when importing upstream
+  GPU changes, keep the `GGML_VK_FA_F8_*`, `GGML_ROCM_FATTN_F8_NATIVE_*` and
+  `LLAMA_VK_MTP_KV_LAST_F16` rollback contracts plus both byte-compatible
+  encoders intact.

@@ -274,7 +274,9 @@ static __global__ void flash_attn_ext_f16(
             }
 #pragma unroll
             for (int j0 = 0; j0 < ncols; j0 += frag_n) {
-                wmma::store_matrix_sync((KQ_acc_t *) KQ + j0*kqs_padded + i_KQ_0 + frag_m*threadIdx.y, KQ_c[j0/frag_n], kqs_padded, wmma::mem_col_major);
+                wmma::store_matrix_sync(
+                    (KQ_acc_t *) KQ + j0*kqs_padded + i_KQ_0 + frag_m*threadIdx.y,
+                    KQ_c[j0/frag_n], kqs_padded, wmma::mem_col_major);
             }
         }
 
@@ -322,25 +324,37 @@ static __global__ void flash_attn_ext_f16(
                 KQ_max_f[j0/nwarps] = KQ_max_new;
 
                 float KQ_rowsum_add = 0.0f;
-#pragma unroll
-                for (int k0 = 0; k0 < FATTN_KQ_STRIDE; k0 += warp_size) {
-                    const int k = k0 + threadIdx.x;
-
-                    const float diff = KQ_f_tmp[k0/warp_size] - KQ_max_f[j0/nwarps];
-                    KQ_f_tmp[k0/warp_size] = expf(diff);
-                    if (diff <= SOFTMAX_FTZ_THRESHOLD) {
-                        KQ_f_tmp[k0/warp_size] = 0.0f;
+                if constexpr (native_f8_v) {
+                    // D098 G4: P is pre-scaled into [0, 128], where gfx12 OCP
+                    // E4M3 bytes match the persistent cache contract. Pack two
+                    // lanes per native conversion instead of running the
+                    // scalar software encoder for every softmax value.
+                    static_assert(FATTN_KQ_STRIDE % (2*warp_size) == 0,
+                        "packed P conversion requires an even number of warp slices");
+                    constexpr float p_f8_scale = 128.0f;
+#pragma unroll 1
+                    for (int k0 = 0; k0 < FATTN_KQ_STRIDE; k0 += 2*warp_size) {
+                        const int k = k0 + threadIdx.x;
+                        const float diff0 = KQ_f_tmp[k0/warp_size] - KQ_max_f[j0/nwarps];
+                        const float diff1 = KQ_f_tmp[k0/warp_size + 1] - KQ_max_f[j0/nwarps];
+                        float p0 = diff0 > SOFTMAX_FTZ_THRESHOLD ? expf(diff0) : 0.0f;
+                        float p1 = diff1 > SOFTMAX_FTZ_THRESHOLD ? expf(diff1) : 0.0f;
+                        KQ_rowsum_add += p0 + p1;
+                        const uint16_t packed = ggml_cuda_fp32x2_to_f8_e4m3_p(
+                            make_float2(p0*p_f8_scale, p1*p_f8_scale));
+                        P_f8[j*kqs_padded + k] = (uint8_t) packed;
+                        P_f8[j*kqs_padded + k + warp_size] = (uint8_t) (packed >> 8);
                     }
-                    KQ_rowsum_add += KQ_f_tmp[k0/warp_size];
-                    if constexpr (native_f8_v) {
-                        // D098 G3b: write the E4M3 P directly (the fp8 x fp8
-                        // P*V MMA consumes P_f8; the f16 P tile is not needed
-                        // on this route). Pre-scale by 128 keeps softmax
-                        // values out of the E4M3 subnormal range; the VKQ
-                        // merge compensates.
-                        constexpr float p_f8_scale = 128.0f;
-                        P_f8[j*kqs_padded + k] = ggml_cuda_fp32_to_f8_e4m3(KQ_f_tmp[k0/warp_size]*p_f8_scale);
-                    } else {
+                } else {
+#pragma unroll
+                    for (int k0 = 0; k0 < FATTN_KQ_STRIDE; k0 += warp_size) {
+                        const int k = k0 + threadIdx.x;
+                        const float diff = KQ_f_tmp[k0/warp_size] - KQ_max_f[j0/nwarps];
+                        KQ_f_tmp[k0/warp_size] = expf(diff);
+                        if (diff <= SOFTMAX_FTZ_THRESHOLD) {
+                            KQ_f_tmp[k0/warp_size] = 0.0f;
+                        }
+                        KQ_rowsum_add += KQ_f_tmp[k0/warp_size];
                         KQ[j*(kqar*kqs_padded) + k] = KQ_f_tmp[k0/warp_size];
                     }
                 }
@@ -519,37 +533,43 @@ static __global__ void flash_attn_ext_f16(
 
         __syncthreads();
 
-#pragma unroll
-        for (int j0 = 0; j0 < ncols; j0 += nwarps) {
-            const int j = j0 + threadIdx.y;
-
-            half2 VKQ_scale;
-            if (std::is_same<KQ_acc_t, float>::value) {
-                VKQ_scale = make_half2(KQ_max_scale_f[j0/nwarps], KQ_max_scale_f[j0/nwarps]);
-            } else {
-                VKQ_scale = KQ_max_scale_h2[j0/nwarps];
-            }
-
-#pragma unroll
-            for (int i0 = 0; i0 < D/2; i0 += warp_size) {
-                const int i = i0 + threadIdx.x;
-                if (i0 + warp_size > D/2 && i >= D/2) {
-                    break;
+        if constexpr (native_f8_v) {
+            static_assert(VKQ_ratio == 1, "native FP8 V merge expects one accumulator group");
+#pragma unroll 1
+            for (int j0 = 0; j0 < ncols; j0 += nwarps) {
+                const int j = j0 + threadIdx.y;
+                const half2 VKQ_scale =
+                    make_half2(KQ_max_scale_f[j0/nwarps], KQ_max_scale_f[j0/nwarps]);
+#pragma unroll 1
+                for (int i0 = 0; i0 < D/2; i0 += warp_size) {
+                    const int i = i0 + threadIdx.x;
+                    const float add0 = VKQ_parts_f[j*D_padded + 2*i]/128.0f;
+                    const float add1 = VKQ_parts_f[j*D_padded + 2*i + 1]/128.0f;
+                    VKQ2[j*(D_padded/2) + i] =
+                        VKQ_scale*VKQ2[j*(D_padded/2) + i] + make_half2(add0, add1);
                 }
-
-                half2 VKQ_add = make_half2(0.0f, 0.0f);
+            }
+        } else {
 #pragma unroll
-                for (int l = 0; l < VKQ_ratio; ++l) {
-                    if constexpr (native_f8_v) {
-                        // Compensate the P pre-scale applied before E4M3.
-                        const float add0 = VKQ_parts_f[l*(ncols*D_padded) + j*D_padded + 2*i]/128.0f;
-                        const float add1 = VKQ_parts_f[l*(ncols*D_padded) + j*D_padded + 2*i + 1]/128.0f;
-                        VKQ_add += make_half2(add0, add1);
-                    } else {
+            for (int j0 = 0; j0 < ncols; j0 += nwarps) {
+                const int j = j0 + threadIdx.y;
+                const half2 VKQ_scale = std::is_same<KQ_acc_t, float>::value ?
+                    make_half2(KQ_max_scale_f[j0/nwarps], KQ_max_scale_f[j0/nwarps]) :
+                    KQ_max_scale_h2[j0/nwarps];
+#pragma unroll
+                for (int i0 = 0; i0 < D/2; i0 += warp_size) {
+                    const int i = i0 + threadIdx.x;
+                    if (i0 + warp_size > D/2 && i >= D/2) {
+                        break;
+                    }
+                    half2 VKQ_add = make_half2(0.0f, 0.0f);
+#pragma unroll
+                    for (int l = 0; l < VKQ_ratio; ++l) {
                         VKQ_add += KQ2[l*(ncols*D_padded/2) + j*(D_padded/2) + i];
                     }
+                    VKQ2[j*(D_padded/2) + i] =
+                        VKQ_scale*VKQ2[j*(D_padded/2) + i] + VKQ_add;
                 }
-                VKQ2[j*(D_padded/2) + i] = VKQ_scale*VKQ2[j*(D_padded/2) + i] + VKQ_add;
             }
         }
 
@@ -850,11 +870,9 @@ static void launch_fattn_chunked_q8_wmma(
     }
 }
 
-template <int D, int cols_per_block, typename KQ_acc_t>
+template <int D, int cols_per_block, typename KQ_acc_t, int nwarps = 4, bool f8_native_only = false>
 void ggml_cuda_flash_attn_ext_wmma_f16_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * KQV = dst;
-
-    constexpr int nwarps = 4;
 
     constexpr int frag_m = cols_per_block == 8 && D % 32 == 0 ? 32 : 16;
     const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
@@ -866,6 +884,26 @@ void ggml_cuda_flash_attn_ext_wmma_f16_case(ggml_backend_cuda_context & ctx, ggm
     const bool f8_native_kq = ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(ctx.device, dst);
     const bool f8_native_v  = ggml_cuda_flash_attn_ext_use_rdna4_f8_native_v(ctx.device, dst);
 
+    if constexpr (f8_native_only) {
+        static_assert(D == 256 && cols_per_block == 16 && nwarps == 8,
+            "the experimental native-only body owns the D=256/cols16/warps8 shape");
+        fattn_kernel_t f8_kernel;
+        if (logit_softcap == 0.0f) {
+            f8_kernel = flash_attn_ext_f16<
+                D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                float, false, false, false, true, true>;
+        } else {
+            f8_kernel = flash_attn_ext_f16<
+                D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                float, true, false, false, true, true>;
+        }
+        launch_fattn<D, cols_per_block, 1>(
+            ctx, dst, f8_kernel, nwarps, 0, FATTN_KQ_STRIDE,
+            false, false, false, warp_size);
+        return;
+    }
+
+    if constexpr (!f8_native_only) {
     fattn_kernel_t fattn_kernel;
     if (f8_native_kq) {
         // The gfx12 FP8 body is owned only by the Qwen D=256/16-column shape;
@@ -954,6 +992,7 @@ void ggml_cuda_flash_attn_ext_wmma_f16_case(ggml_backend_cuda_context & ctx, ggm
     launch_fattn<D, cols_per_block, 1>(
         ctx, dst, fattn_kernel, nwarps, 0, FATTN_KQ_STRIDE,
         true, !q8_v_direct, false, warp_size);
+    }
 }
 
 void ggml_cuda_flash_attn_ext_wmma_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
@@ -994,7 +1033,16 @@ void ggml_cuda_flash_attn_ext_wmma_f16(ggml_backend_cuda_context & ctx, ggml_ten
         constexpr int cols_per_block = 16;
         trace_dispatch(cols_per_block);
         GGML_ASSERT(Q->ne[0] == 256);
-        ggml_cuda_flash_attn_ext_wmma_f16_case<256, cols_per_block, float>(ctx, dst);
+        // The full native FP8 body uses eight waves to halve each lane's VKQ
+        // fragment count. Keeping this as a separate native-only instantiation
+        // avoids pulling the four-wave-only q8 variants into the 256-thread
+        // specialization. On gfx1201 this is spill-free (154-156 VGPR) and
+        // wins both the 12K and 49K full-FP8 lanes.
+        if (ggml_cuda_flash_attn_ext_use_rdna4_f8_native_v(ctx.device, dst)) {
+            ggml_cuda_flash_attn_ext_wmma_f16_case<256, cols_per_block, float, 8, true>(ctx, dst);
+        } else {
+            ggml_cuda_flash_attn_ext_wmma_f16_case<256, cols_per_block, float>(ctx, dst);
+        }
         return;
     }
 

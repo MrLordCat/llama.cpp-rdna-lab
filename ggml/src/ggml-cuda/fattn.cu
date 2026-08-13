@@ -450,10 +450,10 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             break;
 #if defined(GGML_USE_HIP) && defined(GGML_HIP_ROCWMMA_FATTN)
         case GGML_TYPE_F8_E4M3: {
-            // D098 G2/G3: fail closed unless an explicit route is requested.
-            // G2 converts K/V to f16 before the established WMMA body. G3a
-            // computes Q*K with native gfx12 FP8 WMMA; G3b additionally runs
-            // the P*V phase on FP8.
+            // D098 G2-G5: RDNA4 uses the validated native gfx12 FP8 KQ+V body
+            // by default. G2 remains an explicit reference route that converts
+            // K/V to f16; setting the native KQ/V variables to 0 provides the
+            // rollback and phase-bisect paths.
             const bool reference_enabled = std::getenv("GGML_ROCM_FATTN_F8_REFERENCE") != nullptr;
             const bool native_kq_enabled = ggml_cuda_flash_attn_ext_use_rdna4_f8_native_kq(device, dst);
             const bool native_v_enabled  = ggml_cuda_flash_attn_ext_use_rdna4_f8_native_v(device, dst);
