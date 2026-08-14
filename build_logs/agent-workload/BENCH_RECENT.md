@@ -7,6 +7,8 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-08-14 16:38:38 | cold-first | rocm | r001-mtp-prod-none-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 5.5225 | 1756.1900 | 22.7200 | 0 |
+| 2026-08-14 16:37:18 | cold-first | rocm | r001-mtp-prod-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 5.9553 | 1683.5000 | 39.9800 | 0 |
 | 2026-08-14 13:57:45 | cold-first | rocm | r001-h77-ab-cand-r2 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 5.2516 | 1682.7600 | 21.1400 | 0 |
 | 2026-08-14 13:56:29 | cold-first | - | r001-h77-ab-ctrl-r2 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 5.5350 | 1774.3000 | 22.2700 | 0 |
 | 2026-08-14 13:54:52 | cold-first | rocm | r001-h77-ab-cand-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 5.4446 | 1747.9100 | 21.8400 | 0 |
@@ -85,5 +87,3 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-08-13 09:36:35 | cold-first | rocm | d098-g4-pcvt-49k-f16-s6r4 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 512/512 | f16/f16 | none | 8.8691 | 1694.1600 | 23.3400 | 0 |
 | 2026-08-13 09:35:26 | cold-first | rocm | d098-g4-pcvt-12k-full-s6r3 | Qwen3.6-27B-Q4_K_M.gguf | 16384 | 512/512 | f8_e4m3/f8_e4m3 | none | 15.7483 | 1725.8650 | 23.0000 | 0 |
 | 2026-08-13 09:34:26 | cold-first | rocm | d098-g4-pcvt-12k-kq-s6r2 | Qwen3.6-27B-Q4_K_M.gguf | 16384 | 512/512 | f8_e4m3/f8_e4m3 | none | 16.4083 | 1831.4850 | 23.8000 | 0 |
-| 2026-08-13 09:33:26 | cold-first | rocm | d098-g4-pcvt-12k-f16-s6r1 | Qwen3.6-27B-Q4_K_M.gguf | 16384 | 512/512 | f16/f16 | none | 16.7687 | 1785.6600 | 24.8850 | 0 |
-| 2026-08-13 09:07:45 | cold-first | vulkan | d096-d43-49k-f8-direct-trace-s5r7 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 7.2490 | 1192.9000 | 25.8300 | 0 |

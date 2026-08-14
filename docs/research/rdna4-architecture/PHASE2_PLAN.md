@@ -77,8 +77,10 @@ gate. Rejected candidates are documented and reverted.
 - [x] 3.4 Document the surviving env-var surface in one registry doc:
   `docs/research/ENV_VARS.md` (2026-08-14, post-cleanup surface incl. the
   removed-by-f704ad8f2 list).
-- [ ] 3.5 GitHub visibility (needs user decisions): release v0.1.0 with
-  Windows binaries, enable issues, social preview image.
+- [x] 3.5 GitHub visibility: DROPPED by user decision (2026-08-14). Phase 2
+  produced no performance change (all candidates rejected; decode stayed at
+  the pre-existing MTP level), so a release has no new content; the
+  turboquant project is closed. Revisit only if a future change warrants it.
 
 ## Standing validation rules (from AGENTS.md)
 
