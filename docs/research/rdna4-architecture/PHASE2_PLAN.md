@@ -74,6 +74,10 @@ gate. Rejected candidates are documented and reverted.
 - [x] 3.3 Debt cleanup batch 1 (from W11): remove dead diagnostic branches
   (Vulkan FA F8_P2-P5 transforms, NATIVE_DECODE route, HALF_CMP splitter,
   ROCm census scaffolding) - committed f704ad8f2 (2026-08-14).
+  Batch 2 (2026-08-14, debt close): loser MMVQ/MMQ toggle branches removed
+  (QWEN small-K, PAIRDOT-disable, VK16 kernel family, FORCE_MMQ_X,
+  MOE_MMQ_STAGING), PERF notes moved to docs/research/, suite gap documented;
+  see W11 "batch 2 executed".
 - [x] 3.4 Document the surviving env-var surface in one registry doc:
   `docs/research/ENV_VARS.md` (2026-08-14, post-cleanup surface incl. the
   removed-by-f704ad8f2 list).

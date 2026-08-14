@@ -128,3 +128,34 @@ Vulkan full `FLASH_ATTN_EXT` suite 4037/4290 with 253 failures, ALL non-f8
 (sinks=1-heavy f16/f32/bf16/q8_0 cases) and untouched by this diff - a
 pre-existing suite gap on the Vulkan side (verified at runtime, pre-existence
 inferred from diff scope: no removed code touches those paths).
+
+## 2026-08-14: batch 2 executed (debt close + cleanup)
+
+Cleanup-order step 3 applied where a winner was measured/decided (2.5, W10):
+
+- `mmvq.cu`: removed `GGML_MMVQ_QWEN_FORCE_SMALL_K` /
+  `GGML_MMVQ_QWEN_DISABLE_SMALL_K` (default Qwen-hot policy is the winner),
+  `GGML_MMVQ_Q3K_DISABLE_PAIRDOT` (pairdot won), the entire
+  `GGML_MMVQ_Q3K_RDNA4_VK16` alternate kernel family (~270 lines: struct,
+  device kernel, launcher, dispatch) - never accepted, env never set.
+- `mmq.cuh`: removed `GGML_MMQ_RDNA4_Q3/PQ2/Q4Q5_FORCE_MMQ_X` overrides
+  (auto selection is the winner) and `GGML_RDNA4_MOE_MMQ_STAGING`
+  (never-accepted MoE LDS staging; the staging parameter is now a constant
+  `false`); trace formats cleaned of the removed fields.
+- Moved `ggml/src/ggml-cuda/PERF_RESEARCH_NOTES.md` to `docs/research/`.
+- ENV_VARS.md updated: removed entries listed, retained knobs annotated.
+
+Not removed (documented winners / production knobs, W11 step 3 does not
+apply): `GGML_RDNA4_Q3K_SMALLN_DP4A` (default-on production route with an
+escape hatch), `GGML_CUDA_Q3K_PADDED_*` (HIP default = 1), `GGML_HIP_DISABLE_GRAPHS`,
+`GGML_VK_FA_F8_NATIVE`/`_DUMP`/`_DIRECT`, `GGML_VK_FA_SCALAR_*`,
+`GGML_VK_MM_TRACE_SPLIT`, Vulkan Q3K quad-dequant/split-K knobs. The D###
+comments in vk_dispatch.inc that remain all document live code (D096-A2/C,
+D4.3 preconvert audit, D094 routes) - no stale scaffolding comments found.
+
+Known open item (out of debt scope, needs its own GPU work): the Vulkan
+FLASH_ATTN_EXT suite gap - 253 non-f8 sinks-heavy failures (f16/f32/bf16/
+q8_0). Pre-existing, not touched by either cleanup batch; candidate causes to
+investigate when work resumes: loose tolerance on sinks-heavy route-2 cases or
+a scalar-FA sinks path bug. Do NOT run the full Vulkan suite to reproduce
+(>10 min GPU rule); use targeted single cases.

@@ -477,16 +477,6 @@ static constexpr __host__ __device__ bool ggml_cuda_mmvq_is_qwen_hot_type(ggml_t
     return type == GGML_TYPE_Q3_K || type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q6_K;
 }
 
-static bool ggml_cuda_mmvq_qwen_force_small_k_enabled() {
-    static const bool enabled = std::getenv("GGML_MMVQ_QWEN_FORCE_SMALL_K") != nullptr;
-    return enabled;
-}
-
-static bool ggml_cuda_mmvq_qwen_disable_small_k_enabled() {
-    static const bool enabled = std::getenv("GGML_MMVQ_QWEN_DISABLE_SMALL_K") != nullptr;
-    return enabled;
-}
-
 static bool ggml_cuda_trace_mmvq_small_k_enabled() {
     static const bool enabled = std::getenv("GGML_TRACE_MMVQ_SMALL_K") != nullptr;
     return enabled;
@@ -505,289 +495,6 @@ static bool ggml_cuda_trace_mmvq_timing_sync_enabled() {
 static bool ggml_cuda_trace_mmvq_resources_enabled() {
     static const bool enabled = std::getenv("GGML_TRACE_MMVQ_RESOURCES") != nullptr;
     return enabled;
-}
-
-static bool ggml_cuda_mmvq_q3k_disable_pairdot_enabled() {
-    static const bool enabled = std::getenv("GGML_MMVQ_Q3K_DISABLE_PAIRDOT") != nullptr;
-    return enabled;
-}
-
-static bool ggml_cuda_mmvq_q3k_rdna4_vk16_enabled() {
-    static const bool enabled = []() {
-        const char * value = std::getenv("GGML_MMVQ_Q3K_RDNA4_VK16");
-        return value != nullptr && std::atoi(value) != 0;
-    }();
-    return enabled;
-}
-
-struct q3k_rdna4_q8_fragment {
-    int qs[4];
-    float d;
-};
-
-static __device__ __forceinline__ q3k_rdna4_q8_fragment q3k_rdna4_load_q8_fragment(
-        const block_q8_1 * __restrict__ y,
-        const int pair,
-        const int lane) {
-    const block_q8_1 * block = y + pair*16 + lane/2;
-    const int q8_offset = (lane & 1)*4;
-
-    q3k_rdna4_q8_fragment fragment;
-#pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        fragment.qs[i] = get_int_b4(block->qs, q8_offset + i);
-    }
-    fragment.d = __low2float(block->ds);
-    return fragment;
-}
-
-static __device__ __forceinline__ float q3k_rdna4_dot_vk16(
-        const block_q3_K_padded * __restrict__ row,
-        const q3k_rdna4_q8_fragment & fragment,
-        const int pair,
-        const int lane) {
-    const int chunk = lane & 15;
-    const block_q3_K_padded * block = row + pair*2 + lane/16;
-
-    const int scale_low = (block->scales[chunk & 7] >> (4*(chunk >> 3))) & 0x0f;
-    const int scale_high = ((block->scales[8 + (chunk & 3)] >> (2*(chunk >> 2))) & 0x03) << 4;
-    const int scale = (scale_low | scale_high) - 32;
-
-    const int qs_idx = ((chunk >> 3)*8) + ((chunk & 1)*4);
-    const int qs_shift = chunk & 6;
-    const int hm_idx = (chunk & 1)*4;
-    const int hm_shift = chunk >> 1;
-
-    int sum = 0;
-#pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        const uint32_t qs = uint32_t(get_int_b4(block->qs, qs_idx + i));
-        const uint32_t hm = uint32_t(get_int_b4(block->hmask, hm_idx + i));
-        const uint32_t vals = ((qs >> qs_shift) & 0x03030303u) |
-                              (((hm >> hm_shift) & 0x01010101u) << 2);
-        const int signed_vals = int(((vals ^ 0x80808080u) - 0x04040404u) ^ 0x80808080u);
-        sum = ggml_cuda_dp4a(signed_vals, fragment.qs[i], sum);
-    }
-
-    return __half2float(block->d) * float(scale) * fragment.d * float(sum);
-}
-
-template <bool has_fusion>
-__launch_bounds__(32, 1)
-static __global__ void mul_mat_vec_q3k_rdna4_vk16(
-        const void * __restrict__ vx,
-        const void * __restrict__ vy,
-        const ggml_cuda_mm_fusion_args_device fusion,
-        float * __restrict__ dst,
-        const uint32_t ncols_x,
-        const uint3 nchannels_y,
-        const uint32_t stride_row_x,
-        const uint32_t stride_col_y,
-        const uint32_t stride_col_dst,
-        const uint3 channel_ratio,
-        const uint32_t stride_channel_x,
-        const uint32_t stride_channel_y,
-        const uint32_t stride_channel_dst,
-        const uint3 sample_ratio,
-        const uint32_t stride_sample_x,
-        const uint32_t stride_sample_y,
-        const uint32_t stride_sample_dst) {
-    constexpr int warp_size = 32;
-    const int lane = threadIdx.x;
-    const int row = blockIdx.x;
-    const uint32_t channel_dst = blockIdx.y;
-    const uint32_t sample_dst = blockIdx.z;
-
-    const uint32_t channel_x = fastdiv(channel_dst, channel_ratio);
-    const uint32_t channel_y = channel_dst;
-    const uint32_t sample_x = fastdiv(sample_dst, sample_ratio);
-    const uint32_t sample_y = sample_dst;
-
-    const block_q3_K_padded * x = (const block_q3_K_padded *) vx +
-        sample_x*stride_sample_x + channel_x*stride_channel_x + row*stride_row_x;
-    const block_q8_1 * y = (const block_q8_1 *) vy +
-        sample_y*stride_sample_y + channel_y*stride_channel_y;
-
-    const bool use_gate = has_fusion && fusion.gate != nullptr;
-    const block_q3_K_padded * gate = use_gate ?
-        (const block_q3_K_padded *) fusion.gate +
-            sample_x*stride_sample_x + channel_x*stride_channel_x + row*stride_row_x :
-        nullptr;
-
-    float sum = 0.0f;
-    float sum_gate = 0.0f;
-    const int npairs = ncols_x / (2*QK_K);
-
-    for (int pair = 0; pair < npairs; ++pair) {
-        const q3k_rdna4_q8_fragment fragment = q3k_rdna4_load_q8_fragment(y, pair, lane);
-        sum += q3k_rdna4_dot_vk16(x, fragment, pair, lane);
-        if constexpr (has_fusion) {
-            if (use_gate) {
-                sum_gate += q3k_rdna4_dot_vk16(gate, fragment, pair, lane);
-            }
-        }
-    }
-
-    sum = warp_reduce_sum<warp_size>(sum);
-    if constexpr (has_fusion) {
-        if (use_gate) {
-            sum_gate = warp_reduce_sum<warp_size>(sum_gate);
-        }
-    }
-
-    if (lane != 0) {
-        return;
-    }
-
-    const uint32_t dst_offset = sample_dst*stride_sample_dst +
-        channel_dst*stride_channel_dst + row;
-    float result = sum;
-
-    if constexpr (has_fusion) {
-        if (fusion.x_bias != nullptr) {
-            result += ((const float *) fusion.x_bias)[dst_offset];
-        }
-        if (use_gate) {
-            float gate_value = sum_gate;
-            if (fusion.gate_bias != nullptr) {
-                gate_value += ((const float *) fusion.gate_bias)[dst_offset];
-            }
-            switch (fusion.glu_op) {
-                case GGML_GLU_OP_SWIGLU:
-                    result *= ggml_cuda_op_silu_single(gate_value);
-                    break;
-                case GGML_GLU_OP_GEGLU:
-                    result *= ggml_cuda_op_gelu_single(gate_value);
-                    break;
-                case GGML_GLU_OP_SWIGLU_OAI:
-                    result = ggml_cuda_op_swiglu_oai_single(gate_value, result);
-                    break;
-                default:
-                    result *= gate_value;
-                    break;
-            }
-        }
-    }
-
-    dst[dst_offset] = result;
-
-    GGML_UNUSED(stride_col_y);
-    GGML_UNUSED(stride_col_dst);
-    GGML_UNUSED(nchannels_y);
-}
-
-static void launch_mul_mat_vec_q3k_rdna4_vk16(
-        const void * vx,
-        const void * vy,
-        const ggml_cuda_mm_fusion_args_device fusion,
-        float * dst,
-        const int ncols_x,
-        const int nrows_x,
-        const uint3 nchannels_y,
-        const int stride_row_x,
-        const int stride_col_y,
-        const int stride_col_dst,
-        const int nchannels_dst,
-        const uint3 channel_ratio,
-        const int stride_channel_x,
-        const int stride_channel_y,
-        const int stride_channel_dst,
-        const int nsamples_dst,
-        const uint3 sample_ratio,
-        const int stride_sample_x,
-        const int stride_sample_y,
-        const int stride_sample_dst,
-        cudaStream_t stream) {
-    const dim3 block_dims(32, 1, 1);
-    const dim3 block_nums(nrows_x, nchannels_dst, nsamples_dst);
-    const bool has_fusion = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr;
-    const bool trace_timing = ggml_cuda_trace_mmvq_timing_enabled();
-    const bool trace_resources = ggml_cuda_trace_mmvq_resources_enabled();
-    const bool trace_timing_sync = trace_timing && ggml_cuda_trace_mmvq_timing_sync_enabled();
-    const auto timing_start = trace_timing ? std::chrono::high_resolution_clock::now() :
-                                             std::chrono::high_resolution_clock::time_point{};
-
-    if (trace_resources) {
-        static bool logged_direct = false;
-        static bool logged_fused = false;
-        bool & logged = has_fusion ? logged_fused : logged_direct;
-        if (!logged) {
-            logged = true;
-#ifdef GGML_USE_HIP
-            hipFuncAttributes attr{};
-            int active_blocks = -1;
-            int max_threads = -1;
-            const void * kernel = has_fusion ?
-                (const void *) mul_mat_vec_q3k_rdna4_vk16<true> :
-                (const void *) mul_mat_vec_q3k_rdna4_vk16<false>;
-            const int device = ggml_cuda_get_device();
-            (void) hipFuncGetAttributes(&attr, kernel);
-            (void) hipOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks, kernel, 32, 0);
-            (void) hipDeviceGetAttribute(&max_threads, hipDeviceAttributeMaxThreadsPerMultiProcessor, device);
-            const float occupancy = active_blocks > 0 && max_threads > 0 ?
-                100.0f*float(active_blocks*32)/float(max_threads) : -1.0f;
-            GGML_LOG_INFO(
-                "mmvq_q3k_rdna4_vk16_resource: device=%d fused=%d regs=%d static_shared=%zu "
-                "active_blocks=%d occupancy=%.2f%% waves_per_cu=%.2f\n",
-                device,
-                has_fusion,
-                attr.numRegs,
-                attr.sharedSizeBytes,
-                active_blocks,
-                occupancy,
-                active_blocks > 0 ? float(active_blocks) : -1.0f);
-#endif
-        }
-    }
-
-    if (has_fusion) {
-        mul_mat_vec_q3k_rdna4_vk16<true><<<block_nums, block_dims, 0, stream>>>(
-            vx, vy, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
-            channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
-            sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst);
-    } else {
-        mul_mat_vec_q3k_rdna4_vk16<false><<<block_nums, block_dims, 0, stream>>>(
-            vx, vy, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
-            channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
-            sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst);
-    }
-
-    if (trace_timing) {
-        const auto timing_after_launch = std::chrono::high_resolution_clock::now();
-        double sync_ms = 0.0;
-        bool sync_applied = false;
-        int capture_active = 0;
-        if (trace_timing_sync) {
-#ifdef GGML_USE_HIP
-            hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
-            CUDA_CHECK(hipStreamIsCapturing(stream, &capture_status));
-            capture_active = capture_status != hipStreamCaptureStatusNone;
-#else
-            cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
-            CUDA_CHECK(cudaStreamIsCapturing(stream, &capture_status));
-            capture_active = capture_status != cudaStreamCaptureStatusNone;
-#endif
-            if (!capture_active) {
-                const auto sync_start = std::chrono::high_resolution_clock::now();
-                CUDA_CHECK(cudaStreamSynchronize(stream));
-                const auto sync_end = std::chrono::high_resolution_clock::now();
-                sync_ms = std::chrono::duration<double, std::milli>(sync_end - sync_start).count();
-                sync_applied = true;
-            }
-        }
-        const double enqueue_ms = std::chrono::duration<double, std::milli>(timing_after_launch - timing_start).count();
-        GGML_LOG_INFO(
-            "mmvq_q3k_rdna4_vk16_timing: fused=%d ncols_x=%d grid_x=%u enqueue_ms=%.3f "
-            "sync_applied=%d capture_active=%d sync_ms=%.3f total_ms=%.3f\n",
-            has_fusion,
-            ncols_x,
-            block_nums.x,
-            enqueue_ms,
-            sync_applied,
-            capture_active,
-            sync_ms,
-            enqueue_ms + sync_ms);
-    }
 }
 
 template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false, bool use_gate_fast = false, bool use_pairdot = true>
@@ -1214,7 +921,6 @@ static void mul_mat_vec_q_switch_fusion(
     const bool has_fusion = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr;
     const bool trace_timing = ggml_cuda_trace_mmvq_timing_enabled();
     const bool trace_resources = ggml_cuda_trace_mmvq_resources_enabled();
-    const bool disable_q3k_pairdot = ggml_cuda_mmvq_q3k_disable_pairdot_enabled();
     const bool trace_timing_sync = trace_timing && ggml_cuda_trace_mmvq_timing_sync_enabled();
     const bool trace_timing_pre_sync = trace_timing_sync && std::getenv("GGML_TRACE_MMVQ_TIMING_PRE_SYNC") != nullptr;
     const int device = trace_resources ? ggml_cuda_get_device() : 0;
@@ -1326,37 +1032,11 @@ static void mul_mat_vec_q_switch_fusion(
             }
 
             if (use_gate && use_gate_fast_kernel) {
-                if (disable_q3k_pairdot) {
-                    if (trace_resources) {
-                        kernel_trace = mmvq_collect_kernel_resource_trace<type, c_ncols_dst, true, small_k, true, false>(
-                            block_dims, nbytes_shared, warp_size);
-                    }
-                    mul_mat_vec_q<type, c_ncols_dst, true, small_k, true, false><<<block_nums, block_dims, nbytes_shared, stream>>>
-                        (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
-                         channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
-                         sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, q3k_padded_storage);
-                    log_timing(true);
-                    return;
-                }
-
                 if (trace_resources) {
                     kernel_trace = mmvq_collect_kernel_resource_trace<type, c_ncols_dst, true, small_k, true, true>(
                         block_dims, nbytes_shared, warp_size);
                 }
                 mul_mat_vec_q<type, c_ncols_dst, true, small_k, true, true><<<block_nums, block_dims, nbytes_shared, stream>>>
-                    (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
-                     channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
-                     sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, q3k_padded_storage);
-                log_timing(true);
-                return;
-            }
-
-            if (disable_q3k_pairdot) {
-                if (trace_resources) {
-                    kernel_trace = mmvq_collect_kernel_resource_trace<type, c_ncols_dst, true, small_k, false, false>(
-                        block_dims, nbytes_shared, warp_size);
-                }
-                mul_mat_vec_q<type, c_ncols_dst, true, small_k, false, false><<<block_nums, block_dims, nbytes_shared, stream>>>
                     (vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
                      channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
                      sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, q3k_padded_storage);
@@ -1453,9 +1133,6 @@ static void mul_mat_vec_q_switch_ncols_dst(
                 c_ncols_dst == 1 &&
                 ggml_cuda_mmvq_is_qwen_hot_type(type);
 
-        bool forced_small_k = false;
-        bool forced_disable_small_k = false;
-
         constexpr std::array<ggml_type, 2> iq_slow_turing = {
             GGML_TYPE_IQ3_XXS,
             GGML_TYPE_IQ3_S,
@@ -1485,22 +1162,14 @@ static void mul_mat_vec_q_switch_ncols_dst(
         }
 
         if (is_qwen_hot_rdna4) {
-            // RDNA4 Qwen-hot decode policy with explicit env overrides.
+            // RDNA4 Qwen-hot decode policy.
             // Q6_K's heavier vec_dot and fused FFN path are faster with one row per block.
             use = type != GGML_TYPE_Q6_K;
-            forced_small_k = ggml_cuda_mmvq_qwen_force_small_k_enabled();
-            forced_disable_small_k = ggml_cuda_mmvq_qwen_disable_small_k_enabled();
-            if (forced_small_k) {
-                use = true;
-            }
-            if (forced_disable_small_k) {
-                use = false;
-            }
         }
 
         if (is_qwen_hot_rdna4 && ggml_cuda_trace_mmvq_small_k_enabled()) {
             GGML_LOG_INFO(
-                "%s: type=%d/%s ncols_dst=%d ncols_x=%d blocks_per_row=%d nwarps=%d small_k=%d force=%d disable=%d\n",
+                "%s: type=%d/%s ncols_dst=%d ncols_x=%d blocks_per_row=%d nwarps=%d small_k=%d\n",
                 __func__,
                 (int) type,
                 ggml_type_name(type),
@@ -1508,9 +1177,7 @@ static void mul_mat_vec_q_switch_ncols_dst(
                 ncols_x,
                 blocks_per_row_x,
                 nwarps,
-                use,
-                forced_small_k,
-                forced_disable_small_k);
+                use);
         }
 
         return use;
@@ -1529,22 +1196,6 @@ static void mul_mat_vec_q_switch_ncols_dst(
     switch (ncols_dst) {
         case 1: {
             constexpr int c_ncols_dst = 1;
-
-            const bool use_q3k_rdna4_vk16 =
-                type == GGML_TYPE_Q3_K &&
-                table_id == MMVQ_PARAMETERS_RDNA4 &&
-                !has_ids &&
-                q3k_padded_storage &&
-                ncols_x % (2*QK_K) == 0 &&
-                ggml_cuda_mmvq_q3k_rdna4_vk16_enabled();
-            if (use_q3k_rdna4_vk16) {
-                launch_mul_mat_vec_q3k_rdna4_vk16(
-                    vx, vy, fusion, dst, ncols_x, nrows_x, nchannels_y_fd,
-                    stride_row_x, stride_col_y, stride_col_dst, nchannels_dst,
-                    channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst,
-                    nsamples_dst, sample_ratio_fd, stride_sample_x, stride_sample_y, stride_sample_dst, stream);
-                return;
-            }
 
             bool use_small_k = should_use_small_k(c_ncols_dst);
 

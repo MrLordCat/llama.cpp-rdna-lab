@@ -25,18 +25,10 @@ read once at backend init (some cached per pipeline family).
 | Var | Purpose |
 | --- | --- |
 | `GGML_CUDA_FORCE_MMQ_RUNTIME` | force MMQ runtime (no graph) |
-| `GGML_MMQ_RDNA4_Q4Q5_FORCE_MMQ_X` | force MMQ variant X for Q4/Q5 |
-| `GGML_MMQ_RDNA4_Q3_FORCE_MMQ_X` | force MMQ variant X for Q3 |
-| `GGML_MMQ_RDNA4_PQ2_FORCE_MMQ_X` | force MMQ variant X for PQ2 |
 | `GGML_MMQ_RDNA4_Q4K_MAX_NE11` | Q4_K MMQ threshold (max rows) |
 | `GGML_MMQ_RDNA4_STREAM_K_MIN_NE11` | stream-K MMQ threshold |
-| `GGML_MMVQ_Q3K_DISABLE_PAIRDOT` | disable pairdot for Q3_K MMVQ |
-| `GGML_MMVQ_Q3K_RDNA4_VK16` | Q3_K MMVQ VK16 variant toggle |
-| `GGML_MMVQ_QWEN_DISABLE_SMALL_K` | disable small-K MMVQ for Qwen shapes |
-| `GGML_MMVQ_QWEN_FORCE_SMALL_K` | force small-K MMVQ for Qwen shapes |
 | `GGML_MMVQ_RDNA4_Q3K_MAX_BATCH` | Q3_K MMVQ max batch |
-| `GGML_RDNA4_Q3K_SMALLN_DP4A` | Q3_K small-N DP4A route |
-| `GGML_RDNA4_MOE_MMQ_STAGING` | MoE MMQ staging mode |
+| `GGML_RDNA4_Q3K_SMALLN_DP4A` | Q3_K small-N DP4A route: default ON for ncols_max 2-4, `=1` extends to 5, `=0` disables (production escape hatch) |
 | `GGML_OP_OFFLOAD_MIN_BATCH` | offload minimum batch size |
 | `GGML_CUDA_Q3K_PADDED_*` | Q3_K padded dequant storage/probe switches |
 
@@ -142,6 +134,28 @@ These are diagnostic-only and have no effect on results.
 - `GGML_VK_FA_F8_P2` / `_P3` / `_P4` / `_P5` - D096 fp8 direction variants (closed on Vulkan, D4.1)
 - `GGML_VK_FA_HALF_CMP` - in-process A/B splitter
 - GUI defaults referencing `GGML_VK_FA_F8_P5` were removed with the same commit.
+
+## Removed by the phase-3 batch-2 cleanup (debt close, 2026-08-14)
+
+Loser branches consolidated into the defaults (winners per 2.5/W10; none of
+these envs is set anywhere in gui/scripts/run.py):
+
+- `GGML_MMVQ_QWEN_FORCE_SMALL_K` / `GGML_MMVQ_QWEN_DISABLE_SMALL_K` - the
+  default Qwen-hot policy (`use = type != Q6_K`) is the measured winner
+- `GGML_MMVQ_Q3K_DISABLE_PAIRDOT` - pairdot (default) won; the non-pairdot
+  branch is removed
+- `GGML_MMVQ_Q3K_RDNA4_VK16` - never-accepted alternate Q3_K MMVQ kernel
+  family (struct + device kernel + launcher removed entirely)
+- `GGML_MMQ_RDNA4_Q3_FORCE_MMQ_X` / `GGML_MMQ_RDNA4_PQ2_FORCE_MMQ_X` /
+  `GGML_MMQ_RDNA4_Q4Q5_FORCE_MMQ_X` - experiment mmq_x overrides; the auto
+  selection (default) is the winner
+- `GGML_RDNA4_MOE_MMQ_STAGING` - never-accepted MoE MMQ LDS staging route
+
+Retained (production knobs, not losers): `GGML_RDNA4_Q3K_SMALLN_DP4A` (default
+ON, escape hatch), `GGML_CUDA_Q3K_PADDED_*` (HIP default =1), `GGML_HIP_DISABLE_GRAPHS`,
+`GGML_VK_FA_F8_NATIVE`/`GGML_VK_FA_F8_DUMP`/`GGML_VK_FA_F8_DIRECT` (live prefill
+route probes), `GGML_VK_FA_SCALAR_*` (scalar decode tuning), `GGML_VK_MM_TRACE_SPLIT`
+and the Q3K quad-dequant/split-K Vulkan knobs (live route switches).
 
 ## Notes
 

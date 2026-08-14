@@ -1,5 +1,18 @@
 # Results Log
 
+## 2026-08-14 - phase 3 batch 2: debt close + cleanup
+
+- Loser branches consolidated into defaults (winners per 2.5/W10): removed
+  GGML_MMVQ_QWEN_FORCE/DISABLE_SMALL_K, GGML_MMVQ_Q3K_DISABLE_PAIRDOT,
+  the entire GGML_MMVQ_Q3K_RDNA4_VK16 kernel family (~270 lines),
+  GGML_MMQ_RDNA4_Q3/PQ2/Q4Q5_FORCE_MMQ_X, GGML_RDNA4_MOE_MMQ_STAGING.
+  Default routes are unchanged (all these envs were never set anywhere).
+- Moved ggml/src/ggml-cuda/PERF_RESEARCH_NOTES.md to docs/research/.
+- ENV_VARS.md and W11 updated (removed list, retained production knobs,
+  Vulkan sinks-heavy suite gap documented as a known open item).
+- Validation: ROCm build clean (llama-server + test-backend-ops); runtime
+  MUL_MAT/MUL_MAT_ID q3_K 33/33 and q4_K/q6_K 74/74 on ROCm0.
+
 ## 2026-08-14 - phase 3: debt cleanup landed, env registry, GPU1 outage
 
 - 3.3 landed as f704ad8f2: dead FA scaffolding removed (Vulkan F8_P2-P5 +
