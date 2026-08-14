@@ -67,12 +67,16 @@ gate. Rejected candidates are documented and reverted.
   worse NMSE, H77 -3.8%); verdicts recorded in RESULTS_LOG and HYPOTHESES;
   rejected code reverted in source.
 - [ ] 3.2 MTP on ROCm: confirm the stable 38.9 tok/s decode and make it the
-  production track (if unchanged by phase 2).
-- [ ] 3.3 Debt cleanup batch 1 (from W11): remove dead diagnostic branches
+  production track (if unchanged by phase 2). BLOCKED 2026-08-14: after the
+  two system crashes the second RX 9070 XT is disabled by Windows (PnP code
+  22), so the dual-ROCm 49K lane cannot run; retry once the device is
+  re-enabled. Note: the crash constraint caps every GPU run at 10 minutes.
+- [x] 3.3 Debt cleanup batch 1 (from W11): remove dead diagnostic branches
   (Vulkan FA F8_P2-P5 transforms, NATIVE_DECODE route, HALF_CMP splitter,
-  ROCm census scaffolding) - only after phase-2 conclusions are firm.
-- [ ] 3.4 Document the surviving env-var surface in one registry doc
-  (`docs/research/ENV_VARS.md` or similar).
+  ROCm census scaffolding) - committed f704ad8f2 (2026-08-14).
+- [x] 3.4 Document the surviving env-var surface in one registry doc:
+  `docs/research/ENV_VARS.md` (2026-08-14, post-cleanup surface incl. the
+  removed-by-f704ad8f2 list).
 - [ ] 3.5 GitHub visibility (needs user decisions): release v0.1.0 with
   Windows binaries, enable issues, social preview image.
 

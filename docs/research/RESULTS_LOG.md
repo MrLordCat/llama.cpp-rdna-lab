@@ -1,5 +1,20 @@
 # Results Log
 
+## 2026-08-14 - phase 3: debt cleanup landed, env registry, GPU1 outage
+
+- 3.3 landed as f704ad8f2: dead FA scaffolding removed (Vulkan F8_P2-P5 +
+  transforms, F8_NATIVE_DECODE, HALF_CMP, ROCm phase census, GUI P5 default).
+  Validation: ROCm FLASH_ATTN_EXT f8 19/19; Vulkan 4037/4290 (remaining
+  failures pre-existing non-f8 sinks-heavy cases).
+- System incident: two hard hangs ~14:44 and ~15:21 (WHEA 0x124 PCIe +
+  AMD_WATCHDOG + video watchdog, LiveKernelReports 20260814-1448/1521).
+  Machine has prior-day watchdog dumps (Aug 8-13). Aftermath: the second
+  RX 9070 XT is DISABLED by Windows (PnP code 22) - dual-GPU lanes are down
+  until the device is re-enabled; single-GPU lanes remain usable.
+- 3.4 env registry written: docs/research/ENV_VARS.md (180 live GGML_* vars,
+  grouped; removed-by-cleanup list; server-side LLAMA_* and bench vars).
+- 3.2 MTP production confirmation is blocked by the GPU1 outage.
+
 ## 2026-08-14 - R001 RDNA4 architecture exploitation track opened
 
 - New branch `research/rdna4-arch-exploit`; D100-D102 committed on
