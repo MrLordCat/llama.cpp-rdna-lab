@@ -178,6 +178,7 @@ gui/*.pyc
 subProject_q4/
 AGENTS.local.md
 .pi/SYSTEM.md
+docs/research/rdna4-architecture/isa/
 NUL
 build-vulkan/bin/*.dll
 

@@ -1,5 +1,93 @@
 # Results Log
 
+## 2026-08-14 - R001 RDNA4 architecture exploitation track opened
+
+- New branch `research/rdna4-arch-exploit`; D100-D102 committed on
+  `d100-rocm-execution-gap` (`bffa79f33`).
+- Phase 1 constraint: research only, no new builds and no benchmarks.
+- Extracted the gfx1201 code objects from the existing `ggml-hip.dll`
+  (`.hip_fat` section, 129 RDC code objects) and disassembled them with
+  `llvm-objdump -d --mcpu=gfx1201`; artifacts untracked in
+  `docs/research/rdna4-architecture/isa/`.
+- First facts (W00): the 49K full-native decode kernel
+  `flash_attn_ext_f16<256,16,4,64,float,...,native_f8_kq,native_f8_v>` uses
+  248 VGPR / 50 SGPR, 0 AGPR, no stack, 4x wave64 = 256 threads, so the
+  register file admits exactly one CTA per CU (63,488 of 65,536 VGPR) while
+  LDS (29,568 B) would admit two; wave-slot occupancy is 4/16.
+- D103 deprioritized; H75 closed as deferred, H76-H78 opened.
+
+- Details: `docs/research/rdna4-architecture/README.md`,
+  `docs/research/rdna4-architecture/W00_ISA_EXTRACTION_AND_KERNEL_FACTS.md`
+
+## 2026-08-14 - R001 phase 1: gfx1201 constants verified and kernel ISA audited
+
+- No builds, no benchmarks (GPUs reserved for the subproject); work from the
+  existing `ggml-hip.dll` and official docs.
+- Official RDNA4 ISA manual (707 pp, docs.amd.com khub) downloaded; LLVM
+  AMDGPUUsage fetched. Verified: wave64 required for the decode kernel, VOPD
+  is wave32-only, 106 SGPR + VCC, max 256 VGPR per wave, 128 KiB LDS per WGP
+  (64 KiB per work-group, 64 DWORD banks), WMMA fp32 C/D = 4 VGPR/lane in
+  wave64, WMMA D-matrix hazard requires a V_NOP/VALU gap, `V_CVT_SR_FP8_F32`
+  stochastic-rounding exists. See W01.
+- Static ISA audit of the production decode kernel (W02): 1077 instructions
+  of which 788 are `s_wait_alu` (73%); tile loads are per-lane scalar
+  `global_load_u8`; barriers are already split (8 signal + 8 wait); softmax
+  reductions use `ds_bpermute_b32`; P requant is 4 `v_cvt_pk_fp8_f32`.
+- Phase-2 shelf seeded: stochastic-rounding requant, vectorized tile loads +
+  ds_swizzle redistribution, register cut toward 2 CTAs/CU, wave32 redesign
+  (VOPD + dynamic VGPR). Nothing admitted.
+- Details: `docs/research/rdna4-architecture/{W01,W02,README}.md`,
+  H76-H78 updated.
+
+## 2026-08-14 - R001 phase 1: phase map, occupancy model, PV cost hypothesis
+
+- Corrected the production-kernel identity: the full-native decode route is
+  the 8-warp instantiation `<256,16,8,128,float,...,1,1,0>` (156 VGPR / 46
+  SGPR), not the 4-warp one; the 4-warp instantiations serve KQ-only/V-only
+  routes. W00/W01/W02 updated.
+- Verified the LLVM occupancy model (AMDGPUBaseInfo.cpp): gfx12 wave64, 512
+  VGPR units per SIMD, granule 8, 16 waves/EU -> 156 VGPR = 3 waves per
+  SIMD = 12 per CU -> one 8-wave CTA per CU; 2 CTAs need <= 128 VGPR.
+- Mapped the D102 census phases onto the ISA (W03): PV costs 2x KQ per WMMA
+  because its B-fragments (P_f8) are loaded from LDS inside the WMMA chain
+  while KQ's B (Q_b) sits in registers; the fp32 VKQ merge roundtrip is only
+  2.0%. Accumulators are 12 of 156 VGPR - the working set dominates.
+- H77 corrected (threshold <= 128 VGPR), H79 opened.
+- Details: `docs/research/rdna4-architecture/{W00,W01,W02,W03,README}.md`.
+
+## 2026-08-14 - R001 phase 0 closed: W10 gemm audit, ISA tails, backend debt audit
+
+- W10: decode = MMVQ (M<=4, K=5120, N in {5120, 17408}), prefill = MMQ
+  stream-k; hipBLAS is a last-resort fallback off the hot path. Q3_K batch
+  cap 1 on RDNA4 and the QWEN small-K toggle pairs flagged for 2.5.
+- W01 tails closed: LDS banks are 512x32 two-port RAMs (1R/1W per clock,
+  ISA 12.1); ISA 11.6 recommends GLOBAL_LOAD_B128/TR_B128 for WMMA fragment
+  loads (feeds H78); WMMA throughput rates are NOT published anywhere
+  official (ISA + LLVM checked).
+- W11: backend debt audit written (Vulkan FA F8_P2-P5/NATIVE_DECODE/HALF_CMP,
+  census scaffolding, env-var zoo; live fallbacks documented; removal order
+  set for phase 3).
+- Phase 0 complete; phase 2 plan: docs/research/rdna4-architecture/PHASE2_PLAN.md.
+
+## 2026-08-14 - R001 phase 1: wave32 correction, softmax/requant stream, KV vs L2
+
+- Major correction: the kernels are **wave32**, not wave64. Evidence: 45
+  VOPD `v_dual_*` inside the production kernel body (VOPD is illegal in
+  wave64 per ISA 7.8), 5-step 32-lane `ds_bpermute` reductions, `vcc_lo` /
+  `exec_lo` only; no `-mwavefrontsize` flag in the build (ROCm hip-clang
+  builds gfx1201 as wave32). W00-W03 updated.
+- Occupancy recomputed (LLVM model, wave32): 156 VGPR -> 6 waves/SIMD =
+  24/CU; the kernel already runs 2 CTAs per CU and LDS (29,568 B) is the
+  binding constraint; 3 CTAs need <= 21,845 B. H77 rewritten.
+- W04: softmax/requant stream is already fully optimized (VOPD pairs,
+  `v_max3_num_f32`, hardware `v_exp_f32`, packed `v_cvt_pk_fp8_f32` from
+  `__hip_cvt_float2_to_fp8x2`); only untried requant op = stochastic
+  `V_CVT_SR_FP8_F32`.
+- W09: KV = 128 KiB/token (64 layers, 4 KV heads x 256, fp8) -> 3 GiB per
+  GPU at 49K vs 64 MB L2; KV stream is use-once per token. H80 opened
+  (streaming cache-policy hints on KV loads, phase-2 only).
+- Details: `docs/research/rdna4-architecture/{W00-W04,W09,README}.md`.
+
 ## 2026-08-14 - D102 ROCm full-FP8 fused-body phase census
 
 - Template-bounded `clock64()` census inside the D256 full-native decode

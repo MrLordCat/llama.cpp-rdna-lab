@@ -2,7 +2,10 @@
 
 Date: 2026-08-14
 
-Status: planning. No source candidate is admitted yet.
+Status: deprioritized (2026-08-14). Superseded by the R001 RDNA4
+architecture track: per-kernel micro-gates on the FA phase cannot carry the
+program while ~55% of the 49K decode token remains unmeasured. The known
+bounds below stay valid if the track is resumed.
 
 ## Objective
 
