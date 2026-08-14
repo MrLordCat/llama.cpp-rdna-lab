@@ -31,17 +31,20 @@ the D102 `clock64()` phase boundaries in `fattn-wmma-f16.cu`. No GPU runs.
 The census measured 55.6% (PV) vs 28.3% (KQ) for equal WMMA counts. Verified
 structural differences:
 
-1. **B-operand source.** KQ reads its B (Q_b) from registers, PV reads its B
-   (P_f8) from LDS (16 `ds_load_u16` per chain, latency directly in the WMMA
-   operand path). LDS load latency is not hidden: the ISA shows `ds_load`
-   and WMMA interleaved 1:1 with waits, not prefetched a full chain ahead.
-2. **Two accumulator chains in PV** (VKQ_c[2]) vs one in KQ — more hazard
+1. **B-operand source (corrected 2026-08-14).** The production source
+   preloads all P_f8 B-fragments (KQ_b) into registers BEFORE the V loop
+   (fattn-wmma-f16.cu PV section); the disasm confirms the 16 `ds_load_u16`
+   are batched, not interleaved (median distance ds_load->next wmma = 226
+   instructions in TU23). So PV's B IS in registers, like KQ's Q_b. The
+   2x gap does NOT come from LDS B-fragment latency (H79 premise as written
+   was wrong; the phase-2 candidate restructures V_a prefetch instead).
+2. **V_a loads inside the chain**: V_a A-fragments arrive as scalar u8 global
+   loads interleaved with the WMMA stream - the only per-chain operand fed
+   from global memory directly into the mma chain.
+3. **Two accumulator chains in PV** (VKQ_c[2]) vs one in KQ — more hazard
    bookkeeping, but also the only place where independent WMMA work exists.
-3. **PV tail**: the fp32 `store_matrix_sync` of both accumulator chains into
+4. **PV tail**: the fp32 `store_matrix_sync` of both accumulator chains into
    LDS before the barrier; KQ's tail is the same shape but half the size.
-4. **V loads inside the chain**: V_a fragments arrive as scalar u8 loads
-   interleaved with the WMMA stream (better than KQ, whose loads sit in one
-   burst before the chain).
 
 The LDS B-fragment path is the dominant structural suspect for the 2x gap;
 it is exactly the P_f8 staging that D098 introduced so the fp8 V-MMA can

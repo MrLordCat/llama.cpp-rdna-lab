@@ -55,6 +55,47 @@
 - H77 corrected (threshold <= 128 VGPR), H79 opened.
 - Details: `docs/research/rdna4-architecture/{W00,W01,W02,W03,README}.md`.
 
+## 2026-08-14 - R001 phase 2 closed + phase 3 debt cleanup batch 1
+
+- Phase 2 verdicts: H80 blocked (toolchain), H79 neutral, SR requant rejected
+  (NMSE worse), H77 rejected (-3.8% decode; grid 192 = 2x96 CUs already
+  saturates the 2-CTA occupancy). No accepted candidate -> no 98K confirmation
+  and no D104 re-census. All rejected code reverted; verdicts in RESULTS_LOG
+  and HYPOTHESES.
+- 3.3 debt cleanup batch 1 landed: Vulkan FA F8_P2-P5 + transform machinery,
+  GGML_VK_FA_F8_NATIVE_DECODE, GGML_VK_FA_HALF_CMP, dead fa_q8/qscale
+  prealloc, ROCm D102 phase census, GUI GGML_VK_FA_F8_P5 defaults.
+  Validation: both backends build; ROCm f8 19/19; Vulkan suite 4037/4290
+  (253 failures all non-f8, pre-existing sinks-heavy gap - not touched by
+  this diff; see W11).
+
+## 2026-08-14 - R001 phase 2: baselines, H80 blocked, H79/H77 neutral, SR rejected
+
+- Adjacent baselines (49K lane, f8 KV, dual ROCm, cold-first, spec=none):
+  decode 21.12 t/s / 1653.7 ptps; MTP draft-mtp n=2: decode 38.55 t/s
+  (acceptance 78/96), 1575.9 ptps - matches the D089-era 38.9 level.
+- 2.1 H80 REJECTED-BLOCKED: streaming cache hints cannot be expressed with
+  ROCm 7.1 (AOMP-18). __builtin_nontemporal_load compiles but is silently
+  dropped (byte-level encoding diff = zero across the whole TU23), and
+  llvm-mc parses no glc/slc/nt/cache_policy/th modifier for global_load.
+  Deferred until a toolchain can express the gfx12 TH field (ISA Table 13).
+- 2.2 H79 REJECTED (neutral): W03 premise corrected - P_f8 B-fragments were
+  already prefetched into registers (ds_load_u16 batched, median 226 instrs
+  from the next wmma). Candidate prefetched V_a one chain ahead; identical
+  instruction counts, rescheduled PV region, A/B 49K: decode 21.60 vs 21.70
+  (control) t/s = -0.5% (noise), prefill +0.5%. Below the 3% gate; reverted.
+- 2.3 SR REQUANT REJECTED (quality): V_CVT_SR_FP8_F32 dithering WORSE the
+  P requant - native_v=1 test cases ERR 0.0011-0.0013 vs RNE ~0.0007
+  (test-backend-ops FLASH_ATTN_EXT f8: 12/19 vs 19/19). At pre-scale 128 the
+  E4M3 mantissa is already well covered and RNE bias is small; dithering
+  only adds variance. Reverted.
+- 2.4 H77 REJECTED: (a) premise falsified - the decode grid is at most
+  (1, 8, 24) = 192 blocks = exactly 2 CTAs/CU on 96 CUs, so a 3rd CTA would
+  sit idle during decode (fattn-wmma-f16.cu:42). (b) the register-acc
+  variant (VKQ f16 tile removed, LDS 29,568 -> 21,120 B) still regressed:
+  VGPR 156 -> 181 (6 -> 5 waves/SIMD), A/B 49K decode 21.49 vs 22.33 t/s
+  (-3.8%), prefill -3.7%. Correctness was fine (19/19). Reverted.
+
 ## 2026-08-14 - R001 phase 0 closed: W10 gemm audit, ISA tails, backend debt audit
 
 - W10: decode = MMVQ (M<=4, K=5120, N in {5120, 17408}), prefill = MMQ

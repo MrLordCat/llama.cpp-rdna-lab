@@ -2362,11 +2362,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
     def _bench_env_overrides(self) -> dict[str, str]:
         backend_key = self._backend_key_from_display(self.build_backend_combo.currentText().strip()).lower()
         if backend_key == "vulkan":
-            out = self._vulkan_runtime_env()
-            # D096-M: native fp8 attention is the default for f8_e4m3 KV; the
-            # kernel ignores it for other KV types.
-            out["GGML_VK_FA_F8_P5"] = "1"
-            return out
+            return self._vulkan_runtime_env()
         return {}
 
     @staticmethod

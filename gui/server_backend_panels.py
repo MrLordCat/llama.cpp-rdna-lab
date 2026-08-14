@@ -299,7 +299,6 @@ class _VulkanPanel(QWidget):
             out["GGML_VK_AMD_LARGE_MATMUL_VARIANT"] = "wn32"
         else:
             out["GGML_VK_DISABLE_AMD_LARGE_MATMUL"] = "1"
-        out["GGML_VK_FA_F8_P5"] = "1"  # D096-M: native fp8 attention, default for f8 KV
         if self.output_gpu1_check.isChecked():
             out["LLAMA_OUTPUT_DEVICE"] = "Vulkan1"
         if self.kv_gpu1_check.isChecked():

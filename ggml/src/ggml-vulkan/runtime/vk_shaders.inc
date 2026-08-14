@@ -535,56 +535,6 @@ static void ggml_vk_load_shaders(vk_device& device) {
         CREATE_FA(GGML_TYPE_F8_E4M3, f8_e4m3, FA_COOPMAT1, _cm1)
     }
 
-    // D096 P2: build-generated module whose S stage alone uses E4M3 WMMA.
-    if (device->coopmat1_fa_support) {
-        for (auto &fa : device->pipeline_flash_attn_f32_f16[GGML_TYPE_F8_E4M3]) {
-            if (fa.first.path == FA_F8_P2 && fa.first.f32acc) {
-                const uint32_t Br = fa.first.Br;
-                const uint32_t fa_sgs = fa.first.subgroup_size;
-                const bool fa_ds = fa.first.subgroup_size == 0;
-                ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_f8_p2", flash_attn_f32_f16_f8_p2_len, flash_attn_f32_f16_f8_p2_data, "main", 9, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), 1, true, !fa_ds, fa_ds ? 0 : fa_sgs);
-            }
-        }
-    }
-
-    // D096 P5: same fused-Q transform as P4, but V is read raw f8 from the
-    // source cache (fp8 P*V with f32 accumulator, no f16 preconvert pass).
-    if (device->coopmat1_fa_support) {
-        for (auto &fa : device->pipeline_flash_attn_f32_f16[GGML_TYPE_F8_E4M3]) {
-            if (fa.first.path == FA_F8_P5 && fa.first.f32acc) {
-                const uint32_t Br = fa.first.Br;
-                const uint32_t fa_sgs = fa.first.subgroup_size;
-                const bool fa_ds = fa.first.subgroup_size == 0;
-                ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_f8_p5", flash_attn_f32_f16_f8_p5_len, flash_attn_f32_f16_f8_p5_data, "main", 7, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), 1, true, !fa_ds, fa_ds ? 0 : fa_sgs);
-            }
-        }
-    }
-
-    // D096 P4: fused-Q transform with V read from a dense f16 preconvert buffer.
-    if (device->coopmat1_fa_support) {
-        for (auto &fa : device->pipeline_flash_attn_f32_f16[GGML_TYPE_F8_E4M3]) {
-            if (fa.first.path == FA_F8_P4 && fa.first.f32acc) {
-                const uint32_t Br = fa.first.Br;
-                const uint32_t fa_sgs = fa.first.subgroup_size;
-                const bool fa_ds = fa.first.subgroup_size == 0;
-                ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_f8_p4", flash_attn_f32_f16_f8_p4_len, flash_attn_f32_f16_f8_p4_data, "main", 7, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), 1, true, !fa_ds, fa_ds ? 0 : fa_sgs);
-            }
-        }
-    }
-
-    // D096 P3: P2's generated S-only transform with Q8 quantization fused into
-    // the canonical FA workgroup. It has only the seven canonical descriptors.
-    if (device->coopmat1_fa_support) {
-        for (auto &fa : device->pipeline_flash_attn_f32_f16[GGML_TYPE_F8_E4M3]) {
-            if (fa.first.path == FA_F8_P3 && fa.first.f32acc) {
-                const uint32_t Br = fa.first.Br;
-                const uint32_t fa_sgs = fa.first.subgroup_size;
-                const bool fa_ds = fa.first.subgroup_size == 0;
-                ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_f8_p3", flash_attn_f32_f16_f8_p3_len, flash_attn_f32_f16_f8_p3_data, "main", 7, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), 1, true, !fa_ds, fa_ds ? 0 : fa_sgs);
-            }
-        }
-    }
-
     // D096-A2: fp8 native FA kernel - hand-written SPIR-V assembly.
     // f32acc only (f32 accumulation hardcoded); single variant (no aligned
     // split: the coopmat stride parameter handles arbitrary strides), so a
@@ -1523,7 +1473,6 @@ static void ggml_vk_load_shaders(vk_device& device) {
     ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_Q8_0], "cpy_f32_q8_0", cpy_f32_q8_0_len, cpy_f32_q8_0_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_IQ4_NL], "cpy_f32_iq4_nl", cpy_f32_iq4_nl_len, cpy_f32_iq4_nl_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_F8_E4M3], "cpy_f32_f8_e4m3", cpy_f32_f8_e4m3_len, cpy_f32_f8_e4m3_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
-    ggml_vk_create_pipeline(device, device->pipeline_fa_q_f32_f8, "fa_q_f32_f8", fa_q_f32_f8_len, fa_q_f32_f8_data, "main", 3, sizeof(vk_fa_q_f32_f8_push_constants), {1, 1, 1}, {}, 1);
 
 #define SET_ROWS(itype) \
         ggml_vk_create_pipeline(device, device->pipeline_set_rows ## itype [GGML_TYPE_F32],  "set_rows_f32" #itype,  set_rows_f32 ## itype ## _len,  set_rows_f32 ## itype ## _data,  "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true); \

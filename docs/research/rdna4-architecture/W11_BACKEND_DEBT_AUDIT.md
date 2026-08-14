@@ -96,3 +96,35 @@ mtime-sensitive transform pipeline from D096.
 3. Consolidate the winner of each QWEN/small-K toggle pair into the default
    and delete the loser.
 4. Write the surviving env-var registry (3.4 in PHASE2_PLAN.md).
+
+## 2026-08-14: batch 1 executed (PHASE2_PLAN 3.3)
+
+Removed in this batch:
+
+- `GGML_VK_FA_F8_P2..P5` enum members, dispatch branches, pipeline
+  registration blocks in `vk_shaders.inc`, and the whole transform machinery
+  (`--fp8-fa-transform` + `d096_fp8_fa_spirv_*.py` in CMakeLists, generator
+  transforms in `vulkan-shaders-gen.cpp`). The fp8 direction is closed on
+  Vulkan (D4.1: scalar f8 + prefill preconvert is the memory-only route), so
+  the losing variants are gone.
+- `GGML_VK_FA_F8_NATIVE_DECODE` branch in `get_fa_tuning_params` (measured
+  48% regression, diagnostic only).
+- `GGML_VK_FA_HALF_CMP` in-process A/B splitter in `vk_dispatch.inc`.
+- Dead prealloc members `prealloc_fa_q8`/`prealloc_fa_qscale` +
+  `pipeline_fa_q_f32_f8` (P3 machinery; no surviving references).
+- ROCm D102 phase-census scaffolding in `fattn-wmma-f16.cu` (consts, device
+  symbol, init kernel, report, dispatch branch, template flag) - the
+  `phase_census` template parameter was folded back to the plain production
+  instantiation.
+- GUI: `GGML_VK_FA_F8_P5=1` defaults removed from `benchmark_tab.py` and
+  `server_backend_panels.py` (dead env, silently ignored after the removal).
+
+Retained: `GGML_VK_FA_F8_NATIVE` (opt-in prefill kernel) + `GGML_VK_FA_F8_DUMP`
+(its debug dump); `GGML_VK_FA_F8_DIRECT` (live prefill route probe).
+
+Validation: `cmake --build build-rocm` and `build-vulkan` (llama-server +
+test-backend-ops) both clean; ROCm `FLASH_ATTN_EXT -p f8_e4m3` 19/19;
+Vulkan full `FLASH_ATTN_EXT` suite 4037/4290 with 253 failures, ALL non-f8
+(sinks=1-heavy f16/f32/bf16/q8_0 cases) and untouched by this diff - a
+pre-existing suite gap on the Vulkan side (verified at runtime, pre-existence
+inferred from diff scope: no removed code touches those paths).

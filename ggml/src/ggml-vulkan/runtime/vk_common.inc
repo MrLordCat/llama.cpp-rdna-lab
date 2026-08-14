@@ -427,10 +427,6 @@ enum FaCodePath {
     FA_SCALAR,
     FA_COOPMAT1,
     FA_COOPMAT2,
-    FA_F8_P5,
-    FA_F8_P4,
-    FA_F8_P3,
-    FA_F8_P2,
     FA_F8_NATIVE,
 };
 
@@ -439,10 +435,6 @@ static const char * ggml_vk_fa_path_name(FaCodePath path) {
     case FA_SCALAR:    return "scalar";
     case FA_COOPMAT1:  return "coopmat1";
     case FA_COOPMAT2:  return "coopmat2";
-    case FA_F8_P5:     return "f8_p5";
-    case FA_F8_P4:     return "f8_p4";
-    case FA_F8_P3:     return "f8_p3";
-    case FA_F8_P2:     return "f8_p2";
     case FA_F8_NATIVE: return "f8_native";
     default:           return "unknown";
     }
@@ -778,7 +770,6 @@ struct vk_device_struct {
     vk_pipeline pipeline_cpy_f32_f32, pipeline_cpy_f32_f16, pipeline_cpy_f16_f16, pipeline_cpy_f16_f32, pipeline_cpy_f32_bf16, pipeline_cpy_bf16_f32, pipeline_cpy_f32_i32, pipeline_cpy_i32_f32;
     vk_pipeline pipeline_contig_cpy_f32_f32, pipeline_contig_cpy_f32_f16, pipeline_contig_cpy_f16_f16, pipeline_contig_cpy_f16_f32, pipeline_contig_cpy_f32_bf16, pipeline_contig_cpy_bf16_f32, pipeline_contig_cpy_f32_i32, pipeline_contig_cpy_i32_f32;
     vk_pipeline pipeline_cpy_f32_quant[GGML_TYPE_COUNT];
-    vk_pipeline pipeline_fa_q_f32_f8;
     vk_pipeline pipeline_cpy_quant_f32[GGML_TYPE_COUNT];
     vk_pipeline pipeline_cpy_transpose_16, pipeline_cpy_transpose_32;
     vk_pipeline pipeline_set_rows_i32[GGML_TYPE_COUNT];
@@ -1193,18 +1184,6 @@ struct vk_op_unary_push_constants {
     uint32_t ne1_0mp;   uint32_t ne1_0L;
 };
 static_assert(sizeof(vk_op_unary_push_constants) <= 128, "sizeof(vk_op_unary_push_constants) must be <= 128");
-
-struct vk_fa_q_f32_f8_push_constants {
-    uint32_t HSK;
-    uint32_t N;
-    uint32_t heads;
-    uint32_t batches;
-    uint32_t nb01;
-    uint32_t nb02;
-    uint32_t nb03;
-    float attention_scale;
-};
-static_assert(sizeof(vk_fa_q_f32_f8_push_constants) == 32);
 
 static vk_op_unary_push_constants vk_op_unary_push_constants_init(const ggml_tensor * src0, const ggml_tensor * dst, int64_t ne = 0) {
     GGML_ASSERT(ne != 0 || (ggml_nelements(src0) == ggml_nelements(dst)));
@@ -2002,10 +1981,8 @@ struct ggml_backend_vk_context {
     ggml_vk_garbage_collector gc;
     size_t prealloc_size_x, prealloc_size_y, prealloc_size_split_k, prealloc_size_add_rms_partials, prealloc_size_add_rms_partials_offset;
     size_t prealloc_size_fa_k16, prealloc_size_fa_v16, prealloc_size_fa_mask16;
-    size_t prealloc_size_fa_q8, prealloc_size_fa_qscale;
     vk_buffer prealloc_x, prealloc_y, prealloc_split_k, prealloc_add_rms_partials, sync_staging;
     vk_buffer prealloc_fa_k16, prealloc_fa_v16, prealloc_fa_mask16;
-    vk_buffer prealloc_fa_q8, prealloc_fa_qscale;
     vk::Fence fence, almost_ready_fence;
     bool submit_pending {};
     bool almost_ready_fence_pending {};
@@ -2028,7 +2005,6 @@ struct ggml_backend_vk_context {
     // and set to true after the buffer contents are consumed.
     bool prealloc_x_need_sync, prealloc_y_need_sync, prealloc_split_k_need_sync;
     bool prealloc_fa_k16_need_sync, prealloc_fa_v16_need_sync, prealloc_fa_mask16_need_sync;
-    bool prealloc_fa_q8_need_sync, prealloc_fa_qscale_need_sync;
 
     vk_context_ref compute_ctx;
 

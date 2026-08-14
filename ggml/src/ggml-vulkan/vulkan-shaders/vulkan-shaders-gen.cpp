@@ -41,7 +41,6 @@ std::string SPIRV_AS = "spirv-as";
 std::string SPIRV_DIS = "spirv-dis";
 std::string SPIRV_VAL = "spirv-val";
 std::string PYTHON = "python";
-std::string FP8_FA_TRANSFORM = "";
 std::string input_filepath = "";
 std::string output_dir = "/tmp";
 std::string target_hpp = "";
@@ -474,159 +473,6 @@ void spirv_as_to_spv(std::string name, const std::string& source) {
     }
 }
 
-// Generate the native-fp8 P2 module from the build-only canonical cm1 base.
-// The Python tool performs structural audits before and after changing only the
-// S-stage cooperative loads. Keeping this as a build transform avoids a second
-// hand-maintained full flash-attention implementation.
-void transform_fp8_fa_p2() {
-    const std::string base_name = "flash_attn_f32_f16_f8_p2_base_cm1";
-    const std::string output_name = "flash_attn_f32_f16_f8_p2";
-    const std::string base_path = join_paths(output_dir, base_name + ".spv");
-    const std::string output_path = join_paths(output_dir, output_name + ".spv");
-
-    if (input_filepath.empty()) {
-        shader_fnames.emplace_back(output_name, output_path);
-        return;
-    }
-    if (basename(input_filepath) != "flash_attn_cm1.comp") {
-        return;
-    }
-    if (FP8_FA_TRANSFORM.empty()) {
-        throw std::runtime_error("--fp8-fa-transform is required for flash_attn_cm1.comp");
-    }
-
-    std::vector<std::string> cmd = {
-        PYTHON, FP8_FA_TRANSFORM, base_path, output_path,
-        "--spirv-dis", SPIRV_DIS,
-        "--spirv-as", SPIRV_AS,
-        "--spirv-val", SPIRV_VAL,
-    };
-    std::string stdout_str, stderr_str;
-    execute_command(cmd, stdout_str, stderr_str);
-    if (!stdout_str.empty()) {
-        std::cout << stdout_str;
-    }
-    if (!stderr_str.empty()) {
-        throw std::runtime_error("fp8 FA P2 transform failed: " + stderr_str);
-    }
-    shader_fnames.emplace_back(output_name, output_path);
-}
-
-// P3 keeps the same fail-closed S-stage transform but sources Q8 from the
-// canonical workgroup's fused encoder instead of a separate storage buffer.
-void transform_fp8_fa_p3() {
-    const std::string base_name = "flash_attn_f32_f16_f8_p3_base_cm1";
-    const std::string output_name = "flash_attn_f32_f16_f8_p3";
-    const std::string base_path = join_paths(output_dir, base_name + ".spv");
-    const std::string output_path = join_paths(output_dir, output_name + ".spv");
-
-    if (input_filepath.empty()) {
-        shader_fnames.emplace_back(output_name, output_path);
-        return;
-    }
-    if (basename(input_filepath) != "flash_attn_cm1.comp") {
-        return;
-    }
-    if (FP8_FA_TRANSFORM.empty()) {
-        throw std::runtime_error("--fp8-fa-transform is required for flash_attn_cm1.comp");
-    }
-
-    std::vector<std::string> cmd = {
-        PYTHON, FP8_FA_TRANSFORM, base_path, output_path,
-        "--spirv-dis", SPIRV_DIS,
-        "--spirv-as", SPIRV_AS,
-        "--spirv-val", SPIRV_VAL,
-        "--fused-q",
-    };
-    std::string stdout_str, stderr_str;
-    execute_command(cmd, stdout_str, stderr_str);
-    if (!stdout_str.empty()) {
-        std::cout << stdout_str;
-    }
-    if (!stderr_str.empty()) {
-        throw std::runtime_error("fp8 FA P3 transform failed: " + stderr_str);
-    }
-    shader_fnames.emplace_back(output_name, output_path);
-}
-
-// P4 keeps the P3 fused-Q S-stage transform but reads V from a dense f16
-// preconvert buffer (V-only), so the canonical PV path skips tile-local
-// f8->f16 dequant while K*Q stays native fp8.
-void transform_fp8_fa_p4() {
-    const std::string base_name = "flash_attn_f32_f16_f8_p4_base_cm1";
-    const std::string output_name = "flash_attn_f32_f16_f8_p4";
-    const std::string base_path = join_paths(output_dir, base_name + ".spv");
-    const std::string output_path = join_paths(output_dir, output_name + ".spv");
-
-    if (input_filepath.empty()) {
-        shader_fnames.emplace_back(output_name, output_path);
-        return;
-    }
-    if (basename(input_filepath) != "flash_attn_cm1.comp") {
-        return;
-    }
-    if (FP8_FA_TRANSFORM.empty()) {
-        throw std::runtime_error("--fp8-fa-transform is required for flash_attn_cm1.comp");
-    }
-
-    std::vector<std::string> cmd = {
-        PYTHON, FP8_FA_TRANSFORM, base_path, output_path,
-        "--spirv-dis", SPIRV_DIS,
-        "--spirv-as", SPIRV_AS,
-        "--spirv-val", SPIRV_VAL,
-        "--fused-q",
-        "--v-f16",
-    };
-    std::string stdout_str, stderr_str;
-    execute_command(cmd, stdout_str, stderr_str);
-    if (!stdout_str.empty()) {
-        std::cout << stdout_str;
-    }
-    if (!stderr_str.empty()) {
-        throw std::runtime_error("fp8 FA P4 transform failed: " + stderr_str);
-    }
-    shader_fnames.emplace_back(output_name, output_path);
-}
-
-// P5 keeps the P4 fused-Q S-stage but runs the whole PV stage in fp8: P is
-// quantized to shared E4M3 with a per-row scale and V is read as raw fp8,
-// PV accumulates in f32. The transform retypes the P/V cooperative loads.
-void transform_fp8_fa_p5() {
-    const std::string base_name = "flash_attn_f32_f16_f8_p5_base_cm1";
-    const std::string output_name = "flash_attn_f32_f16_f8_p5";
-    const std::string base_path = join_paths(output_dir, base_name + ".spv");
-    const std::string output_path = join_paths(output_dir, output_name + ".spv");
-
-    if (input_filepath.empty()) {
-        shader_fnames.emplace_back(output_name, output_path);
-        return;
-    }
-    if (basename(input_filepath) != "flash_attn_cm1.comp") {
-        return;
-    }
-    if (FP8_FA_TRANSFORM.empty()) {
-        throw std::runtime_error("--fp8-fa-transform is required for flash_attn_cm1.comp");
-    }
-
-    std::vector<std::string> cmd = {
-        PYTHON, FP8_FA_TRANSFORM, base_path, output_path,
-        "--spirv-dis", SPIRV_DIS,
-        "--spirv-as", SPIRV_AS,
-        "--spirv-val", SPIRV_VAL,
-        "--fused-q",
-        "--pv-f8",
-    };
-    std::string stdout_str, stderr_str;
-    execute_command(cmd, stdout_str, stderr_str);
-    if (!stdout_str.empty()) {
-        std::cout << stdout_str;
-    }
-    if (!stderr_str.empty()) {
-        throw std::runtime_error("fp8 FA P5 transform failed: " + stderr_str);
-    }
-    shader_fnames.emplace_back(output_name, output_path);
-}
-
 void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool coopmat2, bool f16acc) {
     std::string load_vec = coopmat2 ? "1" : fp16 ? "8" : "4";
     std::string aligned_b_type_f32 = coopmat2 ? "float" : fp16 ? "mat2x4" : "vec4";
@@ -865,16 +711,6 @@ void process_shaders() {
                     std::string data_a_key = "DATA_A_" + to_uppercase(tname);
                     string_to_spv("flash_attn_f32_f16_" + tname, "flash_attn_cm1.comp",
                         merge_maps(fa_base_dict, {{data_a_key, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"BLOCK_SIZE", "QUANT_K_"+to_uppercase(tname)}, {"COOPMAT", "1"}}), fp16, true, false, f16acc);
-                    if (tname == "f8_e4m3" && !f16acc) {
-                        string_to_spv("flash_attn_f32_f16_f8_p2_base", "flash_attn_cm1.comp",
-                            merge_maps(fa_base_dict, {{data_a_key, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"BLOCK_SIZE", "QUANT_K_F8_E4M3"}, {"COOPMAT", "1"}, {"D096_FP8_S_BASE", "1"}}), fp16, true, false, false);
-                        string_to_spv("flash_attn_f32_f16_f8_p3_base", "flash_attn_cm1.comp",
-                            merge_maps(fa_base_dict, {{data_a_key, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"BLOCK_SIZE", "QUANT_K_F8_E4M3"}, {"COOPMAT", "1"}, {"D096_FP8_S_FUSED_BASE", "1"}}), fp16, true, false, false);
-                        string_to_spv("flash_attn_f32_f16_f8_p4_base", "flash_attn_cm1.comp",
-                            merge_maps(fa_base_dict, {{data_a_key, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"BLOCK_SIZE", "QUANT_K_F8_E4M3"}, {"COOPMAT", "1"}, {"D096_FP8_S_FUSED_BASE", "1"}, {"D096_FP8_V_F16", "1"}}), fp16, true, false, false);
-                        string_to_spv("flash_attn_f32_f16_f8_p5_base", "flash_attn_cm1.comp",
-                            merge_maps(fa_base_dict, {{data_a_key, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"BLOCK_SIZE", "QUANT_K_F8_E4M3"}, {"COOPMAT", "1"}, {"D096_FP8_S_FUSED_BASE", "1"}, {"D096_FP8_V_F16", "1"}, {"D096_FP8_PV_F8", "1"}}), fp16, true, false, false);
-                    }
                 }
 #endif
                 }
@@ -916,9 +752,6 @@ void process_shaders() {
     // fp8 native FA kernel: hand-written SPIR-V assembly (fp8 coopmat reads K/V
     // directly from the f8 KV cache, no preconvert). See D096-A2.
     spirv_as_to_spv("flash_attn_f32_f16_f8_native", "fp8_fa_cm1.spvasm");
-
-    string_to_spv("fa_q_f32_f8", "fa_q_f32_f8.comp",
-        {{"DATA_A_F8_E4M3", "1"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"FLOAT_TYPEV4", "vec4"}}, true);
 
     std::map<std::string, std::string> base_dict = {{"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}};
 
@@ -1273,10 +1106,6 @@ void process_shaders() {
     for (auto &c : compiles) {
         c.wait();
     }
-    transform_fp8_fa_p2();
-    transform_fp8_fa_p3();
-    transform_fp8_fa_p4();
-    transform_fp8_fa_p5();
 }
 
 void write_output_files() {
@@ -1435,9 +1264,6 @@ int main(int argc, char** argv) {
     }
     if (args.find("--python") != args.end()) {
         PYTHON = args["--python"];
-    }
-    if (args.find("--fp8-fa-transform") != args.end()) {
-        FP8_FA_TRANSFORM = args["--fp8-fa-transform"];
     }
     if (args.find("--source") != args.end()) {
         input_filepath = args["--source"]; // The shader source file to compile

@@ -2155,88 +2155,17 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     // D096-A2 (local fork): fp8 native FA kernel - the kernel reads the f8 KV
     // cache directly via fp8 coopmat (no f16 preconvert staging). Opt-in via
     // GGML_VK_FA_F8_NATIVE; f32acc only (see get_fa_tuning_params).
-    // D096 P2/P3/P4/P5 are deliberately fail-closed to ordinary aligned prefill.
-    // P3/P4 additionally fix HSK=256 and Br=16 because their transformed shared
-    // Q8 array has a 4096-byte ABI. P4 adds a dense f16 V preconvert buffer;
-    // P5 (D096-F) keeps V raw f8 and runs fp8 P*V with an f32 accumulator.
-    const bool fa_f8_p5 = (k->type == GGML_TYPE_F8_E4M3) && v->type == k->type &&
-                          HSK == 256 && neq1 > 8 && f32acc &&
-                          (KV % 64) == 0 &&
-                          ((nbq1 / sizeof(float)) & 7) == 0 &&
-                          ((nbk1 / ggml_type_size(k->type)) & 7) == 0 &&
-                          ((nbv1 / ggml_type_size(v->type)) & 7) == 0 &&
-                          ctx->device->coopmat1_fa_support && ctx->device->coopmat_support_16x16x16_f32acc &&
-                          getenv("GGML_VK_FA_F8_P5") != nullptr;
-
-    const bool fa_f8_p4 = !fa_f8_p5 && (k->type == GGML_TYPE_F8_E4M3) && v->type == k->type &&
-                          HSK == 256 && neq1 > 8 && f32acc &&
-                          (KV % 64) == 0 &&
-                          ((nbq1 / sizeof(float)) & 7) == 0 &&
-                          ((nbk1 / ggml_type_size(k->type)) & 7) == 0 &&
-                          ((nbv1 / ggml_type_size(v->type)) & 7) == 0 &&
-                          ctx->device->coopmat1_fa_support && ctx->device->coopmat_support_16x16x16_f32acc &&
-                          getenv("GGML_VK_FA_F8_P4") != nullptr;
-
-    const bool fa_f8_p3 = !fa_f8_p4 && !fa_f8_p5 && (k->type == GGML_TYPE_F8_E4M3) && v->type == k->type &&
-                          HSK == 256 && neq1 > 8 && f32acc &&
-                          (KV % 64) == 0 &&
-                          ((nbq1 / sizeof(float)) & 7) == 0 &&
-                          ((nbk1 / ggml_type_size(k->type)) & 7) == 0 &&
-                          ((nbv1 / ggml_type_size(v->type)) & 7) == 0 &&
-                          ctx->device->coopmat1_fa_support && ctx->device->coopmat_support_16x16x16_f32acc &&
-                          getenv("GGML_VK_FA_F8_P3") != nullptr;
-
-    const bool fa_f8_p2 = !fa_f8_p4 && !fa_f8_p3 && !fa_f8_p5 && (k->type == GGML_TYPE_F8_E4M3) && v->type == k->type && neq1 > 8 && f32acc &&
-                          (KV % 64) == 0 && (HSK % 16) == 0 &&
-                          ((nbq1 / sizeof(float)) & 7) == 0 &&
-                          ((nbk1 / ggml_type_size(k->type)) & 7) == 0 &&
-                          ((nbv1 / ggml_type_size(v->type)) & 7) == 0 &&
-                          ctx->device->coopmat1_fa_support && ctx->device->coopmat_support_16x16x16_f32acc &&
-                          getenv("GGML_VK_FA_F8_P2") != nullptr;
-
-    const bool fa_f8_native = !fa_f8_p4 && !fa_f8_p3 && !fa_f8_p2 && !fa_f8_p5 && (k->type == GGML_TYPE_F8_E4M3) && v->type == k->type && neq1 > 1 && f32acc &&
+    const bool fa_f8_native = (k->type == GGML_TYPE_F8_E4M3) && v->type == k->type && neq1 > 1 && f32acc &&
                               getenv("GGML_VK_FA_F8_NATIVE") != nullptr;
-
-    // D096 D3 (probe): allow the native fp8 coopmat kernel on single-token
-    // decode too. Qwen GQA expands that token to N=6 before tuning, leaving
-    // the Br=16 cooperative geometry under-filled. The clean 2026-08-13 49K
-    // A/B measured 13.28 t/s here versus 25.56 on the default scalar route.
-    const bool fa_f8_native_decode = !fa_f8_native && (k->type == GGML_TYPE_F8_E4M3) && v->type == k->type &&
-                                     neq1 == 1 && f32acc &&
-                                     getenv("GGML_VK_FA_F8_NATIVE") != nullptr &&
-                                     getenv("GGML_VK_FA_F8_NATIVE_DECODE") != nullptr;
-    if (fa_f8_native_decode) {
-        static std::once_flag native_decode_warning_once;
-        std::call_once(native_decode_warning_once, [] {
-            std::cerr << "ggml_vulkan: WARNING: GGML_VK_FA_F8_NATIVE_DECODE enables a diagnostic "
-                         "single-token cooperative-matrix route; on RDNA4/49K it measured about 48% "
-                         "slower than the default scalar f8 decode path" << std::endl;
-        });
-    }
 
     // D096 P1: route raw f8 K/V through the generated DATA_A_F8_E4M3 cm1
     // shader during prefill. The env is also consumed by FA tuning, where it
     // can make the direct cm1 layout fit for GQA decode instead of falling back
     // to scalar; it is therefore a broad route probe, not an isolated scalar
-    // staging switch. Native fp8 WMMA remains a separate diagnostic experiment.
-    const bool fa_f8_direct = !fa_f8_p4 && !fa_f8_p3 && !fa_f8_p2 && !fa_f8_native && !fa_f8_p5 &&
+    // staging switch.
+    const bool fa_f8_direct = !fa_f8_native &&
                               (k->type == GGML_TYPE_F8_E4M3) && v->type == k->type && neq1 > 1 &&
                               getenv("GGML_VK_FA_F8_DIRECT") != nullptr;
-
-    // D096 v108: within-process native/fallback split by REQUEST for clean
-    // pairwise comparisons. GGML_VK_FA_HALF_CMP=N: first N prefill calls
-    // (neq1>4) run native, the rest switch on request parity - request 1
-    // (seq 0..15) native, request 2 (seq 16..31) fallback, request 3 native,
-    // etc. Same prompt + slot delete gives identical inputs on both paths.
-    static int fa_cmp_seq = 0;
-    const char * fa_cmp_env = getenv("GGML_VK_FA_HALF_CMP");
-    bool fa_cmp_native = fa_f8_native || fa_f8_native_decode;
-    if (fa_cmp_env && neq1 > 4) {
-        fa_cmp_seq++;
-        if (fa_cmp_seq > std::atoi(fa_cmp_env)) {
-            fa_cmp_native = ((fa_cmp_seq / 16) % 2) == 0;
-        }
-    }
 
     // D096 D4.3 (local fork): preconvert quantized prefill K/V to f16 before
     // cooperative FA. Decode stays on the compact scalar route. A 2026-08-13
@@ -2244,7 +2173,7 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     // GGML_VK_FA_F8_NATIVE_DECODE and was actually the diagnostic native
     // cooperative route. Clean scalar f8 measured 25.45 tps at 49K versus
     // 27.18 for f16; forced native f8 reproduced 13.28 tps.
-    const bool fa_preconvert = !fa_f8_p4 && !fa_f8_p3 && !fa_f8_p2 && !fa_f8_p5 && !fa_cmp_native && !fa_f8_direct &&
+    const bool fa_preconvert = !fa_f8_native && !fa_f8_direct &&
                                (k->type == GGML_TYPE_Q8_0 || k->type == GGML_TYPE_F8_E4M3) &&
                                v->type == k->type && neq1 > 1 &&
                                getenv("GGML_VK_FA_NO_PRECONVERT") == nullptr;
@@ -2271,8 +2200,6 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
 
     size_t fa_k16_sz = 0;
     size_t fa_v16_sz = 0;
-    size_t fa_q8_sz = 0;
-    size_t fa_qscale_sz = 0;
     size_t nbk2_eff = nbk2;
     size_t nbk3_eff = nbk3;
     size_t nbv2_eff = nbv2;
@@ -2306,56 +2233,6 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         nbk3_eff = nbk2_eff * nek2;
         nbv2_eff = (size_t) v_stride * sizeof(ggml_fp16_t) * nev1;
         nbv3_eff = nbv2_eff * nev2;
-    }
-    if (fa_f8_p5) {
-        // P5: V stays raw f8 in the source cache; no preconvert buffer. The
-        // kernel reads it as fp8 bytes with a row stride of nev0 (f8 per row).
-        v_stride = nev0;
-        nbv2_eff = (size_t) v_stride * nev1;
-        nbv3_eff = nbv2_eff * nev2;
-    }
-    if (fa_f8_p4) {
-        // P4: only V is converted to a dense f16 buffer; K stays raw f8 for the
-        // native fp8 S-stage, Q is quantized inside the FA workgroup (fused).
-        fa_v16_sz = (size_t) nev0 * nev1 * nev2 * nev3 * sizeof(ggml_fp16_t);
-        if (fa_v16_sz > ctx->device->properties.limits.maxStorageBufferRange) {
-            GGML_ABORT("Requested P4 V pre-dequant buffer size is too large");
-        }
-        if (ctx->prealloc_size_fa_v16 < fa_v16_sz) {
-            if (ctx->prealloc_fa_v16_need_sync) {
-                ggml_vk_sync_buffers(ctx, subctx);
-                ctx->prealloc_fa_v16_need_sync = false;
-            }
-            ctx->prealloc_size_fa_v16 = fa_v16_sz;
-            ggml_vk_preallocate_buffers(ctx, subctx);
-        }
-        v_stride = nev0; // f16 elements per row (dense f16 copy)
-        nbv2_eff = (size_t) v_stride * sizeof(ggml_fp16_t) * nev1;
-        nbv3_eff = nbv2_eff * nev2;
-    }
-    if (fa_f8_p2) {
-        fa_q8_sz = (size_t) neq0 * neq1 * neq2 * neq3;
-        fa_qscale_sz = (size_t) CEIL_DIV(neq1, tuning_params.block_rows) * neq2 * neq3 * sizeof(float);
-        if (fa_q8_sz > ctx->device->properties.limits.maxStorageBufferRange ||
-            fa_qscale_sz > ctx->device->properties.limits.maxStorageBufferRange) {
-            GGML_ABORT("Requested P2 Q buffers are too large");
-        }
-        if (ctx->prealloc_size_fa_q8 < fa_q8_sz) {
-            if (ctx->prealloc_fa_q8_need_sync) {
-                ggml_vk_sync_buffers(ctx, subctx);
-                ctx->prealloc_fa_q8_need_sync = false;
-            }
-            ctx->prealloc_size_fa_q8 = fa_q8_sz;
-            ggml_vk_preallocate_buffers(ctx, subctx);
-        }
-        if (ctx->prealloc_size_fa_qscale < fa_qscale_sz) {
-            if (ctx->prealloc_fa_qscale_need_sync) {
-                ggml_vk_sync_buffers(ctx, subctx);
-                ctx->prealloc_fa_qscale_need_sync = false;
-            }
-            ctx->prealloc_size_fa_qscale = fa_qscale_sz;
-            ggml_vk_preallocate_buffers(ctx, subctx);
-        }
     }
 
     const uint32_t alignment = tuning_params.block_cols;
@@ -2545,28 +2422,6 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     vk_subbuffer mask_buf = mask ? ggml_vk_tensor_subbuffer(ctx, mask) : q_buf;
     vk_subbuffer sinks_buf = sinks ? ggml_vk_tensor_subbuffer(ctx, sinks) : q_buf;
     vk_subbuffer mask_opt_buf = use_mask_opt ? ggml_vk_subbuffer(ctx, ctx->prealloc_y, 0) : q_buf;
-    vk_subbuffer q8_buf = fa_f8_p2 ? vk_subbuffer{ctx->prealloc_fa_q8, 0, fa_q8_sz} : q_buf;
-    vk_subbuffer qscale_buf = fa_f8_p2 ? vk_subbuffer{ctx->prealloc_fa_qscale, 0, fa_qscale_sz} : q_buf;
-
-    if (fa_f8_p2) {
-        if (ctx->prealloc_fa_q8_need_sync || ctx->prealloc_fa_qscale_need_sync) {
-            ggml_vk_sync_buffers(ctx, subctx);
-            ctx->prealloc_fa_q8_need_sync = false;
-            ctx->prealloc_fa_qscale_need_sync = false;
-        }
-        ggml_pipeline_request_descriptor_sets(ctx, ctx->device->pipeline_fa_q_f32_f8, 1);
-        const vk_fa_q_f32_f8_push_constants qpc = {
-            HSK, (uint32_t)neq1, (uint32_t)neq2, (uint32_t)neq3,
-            (uint32_t)(nbq1 / sizeof(float)),
-            (uint32_t)(nbq2 / sizeof(float)),
-            (uint32_t)(nbq3 / sizeof(float)),
-            scale,
-        };
-        ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_fa_q_f32_f8,
-                                  {q_buf, q8_buf, qscale_buf}, qpc,
-                                  {CEIL_DIV((uint32_t)neq1, 16), (uint32_t)neq2, (uint32_t)neq3});
-        ggml_vk_sync_buffers(ctx, subctx);
-    }
 
     if (fa_preconvert) {
         // q8_0 / f8_e4m3 -> f16 conversion passes (dequant shaders, f16 output)
@@ -2586,20 +2441,6 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
                                   { CEIL_DIV(v_nelem, 4096), 1, 1 });
         ggml_vk_sync_buffers(ctx, subctx);
         k_buf = k16_buf;
-        v_buf = v16_buf;
-    }
-
-    if (fa_f8_p4) {
-        // P4: only V is pre-converted to f16; K stays raw f8 for the native
-        // fp8 S-stage and Q is quantized inside the FA workgroup.
-        ggml_pipeline_request_descriptor_sets(ctx, ctx->device->pipeline_dequant[v->type], 1);
-        const uint32_t v_nelem = (uint32_t)(nev0 * nev1 * nev2 * nev3);
-        const vk_subbuffer v16_buf{ ctx->prealloc_fa_v16, 0, fa_v16_sz };
-        const std::vector<uint32_t> pc_v = { 1, v_nelem, 0, 0, v_nelem };
-        ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_dequant[v->type],
-                                  { v_buf, v16_buf }, pc_v,
-                                  { CEIL_DIV(v_nelem, 4096), 1, 1 });
-        ggml_vk_sync_buffers(ctx, subctx);
         v_buf = v16_buf;
     }
 
@@ -2786,19 +2627,9 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         }
 
         vk_subbuffer split_k_buf = ggml_vk_subbuffer(ctx, ctx->prealloc_split_k, 0);
-        if (fa_pipeline_state.path == FA_F8_P4 || fa_pipeline_state.path == FA_F8_P3 || fa_pipeline_state.path == FA_F8_P5) {
-            ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
-                                      {q_buf, k_buf, v_buf, mask_buf, sinks_buf, split_k_buf, mask_opt_buf},
-                                      pc, { dispatch_x, workgroups_y, workgroups_z });
-        } else if (fa_pipeline_state.path == FA_F8_P2) {
-            ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
-                                      {q_buf, k_buf, v_buf, mask_buf, sinks_buf, split_k_buf, mask_opt_buf, q8_buf, qscale_buf},
-                                      pc, { dispatch_x, workgroups_y, workgroups_z });
-        } else {
-            ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
-                                      {q_buf, k_buf, v_buf, mask_buf, sinks_buf, split_k_buf, mask_opt_buf},
-                                      pc, { dispatch_x, workgroups_y, workgroups_z });
-        }
+        ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
+                                  {q_buf, k_buf, v_buf, mask_buf, sinks_buf, split_k_buf, mask_opt_buf},
+                                  pc, { dispatch_x, workgroups_y, workgroups_z });
 
         ggml_vk_sync_buffers(ctx, subctx);
         const vk_op_flash_attn_split_k_reduce_push_constants pc2 = { HSV, (uint32_t)ne1, (uint32_t)ne2, (uint32_t)ne3, split_k, (sinks != nullptr) };
@@ -2813,15 +2644,7 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         }
         // D096-C: the native FA pipeline has parameter_count=8 (debug binding 7
         // is unused unless the kernel dump is armed); always pass 8 subbuffers.
-        if (fa_pipeline_state.path == FA_F8_P4 || fa_pipeline_state.path == FA_F8_P3 || fa_pipeline_state.path == FA_F8_P5) {
-            ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
-                                      {q_buf, k_buf, v_buf, mask_buf, sinks_buf, dst_buf, mask_opt_buf},
-                                      pc, { workgroups_x, workgroups_y, workgroups_z });
-        } else if (fa_pipeline_state.path == FA_F8_P2) {
-            ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
-                                      {q_buf, k_buf, v_buf, mask_buf, sinks_buf, dst_buf, mask_opt_buf, q8_buf, qscale_buf},
-                                      pc, { workgroups_x, workgroups_y, workgroups_z });
-        } else if (fa_pipeline_state.path == FA_F8_NATIVE && fa_f8_dbg_armed) {
+        if (fa_pipeline_state.path == FA_F8_NATIVE && fa_f8_dbg_armed) {
             const vk_subbuffer dbg_sb{ ggml_vk_fa8_dbg_buf_ref(), 0, 512 * 1024 };
             ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
                                       {q_buf, k_buf, v_buf, mask_buf, sinks_buf, dst_buf, mask_opt_buf, dbg_sb},
@@ -2882,12 +2705,5 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     if (fa_preconvert) {
         ctx->prealloc_fa_k16_need_sync = true;
         ctx->prealloc_fa_v16_need_sync = true;
-    }
-    if (fa_f8_p4) {
-        ctx->prealloc_fa_v16_need_sync = true;
-    }
-    if (fa_f8_p2) {
-        ctx->prealloc_fa_q8_need_sync = true;
-        ctx->prealloc_fa_qscale_need_sync = true;
     }
 }

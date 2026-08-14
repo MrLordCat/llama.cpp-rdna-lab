@@ -1109,76 +1109,12 @@ static vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_
         return get_fa_tuning_params_coopmat2(device, hsk, hsv, n_rows, n_kv, k_type, v_type, f32acc);
     }
 
-    // D096 P5: same fused-Q/PV fp8 transforms as P4, but V is read raw f8
-    // (fp8 P*V, f32 accumulator) and there is no f16 preconvert pass.
-    if (k_type == GGML_TYPE_F8_E4M3 && v_type == k_type && hsk == 256 && f32acc && n_rows > 8 &&
-        device->coopmat1_fa_support && device->coopmat_support_16x16x16_f32acc &&
-        getenv("GGML_VK_FA_F8_P5") != nullptr) {
-        vk_fa_tuning_params params = get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, f32acc);
-        if (params.block_rows == 16) {
-            params.path = FA_F8_P5;
-            params.shmem_staging = 0;
-            return params;
-        }
-    }
-
-    // D096 P4: same fused-Q transform as P3, but V comes from a dense f16
-    // preconvert buffer so the canonical PV path needs no tile-local dequant.
-    if (k_type == GGML_TYPE_F8_E4M3 && v_type == k_type && hsk == 256 && f32acc && n_rows > 8 &&
-        device->coopmat1_fa_support && device->coopmat_support_16x16x16_f32acc &&
-        getenv("GGML_VK_FA_F8_P5") == nullptr && getenv("GGML_VK_FA_F8_P4") != nullptr) {
-        vk_fa_tuning_params params = get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, f32acc);
-        if (params.block_rows == 16) {
-            params.path = FA_F8_P4;
-            params.shmem_staging = 0;
-            return params;
-        }
-    }
-
-    // D096 P3: the same generated S-only fp8 transform as P2, but Q is
-    // quantized into shared E4M3 inside the canonical FA workgroup. The fixed
-    // 4096-byte Q tile ABI is deliberately shape-gated to Br=16, HSK=256.
-    if (k_type == GGML_TYPE_F8_E4M3 && v_type == k_type && hsk == 256 && f32acc && n_rows > 8 &&
-        device->coopmat1_fa_support && device->coopmat_support_16x16x16_f32acc &&
-        getenv("GGML_VK_FA_F8_P5") == nullptr && getenv("GGML_VK_FA_F8_P4") == nullptr && getenv("GGML_VK_FA_F8_P3") != nullptr) {
-        vk_fa_tuning_params params = get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, f32acc);
-        if (params.block_rows == 16) {
-            params.path = FA_F8_P3;
-            params.shmem_staging = 0;
-            return params;
-        }
-    }
-
-    // D096 P2: generated canonical cm1 with only K*Q->S transformed to fp8
-    // cooperative matrices. Restrict to ordinary prefill; short GQA requests
-    // keep the canonical route and are not part of the tile-scale ABI.
-    if (k_type == GGML_TYPE_F8_E4M3 && v_type == k_type && f32acc && n_rows > 8 &&
-        device->coopmat1_fa_support && device->coopmat_support_16x16x16_f32acc &&
-        getenv("GGML_VK_FA_F8_P3") == nullptr && getenv("GGML_VK_FA_F8_P2") != nullptr) {
-        vk_fa_tuning_params params = get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, f32acc);
-        params.path = FA_F8_P2;
-        params.shmem_staging = 0;
-        return params;
-    }
-
     // D096-A2 (local fork): fp8 native FA kernel - hand-written SPIR-V assembly
     // (fp8 coopmat reads K/V directly from the f8 KV cache; no f16 preconvert,
     // no shmem K staging). f32acc only; opt-in via GGML_VK_FA_F8_NATIVE.
     if (k_type == GGML_TYPE_F8_E4M3 && v_type == k_type && f32acc && n_rows > 1 &&
         device->coopmat1_fa_support && device->coopmat_support_16x16x16_f32acc &&
         getenv("GGML_VK_FA_F8_NATIVE") != nullptr) {
-        vk_fa_tuning_params params = get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, f32acc);
-        params.path = FA_F8_NATIVE;
-        params.shmem_staging = 0; // native kernel reads K directly from the f8 KV cache
-        return params;
-    }
-
-    // D096 D3 (probe): native fp8 coopmat on single-token decode under
-    // GGML_VK_FA_F8_NATIVE_DECODE. Qwen GQA reaches this as n_rows=6; the clean
-    // 49K A/B rejected it at 13.28 t/s versus 25.56 for default scalar f8.
-    if (k_type == GGML_TYPE_F8_E4M3 && v_type == k_type && f32acc && n_rows == 1 &&
-        device->coopmat1_fa_support && device->coopmat_support_16x16x16_f32acc &&
-        getenv("GGML_VK_FA_F8_NATIVE") != nullptr && getenv("GGML_VK_FA_F8_NATIVE_DECODE") != nullptr) {
         vk_fa_tuning_params params = get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, f32acc);
         params.path = FA_F8_NATIVE;
         params.shmem_staging = 0; // native kernel reads K directly from the f8 KV cache

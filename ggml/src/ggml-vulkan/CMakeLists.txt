@@ -218,9 +218,6 @@ if (Vulkan_FOUND)
               CONFIGURE_DEPENDS "${_ggml_vk_input_dir}/*.cpp"
                                 "${_ggml_vk_input_dir}/*.h"
                                 "${_ggml_vk_input_dir}/*.glsl")
-    list(APPEND _ggml_vk_shaders_gen_sources
-         "${CMAKE_SOURCE_DIR}/scripts/research/d096_fp8_fa_spirv_audit.py"
-         "${CMAKE_SOURCE_DIR}/scripts/research/d096_fp8_fa_spirv_transform.py")
 
     add_custom_command(
         OUTPUT ${_ggml_vk_header}
@@ -229,7 +226,6 @@ if (Vulkan_FOUND)
             --spirv-as   ${Vulkan_SPIRV_AS_EXECUTABLE}
             --spirv-dis  ${Vulkan_SPIRV_DIS_EXECUTABLE}
             --spirv-val  ${Vulkan_SPIRV_VAL_EXECUTABLE}
-            --fp8-fa-transform ${CMAKE_SOURCE_DIR}/scripts/research/d096_fp8_fa_spirv_transform.py
             --output-dir ${_ggml_vk_output_dir}
             --target-hpp ${_ggml_vk_header}
         DEPENDS ${_ggml_vk_shaders_gen_sources}
