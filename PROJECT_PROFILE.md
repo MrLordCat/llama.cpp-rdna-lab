@@ -50,6 +50,7 @@ fixes без импорта нерелевантных backend, converter и CI-
 | `bge-m3-Q8_0.gguf` | ~605 MB | embeddings |
 | `Qwen3.5-9B-Q6_K.gguf` | ~6.9 GB | быстрый Qwen text/VLM pair |
 | `Qwen3.6-27B-Q4_K_M.gguf` | ~15.9 GiB | primary dense Qwen3.6, MTP-enabled, dual-GPU |
+| `Qwen3.8-27B-Q4_K_M.gguf` | ~17.1 GiB | new Qwen3.8 (2026-08), same qwen35 family, MTP-enabled; verified on Vulkan + ROCm 2026-08-14 |
 | `Qwen3.6-27B-Q3_K_S.gguf` | ~11.5 GB | secondary headroom/vision/Q3 research model |
 | `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf` | ~12.3 GB | MoE Qwen3.6 A3B для RX 9070 XT |
 | `mmproj-F16.gguf` | ~876 MB | generic VLM projector |
