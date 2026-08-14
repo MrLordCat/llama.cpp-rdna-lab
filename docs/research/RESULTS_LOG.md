@@ -11,6 +11,11 @@
   Machine has prior-day watchdog dumps (Aug 8-13). Aftermath: the second
   RX 9070 XT is DISABLED by Windows (PnP code 22) - dual-GPU lanes are down
   until the device is re-enabled; single-GPU lanes remain usable.
+- 3.2 MTP production track CONFIRMED on the debt-cleaned binary
+  (f07aede1b, 49K dual-ROCm, f8 KV, fresh boot after GPU1 re-enable):
+  draft-mtp n=2 decode 39.98 t/s (acceptance 78/96) vs adjacent spec=none
+  22.72 t/s = 1.76x; the 38.9 t/s target is met. MTP stays the production
+  decode configuration on ROCm.
 - 3.4 env registry written: docs/research/ENV_VARS.md (180 live GGML_* vars,
   grouped; removed-by-cleanup list; server-side LLAMA_* and bench vars).
 - 3.2 MTP production confirmation is blocked by the GPU1 outage.
