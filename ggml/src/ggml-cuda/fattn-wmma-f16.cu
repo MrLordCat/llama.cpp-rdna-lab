@@ -38,10 +38,91 @@ static int ggml_cuda_wmma_fattn_forced_cols_per_block() {
     return cached;
 }
 
+// D102: template-bounded phase census for the D256 full-native N<=4 body.
+// The small-N decode grid is at most (1, 8, 24) = 192 blocks. Each block
+// writes its four accumulated clock64() phase deltas into pinned host memory
+// through a device pointer installed by a tiny init kernel captured in the
+// same graph. The host reads the pinned mirror with plain memory access at
+// exit; no device-symbol host lookup and no HIP call after teardown is used.
+constexpr int GGML_ROCM_FATTN_PHASE_CENSUS_BLOCKS = 192;
+constexpr int GGML_ROCM_FATTN_PHASE_CENSUS_PHASES = 4;
+__device__ unsigned long long * gg_rocm_fattn_phase_census_dst = nullptr;
+
+#if defined(GGML_USE_HIP)
+static __global__ void ggml_rocm_fattn_phase_census_init_kernel(
+        unsigned long long * dst) {
+    gg_rocm_fattn_phase_census_dst = dst;
+}
+
+static unsigned long long * gg_rocm_fattn_phase_census_host = nullptr;
+static unsigned long long * gg_rocm_fattn_phase_census_host_dev = nullptr;
+static int gg_rocm_fattn_phase_census_device_count = 0;
+
+// D102: per-device phase shares are mirrored into a pinned host buffer by the
+// census kernel itself. The mirror is refreshed on every graph replay, so the
+// exit handler only reads plain host memory and never touches HIP.
+static void ggml_rocm_fattn_phase_census_report() {
+    if (gg_rocm_fattn_phase_census_host == nullptr) {
+        return;
+    }
+    constexpr size_t region = GGML_ROCM_FATTN_PHASE_CENSUS_BLOCKS*GGML_ROCM_FATTN_PHASE_CENSUS_PHASES;
+    for (int dev = 0; dev < gg_rocm_fattn_phase_census_device_count; ++dev) {
+        const unsigned long long * data = gg_rocm_fattn_phase_census_host + dev*region;
+
+        unsigned long long totals[GGML_ROCM_FATTN_PHASE_CENSUS_PHASES] = {0, 0, 0, 0};
+        int used = 0;
+        for (int s = 0; s < GGML_ROCM_FATTN_PHASE_CENSUS_BLOCKS; ++s) {
+            unsigned long long total = 0;
+            for (int p = 0; p < GGML_ROCM_FATTN_PHASE_CENSUS_PHASES; ++p) {
+                total += data[s*GGML_ROCM_FATTN_PHASE_CENSUS_PHASES + p];
+            }
+            if (total == 0) {
+                continue;
+            }
+            ++used;
+            for (int p = 0; p < GGML_ROCM_FATTN_PHASE_CENSUS_PHASES; ++p) {
+                totals[p] += data[s*GGML_ROCM_FATTN_PHASE_CENSUS_PHASES + p];
+            }
+        }
+
+        const unsigned long long sum = totals[0] + totals[1] + totals[2] + totals[3];
+        if (sum > 0) {
+            fprintf(stderr,
+                "GGML_TRACE_FATTN_PHASE_CENSUS: dev=%d blocks=%d kq=%.1f%% softmax=%.1f%% pv=%.1f%% merge=%.1f%%\n",
+                dev, used,
+                100.0*totals[0]/sum, 100.0*totals[1]/sum,
+                100.0*totals[2]/sum, 100.0*totals[3]/sum);
+        }
+    }
+}
+
+static void ggml_rocm_fattn_phase_census_prepare_copy(ggml_backend_cuda_context & ctx) {
+    constexpr size_t region = GGML_ROCM_FATTN_PHASE_CENSUS_BLOCKS*GGML_ROCM_FATTN_PHASE_CENSUS_PHASES;
+    if (gg_rocm_fattn_phase_census_host == nullptr) {
+        gg_rocm_fattn_phase_census_device_count = ggml_cuda_info().device_count;
+        if (hipHostMalloc((void **) &gg_rocm_fattn_phase_census_host,
+                sizeof(unsigned long long)*region*gg_rocm_fattn_phase_census_device_count,
+                hipHostMallocDefault) != hipSuccess ||
+            hipHostGetDevicePointer((void **) &gg_rocm_fattn_phase_census_host_dev,
+                gg_rocm_fattn_phase_census_host, 0) != hipSuccess) {
+            gg_rocm_fattn_phase_census_host = nullptr;
+            gg_rocm_fattn_phase_census_host_dev = nullptr;
+            gg_rocm_fattn_phase_census_device_count = 0;
+            return;
+        }
+        std::atexit(ggml_rocm_fattn_phase_census_report);
+    }
+    // Captured init node: every replay re-installs this device's mirror
+    // pointer before the census kernel writes its phase deltas into it.
+    ggml_rocm_fattn_phase_census_init_kernel<<<1, 1, 0, ctx.stream()>>>(
+        gg_rocm_fattn_phase_census_host_dev + ctx.device*region);
+}
+#endif // defined(GGML_USE_HIP)
+
 // D == head size, VKQ_stride == num VKQ rows calculated in parallel:
 template<int D, int ncols, int nwarps, int VKQ_stride, typename KQ_acc_t,
     bool use_logit_softcap, bool q8_v_direct = false, bool write_meta_single = false,
-    bool native_f8_kq = false, bool native_f8_v = false>
+    bool native_f8_kq = false, bool native_f8_v = false, bool phase_census = false>
 __launch_bounds__(nwarps*ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void flash_attn_ext_f16(
         const char * __restrict__ Q,
@@ -144,6 +225,14 @@ static __global__ void flash_attn_ext_f16(
     const int stride_K  = nb11 / sizeof(kq_input_t);
     const int stride_V  = nb21 / sizeof(v_input_t);
     const int stride_V_q8 = nb21 / sizeof(block_q8_0);
+
+    // D102 phase census accumulators. Unused in the production instantiations
+    // and eliminated by the compiler there.
+    unsigned long long census_t_kq = 0;
+    unsigned long long census_t_sm = 0;
+    unsigned long long census_t_pv = 0;
+    unsigned long long census_t_mg = 0;
+    unsigned long long census_t_prev = 0;
 
     const float slopef = get_alibi_slope(max_bias, head, n_head_log2, m0, m1);
     const half  slopeh = __float2half(slopef);
@@ -257,6 +346,9 @@ static __global__ void flash_attn_ext_f16(
 
     // Iterate over ne11 == previous tokens:
     const int k_VKQ_max = KV_max ? KV_max[sequence*gridDim.x + blockIdx.x] : ne11;
+    if constexpr (phase_census) {
+        census_t_prev = clock64();
+    }
     for (int k_VKQ_0 = blockIdx.y*FATTN_KQ_STRIDE; k_VKQ_0 < k_VKQ_max; k_VKQ_0 += gridDim.y*FATTN_KQ_STRIDE) {
         // Calculate tile of KQ:
 #pragma unroll
@@ -287,6 +379,12 @@ static __global__ void flash_attn_ext_f16(
         }
 
         __syncthreads();
+
+        if constexpr (phase_census) {
+            const unsigned long long census_t_now = clock64();
+            census_t_kq += census_t_now - census_t_prev;
+            census_t_prev = census_t_now;
+        }
 
         // Calculate softmax for each KQ column using the current max. value.
         // The divisor is stored in KQ_rowsum and will be applied at the end.
@@ -424,6 +522,12 @@ static __global__ void flash_attn_ext_f16(
 
         __syncthreads();
 
+        if constexpr (phase_census) {
+            const unsigned long long census_t_now = clock64();
+            census_t_sm += census_t_now - census_t_prev;
+            census_t_prev = census_t_now;
+        }
+
         frag_b_v KQ_b[FATTN_KQ_STRIDE/(VKQ_ratio*16)][ncols/frag_n];
 #pragma unroll
         for (int j0 = 0; j0 < ncols; j0 += frag_n) {
@@ -539,6 +643,12 @@ static __global__ void flash_attn_ext_f16(
 
         __syncthreads();
 
+        if constexpr (phase_census) {
+            const unsigned long long census_t_now = clock64();
+            census_t_pv += census_t_now - census_t_prev;
+            census_t_prev = census_t_now;
+        }
+
         if constexpr (native_f8_v) {
             static_assert(VKQ_ratio == 1, "native FP8 V merge expects one accumulator group");
 #pragma unroll 1
@@ -580,6 +690,21 @@ static __global__ void flash_attn_ext_f16(
         }
 
         __syncthreads();
+
+        if constexpr (phase_census) {
+            const unsigned long long census_t_now = clock64();
+            census_t_mg += census_t_now - census_t_prev;
+            const unsigned long long linear =
+                ((unsigned long long) blockIdx.z*gridDim.y + blockIdx.y)*gridDim.x + blockIdx.x;
+            if (linear < GGML_ROCM_FATTN_PHASE_CENSUS_BLOCKS && threadIdx.x == 0 && threadIdx.y == 0 &&
+                    gg_rocm_fattn_phase_census_dst != nullptr) {
+                gg_rocm_fattn_phase_census_dst[linear*GGML_ROCM_FATTN_PHASE_CENSUS_PHASES + 0] = census_t_kq;
+                gg_rocm_fattn_phase_census_dst[linear*GGML_ROCM_FATTN_PHASE_CENSUS_PHASES + 1] = census_t_sm;
+                gg_rocm_fattn_phase_census_dst[linear*GGML_ROCM_FATTN_PHASE_CENSUS_PHASES + 2] = census_t_pv;
+                gg_rocm_fattn_phase_census_dst[linear*GGML_ROCM_FATTN_PHASE_CENSUS_PHASES + 3] = census_t_mg;
+                __threadfence_system();
+            }
+        }
     }
 
     // Apply attention sinks
@@ -897,12 +1022,32 @@ void ggml_cuda_flash_attn_ext_wmma_f16_case(ggml_backend_cuda_context & ctx, ggm
         static_assert(D == 256 && cols_per_block == 16 && nwarps == 8,
             "the native-only body owns the D=256/cols16/warps8 shape");
         GGML_ASSERT(f8_native_v);
+        const ggml_tensor * Q = dst->src[0];
+        bool phase_census_enabled = false;
+#if defined(GGML_USE_HIP)
+        // D102: per-phase clock64 shares, decode/verify rows only. Prefill and
+        // every other route keep the unchanged production instantiation.
+        phase_census_enabled = std::getenv("GGML_ROCM_FATTN_PHASE_CENSUS") != nullptr &&
+            Q->ne[1] <= 4;
+#endif
         fattn_kernel_t f8_kernel;
         if (logit_softcap == 0.0f) {
             if (f8_native_kq) {
-                f8_kernel = flash_attn_ext_f16<
-                    D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
-                    float, false, false, false, true, true>;
+                if (phase_census_enabled) {
+#if defined(GGML_USE_HIP)
+                    // D102: mirror the census slots into pinned host memory
+                    // with an async node inside the same capture. No sync and
+                    // no HIP call ever happens after teardown.
+                    ggml_rocm_fattn_phase_census_prepare_copy(ctx);
+#endif
+                    f8_kernel = flash_attn_ext_f16<
+                        D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                        float, false, false, false, true, true, true>;
+                } else {
+                    f8_kernel = flash_attn_ext_f16<
+                        D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                        float, false, false, false, true, true>;
+                }
             } else {
                 f8_kernel = flash_attn_ext_f16<
                     D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
@@ -1075,7 +1220,6 @@ void ggml_cuda_flash_attn_ext_wmma_f16(ggml_backend_cuda_context & ctx, ggml_ten
         ggml_cuda_flash_attn_ext_use_rdna4_f8_native_v(ctx.device, dst)) {
         // D099 native FP8 always uses the fp32-accumulator 16-column body.
         constexpr int cols_per_block = 16;
-        trace_dispatch(cols_per_block);
         // The full native FP8 body uses eight waves to halve each lane's VKQ
         // fragment count. Keeping this as a separate native-only instantiation
         // avoids pulling the four-wave-only q8 variants into the 256-thread
@@ -1083,12 +1227,16 @@ void ggml_cuda_flash_attn_ext_wmma_f16(ggml_backend_cuda_context & ctx, ggml_ten
         // wins both the 12K and 49K full-FP8 lanes.
         if (Q->ne[0] == 256) {
             if (ggml_cuda_flash_attn_ext_use_rdna4_f8_native_v(ctx.device, dst)) {
+                trace_dispatch(cols_per_block);
                 ggml_cuda_flash_attn_ext_wmma_f16_case<256, cols_per_block, float, 8, true>(ctx, dst);
             } else {
+                trace_dispatch(cols_per_block);
                 ggml_cuda_flash_attn_ext_wmma_f16_case<256, cols_per_block, float>(ctx, dst);
             }
             return;
         }
+
+        trace_dispatch(cols_per_block);
 
         switch (Q->ne[0]) {
             case 64:

@@ -22,6 +22,30 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
             CUDA_CHECK(cudaFreeHost(slot.host));
         }
     }
+#if defined(GGML_USE_HIP)
+    for (auto & slot : graph_device_trace_slots) {
+        if (slot.pending && slot.end != nullptr) {
+            ggml_cuda_set_device(device);
+            CUDA_CHECK(cudaEventSynchronize(slot.end));
+            float elapsed_ms = 0.0f;
+            CUDA_CHECK(hipEventElapsedTime(&elapsed_ms, slot.start, slot.end));
+            GGML_LOG_INFO(
+                "GGML_TRACE_CUDA_GRAPH_DEVICE_TIMING: dev=%d key=%p nodes=%d uid=%zu "
+                "use=%d update=%d device_ms=%.3f flush=1\n",
+                device, slot.key, slot.nodes, (size_t) slot.uid,
+                slot.use ? 1 : 0, slot.update ? 1 : 0, elapsed_ms);
+            slot.pending = false;
+        }
+        if (slot.start != nullptr) {
+            ggml_cuda_set_device(device);
+            CUDA_CHECK(cudaEventDestroy(slot.start));
+        }
+        if (slot.end != nullptr) {
+            ggml_cuda_set_device(device);
+            CUDA_CHECK(cudaEventDestroy(slot.end));
+        }
+    }
+#endif
     for (int i = 0; i < GGML_CUDA_MAX_DEVICES; ++i) {
         for (int j = 0; j < GGML_CUDA_MAX_STREAMS; ++j) {
             if (streams[i][j] != nullptr) {

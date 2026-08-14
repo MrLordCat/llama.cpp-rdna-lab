@@ -175,7 +175,7 @@ gui/*.pyc
 /log*.text
 
 # Local-only agent/runtime overrides
-
+subProject_q4/
 AGENTS.local.md
 .pi/SYSTEM.md
 NUL

@@ -1361,6 +1361,19 @@ struct ggml_cuda_concurrent_event {
     }
 };
 
+#if defined(GGML_USE_HIP)
+struct ggml_cuda_graph_device_trace_slot {
+    cudaEvent_t start = nullptr;
+    cudaEvent_t end   = nullptr;
+    bool pending      = false;
+    const void * key  = nullptr;
+    uint64_t uid      = 0;
+    int nodes         = 0;
+    bool use          = false;
+    bool update       = false;
+};
+#endif
+
 struct ggml_cuda_stream_context {
     std::unordered_map<const ggml_tensor *, ggml_cuda_concurrent_event> concurrent_events;
 
@@ -1405,6 +1418,12 @@ struct ggml_backend_cuda_context {
     bool cublas_src1_f16_reuse_valid[GGML_CUDA_MAX_DEVICES] = {false};
 
     int curr_stream_no = 0;
+
+#if defined(GGML_USE_HIP)
+    static constexpr size_t GRAPH_DEVICE_TRACE_SLOTS = 64;
+    std::array<ggml_cuda_graph_device_trace_slot, GRAPH_DEVICE_TRACE_SLOTS> graph_device_trace_slots;
+    size_t graph_device_trace_cursor = 0;
+#endif
 
 #ifdef USE_CUDA_GRAPH
     // Map from first_node_ptr to cuda_graph - allows multiple graphs per context

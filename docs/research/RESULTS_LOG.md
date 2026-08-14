@@ -1,5 +1,61 @@
 # Results Log
 
+## 2026-08-14 - D102 ROCm full-FP8 fused-body phase census
+
+- Template-bounded `clock64()` census inside the D256 full-native decode
+  kernel, env-gated (`GGML_ROCM_FATTN_PHASE_CENSUS=1`, `Q->ne[1] <= 4`);
+  production instantiation byte-identical.
+- 49K census, 192 blocks per device, both GPUs agree: P*V `55.4%`,
+  KQ `28.3%`, softmax+P requant `14.3%`, merge `2.0%`.
+- No phase owns 60%, so D102 closes without a prototype; the fused body is
+  jointly MMA/register/bandwidth bound. The open lever is the fp32 VKQ
+  materialization cost inside the P*V phase (H75, D103), validated 98K-first
+  because the FA kernel is only ~20% of a 49K decode token.
+- Output mechanism: HIP on Windows cannot host-copy device symbols
+  (`invalid device symbol`), a sync symbol copy in an `atexit` handler hangs
+  an unkillable process after teardown, and sync copies inside capture poison
+  the graph. The kept mechanism writes deltas directly into pinned host
+  memory via a device pointer installed by a captured init kernel.
+- Census run distorted by design (decode `19.70` vs `22.82-22.94` adjacent
+  controls) from the per-step pinned writes and fence; phase shares cover
+  only the chunk loop and are unaffected.
+- Focused ROCm0 FP8 correctness: `2/2` production path, `2/2` census path.
+
+- Details: `docs/research/major-topology/D102_ROCM_FP8_FUSED_BODY_PHASE_CENSUS.md`
+
+## 2026-08-14 - D101 ROCm full-FP8 long-KV phase ceiling
+
+- The 49K full-native center measured `1794.77/22.815/5.625` for
+  prompt/decode/aggregate. KQ-only fell to `1745.31/19.60/5.29` (`-14.1%`
+  decode), and the portable reference fell to `1694.78/17.31/5.01`
+  (`-24.1%`). Both native FP8 phases remain material production wins.
+- A default-off PB8 result-combine prototype computed shared exponential
+  scales and denominator once rather than in all 256 D lanes. ROCm0 native-V
+  correctness passed `2/2`, and exact route proof passed on both GPUs.
+- The same-binary A-B-A was neutral: controls centered at `22.865 tok/s` and
+  the candidate measured `22.91` (`+0.20%`) with slightly lower prompt and
+  aggregate throughput. The prototype and its environment gate were removed.
+- No 98K run was admitted because neither phase rollback nor the bounded
+  prototype cleared the 49K `>=3%` gate. No production policy changed.
+
+- Details: `docs/research/major-topology/D101_ROCM_FP8_LONG_KV_PHASE_CEILING.md`
+
+## 2026-08-13 - D100 ROCm long-context execution-gap diagnosis
+
+- Adjacent 49K full-FP8 controls measured `1814.35/22.66/9.05` for
+  `spec=none` and `1746.27/38.89/10.57` for MTP n2 with `76.62%` acceptance.
+- Stable graph replay and asynchronous HIP event timing reject host dispatch
+  as the dominant ceiling: steady launch is about `0.6 ms` per graph, while
+  N=1 device graphs are `18.829/19.642 ms` p50 at 49K and
+  `21.329/22.192 ms` at 98K across ROCm1/ROCm0.
+- Rejected and removed full-FP8 topology probes: 16 waves (`-1.85%` decode),
+  an unsupported rocWMMA 8-column fragment layout, 32 KV slices (`-1.35%`),
+  and 4 KV slices (`+0.31%`, noise in an A-B-A bracket).
+- Keep default-off whole-graph device timing, FA launch-geometry tracing and
+  the trace summarizer. No production policy changed.
+
+- Details: `docs/research/major-topology/D100_ROCM_LONG_CONTEXT_EXECUTION_GAP.md`
+
 ## 2026-08-13 - D096 D6 independent ROCm draft-FP8 cache
 
 - Stopped the target-context `LLAMA_VK_MTP_KV_LAST_F16` precision tail from

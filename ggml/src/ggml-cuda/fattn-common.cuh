@@ -1371,6 +1371,17 @@ void launch_fattn(
         }
     }
 
+
+    if (std::getenv("GGML_TRACE_FATTN_LAUNCH_CONFIG") != nullptr) {
+        GGML_LOG_INFO(
+            "GGML_TRACE_FATTN_LAUNCH_CONFIG: dev=%d D=%lld q_rows=%lld kv=%lld ncols=%d nwarps=%d "
+            "ntiles_dst=%d ntiles_kv=%d max_blocks_per_sm=%d nsm=%d parallel_blocks=%d "
+            "grid=(%u,%u,%u) stream_k=%d\n",
+            ctx.device, (long long) Q->ne[0], (long long) Q->ne[1], (long long) K->ne[1],
+            ncols, nwarps, ntiles_dst, ntiles_KV, max_blocks_per_sm, nsm, parallel_blocks,
+            blocks_num.x, blocks_num.y, blocks_num.z, stream_k ? 1 : 0);
+    }
+
     float scale         = 1.0f;
     float max_bias      = 0.0f;
     float logit_softcap = 0.0f;

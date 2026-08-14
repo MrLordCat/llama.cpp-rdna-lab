@@ -1465,6 +1465,9 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
 
     static const bool trace_graph_host_timing = getenv("GGML_TRACE_CUDA_GRAPH_HOST_TIMING") != nullptr;
+#if defined(GGML_USE_HIP)
+    static const bool trace_graph_device_timing = getenv("GGML_TRACE_CUDA_GRAPH_DEVICE_TIMING") != nullptr;
+#endif
     const int64_t t_start_us = trace_graph_host_timing ? ggml_time_us() : 0;
     int64_t t_device_us = t_start_us;
     int64_t t_key_us = t_start_us;
@@ -1552,11 +1555,26 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 
     if (ggml_cuda_graph_trace_state_enabled()) {
         const ggml_tensor * first = cgraph->n_nodes > 0 ? cgraph->nodes[0] : nullptr;
+        const ggml_tensor * last  = cgraph->n_nodes > 0 ? cgraph->nodes[cgraph->n_nodes - 1] : nullptr;
         GGML_LOG_INFO(
-                "%s: dev=%d key=%p first=%p first_op=%s first_name=%s uid=%zu nodes=%d enabled=%d compatible=%d props_changed=%d warmup_before=%d warmup_after=%d instance_before=%d use=%d update=%d\n",
+            "%s: dev=%d key=%p first=%p first_op=%s first_name=%s "
+            "first_ne=(%lld,%lld,%lld,%lld) last_op=%s last_name=%s "
+            "last_ne=(%lld,%lld,%lld,%lld) uid=%zu nodes=%d enabled=%d "
+            "compatible=%d props_changed=%d warmup_before=%d warmup_after=%d "
+            "instance_before=%d use=%d update=%d\n",
                 __func__, cuda_ctx->device, graph_key, (const void *) first,
                 first ? ggml_op_name(first->op) : "none",
                 first ? first->name : "",
+            first ? (long long) first->ne[0] : -1LL,
+            first ? (long long) first->ne[1] : -1LL,
+            first ? (long long) first->ne[2] : -1LL,
+            first ? (long long) first->ne[3] : -1LL,
+            last ? ggml_op_name(last->op) : "none",
+            last ? last->name : "",
+            last ? (long long) last->ne[0] : -1LL,
+            last ? (long long) last->ne[1] : -1LL,
+            last ? (long long) last->ne[2] : -1LL,
+            last ? (long long) last->ne[3] : -1LL,
                 (size_t) cgraph->uid, cgraph->n_nodes,
                 graph_enabled ? 1 : 0,
                 graph_compatible ? 1 : 0,
@@ -1578,13 +1596,62 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
         CUDA_CHECK(cudaStreamBeginCapture(cuda_ctx->stream(), cudaStreamCaptureModeRelaxed));
     }
 
+#if defined(GGML_USE_HIP)
+    ggml_cuda_graph_device_trace_slot * device_trace_slot = nullptr;
+    // Recording an event immediately before stream capture would make the
+    // capture boundary depend on an outstanding operation. Skip the rare
+    // capture/update calls; steady direct execution and graph replay are the
+    // D100 timing targets.
+    if (trace_graph_device_timing && !(use_cuda_graph && cuda_graph_update_required)) {
+        auto & slot = cuda_ctx->graph_device_trace_slots[
+            cuda_ctx->graph_device_trace_cursor++ % ggml_backend_cuda_context::GRAPH_DEVICE_TRACE_SLOTS];
+
+        if (slot.pending) {
+            const hipError_t query_status = hipEventQuery(slot.end);
+            if (query_status == hipSuccess) {
+                float elapsed_ms = 0.0f;
+                CUDA_CHECK(hipEventElapsedTime(&elapsed_ms, slot.start, slot.end));
+                GGML_LOG_INFO(
+                    "GGML_TRACE_CUDA_GRAPH_DEVICE_TIMING: dev=%d key=%p nodes=%d uid=%zu "
+                    "use=%d update=%d device_ms=%.3f flush=0\n",
+                    cuda_ctx->device, slot.key, slot.nodes, (size_t) slot.uid,
+                    slot.use ? 1 : 0, slot.update ? 1 : 0, elapsed_ms);
+                slot.pending = false;
+            } else if (query_status != hipErrorNotReady) {
+                CUDA_CHECK(query_status);
+            }
+        }
+
+        if (!slot.pending) {
+            if (slot.start == nullptr) {
+                CUDA_CHECK(hipEventCreateWithFlags(&slot.start, hipEventDefault));
+                CUDA_CHECK(hipEventCreateWithFlags(&slot.end, hipEventDefault));
+            }
+            slot.key    = graph_key;
+            slot.uid    = cgraph->uid;
+            slot.nodes  = cgraph->n_nodes;
+            slot.use    = use_cuda_graph;
+            slot.update = cuda_graph_update_required;
+            CUDA_CHECK(cudaEventRecord(slot.start, cuda_ctx->stream()));
+            device_trace_slot = &slot;
+        }
+    }
+#endif
+
     ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
+
+#if defined(GGML_USE_HIP)
+    if (device_trace_slot != nullptr) {
+        CUDA_CHECK(cudaEventRecord(device_trace_slot->end, cuda_ctx->stream()));
+        device_trace_slot->pending = true;
+    }
+#endif
 
     if (trace_graph_host_timing) {
         const int64_t t_end_us = ggml_time_us();
         GGML_LOG_INFO(
-            "GGML_TRACE_CUDA_GRAPH_HOST_TIMING: dev=%d nodes=%d uid=%zu use=%d update=%d device_ms=%.3f key_ms=%.3f enabled_ms=%.3f compat_ms=%.3f props_ms=%.3f eval_ms=%.3f total_ms=%.3f\n",
-            cuda_ctx->device, cgraph->n_nodes, (size_t) cgraph->uid,
+            "GGML_TRACE_CUDA_GRAPH_HOST_TIMING: dev=%d key=%p nodes=%d uid=%zu use=%d update=%d device_ms=%.3f key_ms=%.3f enabled_ms=%.3f compat_ms=%.3f props_ms=%.3f eval_ms=%.3f total_ms=%.3f\n",
+            cuda_ctx->device, graph_key, cgraph->n_nodes, (size_t) cgraph->uid,
             use_cuda_graph ? 1 : 0, cuda_graph_update_required ? 1 : 0,
             (t_device_us - t_start_us) / 1000.0,
             (t_key_us - t_device_us) / 1000.0,
