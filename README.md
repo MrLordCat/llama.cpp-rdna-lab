@@ -11,7 +11,7 @@ The desktop application is branded **RDNA LLM Studio**. The repository keeps
 upstream `llama-*` executable names and source structure so that runtime
 compatibility and upstream synchronization remain straightforward.
 
-The primary workload is agentic coding with Qwen3.6-27B: large cold prompts,
+The primary workload is agentic coding with Qwen3.8-27B: large cold prompts,
 single-user requests, long contexts, tool use, vision, and speculative decode.
 The main performance priority is prompt evaluation. MTP is kept only when its
 decode gain does not impose an unacceptable prefill cost.
@@ -27,7 +27,7 @@ decode gain does not impose an unacceptable prefill cost.
 | Host platform | Windows 11 on AMD AM4 |
 | Accelerators | 2x Radeon RX 9070 XT 16 GB (`gfx1201`) |
 | Backends | ROCm/HIP, Vulkan, and CPU |
-| Primary model | Qwen3.6-27B Q4_K_M with MTP |
+| Primary model | Qwen3.8-27B Q4_K_M with MTP |
 | Experimental model | Ternary Bonsai 27B `PQ2_0` on CPU and ROCm |
 | Main objective | Maximum cold prompt evaluation without sacrificing useful decode speed |
 | Serving | OpenAI-compatible `llama-server` plus a PyQt6 desktop GUI |
@@ -56,7 +56,7 @@ checkout on the same long-prompt contract. See
 
 ## Project Goals
 
-- Maximize Qwen3.6 prompt-evaluation throughput for agent workloads.
+- Maximize Qwen3.8 prompt-evaluation throughput for agent workloads.
 - Use both GPUs without moving the active working set into system RAM.
 - Make MTP improve decode while keeping long-prompt prefill close to baseline.
 - Provide a practical GUI for building, launching, monitoring, and autotuning.
@@ -83,10 +83,10 @@ NVIDIA hardware. See [Supported Backends](docs/SUPPORTED_BACKENDS.md).
 
 | Model / feature | CPU | ROCm/HIP | Vulkan | Notes |
 | --- | --- | --- | --- | --- |
-| Qwen3.6 GGUF, including Q3_K_S and Q4_K | Yes | Yes | Yes | Primary supported family |
-| Qwen3.6 NextN MTP | Yes | Yes | Yes | Requires an MTP-enabled GGUF |
+| Qwen3.8 GGUF (Q4_K_M primary; Qwen3.6 family also supported) | Yes | Yes | Yes | Primary supported family |
+| Qwen3.8 NextN MTP | Yes | Yes | Yes | Requires an MTP-enabled GGUF |
 | Ternary Bonsai 27B `PQ2_0` | Yes | Yes | Not yet | Native loader, CPU kernels, and HIP MMQ/MMVQ path |
-| Qwen3.6 vision projector | Yes | Yes | Yes | Use a matching `mmproj-*.gguf` |
+| Qwen3.5/3.6/3.8 vision projector | Yes | Yes | Yes | Use a matching `mmproj-*.gguf` |
 | DFlash | Research | Research | Research | Not a recommended production profile |
 
 D094 (2026-08-07, tested on `Qwen3.6-27B-Q4_K_M.gguf` and
@@ -99,9 +99,11 @@ the f16-KV 49K lane now beats ROCm
 5.7655 TPS). See [BENCHMARKS.md](BENCHMARKS.md) and
 [Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md).
 
-Q4_K_M is the primary practical Qwen model on this 2x16 GB machine. The
-one-copy ROCm scheduler and bounded Q8 Flash Attention route make its measured
-49K and 98K lanes viable. Q3_K_S remains the secondary choice for maximum
+Qwen3.8-27B-Q4_K_M is the primary practical Qwen model on this 2x16 GB
+machine (rebased 2026-08-14; it shares the qwen35 architecture family with
+Qwen3.6 and runs the same MTP/vision paths). The one-copy ROCm scheduler and
+bounded Q8 Flash Attention route make its measured 49K and 98K lanes viable.
+Q3_K_S (Qwen3.6) remains the secondary choice for maximum
 context/VRAM headroom, vision, and Q3-specific kernel research. `PQ2_0` is an
 experimental Prism format and should not be confused with conventional `Q2_0`
 quantization.
@@ -114,7 +116,7 @@ quantization.
 - 2x AMD Radeon RX 9070 XT, 16 GB VRAM each, RDNA4 `gfx1201`
 - AMD ROCm/HIP SDK 7.1 for Windows
 - AMD proprietary Vulkan driver
-- Main model: `Qwen3.6-27B-Q4_K_M.gguf`
+- Main model: `Qwen3.8-27B-Q4_K_M.gguf`
 - Vision projector: `mmproj-F16.gguf`
 
 The two GPUs are normally used with layer split, not tensor split. GPU1 is the
@@ -127,7 +129,7 @@ materially change the numbers below.
 
 ## Current Performance
 
-Snapshot date: **2026-08-13**.
+Snapshot date: **2026-08-14** (Qwen3.8-27B-Q4_K_M rebaseline).
 
 The fixed headline tables below retain their original model-scoped contracts.
 Q3_K_S rows are historical/secondary evidence; the current primary Q4_K_M
@@ -143,53 +145,60 @@ The current dual-Vulkan refresh uses `Vulkan1,Vulkan0`, layer split `1,1`,
 98K spec-none rows use 128 output tokens. The current 98K MTP rows use the D097
 256-token adjacent bracket: q8 is the center of its two controls and FP8 uses
 the production last-12-f16 policy. FP8 uses the native P5 FlashAttention route.
+The Qwen3.8 rebaseline includes the W12 f8 decode indexing fix
+(`a013f5230`); earlier Qwen3.6 f8 rows predate it and stay in
+[Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md).
 
 | Context | KV | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
 | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| 12,288 | q8_0 | none | 7,889 / 128 | 1672.17 | **28.47** | 13.80 | - |
-| 12,288 | f8_e4m3 P5 | none | 7,889 / 128 | **1791.64** | 28.03 | **14.21** | - |
-| 12,288 | q8_0 + last8 f16 | MTP n2 | 7,889 / 128 | 1686.74 | 45.55 | 17.01 | 65.45% |
-| 12,288 | f8_e4m3 P5 + last8 f16 | MTP n2 | 7,889 / 128 | **1702.94** | **50.69** | **17.79** | **75.25%** |
-| 49,152 | q8_0 | none | 30,723 / 128 | 1519.42 | **27.21** | 5.1146 | - |
-| 49,152 | f8_e4m3 P5 | none | 30,723 / 128 | **1677.42** | 25.60 | **5.4627** | - |
-| 49,152 | q8_0 + last8 f16 | MTP n2 | 30,723 / 128 | 1656.10 | 43.59 | 5.9288 | 66.06% |
-| 49,152 | f8_e4m3 P5 + last8 f16 | MTP n2 | 30,723 / 128 | **1679.76** | **44.51** | **6.0176** | **67.59%** |
-| 98,304 | q8_0 | none | 57,530 / 128 | 1314.53 | **25.07** | 2.6090 | - |
-| 98,304 | f8_e4m3 P5 | none | 57,530 / 128 | **1480.18** | 21.98 | **2.8522** | - |
-| 98,304 | q8_0 + last8 f16 (r2 center) | MTP n2 | 57,530 / 256 | 1422.71 | **41.96** | 5.4736 | 72.60% |
-| 98,304 | **f8_e4m3 P5 + last12 f16** | MTP n2 | 57,530 / 256 | **1510.95** | 41.79 | **5.7618** | **73.79%** |
+| 12,288 | q8_0 | none | 7,958 / 128 | 1637.77 | **28.31** | 13.5852 | - |
+| 12,288 | f8_e4m3 P5 | none | 7,958 / 128 | **1666.95** | 28.02 | **13.6357** | - |
+| 12,288 | q8_0 + last8 f16 | MTP n2 | 7,958 / 128 | 1654.23 | **53.89** | **17.6927** | **84.2%** |
+| 12,288 | f8_e4m3 P5 + last8 f16 | MTP n2 | 7,958 / 128 | 1599.87 | 48.26 | 16.5878 | 80.4% |
+| 49,152 | q8_0 | none | 30,764 / 128 | 1532.79 | **26.05** | 5.1016 | - |
+| 49,152 | f8_e4m3 P5 | none | 30,764 / 128 | 1524.51 | 24.78 | 5.0278 | - |
+| 49,152 | q8_0 + last8 f16 | MTP n2 | 30,764 / 128 | 1637.44 | **48.56** | **5.9465** | **81.8%** |
+| 49,152 | f8_e4m3 P5 + last8 f16 | MTP n2 | 30,764 / 128 | **1648.44** | 46.63 | **5.9526** | 74.4% |
+| 98,304 | q8_0 | none | 58,186 / 128 | 1355.34 | **24.55** | **2.6480** | - |
+| 98,304 | f8_e4m3 P5 | none | 58,186 / 128 | **1366.27** | 22.82 | 2.6460 | - |
+| 98,304 | q8_0 + last8 f16 (r1) | MTP n2 | 58,120 / 256 | 1447.99 | **42.87** | 5.5278 | **71.5%** |
+| 98,304 | **f8_e4m3 P5 + last12 f16** | MTP n2 | 58,120 / 256 | **1470.42** | 39.77 | **5.5502** | 60.8% |
 
-FP8 is the faster prompt-heavy profile: spec-none prompt throughput rises by
-7.1%/10.4%/12.6% at 12K/49K/98K and main KV allocation falls by 5.88%.
-With MTP it improves aggregate TPS at all three contexts. At 98K the current
-last-12 policy reaches `73.79%` acceptance versus the q8 center's `72.60%`,
-while improving prompt by `+6.20%` and aggregate TPS by `+5.27%`. The cost is
-5376 versus 4704 MiB main KV. The superseded FP8 last8 result
-(`1465.98/32.40/2.9494`, 51.61%) remains only in the D097 diagnosis record.
-Full methodology, memory rows, corrected historical KV labels, and artifacts are in
-[Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md).
+On Qwen3.8 the FP8 prompt advantage over q8 has shrunk to roughly parity:
+spec-none prompt throughput changes by `+1.8%`, `-0.5%` and `+0.8%` at
+12K/49K/98K, while spec-none decode is `-1.0%`, `-4.9%` and `-7.1%`. MTP
+aggregate changes by `-6.2%`, `+0.1%` and `+0.4%`. FP8 keeps the 5.88% main-KV
+saving at every context, and MTP acceptance stays usable at 12K/49K
+(`80.4%`/`74.4%` versus q8 `84.2%`/`81.8%`), but at 98K the last-12 f16 policy
+lands at `60.8%` versus the q8 center's `71.5%`. The 98K last-12 f16 MTP
+profile is therefore context-research material on Qwen3.8, not the default
+recommendation. Artifacts use `q38-rb-vk-{12k,49k,98k}-{q8,f8}-{none,mtp2}-r1`
+(98K q8 spec-none is r2 after a harness-timeout retry).
 
 ### Q4_K_M ROCm q8 vs native FP8
 
 D098 adds byte-compatible HIP E4M3 cache conversion and a guarded native
 gfx1201 `fp8 x fp8 -> fp32` FlashAttention body. The selected eight-wave body
 uses `154-156 VGPR`, `29568 B` LDS and no spills/scratch. Focused reference,
-KQ-only and full-native prefill/decode tests pass `6/6`.
+KQ-only and full-native prefill/decode tests pass `6/6`. Qwen3.8 rows below
+use the same contracts as the Qwen3.6 D098 table; the 49K spec-none bracket
+keeps `b512/ub512` and 256 output tokens.
 
 | Context | KV | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
 | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| 49,152 | q8_0 center | none | 30,187 / 256 | 1686.75 | 21.83 | 8.62 | - |
-| 49,152 | **f8_e4m3 native** | none | 30,187 / 256 | **1769.37** | **22.97** | **9.05** | - |
-| 49,152 | q8_0 + last8 f16 center | MTP n2 | 30,187 / 128 | 1672.03 | 37.96 | 5.95 | 77.78% |
-| 49,152 | **f8_e4m3 native + last8 f16** | MTP n2 | 30,187 / 128 | **1751.58** | **41.98** | **6.29** | **83.16%** |
-| 98,304 | q8_0 + last8 f16 center | MTP n2 | 57,893 / 128 | 1443.54 | 33.50 | 2.905 | 79.59% |
-| 98,304 | **f8_e4m3 native + last12 f16** | MTP n2 | 57,893 / 128 | **1482.86** | **35.82** | **2.99** | **81.25%** |
+| 49,152 | q8_0 center | none | 30,764 / 256 | 1647.17 | 21.53 | 8.3481 | - |
+| 49,152 | **f8_e4m3 native** | none | 30,764 / 256 | **1713.67** | **22.20** | **8.6528** | - |
+| 49,152 | q8_0 + last8 f16 center | MTP n2 | 30,764 / 128 | 1625.29 | 35.14 | 5.6373 | 70.7% |
+| 49,152 | **f8_e4m3 native + last8 f16** | MTP n2 | 30,764 / 128 | **1716.79** | **39.96** | **6.0332** | **78.2%** |
+| 98,304 | q8_0 + last8 f16 center | MTP n2 | 58,186 / 128 | 1431.43 | 29.47 | 2.8343 | **65.8%** |
+| 98,304 | **f8_e4m3 native + last12 f16** | MTP n2 | 58,186 / 128 | **1481.94** | **31.60** | **2.9461** | 65.3% |
 
-The 49K same-binary spec-none bracket gives full FP8 `+4.9%` prompt,
-`+5.2%` decode and `+5.0%` aggregate versus q8. MTP also passes quality:
-49K gains `+5.38 pp` acceptance and 98K gains `+1.66 pp`, with stable D091
-`ROCm1,ROCm0` placement. The guarded RDNA4 D=256 F8/F8 route is enabled by
-default; set `GGML_ROCM_FATTN_F8_NATIVE_KQ=0` for complete rollback or
+The 49K same-binary spec-none bracket gives full FP8 `+4.0%` prompt,
+`+3.1%` decode and `+3.7%` aggregate versus q8. MTP also passes quality at
+49K: `+5.6%` prompt, `+13.7%` decode and `+7.5 pp` acceptance. At 98K FP8
+keeps `+3.5%` prompt and `+7.2%` decode, with acceptance parity
+(`-0.5 pp`). The guarded RDNA4 D=256 F8/F8 route is enabled by default; set
+`GGML_ROCM_FATTN_F8_NATIVE_KQ=0` for complete rollback or
 `GGML_ROCM_FATTN_F8_NATIVE_V=0` for KQ-only diagnosis. Details and artifacts:
 [D098](docs/research/major-topology/D098_Q4KM_ROCM_FP8_KICKOFF.md).
 
@@ -224,9 +233,9 @@ reloads initiated by the benchmark harness. Artifacts use
 
 | Lane | Context | Actual prompt | Output | Batch / UBatch | KV | Repeats |
 | --- | ---: | ---: | ---: | ---: | --- | ---: |
-| Vulkan short | 12,288 | 7,842 | 128 | 8192 / 1024 | q8_0 / q8_0 | 3 |
+| Vulkan short | 12,288 | 7,958 | 128 | 8192 / 1024 | q8_0 / q8_0 | 1 |
 | ROCm short | 12,288 | 6,393 | 256 | 8192 / 1024 | q8_0 / q8_0 | 3 |
-| Matched long, both backends | 49,152 | 29,561 | 128 | 8192 / 1024 | q8_0 / q8_0 | 1 |
+| Matched long, both backends | 49,152 | 30,764 | 128 | 8192 / 1024 | q8_0 / q8_0 | 1 |
 | ROCm extended long | 65,536 | 41,058 | 128 | 8192 / 1024 | q8_0 / q8_0 | 1 |
 | ROCm near-capacity | 131,072 | 72,295 | 64 | 8192 / 1024 | q8_0 / q8_0 | 1 |
 
@@ -495,7 +504,7 @@ Evidence:
 - Vulkan/ROCm-aware benchmark and autotune UI with live prompt progress.
 - OpenAI-compatible `llama-server` for local applications and coding agents.
 - Dual-GPU layer placement and explicit output-device controls.
-- Upstream-style Qwen3.6 MTP pipeline with backend-resident NextN handoff.
+- Upstream-style Qwen3.5/3.6/3.8 MTP pipeline with backend-resident NextN handoff.
 - ROCm KV-only sparse-history MTP with a bounded long-prompt prefill cost.
 - RDNA4 Q3_K prompt and small-N decode kernel specializations.
 - Native Prism `PQ2_0` GGUF loading, CPU support, and optimized HIP MMQ/MMVQ

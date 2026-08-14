@@ -85,7 +85,7 @@ class InferenceTabWidget(QWidget):
         n_predict_layout.addWidget(QLabel("Tokens:"))
         self.n_predict_spin = QSpinBox()
         self.n_predict_spin.setRange(-1, 8192)
-        # D096-N: thinking models (Qwen3.6) spend 150-600+ tokens on reasoning
+        # D096-N: thinking models (Qwen3.5/3.6/3.8) spend 150-600+ tokens on reasoning
         # before the answer; the old 128-token default produced empty answers.
         self.n_predict_spin.setValue(1024)
         n_predict_layout.addWidget(self.n_predict_spin)

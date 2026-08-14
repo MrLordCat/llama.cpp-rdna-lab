@@ -12,7 +12,7 @@ fixes без импорта нерелевантных backend, converter и CI-
 
 ## Текущий performance target
 
-- Primary model: dense `Qwen3.6-27B-Q4_K_M.gguf`. Базовая безопасная дорожка — dual-ROCm `ctx=49152,b=8192,ub=1024,q8_0/q8_0`, cold/no-reuse/no-warmup.
+- Primary model: dense `Qwen3.8-27B-Q4_K_M.gguf` (17.1 GiB, rebased from Qwen3.6 2026-08-14). Базовая безопасная дорожка — dual-ROCm `ctx=49152,b=8192,ub=1024,q8_0/q8_0`, cold/no-reuse/no-warmup.
 - Любой MTP результат сравнивать с соседним `spec=none` запуском той же Q4 модели. Production agent profile использует MTP n3, когда длина ответа окупает небольшой prefill tax.
 - `ctx=98304` — проверенный extended Q4 lane с one-copy ROCm scheduler. `ctx=131072` остаётся residency stress и требует отдельного placement/backend контроля.
 - Q3_K_S остаётся secondary моделью для максимального VRAM/context headroom, vision и исторической Q3 kernel research программы. Q3 и Q4 TPS не объединять в один baseline.
@@ -49,8 +49,8 @@ fixes без импорта нерелевантных backend, converter и CI-
 | --- | ---: | --- |
 | `bge-m3-Q8_0.gguf` | ~605 MB | embeddings |
 | `Qwen3.5-9B-Q6_K.gguf` | ~6.9 GB | быстрый Qwen text/VLM pair |
-| `Qwen3.6-27B-Q4_K_M.gguf` | ~15.9 GiB | primary dense Qwen3.6, MTP-enabled, dual-GPU |
-| `Qwen3.8-27B-Q4_K_M.gguf` | ~17.1 GiB | new Qwen3.8 (2026-08), same qwen35 family, MTP-enabled; verified on Vulkan + ROCm 2026-08-14 |
+| `Qwen3.6-27B-Q4_K_M.gguf` | ~15.9 GiB | previous primary dense Qwen3.6 (до 2026-08-14), MTP-enabled |
+| `Qwen3.8-27B-Q4_K_M.gguf` | ~17.1 GiB | **primary** dense Qwen3.8 (2026-08), same qwen35 family, MTP-enabled; rebaseline 2026-08-14 |
 | `Qwen3.6-27B-Q3_K_S.gguf` | ~11.5 GB | secondary headroom/vision/Q3 research model |
 | `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf` | ~12.3 GB | MoE Qwen3.6 A3B для RX 9070 XT |
 | `mmproj-F16.gguf` | ~876 MB | generic VLM projector |

@@ -1,11 +1,12 @@
-# Qwen3.6-27B Q4_K_M Results
+# Qwen3.8-27B Q4_K_M Results
 
-Status (2026-08-11): this is the primary production and performance model for
-the fork. The safe default research lane remains dual-ROCm `ctx=49152` with q8
-KV and an adjacent spec-none control. The current Vulkan refresh below compares
-q8_0 with native P5 `f8_e4m3` at 12K, 49K and 98K, both spec-none and MTP n2.
-See
-[D089](docs/research/major-topology/D089_Q4_K_M_PRIMARY_BASELINE_PROMOTION.md).
+Status (2026-08-14): Qwen3.8-27B-Q4_K_M is now the primary production and
+performance model of the fork. The rebaseline below re-runs the full README
+Q4_K_M matrix (Vulkan q8/f8 at 12K/49K/98K, ROCm q8/f8 at 49K/98K, spec-none
+and MTP n2) on the Qwen3.8 GGUF with the same contracts. It also includes the
+W12 f8 decode indexing fix (`a013f5230`): the earlier Qwen3.6 f8 rows predate
+that fix and stay in the historical sections. The safe default research lane
+remains dual-ROCm `ctx=49152` with q8 KV and an adjacent spec-none control.
 
 ROCm short and 49K rows were refreshed on 2026-07-16 after the E344 Q4_K/Q5_K
 prompt geometry and E345 Q6_K decode policy. The 98K production row remains the
@@ -22,16 +23,19 @@ are listed below.
 ## Test system
 
 - 2x AMD Radeon RX 9070 XT 16 GB
-- `Qwen3.6-27B-Q4_K_M.gguf` (15.932 GiB)
+- `Qwen3.8-27B-Q4_K_M.gguf` (17.1 GiB)
 - Windows 11, ROCm/HIP 7.1 and Vulkan
 - dual-GPU layer split, one server slot, full GPU offload
-- FlashAttention, `b8192/ub1024`
+- FlashAttention, `b8192/ub1024` (ROCm 49K spec-none bracket: `b512/ub512`)
 - current Vulkan matrix: q8_0/q8_0 and f8_e4m3/f8_e4m3 KV
 - MTP n2 refresh rows: last 8 full-attention KV layers are f16; current 98K
 	FP8 MTP automatically uses last 12 after D097
 - cold prompts, no cache reuse, no warmup, seed 42
+- artifacts: `q38-rb-vk-{12k,49k,98k}-{q8,f8}-{none,mtp2}-r1`
+	(98K q8 spec-none = r2 after a harness 45 s hard-timeout retry) and
+	`q38-rb-rc-{49k,98k}-{q8,f8}-{none,mtp2}-r1`
 
-## Current Vulkan q8 vs FP8 refresh (2026-08-11)
+## Current Vulkan q8 vs FP8 refresh (2026-08-14, Qwen3.8 rebaseline)
 
 All rows use the same binary, `Vulkan1,Vulkan0`, layer split `1,1`, one slot,
 `b8192/ub1024`, FlashAttention and cold/no-reuse/no-prime execution. The
@@ -42,35 +46,49 @@ controls and FP8 uses the production last-12-f16 policy.
 
 | Context | KV | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance | Main KV MiB |
 | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 12,288 | q8_0 | none | 7,889 / 128 | 1672.17 | **28.47** | 13.80 | - | 408 |
-| 12,288 | f8_e4m3 P5 | none | 7,889 / 128 | **1791.64** | 28.03 | **14.21** | - | **384** |
-| 12,288 | q8_0 + last8 f16 | MTP n2 | 7,889 / 128 | 1686.74 | 45.55 | 17.01 | 65.45% | 588 |
-| 12,288 | f8_e4m3 P5 + last8 f16 | MTP n2 | 7,889 / 128 | **1702.94** | **50.69** | **17.79** | **75.25%** | **576** |
-| 49,152 | q8_0 | none | 30,723 / 128 | 1519.42 | **27.21** | 5.1146 | - | 1632 |
-| 49,152 | f8_e4m3 P5 | none | 30,723 / 128 | **1677.42** | 25.60 | **5.4627** | - | **1536** |
-| 49,152 | q8_0 + last8 f16 | MTP n2 | 30,723 / 128 | 1656.10 | 43.59 | 5.9288 | 66.06% | 2352 |
-| 49,152 | f8_e4m3 P5 + last8 f16 | MTP n2 | 30,723 / 128 | **1679.76** | **44.51** | **6.0176** | **67.59%** | **2304** |
-| 98,304 | q8_0 | none | 57,530 / 128 | 1314.53 | **25.07** | 2.6090 | - | 3264 |
-| 98,304 | f8_e4m3 P5 | none | 57,530 / 128 | **1480.18** | 21.98 | **2.8522** | - | **3072** |
-| 98,304 | q8_0 + last8 f16 (r2 center) | MTP n2 | 57,530 / 256 | 1422.71 | **41.96** | 5.4736 | 72.60% | **4704** |
-| 98,304 | **f8_e4m3 P5 + last12 f16** | MTP n2 | 57,530 / 256 | **1510.95** | 41.79 | **5.7618** | **73.79%** | 5376 |
+| 12,288 | q8_0 | none | 7,958 / 128 | 1637.77 | **28.31** | 13.5852 | - | 408 |
+| 12,288 | f8_e4m3 P5 | none | 7,958 / 128 | **1666.95** | 28.02 | **13.6357** | - | **384** |
+| 12,288 | q8_0 + last8 f16 | MTP n2 | 7,958 / 128 | 1654.23 | **53.89** | **17.6927** | **84.2%** | 588 |
+| 12,288 | f8_e4m3 P5 + last8 f16 | MTP n2 | 7,958 / 128 | 1599.87 | 48.26 | 16.5878 | 80.4% | **576** |
+| 49,152 | q8_0 | none | 30,764 / 128 | 1532.79 | **26.05** | 5.1016 | - | 1632 |
+| 49,152 | f8_e4m3 P5 | none | 30,764 / 128 | 1524.51 | 24.78 | 5.0278 | - | **1536** |
+| 49,152 | q8_0 + last8 f16 | MTP n2 | 30,764 / 128 | 1637.44 | **48.56** | **5.9465** | **81.8%** | 2352 |
+| 49,152 | f8_e4m3 P5 + last8 f16 | MTP n2 | 30,764 / 128 | **1648.44** | 46.63 | **5.9526** | 74.4% | **2304** |
+| 98,304 | q8_0 | none | 58,186 / 128 | 1355.34 | **24.55** | **2.6480** | - | 3264 |
+| 98,304 | f8_e4m3 P5 | none | 58,186 / 128 | **1366.27** | 22.82 | 2.6460 | - | **3072** |
+| 98,304 | q8_0 + last8 f16 (r1) | MTP n2 | 58,120 / 256 | 1447.99 | **42.87** | 5.5278 | **71.5%** | **4704** |
+| 98,304 | **f8_e4m3 P5 + last12 f16** | MTP n2 | 58,120 / 256 | **1470.42** | 39.77 | **5.5502** | 60.8% | 5376 |
 
-FP8 spec-none prompt throughput improves by `+7.1%`, `+10.4%` and `+12.6%`
-at 12K/49K/98K. Its spec-none decode changes by `-1.5%`, `-5.9%` and `-12.3%`,
-but prompt-heavy aggregate TPS still improves by `+3.0%`, `+6.8%` and `+9.3%`.
-With MTP, FP8 improves aggregate TPS by `+4.6%` at 12K, `+1.5%` at 49K and
-`+5.27%` at 98K under the current context-scoped policy. At 98K FP8 last12
-improves acceptance by `+1.19` percentage points and matches decode within
-`-0.41%` of the adjacent q8 control center. The superseded matched-N8 FP8 row
-is retained only in the D097 diagnosis section below.
+On Qwen3.8 the FP8 prompt edge over q8 is roughly parity: spec-none prompt
+throughput changes by `+1.8%`, `-0.5%` and `+0.8%` at 12K/49K/98K; spec-none
+decode changes by `-1.0%`, `-4.9%` and `-7.1%`; aggregate by `+0.4%`,
+`-1.5%` and `-0.1%`. MTP aggregate changes by `-6.2%`, `+0.1%` and `+0.4%`.
+Acceptance: FP8 MTP lands at `80.4%`/`74.4%`/`60.8%` versus q8
+`84.2%`/`81.8%`/`71.5%` at 12K/49K/98K. At 98K the last-12 f16 policy loses
+`10.7 pp` to the q8 center on Qwen3.8, so it stays research material there;
+at 12K/49K FP8 remains the memory-saving option (main KV -5.88% spec-none,
+-2.04% with the matched last-8 f16 MTP policy) with comparable aggregate TPS.
 
-FP8 reduces the main KV allocation by 5.88% in spec-none. With the matched
-last-8-f16 MTP policy at 12K/49K, the reduction is 2.04% because half of this
-model's 16 full-attention KV layers intentionally use f16. The current 98K
-last12 recovery instead costs 5376 versus 4704 MiB (`+14.29%`) because quality
-is prioritized at that context. D095 artifacts use
-`d095-refresh-vk-q4km-{12k,49k,98k}-{q8,f8}-{none,mtp2}-r1`; current 98K MTP
-artifacts use the D097 prefixes documented below.
+### ROCm q8 vs native FP8 (2026-08-14, Qwen3.8 rebaseline)
+
+Same D098 guarded native gfx1201 F8/F8 body as the Qwen3.6 table.
+`ROCm1,ROCm0 -sm layer -ts 1,1`; the 49K spec-none bracket uses `b512/ub512`
+and 256 output tokens.
+
+| Context | KV | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 49,152 | q8_0 center | none | 30,764 / 256 | 1647.17 | 21.53 | 8.3481 | - |
+| 49,152 | **f8_e4m3 native** | none | 30,764 / 256 | **1713.67** | **22.20** | **8.6528** | - |
+| 49,152 | q8_0 + last8 f16 center | MTP n2 | 30,764 / 128 | 1625.29 | 35.14 | 5.6373 | 70.7% |
+| 49,152 | **f8_e4m3 native + last8 f16** | MTP n2 | 30,764 / 128 | **1716.79** | **39.96** | **6.0332** | **78.2%** |
+| 98,304 | q8_0 + last8 f16 center | MTP n2 | 58,186 / 128 | 1431.43 | 29.47 | 2.8343 | **65.8%** |
+| 98,304 | **f8_e4m3 native + last12 f16** | MTP n2 | 58,186 / 128 | **1481.94** | **31.60** | **2.9461** | 65.3% |
+
+49K spec-none: FP8 `+4.0%` prompt, `+3.1%` decode, `+3.7%` aggregate. 49K MTP:
+`+5.6%` prompt, `+13.7%` decode, `+7.5 pp` acceptance. 98K MTP: `+3.5%` prompt,
+`+7.2%` decode, acceptance parity `-0.5 pp`.
+
+## Qwen3.6 historical refresh (2026-08-11, superseded by the rebaseline above)
 
 ## D097 98K FP8 MTP acceptance recovery (2026-08-11)
 

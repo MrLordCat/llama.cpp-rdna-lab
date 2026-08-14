@@ -38,7 +38,7 @@ class AutotuneProfile:
 ACTIVE_PROMPT_PROFILE = AutotuneProfile(
     key="active-ctx130k",
     title="Active 130K Context",
-    description="Current Qwen3.6/RDNA4 cold-first 130K target with expected RAM spill.",
+    description="Current Qwen3.8/RDNA4 cold-first 130K target with expected RAM spill.",
     min_ctx=131072,
     ctx_values="131072",
     tasks="quick",

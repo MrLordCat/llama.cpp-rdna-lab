@@ -115,7 +115,8 @@ scripts/agent_workload_bench.py
 
 ## Performance policy
 
-- The primary production and performance model is Qwen3.6-27B Q4_K_M. The
+- The primary production and performance model is Qwen3.8-27B Q4_K_M
+  (rebased from Qwen3.6 2026-08-14; same qwen35 architecture family). The
   safe baseline is the dual-ROCm 49K lane from D089; Q3_K_S remains a
   secondary headroom and model-specific kernel-research lane.
 - Preserve model-scoped targets. The Q3 `2000 prompt tok/s` objective remains

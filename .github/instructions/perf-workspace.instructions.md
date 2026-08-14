@@ -31,7 +31,7 @@ spec mode, reuse, thinking mode, max tokens, real-context settings, and backend.
 For quick iteration use `--runs 1`; use `--runs 3` only for final confirmation of
 borderline or promising deltas.
 
-Current primary dense Qwen baseline is `Qwen3.6-27B-Q4_K_M.gguf`. Start generic
+Current primary dense Qwen baseline is `Qwen3.8-27B-Q4_K_M.gguf` (rebased from Qwen3.6 2026-08-14). Start generic
 production/performance work from the safe ROCm lane
 `ctx=49152,b=8192,ub=1024,q8_0/q8_0,-dev ROCm1,ROCm0,-sm layer,-ts 1,1`, one
 slot, cold/no-reuse/no-warmup. The adjacent `spec=none` control is

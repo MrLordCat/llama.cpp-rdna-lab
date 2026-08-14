@@ -76,7 +76,7 @@ prompt/decode/aggregate TPS vs ROCm 1679.20/32.33/5.7655 (Vulkan +2.4%/+33%/+6.4
 
 ## Primary Q4_K_M Baseline (2026-07-20)
 
-The project baseline is now `Qwen3.6-27B-Q4_K_M.gguf`. The safe production
+The project baseline is now `Qwen3.8-27B-Q4_K_M.gguf`. The safe production
 research lane is dual ROCm, `ctx=49152,b8192/ub1024,q8_0/q8_0`, one slot,
 FlashAttention, cold/no-reuse/no-warmup, and `-dev ROCm1,ROCm0 -sm layer -ts
 1,1`. The adjacent spec-none row measures `1778.59/21.98` prompt/decode tok/s;

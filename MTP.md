@@ -10,7 +10,7 @@ MTP, Multi-Token Prediction, это вариант speculative decoding, где 
 
 ## Статус в llama.cpp
 
-MTP поддержка в этом форке уже присутствует как experimental text-only path для Qwen3.6 MTP-enabled GGUF.
+MTP поддержка в этом форке уже присутствует как experimental text-only path для Qwen3.5/3.6/3.8 MTP-enabled GGUF (Qwen3.8 проверен 2026-08-14).
 
 Актуальная upstream работа:
 

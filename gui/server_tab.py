@@ -287,7 +287,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_context_spinbox.setValue(32768)
         self.server_context_spinbox.setSingleStep(8192)
         self.server_context_spinbox.setToolTip(
-            "Server context size in tokens. Qwen3.6 advertises 262144 tokens;\n"
+            "Server context size in tokens. Qwen3.8 advertises 262144 tokens;\n"
             "larger values still require enough VRAM/RAM and may need quantized KV cache."
         )
         self.server_context_spinbox.valueChanged.connect(self._apply_backend_model_recommendation)
@@ -320,7 +320,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_ctx_checkpoints_spinbox.setRange(0, 64)
         self.server_ctx_checkpoints_spinbox.setValue(4)
         self.server_ctx_checkpoints_spinbox.setToolTip(
-            "Number of recurrent/SWA rollback checkpoints retained per slot. Qwen3.6 checkpoints are about 150 MiB each."
+            "Number of recurrent/SWA rollback checkpoints retained per slot. Qwen3.8 checkpoints are about 150 MiB each."
         )
 
         self.server_checkpoint_interval_spinbox = QSpinBox()
@@ -335,7 +335,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_conversation_cache_check = QCheckBox("High-hit chat cache")
         self.server_conversation_cache_check.setToolTip(
             "Enable --conversation-cache for append-only chats. The server forces prompt caching, keeps at least 32\n"
-            "hybrid/recurrent rollback checkpoints, and uses an interval no larger than 8192 tokens. Qwen3.6\n"
+            "hybrid/recurrent rollback checkpoints, and uses an interval no larger than 8192 tokens. Qwen3.8\n"
             "checkpoints are about 150 MiB each. Prompt Cache MiB remains separate and is only needed for evicted slots."
         )
         self.server_conversation_cache_check.toggled.connect(self._on_conversation_cache_toggled)

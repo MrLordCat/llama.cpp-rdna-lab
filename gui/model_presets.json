@@ -63,6 +63,31 @@
             }
         },
         {
+            "pattern": "Qwen3\\.8\\-27B\\-Q4_K_M\\.gguf",
+            "name": "Primary Qwen3.8-27B Q4_K_M (safe 49K)",
+            "backends": [
+                "rocm",
+                "vulkan"
+            ],
+            "ctx": 49152,
+            "batch_size": 8192,
+            "ubatch_size": 1024,
+            "gpu_layers": -1,
+            "parallel": 1,
+            "flash_attn": true,
+            "kv_cache": 3,
+            "notes": "Primary model since the 2026-08-14 rebaseline (replaced Qwen3.6). Same qwen35 family; measured ROCm 49K lane uses q8 KV, b8192/ub1024 and MTP n2; compare performance work with an adjacent spec=none control.",
+            "extra_args": "--spec-type draft-mtp --spec-draft-n-max 2",
+            "backend_overrides": {
+                "vulkan": {
+                    "name": "Primary Qwen3.8-27B Q4_K_M (Vulkan FP8 49K)",
+                    "kv_cache": 9,
+                    "notes": "Measured Vulkan profile: Vulkan1,Vulkan0, native P5 f8_e4m3, b8192/ub1024 and MTP n2. At ctx>=98304 the server automatically changes the f16 KV tail from N8 to D097 N12.",
+                    "extra_args": "--spec-type draft-mtp --spec-draft-n-max 2"
+                }
+            }
+        },
+        {
             "pattern": "Ternary\\-Bonsai\\-27B\\-PQ2_0\\.gguf",
             "name": "AutoTune 130k Ternary-Bonsai-27B-PQ2_0.gguf",
             "ctx": 49152,

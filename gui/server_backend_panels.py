@@ -111,7 +111,7 @@ class _RocmPanel(QWidget):
             "Which GPUs the server uses.\n"
             "For large MTP runs, use ROCm1,ROCm0 layer split so weights/KV stay\n"
             "on the two cards instead of spilling one card into RAM. Single-GPU\n"
-            "choices are mainly for clean diagnostics. Qwen3.6 Q4_K_M at 131K+\n"
+            "choices are mainly for clean diagnostics. Qwen3.8 Q4_K_M at 131K+\n"
             "uses the measured 27:37 split to respect each GPU's WDDM budget."
         )
         dev_row.addWidget(self.device_combo, 1)
