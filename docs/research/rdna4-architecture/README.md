@@ -80,20 +80,18 @@ work is evaluated on the whole locked lane.
 | W08 | done | occupancy closed in W03: wave32, 156 VGPR -> 6 waves/SIMD = 24/CU; 2 CTAs per CU already, LDS-bound, 3 CTAs need <= 21,845 B |
 | W10 | done | [MMVQ gemm audit](W10_MMVQ_GEMM_SHAPES.md): decode = MMVQ M<=4/K=5120/N<=17408; prefill = MMQ stream-k; hipBLAS off the hot path; follow-ups: Q3_K batch cap 1, small-K toggle consolidation |
 | W11 | done | [backend debt audit](W11_BACKEND_DEBT_AUDIT.md): dead diagnostics (Vulkan FA P2-P5/NATIVE_DECODE/HALF_CMP, census), live fallbacks (do not remove), removal order for phase 3 |
+| W12 | done | [decode-token census](W12_DECODE_TOKEN_CENSUS.md): MUL_MAT >= 50% of a 49K decode token (weight stream IS the bottleneck), FA ~10-20%, GDN ~13.5%; next candidates = MMVQ/MMQ weight-stream, then GDN; FA-level micro-opts demoted |
 
-## Phase-2 candidate shelf (nothing admitted yet)
+Track status: PAUSED 2026-08-14 after W12 (user switch to Qwen 3.8 27B
+support). Resume pointer = W12 "Direction set" section.
 
-- Stochastic-rounding requant `V_CVT_SR_FP8_F32` for E4M3-P (D098 NMSE
-  lever) - quality gate first.
-- Prefetch P_f8 B-fragments one chain ahead / keep P in registers across
-  softmax->PV (H79; no occupancy penalty, VGPR is not the limit).
-- 3 CTAs per CU: cut LDS from 29,568 B to <= 21,845 B (shrink P_f8 and the
-  VKQ f16 tile; LDS is the binding constraint).
-- KV streaming cache-policy hints on the global u8 loads (H80).
-- Vectorized fp8 tile loads + `ds_swizzle_b32` redistribution into WMMA
-  fragments (cuts the u8 load stream, adds LDS traffic).
-4. Record per-candidate notes under this folder and in RESULTS_LOG;
-   negative results stay documented with the artifact that killed them.
+## Phase-2 candidate shelf (exhausted 2026-08-14, see PHASE2_PLAN)
+
+All phase-2 candidates were tested and rejected/blocked (H80 toolchain-blocked,
+H79 neutral, SR-requant worse NMSE, H77 premise falsified + regression). The
+post-W12 shelf lives in W12 "Direction set": decode MUL_MAT/MMVQ
+weight-stream candidates first, GDN audit second, FA shelf leftovers demoted
+(the untried vectorized fp8 tile loads remain documented there).
 
 ## Fences
 

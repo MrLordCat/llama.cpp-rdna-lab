@@ -1,5 +1,18 @@
 # Results Log
 
+## 2026-08-14 - W12 decode-token census: MUL_MAT dominates, track paused
+
+- Whole-lane node-timing census (GGML_TRACE_CUDA_NODE_TIMING + SYNC, 49K
+  lane, 32 tokens, r001-w12-census-r1): MUL_MAT 63% (sync-inflated, true
+  >=50%), GATED_DELTA_NET 13.5%, FLASH_ATTN_EXT 10.4%, rest <3% each.
+- Verdict: the decode weight stream is the bottleneck; FA micro-opts are
+  capped (~10-20% of the token) and can never clear the whole-lane >=3%
+  gate alone. Next candidates (W12 "Direction set"): MMVQ/MMQ weight-stream
+  work, then GDN per-token audit; FA shelf leftovers demoted.
+- Parser script: scripts/research/w12_decode_token_census.py. Doc:
+  docs/research/rdna4-architecture/W12_DECODE_TOKEN_CENSUS.md.
+- Track PAUSED here by user request (Qwen 3.8 27B support is next).
+
 ## 2026-08-14 - phase 3 batch 2: debt close + cleanup
 
 - Loser branches consolidated into defaults (winners per 2.5/W10): removed
