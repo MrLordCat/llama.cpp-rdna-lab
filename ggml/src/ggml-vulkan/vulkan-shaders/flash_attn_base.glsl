@@ -254,18 +254,21 @@ float fp8_e4m3_to_f32_fast(uint8_t v) {
 
 FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
     if (binding_idx == BINDING_IDX_K) {
-        // a_offset is a byte offset (BLOCK_BYTE_SIZE==1); ib is a multiple of
-        // 4 in every call site, so one aligned 4-byte load covers 4 f8 values.
+        // a_offset is a byte offset (BLOCK_BYTE_SIZE==1); ib is a byte offset
+        // (BLOCK_SIZE==1, ib = coord), so the uint32-array index is
+        // (a_offset + ib) / 4. W12-f8 fix (2026-08-14): the previous
+        // a_offset/4 + ib indexed 4x too far and read garbage K/V slots,
+        // which made f8 KV output incoherent on Vulkan.
         // D4.3 audit (2026-08-13): the 13.39/13.46 tps load-width probes had
         // inherited GGML_VK_FA_F8_NATIVE_DECODE, so they did not exercise this
         // scalar code. Clean scalar f8 measured 25.45 tps at the 49K lane.
-        const uint bits = k_packed32.k_data_packed32[a_offset / 4 + ib];
+        const uint bits = k_packed32.k_data_packed32[(a_offset + ib) / 4];
         return FLOAT_TYPEV4(fp8_e4m3_to_f32_fast(uint8_t((bits >>  0) & 0xFFu)),
                             fp8_e4m3_to_f32_fast(uint8_t((bits >>  8) & 0xFFu)),
                             fp8_e4m3_to_f32_fast(uint8_t((bits >> 16) & 0xFFu)),
                             fp8_e4m3_to_f32_fast(uint8_t((bits >> 24) & 0xFFu)));
     } else {
-        const uint bits = v_packed32.v_data_packed32[a_offset / 4 + ib];
+        const uint bits = v_packed32.v_data_packed32[(a_offset + ib) / 4];
         return FLOAT_TYPEV4(fp8_e4m3_to_f32_fast(uint8_t((bits >>  0) & 0xFFu)),
                             fp8_e4m3_to_f32_fast(uint8_t((bits >>  8) & 0xFFu)),
                             fp8_e4m3_to_f32_fast(uint8_t((bits >> 16) & 0xFFu)),
