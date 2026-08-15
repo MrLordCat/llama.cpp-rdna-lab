@@ -48,8 +48,8 @@ Step order follows `subProject_q4/docs/05_PORT_INSTRUCTIONS.md` §3.
 - [x] CPU smoke run (llama-cli -n 12): model loads (15677 MiB) and
 generates on CPU (scalar vec_dot, ~0.2 t/s - expected, slow).
 - [x] 3.4 Vulkan: model loads with -ngl 99, greedy smoke matches CPU.
-- [ ] 3.4 GPU ppl: GPU sanity done (16 chunks, 7.02); full 256-chunk table pending.
-- [x] Acceptance: bit-exact dumps, unit tests, quantize size, ppl/KLD table.
+- [x] 3.4 GPU ppl 256 chunks: 6.6124 +/- 0.064 == bf16 6.6202 (parity).
+- [ ] ppl/KLD table: Q6_K + Q4_K_M on the same 256 chunks + KLD vs bf16 base.
 
 ## 3.4 Vulkan - done (decode MMV + dequant fallback), ppl sanity passed
 
@@ -78,13 +78,18 @@ generates on CPU (scalar vec_dot, ~0.2 t/s - expected, slow).
   -dev Vulkan1,Vulkan0 greedy "2+2=" -n 12 --temp 0 --seed 42 matches the
   CPU build byte-for-byte (12 tokens); model fits (7323+7615 MiB), decode
   8.9 t/s cold / 27.1 t/s warm.
-- ppl: 16 chunks wiki.test.raw = 7.0196 +/- 0.274 (bf16 calib 6.6202 on
-  256 chunks). NOTE: on AMD the output.weight mat-mat prefill dequant needs
-  a 2.37 GB fp16 buffer; AMD reports maxBufferSize < that, so ppl runs need
+- ppl (first 256 chunks of subProject_q4/calibration/wiki.test.raw,
+  -c 512, -b 512 -ub 512, Vulkan dual GPU): Q4_K16 = 6.6124 +/- 0.064
+  vs bf16 calibration 6.6202 on the same 256 chunks -> PARITY (delta
+  0.008 << 0.064 sampling error). 16-chunk sanity was 7.0196 +/- 0.274.
+  Run: 14.9 min, 131072 tokens at 167 t/s prefill (per-pass 4.16 s
+  includes the output.weight dequant). NOTE: on AMD the output.weight
+  mat-mat prefill dequant needs a 2.37 GB fp16 buffer; AMD reports
+  maxBufferSize < that, so ppl runs need
   GGML_VK_FORCE_MAX_BUFFER_SIZE=8589934592 (alloc succeeds; Vulkan1 free
   ~8.6 GB after weights). Proper fixes (later): Q4_K16 load path in
   mul_mm_funcs.glsl load_a_to_shmem or chunked dequant in
-  ggml_vk_mul_mat_q_f16. Full 256-chunk ppl + KLD table still pending.
+  ggml_vk_mul_mat_q_f16. Table (Q6_K, Q4_K_M) + KLD still pending.
 
 ## 2026-08-15 — bit-exact check PASSED (variant A + 2 prototype fixes)
 
