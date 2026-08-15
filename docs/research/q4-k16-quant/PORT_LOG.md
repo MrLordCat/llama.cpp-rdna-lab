@@ -27,6 +27,14 @@ Step order follows `subProject_q4/docs/05_PORT_INSTRUCTIONS.md` §3.
   - ffn_down (64) -> Q4_K16_S
   - ssm_alpha/ssm_beta -> untouched bf16; norms/ssm_a/dt/conv1d untouched
   - quant size = 15677.83 MiB = 16.44 GB (4.89 bpw) == target 16.44 GB
+- [x] Full quantize run (2026-08-15, 5.7 min, commit a9d0e8008):
+  models/Qwen3.6-27B-Q4_K16.gguf = 16,450,386,176 bytes = 16.45 GB;
+  file contents 320 M + 64 S + 18 K16 + 96 bf16 (ssm_alpha/beta) +
+  353 f32 untouched. Two integration bugs found and fixed by the run:
+  (1) ggml_validate_row_data had no Q4_K16 cases ('invalid type 50');
+  (2) imatrix wrappers applied row*n_per_row offset - llama.cpp passes
+  COLUMN-WISE imatrix (n_per_row values for all rows), fixed to match
+  upstream quantize_q4_K; bitcheck re-run column-wise, still bit-exact.
 - [ ] Run llama-quantize with imatrix (long) + ppl/KLD verdict.
 - [ ] 3.3 CPU `vec_dot_q4_K16_q8_1` (scalar first, SIMD optional).
 - [ ] 3.4 GPU minimal (backend Vulkan first): type traits, dequant_row for ppl, model loads with -ngl all, ppl matches CPU.
