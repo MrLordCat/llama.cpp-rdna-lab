@@ -7,6 +7,29 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-08-15 10:24:59 | cold-first | rocm | q38-w13-c1b-final-r1 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 9.0116 | 1802.3950 | 22.8750 | 0 |
+| 2026-08-15 10:16:38 | cold-first | rocm | q38-w13-c1b-98k-ctrl-r2 | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 8.0955 | 1577.8000 | 19.4550 | 0 |
+| 2026-08-15 10:13:58 | cold-first | rocm | q38-w13-c1b-98k-cand-r1 | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 8.1520 | 1570.9500 | 19.9050 | 0 |
+| 2026-08-15 10:11:17 | cold-first | rocm | q38-w13-c1b-98k-ctrl-r1 | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 8.1158 | 1573.9250 | 19.6400 | 0 |
+| 2026-08-15 10:08:29 | cold-first | rocm | q38-w13-c1b-ctrl-r2 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 8.1840 | 1620.7300 | 21.2700 | 0 |
+| 2026-08-15 10:06:38 | cold-first | rocm | q38-w13-c1b-cand-r1 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 8.3362 | 1643.0200 | 21.6700 | 0 |
+| 2026-08-15 10:04:53 | cold-first | rocm | q38-w13-c1b-ctrl-r1 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 7.8881 | 1598.5450 | 19.7200 | 0 |
+| 2026-08-15 09:50:51 | cold-first | rocm | q38-w13-c1b-trace-r1 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 4.2654 | 1709.6350 | 22.0950 | 0 |
+| 2026-08-15 09:38:36 | cold-first | rocm | q38-w13-c1-trace-cand-r1 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 4.2414 | 1695.8200 | 22.1550 | 0 |
+| 2026-08-15 09:37:15 | cold-first | rocm | q38-w13-c1-trace-ctrl-r1 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 4.2174 | 1695.1200 | 21.4700 | 0 |
+| 2026-08-15 09:31:50 | cold-first | rocm | q38-w13-c1-98k-ctrl-r3 | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 8.1416 | 1574.8700 | 19.7800 | 0 |
+| 2026-08-15 09:29:11 | cold-first | rocm | q38-w13-c1-98k-cand-r2 | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 8.2393 | 1586.9600 | 20.1300 | 0 |
+| 2026-08-15 09:26:34 | cold-first | rocm | q38-w13-c1-98k-ctrl-r2 | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 8.2142 | 1591.4100 | 19.8850 | 0 |
+| 2026-08-15 09:16:54 | cold-first | rocm | q38-w13-c1-98k-cand-r1 | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 2.8552 | 1532.2700 | 19.4300 | 0 |
+| 2026-08-15 09:14:23 | cold-first | rocm | q38-w13-c1-98k-ctrl-r1 | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 2.9317 | 1570.4950 | 19.8500 | 0 |
+| 2026-08-15 09:11:57 | cold-first | rocm | q38-w13-c1-ctrl-r4 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 8.0419 | 1629.8000 | 20.0800 | 0 |
+| 2026-08-15 09:10:15 | cold-first | rocm | q38-w13-c1-cand-r3 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 8.6246 | 1696.5250 | 22.5100 | 0 |
+| 2026-08-15 09:06:15 | cold-first | rocm | q38-w13-c1-ctrl-r3 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 8.4726 | 1687.3900 | 21.6900 | 0 |
+| 2026-08-15 09:04:32 | cold-first | rocm | q38-w13-c1-cand-r2 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 8.4758 | 1674.7100 | 21.8900 | 0 |
+| 2026-08-15 09:02:45 | cold-first | rocm | q38-w13-c1-ctrl-r2 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 8.4211 | 1683.1000 | 21.4200 | 0 |
+| 2026-08-15 09:01:08 | cold-first | rocm | q38-w13-c1-cand-r1 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 8.8043 | 1735.6300 | 22.8250 | 0 |
+| 2026-08-15 08:59:36 | cold-first | rocm | q38-w13-c1-ctrl-r1 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 8.5456 | 1695.7100 | 21.9700 | 0 |
+| 2026-08-15 08:56:08 | cold-first | rocm | q38-w13-49k-f8-baseline-r1 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 512/512 | f8_e4m3/f8_e4m3 | none | 8.5909 | 1691.4750 | 22.4450 | 0 |
 | 2026-08-14 21:13:00 | cold-first | rocm | q38-rb-rc-98k-f8-mtp2-r1 | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 2.9455 | 1481.9400 | 31.6050 | 0 |
 | 2026-08-14 21:11:01 | cold-first | rocm | q38-rb-rc-98k-q8-mtp2-r1 | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.8342 | 1431.4250 | 29.4700 | 0 |
 | 2026-08-14 21:08:58 | cold-first | rocm | q38-rb-rc-49k-f8-mtp2-r1 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 6.0276 | 1716.7950 | 39.9550 | 0 |
@@ -64,26 +87,3 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-08-13 22:18:06 | cold-first | rocm | d100-g3-rocm49k-fp8-pb-auto-open-r4 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 5.6886 | 1818.2700 | 22.9700 | 0 |
 | 2026-08-13 22:08:43 | cold-first | rocm | d100-g3-rocm49k-fp8-w8-close-r3 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 5.6575 | 1807.2200 | 22.9400 | 0 |
 | 2026-08-13 22:07:38 | cold-first | rocm | d100-g3-rocm49k-fp8-w16-r2 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 5.6358 | 1806.8000 | 22.5400 | 0 |
-| 2026-08-13 22:06:43 | cold-first | rocm | d100-g3-rocm49k-fp8-w8-open-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 5.6757 | 1811.9800 | 22.9900 | 0 |
-| 2026-08-13 21:59:47 | cold-first | rocm | d100-g2-rocm98k-fp8-none-devicetrace-r1 | Qwen3.6-27B-Q4_K_M.gguf | 98304 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 1.6177 | 1604.9600 | 19.9900 | 0 |
-| 2026-08-13 21:52:20 | cold-first | rocm | d100-g2-rocm49k-fp8-none-devicetrace-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 8.9972 | 1803.2700 | 22.5200 | 0 |
-| 2026-08-13 21:50:34 | cold-first | rocm | d100-g2-rocm49k-fp8-mtp2-devicetrace-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 10.7041 | 1724.6400 | 42.2700 | 0 |
-| 2026-08-13 21:27:17 | cold-first | rocm | d100-g1-rocm49k-fp8-mtp2-graphdiff-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 0.4422 | 1721.5500 | 37.7800 | 0 |
-| 2026-08-13 21:25:47 | cold-first | rocm | d100-g1-rocm49k-fp8-mtp2-graphtrace-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 10.5394 | 1743.5300 | 38.5600 | 0 |
-| 2026-08-13 21:24:32 | cold-first | rocm | d100-g0-rocm49k-fp8-mtp2-clean-r2 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 10.5700 | 1746.2700 | 38.8900 | 0 |
-| 2026-08-13 21:23:30 | cold-first | rocm | d100-g0-rocm49k-fp8-none-clean-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 9.0486 | 1814.3500 | 22.6600 | 0 |
-| 2026-08-13 16:42:50 | cold-first | rocm | d096-d6-rocm49k-mainf8-draftf16-close-r4 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 5.4690 | 1569.5000 | 33.9400 | 0 |
-| 2026-08-13 16:41:32 | cold-first | rocm | d096-d6-rocm49k-mainf8-draftf8-fixed-r3 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 5.4647 | 1566.5200 | 33.9000 | 0 |
-| 2026-08-13 16:34:20 | cold-first | rocm | d096-d6-rocm49k-mainf8-draftf8-r2 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 5.4563 | 1565.6800 | 33.7200 | 0 |
-| 2026-08-13 16:33:04 | cold-first | rocm | d096-d6-rocm49k-mainf8-draftf16-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 5.7928 | 1622.6300 | 40.9100 | 0 |
-| 2026-08-13 12:51:55 | cold-first | rocm | d099-rocm49k-q8-close-r3 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 8.7177 | 1739.2200 | 21.9300 | 0 |
-| 2026-08-13 12:50:57 | cold-first | rocm | d099-rocm49k-f8-r2 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 9.0811 | 1809.6200 | 22.9600 | 0 |
-| 2026-08-13 12:49:59 | cold-first | rocm | d099-rocm49k-q8-open-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 8.7257 | 1741.8000 | 21.9500 | 0 |
-| 2026-08-13 11:37:38 | autotune | rocm | gui-autotune-Qwen3.6-27B-Q4_K_M-20260813-113545 | Qwen3.6-27B-Q4_K_M.gguf | 98304 | sweep/sweep | sweep/sweep | mtp | 3.0656 | 1548.33 | 31.26 | 0 |
-| 2026-08-13 11:34:55 | autotune | vulkan | gui-autotune-Qwen3.6-27B-Q4_K_M-20260813-113408 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | sweep/sweep | sweep/sweep | mtp | 16.8156 | 1619.83 | 47.99 | 0 |
-| 2026-08-13 11:33:40 | autotune | rocm | gui-autotune-Qwen3.6-27B-Q4_K_M-20260813-113259 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | sweep/sweep | sweep/sweep | mtp | 16.4508 | 1559.14 | 48.37 | 0 |
-| 2026-08-13 11:32:41 | autotune | rocm | gui-autotune-Qwen3.6-27B-Q4_K_M-20260813-113030 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | sweep/sweep | sweep/sweep | mtp | 6.5217 | 1818.18 | 43.21 | 0 |
-| 2026-08-13 11:25:56 | cold-first | rocm | d098-g5-default-smoke-12k-s12r1 | Qwen3.6-27B-Q4_K_M.gguf | 16384 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 2.7627 | 1688.8500 | 25.9900 | 0 |
-| 2026-08-13 11:19:35 | cold-first | rocm | d098-g5-98k-mtp2-q8-close-s11r3 | Qwen3.6-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.9036 | 1441.9300 | 33.5700 | 0 |
-| 2026-08-13 11:18:22 | cold-first | rocm | d098-g5-98k-mtp2-f8-s11r2 | Qwen3.6-27B-Q4_K_M.gguf | 98304 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 2.9919 | 1482.8600 | 35.8200 | 0 |
-| 2026-08-13 11:17:09 | cold-first | rocm | d098-g5-98k-mtp2-q8-open-s11r1 | Qwen3.6-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.9084 | 1445.1400 | 33.4300 | 0 |

@@ -32,9 +32,12 @@ Route order in `ggml_cuda_mul_mat`:
 - The MMVQ kernel reads the full weight matrix (~16 GB total) per token and
   converts activations to Q8_1 on the fly - the dominant decode traffic
   (consistent with D102's ~17 GB/token weight-stream observation).
-- Local tuning toggles live here: `GGML_MMVQ_QWEN_FORCE_SMALL_K` /
-  `GGML_MMVQ_QWEN_DISABLE_SMALL_K` / `GGML_MMVQ_Q3K_RDNA4_VK16` /
-  `GGML_MMVQ_Q3K_DISABLE_PAIRDOT` - all RDNA4/Qwen-specific.
+- Local tuning toggles live here: `GGML_MMVQ_Q3K_RDNA4_VK16` /
+  `GGML_MMVQ_Q3K_DISABLE_PAIRDOT` / `GGML_MMVQ_RDNA4_Q3K_MAX_BATCH`. The
+  former `GGML_MMVQ_QWEN_FORCE_SMALL_K` / `GGML_MMVQ_QWEN_DISABLE_SMALL_K`
+  toggles were consolidated into the auto small_k policy during phase-3 debt
+  cleanup (W13 audit: Qwen-hot RDNA4 ncols==1 -> small_k on for Q3_K/Q4_K,
+  off for Q6_K).
 
 ## Prefill path
 

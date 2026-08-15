@@ -18,10 +18,10 @@ of normal E### benchmarking: use it to rank designs before editing backend code.
 | Prompt-eval supremacy program | [D094 Q4_K_M Vulkan-vs-ROCm prompt-eval program](D094_Q4KM_VULKAN_PROMPT_SUPREMACY_PROGRAM.md), closed after seven cycles: graphics-queue launch and q8 pre-dequant staging accepted; scoped concat, FA and int8-coopmat candidates rejected; native-FP8/MTP follow-up transferred to D096; no Vulkan-supremacy claim |
 | FP8 MTP polish | [D095](D095_Q4KM_VULKAN_FP8_MTP_POLISH.md) R1-R9 prebuild complete; [D097](D097_Q4KM_VULKAN_FP8_LONG_ACCEPTANCE.md) fixes the 98K acceptance regression with context-scoped FP8 last12: `1510.95/41.79`, 73.79% acceptance versus q8-center `1422.71/41.96`, 72.60%. It costs 5376 vs 4704 MiB KV. q8 and shorter FP8 remain last8; M6 q8 bridge is default-off generation research. |
 | ROCm FP8 program | [D098 native ROCm FP8 KV](D098_Q4KM_ROCM_FP8_KICKOFF.md), complete on `master`: spill-free eight-wave full FP8 passes focused FA `6/6` and is the guarded RDNA4 backend default. G4 49K spec-none beats q8 center by `+4.9%/+5.2%/+5.0%` prompt/decode/aggregate. G5 49K MTP gains `+4.8%/+10.6%/+5.7%` with acceptance `83.16%` vs `77.78%`; 98K gains `+2.7%/+6.9%/+2.9%` with acceptance `81.25%` vs `79.59%`. Rollback: `GGML_ROCM_FATTN_F8_NATIVE_KQ=0`. [D099 production hardening](D099_ROCM_FP8_PRODUCTION_HARDENING.md) is complete: `19/19` focused cases, gfx1201 and compile-only gfx1100 builds, portable fallback, mixed K/V and exact aliases; 49K FP8 remains `+4.0%/+4.7%` prompt/decode over q8 center. |
-| Model | `models/Qwen3.6-27B-Q4_K_M.gguf` (MTP-enabled) |
+| Model | `models/Qwen3.8-27B-Q4_K_M.gguf` (MTP-enabled, rebased 2026-08-14; Qwen3.6 historical) |
 | Safe lane | ROCm `ctx=49152,b=8192,ub=1024,q8_0/q8_0,-dev ROCm1,ROCm0,-sm layer,-ts 1,1`, cold/no-reuse/no-warmup |
-| Control | spec-none `1778.59 prompt / 21.98 decode tok/s`, `5.6829` aggregate TPS |
-| Agent profile | MTP n3 `1731.71 / 39.58`, `6.2802` aggregate TPS, `74.36%` acceptance |
+| Control | spec-none `1647.17 prompt / 21.53 decode tok/s`, `8.3481` aggregate TPS (Qwen3.8 rebaseline, q38-rb-rc-49k-q8-none-r1, 256 out) |
+| Agent profile | MTP n2 `1625.29 / 35.14`, `5.6373` aggregate TPS, `70.7%` acceptance (Qwen3.8; n3 not yet re-measured on 3.8) |
 | Extended lane | ROCm `ctx=98304` one-copy scheduler with `-dev ROCm1,ROCm0 -sm layer -ts 1,1`; 131K remains a `27:37` placement/residency stress lane |
 | KV policy | q8 primary; alternatives require matched Q4 quality and performance gates |
 

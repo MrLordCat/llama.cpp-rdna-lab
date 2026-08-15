@@ -81,9 +81,12 @@ work is evaluated on the whole locked lane.
 | W10 | done | [MMVQ gemm audit](W10_MMVQ_GEMM_SHAPES.md): decode = MMVQ M<=4/K=5120/N<=17408; prefill = MMQ stream-k; hipBLAS off the hot path; follow-ups: Q3_K batch cap 1, small-K toggle consolidation |
 | W11 | done | [backend debt audit](W11_BACKEND_DEBT_AUDIT.md): dead diagnostics (Vulkan FA P2-P5/NATIVE_DECODE/HALF_CMP, census), live fallbacks (do not remove), removal order for phase 3 |
 | W12 | done | [decode-token census](W12_DECODE_TOKEN_CENSUS.md): MUL_MAT >= 50% of a 49K decode token (weight stream IS the bottleneck), FA ~10-20%, GDN ~13.5%; next candidates = MMVQ/MMQ weight-stream, then GDN; FA-level micro-opts demoted |
+| W13 | C1 measured | [decode MUL_MAT/MMVQ weight-stream audit](W13_DECODE_MUL_MAT_WEIGHT_STREAM.md): Q4_K ncols==1 decode = 8 warps x 8 rows (small_k auto policy), 3 K-iterations, ~40-45% of peak BW. C1 (small_k=0, gate GGML_MMVQ_RDNA4_QWEN_SMALL_K, default-off): 49K stable +2.7-4.1% decode in 3/3 A-B-A pairs, 98K = noise (-2.1%/+1.5%) -> NOT promoted, gate stays opt-in. C1b (staged x/gate reduce, gate GGML_MMVQ_RDNA4_QWEN_STAGED_REDUCE, default 1): fused FFN shared 14336->7168 B, occupancy 50->100%, grid unchanged; 49K +5.7%, 98K +1.8% stable positive - verdict pending user call (strict dual-lane gate not met). Protocol: context-dependent MMVQ wins need both 49K and 98K confirmation |
 
-Track status: PAUSED 2026-08-14 after W12 (user switch to Qwen 3.8 27B
-support). Resume pointer = W12 "Direction set" section.
+Track status: ACTIVE 2026-08-14 (resumed after the Qwen3.8 rebaseline and
+f8-KV fix). W13 source audit is done; measurement starts when the GPUs are
+free again - the user reserves the GPUs for now, so no bench/GPU launches
+until the next signal. Resume pointer = W13 "Measurement plan".
 
 ## Phase-2 candidate shelf (exhausted 2026-08-14, see PHASE2_PLAN)
 
@@ -104,7 +107,7 @@ weight-stream candidates first, GDN audit second, FA shelf leftovers demoted
 
 ## Lane
 
-- `Qwen3.6-27B-Q4_K_M.gguf`, q8_0/q8_0 production KV; f8_e4m3/f8_e4m3 for
+- `Qwen3.8-27B-Q4_K_M.gguf` (primary since 2026-08-14 rebaseline), q8_0/q8_0 production KV; f8_e4m3/f8_e4m3 for
   the opt-in native lanes;
 - `ctx=49152,b=8192,ub=1024`, one slot, `-dev ROCm1,ROCm0 -sm layer -ts 1,1`;
 - `triage_diff`, seed 42, 128 tokens, `spec=none` (MTP comparisons only

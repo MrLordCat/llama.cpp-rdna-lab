@@ -683,13 +683,12 @@ static __global__ void mul_mat_vec_q(
         }
     }
 
+    // Staged x/gate reduce (W13 C1b): the gate partials reuse the x-partial
+    // buffer instead of a second shared array. Halves the shared footprint of
+    // the fused FFN path (the occupancy limit at 8 rows/CTA: 14336 -> 7168 B,
+    // 50% -> 100% occupancy) at the cost of two extra barriers on the fused
+    // gate path; no extra registers.
     __shared__ float tmp_shared[nwarps-1 > 0 ? nwarps-1 : 1][ncols_dst][rows_per_cuda_block][warp_size];
-    __shared__ float tmp_shared_gate[(has_fusion && (nwarps-1 > 0)) ? nwarps-1 : 1][ncols_dst][rows_per_cuda_block][warp_size];
-    if constexpr (!has_fusion) {
-        (void) tmp_shared_gate;
-    } else if (!use_gate) {
-        (void) tmp_shared_gate;
-    }
 
     if (threadIdx.y > 0) {
 #pragma unroll
@@ -697,15 +696,49 @@ static __global__ void mul_mat_vec_q(
 #pragma unroll
             for (int i = 0; i < rows_per_cuda_block; ++i) {
                 tmp_shared[threadIdx.y-1][j][i][threadIdx.x] = tmp[j][i];
-                if constexpr (has_fusion) {
-                    if (use_gate) {
-                        tmp_shared_gate[threadIdx.y-1][j][i][threadIdx.x] = tmp_gate[j][i];
+            }
+        }
+    }
+    __syncthreads();
+    if (threadIdx.y == 0) {
+#pragma unroll
+        for (int j = 0; j < ncols_dst; ++j) {
+#pragma unroll
+            for (int i = 0; i < rows_per_cuda_block; ++i) {
+#pragma unroll
+                for (int l = 0; l < nwarps-1; ++l) {
+                    tmp[j][i] += tmp_shared[l][j][i][threadIdx.x];
+                }
+            }
+        }
+    }
+    if constexpr (has_fusion) {
+        if (use_gate) {
+            __syncthreads();
+            if (threadIdx.y > 0) {
+#pragma unroll
+                for (int j = 0; j < ncols_dst; ++j) {
+#pragma unroll
+                    for (int i = 0; i < rows_per_cuda_block; ++i) {
+                        tmp_shared[threadIdx.y-1][j][i][threadIdx.x] = tmp_gate[j][i];
+                    }
+                }
+            }
+            __syncthreads();
+            if (threadIdx.y == 0) {
+#pragma unroll
+                for (int j = 0; j < ncols_dst; ++j) {
+#pragma unroll
+                    for (int i = 0; i < rows_per_cuda_block; ++i) {
+#pragma unroll
+                        for (int l = 0; l < nwarps-1; ++l) {
+                            tmp_gate[j][i] += tmp_shared[l][j][i][threadIdx.x];
+                        }
                     }
                 }
             }
         }
     }
-    __syncthreads();
     if (threadIdx.y > 0) {
         return;
     }
@@ -717,15 +750,6 @@ static __global__ void mul_mat_vec_q(
     for (int j = 0; j < ncols_dst; ++j) {
 #pragma unroll
         for (int i = 0; i < rows_per_cuda_block; ++i) {
-#pragma unroll
-            for (int l = 0; l < nwarps-1; ++l) {
-                tmp[j][i] += tmp_shared[l][j][i][threadIdx.x];
-                if constexpr (has_fusion) {
-                    if (use_gate) {
-                        tmp_gate[j][i] += tmp_shared_gate[l][j][i][threadIdx.x];
-                    }
-                }
-            }
             tmp[j][i] = warp_reduce_sum<warp_size>(tmp[j][i]);
             if constexpr (has_fusion) {
                 if (use_gate) {
@@ -1165,6 +1189,21 @@ static void mul_mat_vec_q_switch_ncols_dst(
             // RDNA4 Qwen-hot decode policy.
             // Q6_K's heavier vec_dot and fused FFN path are faster with one row per block.
             use = type != GGML_TYPE_Q6_K;
+
+            // W13 C1 A/B gate (temporary, 2026-08-15): override the consolidated
+            // auto policy for the small_k A-B-A on Qwen3.8. 0 = one row per CTA
+            // (generic geometry), 1 = rows_per_block == nwarps (auto default).
+            // Removed after the C1 verdict.
+            static const int64_t qwen_small_k_override = [] {
+                const char * env = std::getenv("GGML_MMVQ_RDNA4_QWEN_SMALL_K");
+                if (env == nullptr || env[0] == '\0') {
+                    return int64_t{-1};
+                }
+                return std::clamp<int64_t>(std::atoll(env), 0, 1);
+            }();
+            if (qwen_small_k_override >= 0) {
+                use = qwen_small_k_override != 0;
+            }
         }
 
         if (is_qwen_hot_rdna4 && ggml_cuda_trace_mmvq_small_k_enabled()) {
