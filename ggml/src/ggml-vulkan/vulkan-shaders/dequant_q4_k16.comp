@@ -1,0 +1,65 @@
+#version 450
+
+// Q4_K16 dequant (research/q4-k16-quant): one thread per 16-element sub-block,
+// one workgroup per 512-element super-block.
+// Caller must define: DATA_A_Q4_K16, SC_BITS, MIN_BITS, SC_BYTES, M_BYTES, D_TYPE.
+
+#include "dequant_head.glsl"
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly buffer A {A_TYPE data_a[];};
+layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
+
+// LSB-first bit extraction, j-th SC_BITS-bit field (same order as the C
+// reference unpack_bits_u8)
+uint unpack_bits(uint8_t src[SC_BYTES], uint j) {
+    uint bitpos = j * SC_BITS;
+    uint v = 0;
+    for (uint b = 0; b < SC_BITS; ++b) {
+        if ((src[bitpos >> 3] & (1u << (bitpos & 7))) != 0) {
+            v |= (1u << b);
+        }
+        ++bitpos;
+    }
+    return v;
+}
+
+uint unpack_min_bits(uint8_t src[M_BYTES], uint j) {
+    uint bitpos = j * MIN_BITS;
+    uint v = 0;
+    for (uint b = 0; b < MIN_BITS; ++b) {
+        if ((src[bitpos >> 3] & (1u << (bitpos & 7))) != 0) {
+            v |= (1u << b);
+        }
+        ++bitpos;
+    }
+    return v;
+}
+
+void main() {
+    const uint ib = gl_WorkGroupID.x;
+    if (ib >= p.nel / QUANT_K) {
+        return;
+    }
+
+    const uint j = gl_LocalInvocationID.x; // sub-block 0..31
+
+    const FLOAT_TYPE dall = FLOAT_TYPE(data_a[ib].dm.x);
+    const FLOAT_TYPE dmin = FLOAT_TYPE(data_a[ib].dm.y);
+
+    const uint sc = unpack_bits(data_a[ib].sc, j);
+    const uint m  = unpack_min_bits(data_a[ib].m, j);
+
+    const FLOAT_TYPE d1 = dall * FLOAT_TYPE(sc);
+    const FLOAT_TYPE m1 = dmin * FLOAT_TYPE(m);
+
+    const uint y_base = ib * QUANT_K + 16 * j;
+
+    // two elements per byte, matching the C layout qs[8*j + l/2]
+    for (uint l = 0; l < 8; ++l) {
+        const uint8_t qv = data_a[ib].qs[8 * j + l];
+        data_b[y_base + 2*l    ] = D_TYPE(d1 * FLOAT_TYPE(qv & 0xF) - m1);
+        data_b[y_base + 2*l + 1] = D_TYPE(d1 * FLOAT_TYPE(qv >> 4)  - m1);
+    }
+}

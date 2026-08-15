@@ -582,6 +582,9 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     case GGML_TYPE_IQ4_NL:
                     case GGML_TYPE_MXFP4:
                     case GGML_TYPE_NVFP4:
+                    case GGML_TYPE_Q4_K16_M:
+                    case GGML_TYPE_Q4_K16:
+                    case GGML_TYPE_Q4_K16_S:
                         break;
                     default:
                         return false;

@@ -411,6 +411,32 @@ struct block_q4_K_packed128
 #define DATA_A_QUANT_K
 #endif
 
+// Q4_K16 research quant (research/q4-k16-quant): 512-element super-block of
+// 32 sub-blocks x 16 elements; per-sub-block 4-bit values with (sc, m) packed
+// as LSB-first bitstreams of SC_BITS/MIN_BITS bits per sub-block.
+// All three configs share this block via DATA_A_Q4_K16; the generator defines
+// SC_BITS/MIN_BITS/SC_BYTES/M_BYTES per config (dequant, mul_mat_vec).
+// mat-mat (mul_mm.comp) uses its own load path; there is no MMQ for these types.
+
+#define QUANT_K_Q4_K16 512
+#define NSUBBLOCKS_Q4_K16 32
+
+#if defined(DATA_A_Q4_K16)
+
+struct block_q4_K16
+{
+    f16vec2 dm;              // x = d, y = dmin
+    uint8_t sc[SC_BYTES];    // SC_BITS per sub-block, LSB-first
+    uint8_t m[M_BYTES];      // MIN_BITS per sub-block, LSB-first
+    uint8_t qs[QUANT_K_Q4_K16/2]; // 8 bytes per sub-block, 2 nibbles per byte
+};
+
+#define QUANT_K QUANT_K_Q4_K16
+#define QUANT_R 1
+#define A_TYPE block_q4_K16
+#define DATA_A_QUANT_K
+#endif
+
 #define QUANT_K_Q5_K 256
 
 struct block_q5_K

@@ -709,3 +709,31 @@ vec2 get_dm(uint ib, uint a_offset) {
     return vec2(1, 0);
 }
 #endif
+
+#if defined(DATA_A_Q4_K16)
+// Q4_K16 research quant: 512-element super-block = 32 sub-blocks x 16.
+// sc/m are per-sub-block values packed LSB-first in SC_BITS/MIN_BITS-wide
+// bitstreams. Returns y = d*sc*l - dmin*m for 4 consecutive raw nibbles l,
+// matching dequantize_row_q4_K16_impl exactly (fma for d*sc*l - dmin*m).
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    const uint sb = iqs / 16;                      // sub-block 0..31
+    const uint b0 = sb * 8 + (iqs % 16) / 2;       // 4 consecutive nibbles = 2 bytes
+    const uint8_t q0 = data_a[a_offset + ib].qs[b0];
+    const uint8_t q1 = data_a[a_offset + ib].qs[b0 + 1];
+
+    const uint scpos = sb * SC_BITS;
+    const uint mpos  = sb * MIN_BITS;
+    const uint sc = (uint(data_a[a_offset + ib].sc[scpos >> 3]) | (uint(data_a[a_offset + ib].sc[(scpos >> 3) + 1]) << 8)) >> (scpos & 7) & ((1u << SC_BITS) - 1);
+    const uint m  = (uint(data_a[a_offset + ib].m[mpos >> 3])  | (uint(data_a[a_offset + ib].m[(mpos >> 3) + 1])  << 8)) >> (mpos & 7)  & ((1u << MIN_BITS) - 1);
+
+    const vec2 dmv = vec2(data_a[a_offset + ib].dm);
+    const float d  = dmv.x * float(sc);
+    const float dm = -dmv.y * float(m);
+
+    return vec4(fma(d, float(q0 & 0xF), dm), fma(d, float(q0 >> 4), dm),
+                fma(d, float(q1 & 0xF), dm), fma(d, float(q1 >> 4), dm));
+}
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(1, 0);
+}
+#endif

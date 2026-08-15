@@ -820,6 +820,11 @@ static bool ggml_vk_should_use_mmvq(const vk_device& device, uint32_t m, uint32_
         return true;
     }
 
+    // Q4_K16_*: no Q8_1 MMVQ kernels are generated; prefer the direct f32/f16 MMV kernels.
+    if (src0_type == GGML_TYPE_Q4_K16_M || src0_type == GGML_TYPE_Q4_K16 || src0_type == GGML_TYPE_Q4_K16_S) {
+        return false;
+    }
+
     // Quantization overhead is not worth it for small k
     switch (device->vendor_id) {
     case VK_VENDOR_ID_NVIDIA:
@@ -939,11 +944,23 @@ static void ggml_vk_mul_mat_vec_q_f16(
     // Check for mmq first
     vk_pipeline dmmv = quantize_y ? ggml_vk_get_dequantize_mul_mat_vec(ctx, src0->type, GGML_TYPE_Q8_1, ne11, ne20, ne00) : nullptr;
     vk_pipeline to_q8_1 = nullptr;
+    bool qx_needs_dequant = x_non_contig;
 
     if (dmmv == nullptr) {
         // Fall back to f16 dequant mul mat
         dmmv = ggml_vk_get_dequantize_mul_mat_vec(ctx, src0->type, src1->type, ne11, ne20, ne00);
         quantize_y = false;
+    }
+
+    if (dmmv == nullptr) {
+        // Safety net: dequantize src0 to f16 on the device and use the f16 vec
+        // kernel. Q4_K16_* have dedicated MMV kernels and do not normally hit
+        // this path (kept for any type without a vec kernel).
+        dmmv = ggml_vk_get_dequantize_mul_mat_vec(ctx, GGML_TYPE_F16, src1->type, ne11, ne20, ne00);
+        qx_needs_dequant = true;
+        if (to_fp16_vk_0 == nullptr) {
+            to_fp16_vk_0 = ggml_vk_get_to_fp16(ctx, src0->type);
+        }
     }
 
     if (quantize_y) {
@@ -954,7 +971,6 @@ static void ggml_vk_mul_mat_vec_q_f16(
         dmmv = ggml_vk_get_64b_indexing_pipeline(ctx, dmmv);
     }
 
-    const bool qx_needs_dequant = x_non_contig;
     // D094: pre-quantized Q8_1 src1 is consumed directly by MMVQ kernels.
     const bool qy_needs_dequant = !quantize_y && src1->type != GGML_TYPE_Q8_1 && ((src1->type != GGML_TYPE_F16 && !f16_f32_kernel) || y_non_contig);
 
@@ -969,7 +985,12 @@ static void ggml_vk_mul_mat_vec_q_f16(
     const uint64_t y_ne = ne10 * ne11 * ne12 * ne13;
 
     const uint64_t qx_sz = ggml_vk_align_size(ggml_vk_device_type_size(src0->type) * x_ne / ggml_blck_size(src0->type), ctx->device->properties.limits.minStorageBufferOffsetAlignment);
-    const uint64_t x_sz = x_non_contig ? ggml_vk_align_size(ggml_vk_device_type_size(src0->type) * x_ne, ctx->device->properties.limits.minStorageBufferOffsetAlignment) : qx_sz;
+    // safety-net dequant (non-MMV types) writes an fp16-sized buffer
+    const uint64_t x_sz = qx_needs_dequant
+        ? (x_non_contig
+            ? ggml_vk_align_size(ggml_vk_device_type_size(src0->type) * x_ne, ctx->device->properties.limits.minStorageBufferOffsetAlignment)
+            : sizeof(ggml_fp16_t) * x_ne)
+        : qx_sz;
     const uint64_t y_sz = quantize_y ? (ggml_vk_align_size(y_ne, 128) * ggml_vk_device_type_size(GGML_TYPE_Q8_1) / ggml_blck_size(GGML_TYPE_Q8_1)) :
                          (f16_f32_kernel ? sizeof(float) * y_ne : sizeof(ggml_fp16_t) * y_ne);
 
@@ -1040,6 +1061,14 @@ static void ggml_vk_mul_mat_vec_q_f16(
 
         GGML_ASSERT(x_sz == ggml_vk_align_size(ggml_vk_device_type_size(src0->type) * x_ne, ctx->device->properties.limits.minStorageBufferOffsetAlignment));
         ggml_vk_cpy_to_contiguous(ctx, subctx, to_fp16_vk_0, src0, d_Qx, d_X);
+    } else if (qx_needs_dequant) {
+        // research quant fallback: dequantize src0 to f16 via the dequant kernel
+        if (ctx->prealloc_x_need_sync) {
+            ggml_vk_sync_buffers(ctx, subctx);
+        }
+        const std::vector<uint32_t> pc = { (uint32_t)ne01, (uint32_t)ne10, (uint32_t)ne10, (uint32_t)ne10, (uint32_t)(ggml_nelements(src0)) };
+        ggml_vk_dispatch_pipeline(ctx, subctx, to_fp16_vk_0, { vk_subbuffer{ d_Qx.buffer, d_Qx.offset, qx_sz }, vk_subbuffer{ d_X.buffer, d_X.offset, x_sz } }, pc, { (uint32_t)(x_ne), 1, 1});
+        ggml_vk_sync_buffers(ctx, subctx);
     }
     if (y_non_contig) {
         GGML_ASSERT(y_sz == ggml_vk_device_type_size(src1->type) * y_ne);

@@ -173,6 +173,7 @@ static ggml_backend_buffer_t ggml_backend_vk_buffer_type_alloc_buffer(ggml_backe
     try {
         dev_buffer = ggml_vk_create_buffer_device(ctx->device, size);
     } catch (const vk::SystemError& e) {
+        std::cerr << "ggml_vulkan: buffer type alloc failed: name=" << ctx->name << " size=" << size << std::endl;
         return nullptr;
     }
 

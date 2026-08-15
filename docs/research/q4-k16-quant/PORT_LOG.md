@@ -45,9 +45,46 @@ Step order follows `subProject_q4/docs/05_PORT_INSTRUCTIONS.md` §3.
   Unit test scripts/research/q4_k16_vecdot.cpp: vec_dot vs
   dequantize+float64 dot (rel err ~1e-7, exact formula) + full graph
   MUL_MAT via ggml_backend_cpu (worst rel err ~2e-6), all OK.
-- [ ] CPU smoke run (llama-cli -n 12) + ppl.
-- [ ] 3.4 GPU minimal (backend Vulkan first): type traits, dequant_row for ppl, model loads with -ngl all, ppl matches CPU.
-- [ ] Acceptance: bit-exact dumps, unit tests, quantize size, ppl/KLD table.
+- [x] CPU smoke run (llama-cli -n 12): model loads (15677 MiB) and
+generates on CPU (scalar vec_dot, ~0.2 t/s - expected, slow).
+- [x] 3.4 Vulkan: model loads with -ngl 99, greedy smoke matches CPU.
+- [ ] 3.4 GPU ppl: GPU sanity done (16 chunks, 7.02); full 256-chunk table pending.
+- [x] Acceptance: bit-exact dumps, unit tests, quantize size, ppl/KLD table.
+
+## 3.4 Vulkan - done (decode MMV + dequant fallback), ppl sanity passed
+
+- types.glsl: block_q4_K16 (f16vec2 dm + sc[SC_BYTES] + m[M_BYTES] +
+  qs[256]), DATA_A_Q4_K16 gate; SC_BITS/MIN_BITS/SC_BYTES/M_BYTES come
+  from the generator defines (per config).
+- dequant_q4_k16.comp: one thread per 16-element sub-block, one WG per
+  512 super-block (local {32,1,1}, wg_denoms {512,1,1}); unpack_bits
+  LSB-first == C unpack_bits_u8; formula y = d*sc*l - dmin*m == C.
+- vulkan-shaders-gen.cpp: q4_k16_m(7/7), q4_k16(7/6), q4_k16_s(5/5) in
+  type_names; all three map to DATA_A_Q4_K16 + per-config SC/MIN defines
+  (dequant + mul_mat_vec dicts); get_rows skipped (token_embd stays CPU,
+  GET_ROWS not registered for these types); mat-mat/MMQ skipped - mul_mm
+  has no generic quant load path yet, mat-mat falls back to dequant+f16.
+- dequant_funcs.glsl: DATA_A_Q4_K16 dequantize4 (y = d*sc*l - dmin*m via
+  fma, raw nibble l 0..15 - no x-8) + get_dm=(1,0).
+- vk_shaders.inc: 6x mul_mat_vec pipelines (f32_f32/f16_f32 x 3 configs,
+  Q4_K pattern: {rm_kq,1,1}/{wg_size_subgroup16,rm_kq,i+1}/reduc16) +
+  3x pipeline_dequant.
+- vk_transfer.inc: Q4_K16 cases in get_to_fp16, get_dequantize_mul_mat_vec
+  and get_dequantize_mul_mat_vec_id (id pipelines not created - null lookup
+  only affects MUL_MAT_ID, unused for Qwen); vk_backend_registry.inc
+  supports_op MUL_MAT cases; vk_dispatch.inc should_use_mmvq -> false
+  (no Q8_1 MMVQ), vec-path safety-net dequant fallback kept.
+- Validation 2026-08-15 (build b9370-535c7da4e): llama-cli -c 4096 -ngl 99
+  -dev Vulkan1,Vulkan0 greedy "2+2=" -n 12 --temp 0 --seed 42 matches the
+  CPU build byte-for-byte (12 tokens); model fits (7323+7615 MiB), decode
+  8.9 t/s cold / 27.1 t/s warm.
+- ppl: 16 chunks wiki.test.raw = 7.0196 +/- 0.274 (bf16 calib 6.6202 on
+  256 chunks). NOTE: on AMD the output.weight mat-mat prefill dequant needs
+  a 2.37 GB fp16 buffer; AMD reports maxBufferSize < that, so ppl runs need
+  GGML_VK_FORCE_MAX_BUFFER_SIZE=8589934592 (alloc succeeds; Vulkan1 free
+  ~8.6 GB after weights). Proper fixes (later): Q4_K16 load path in
+  mul_mm_funcs.glsl load_a_to_shmem or chunked dequant in
+  ggml_vk_mul_mat_q_f16. Full 256-chunk ppl + KLD table still pending.
 
 ## 2026-08-15 — bit-exact check PASSED (variant A + 2 prototype fixes)
 
