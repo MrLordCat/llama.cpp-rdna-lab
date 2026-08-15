@@ -36,7 +36,16 @@ Step order follows `subProject_q4/docs/05_PORT_INSTRUCTIONS.md` §3.
   COLUMN-WISE imatrix (n_per_row values for all rows), fixed to match
   upstream quantize_q4_K; bitcheck re-run column-wise, still bit-exact.
 - [ ] Run llama-quantize with imatrix (long) + ppl/KLD verdict.
-- [ ] 3.3 CPU `vec_dot_q4_K16_q8_1` (scalar first, SIMD optional).
+- [x] 3.3 CPU `vec_dot_q4_K16_q8_1` (scalar): ggml_vec_dot_q4_K16_{M,K16,S}_q8_1
+  in ggml-cpu/quants.c (shared impl with sc_bits/min_bits); weights y as two
+  q8_K blocks per 512 super-block (vec_dot_type = GGML_TYPE_Q8_K, bsums[16]
+  match the 16-element sub-blocks). type_traits_cpu entries with from_float
+  wrappers quantize_row_q4_K16_*. get_rows Q4_K16 cases added to ops.cpp.
+  NOTE: block_q8_K.d is float (not half) in this fork.
+  Unit test scripts/research/q4_k16_vecdot.cpp: vec_dot vs
+  dequantize+float64 dot (rel err ~1e-7, exact formula) + full graph
+  MUL_MAT via ggml_backend_cpu (worst rel err ~2e-6), all OK.
+- [ ] CPU smoke run (llama-cli -n 12) + ppl.
 - [ ] 3.4 GPU minimal (backend Vulkan first): type traits, dequant_row for ppl, model loads with -ngl all, ppl matches CPU.
 - [ ] Acceptance: bit-exact dumps, unit tests, quantize size, ppl/KLD table.
 

@@ -1331,3 +1331,101 @@ void quantize_row_iq4_xs(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, 
     assert(k % QK_K == 0);
     quantize_iq4_xs(x, y, 1, k, NULL);
 }
+
+// ============================ custom Q4_K16 (research/q4-k16-quant)
+
+void quantize_row_q4_K16_M(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_K16 == 0);
+    quantize_row_q4_K16_M_ref(x, y, k);
+}
+
+void quantize_row_q4_K16(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_K16 == 0);
+    quantize_row_q4_K16_ref(x, y, k);
+}
+
+void quantize_row_q4_K16_S(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_K16 == 0);
+    quantize_row_q4_K16_S_ref(x, y, k);
+}
+
+// Scalar vec_dot: x = one Q4_K16 super-block (512 = 32 sub-blocks x 16),
+// y = two q8_K blocks (vec_dot_type = GGML_TYPE_Q8_K). Each 16-element
+// sub-block has its own scale/min packed in the sc/m bit streams:
+//   dot = sum_j yb.d * (d*sc[j] * sum_l(q8[l]*L[l]) - dmin*m[j]*bsums[j])
+// which equals sum_i y[i] * dequantized_x[i] exactly.
+
+static uint8_t unpack_bits_u8_k16(const uint8_t * GGML_RESTRICT src, int j, int nbits) {
+    int bitpos = j * nbits;
+    uint8_t v = 0;
+    for (int b = 0; b < nbits; ++b) {
+        if (src[bitpos >> 3] & (1u << (bitpos & 7))) {
+            v |= (uint8_t) (1u << b);
+        }
+        ++bitpos;
+    }
+    return v;
+}
+
+static void ggml_vec_dot_q4_K16_q8_1_impl(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc, int sc_bits, int min_bits) {
+    assert(n % QK_K16 == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const int nb = n / QK_K16;
+
+    const int sc_bytes = (NSUBBLOCKS_K16 * sc_bits + 7) / 8;
+    const int m_bytes   = (NSUBBLOCKS_K16 * min_bits + 7) / 8;
+    const int block_stride = 2*sizeof(ggml_half) + sc_bytes + m_bytes + QK_K16/2;
+
+    const uint8_t * GGML_RESTRICT x = (const uint8_t *) vx;
+    const block_q8_K * GGML_RESTRICT y = (const block_q8_K *) vy;
+
+    float sumf = 0.0f;
+
+    for (int i = 0; i < nb; ++i) {
+        const ggml_half * d          = (const ggml_half *) x;
+        const ggml_half * dmin       = d + 1;
+        const uint8_t   * sc_stream  = (const uint8_t *) (dmin + 1);
+        const uint8_t   * m_stream   = sc_stream + sc_bytes;
+        const uint8_t   * qs         = m_stream + m_bytes;
+
+        const float d_f    = GGML_CPU_FP16_TO_FP32(*d);
+        const float dmin_f = GGML_CPU_FP16_TO_FP32(*dmin);
+
+        for (int j = 0; j < NSUBBLOCKS_K16; ++j) {
+            const block_q8_K * yb = &y[2*i + j/16];
+            const int jj = j & 15;
+            const int sc = unpack_bits_u8_k16(sc_stream, j, sc_bits);
+            const int m  = unpack_bits_u8_k16(m_stream,  j, min_bits);
+            int sumi = 0;
+            for (int l = 0; l < 16; ++l) {
+                const uint8_t qv = qs[8*j + (l >> 1)];
+                const int li = (l & 1) ? (qv >> 4) : (qv & 0xF);
+                sumi += li * yb->qs[16*jj + l];
+            }
+            // NOTE: block_q8_K.d is float (not half) in this fork
+            const float yd = yb->d;
+            sumf += yd * (d_f * sc * sumi - dmin_f * m * yb->bsums[jj]);
+        }
+
+        x += block_stride;
+    }
+
+    *s = sumf;
+}
+
+void ggml_vec_dot_q4_K16_M_q8_1(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    ggml_vec_dot_q4_K16_q8_1_impl(n, s, bs, vx, bx, vy, by, nrc, 7, 7);
+}
+
+void ggml_vec_dot_q4_K16_q8_1(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    ggml_vec_dot_q4_K16_q8_1_impl(n, s, bs, vx, bx, vy, by, nrc, 7, 6);
+}
+
+void ggml_vec_dot_q4_K16_S_q8_1(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    ggml_vec_dot_q4_K16_q8_1_impl(n, s, bs, vx, bx, vy, by, nrc, 5, 5);
+}
