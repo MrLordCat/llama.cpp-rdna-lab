@@ -1817,7 +1817,8 @@ size_t quantize_q4_K16_M(const float * GGML_RESTRICT src, void * GGML_RESTRICT d
     else {
         char * qrow = (char *) dst;
         for (int64_t row = 0; row < nrow; ++row) {
-            quantize_row_q4_K16_impl(src, qrow, n_per_row, quant_weights + row*n_per_row, 7, 7);
+            // column-wise imatrix: the same n_per_row weights for every row
+            quantize_row_q4_K16_impl(src, qrow, n_per_row, quant_weights, 7, 7);
             src += n_per_row;
             qrow += row_size;
         }
@@ -1833,7 +1834,8 @@ size_t quantize_q4_K16(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst
     else {
         char * qrow = (char *) dst;
         for (int64_t row = 0; row < nrow; ++row) {
-            quantize_row_q4_K16_impl(src, qrow, n_per_row, quant_weights + row*n_per_row, 7, 6);
+            // column-wise imatrix: the same n_per_row weights for every row
+            quantize_row_q4_K16_impl(src, qrow, n_per_row, quant_weights, 7, 6);
             src += n_per_row;
             qrow += row_size;
         }
@@ -1849,7 +1851,8 @@ size_t quantize_q4_K16_S(const float * GGML_RESTRICT src, void * GGML_RESTRICT d
     else {
         char * qrow = (char *) dst;
         for (int64_t row = 0; row < nrow; ++row) {
-            quantize_row_q4_K16_impl(src, qrow, n_per_row, quant_weights + row*n_per_row, 5, 5);
+            // column-wise imatrix: the same n_per_row weights for every row
+            quantize_row_q4_K16_impl(src, qrow, n_per_row, quant_weights, 5, 5);
             src += n_per_row;
             qrow += row_size;
         }
@@ -5692,6 +5695,18 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
         case GGML_TYPE_Q4_K:
             {
                 VALIDATE_ROW_DATA_DM_F16_IMPL(block_q4_K, data, nb, d, dmin);
+            } break;
+        case GGML_TYPE_Q4_K16_M:
+            {
+                VALIDATE_ROW_DATA_DM_F16_IMPL(block_q4_K16_M, data, nb, d, dmin);
+            } break;
+        case GGML_TYPE_Q4_K16:
+            {
+                VALIDATE_ROW_DATA_DM_F16_IMPL(block_q4_K16, data, nb, d, dmin);
+            } break;
+        case GGML_TYPE_Q4_K16_S:
+            {
+                VALIDATE_ROW_DATA_DM_F16_IMPL(block_q4_K16_S, data, nb, d, dmin);
             } break;
         case GGML_TYPE_Q5_K:
             {

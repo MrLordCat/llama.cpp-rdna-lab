@@ -102,10 +102,12 @@ def check_random(blocks: int, seed: int) -> int:
             py["deq"] = q.dequantize_q4_k16(py)
             cpp["deq"] = deq_cpp
             fails += compare(cpp, py, x, cfg, False)
-            # с imatrix
-            qw = rng.random((blocks, 512)).astype(np.float32) + 0.5
-            py = q.quantize_q4_k16(x, quant_weights=qw, exact=True, **CFGS[cfg])
-            cpp, deq_cpp = run_harness(x, cfg, qw, tmp)
+            # с imatrix: ПОКОЛОНОЧНЫЕ веса (одна строка, тайлится на все строки),
+            # как в llama-quantize (imatrix.gguf хранит n_per_row значений на тензор)
+            qw = rng.random((1, 512)).astype(np.float32) + 0.5
+            qw_tiled = np.tile(qw, (blocks, 1)).astype(np.float32)
+            py = q.quantize_q4_k16(x, quant_weights=qw_tiled, exact=True, **CFGS[cfg])
+            cpp, deq_cpp = run_harness(x, cfg, qw_tiled, tmp)
             py["deq"] = q.dequantize_q4_k16(py)
             cpp["deq"] = deq_cpp
             fails += compare(cpp, py, x, cfg, True)
