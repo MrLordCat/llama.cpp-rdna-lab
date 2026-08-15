@@ -436,6 +436,33 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
 
     // for arches that share the same tensor between the token embeddings and the output, we quantize the token embeddings
     // with the quantization of the output tensor
+    if (ftype == LLAMA_FTYPE_MOSTLY_Q4_K16) {
+        // custom Q4_K16 slim policy (research/q4-k16-quant):
+        //   attn_qkv/gate, ffn_gate/up, attn_k/q/v, ssm_out -> Q4_K16_M
+        //   attn_output, token_embd, output -> Q4_K16
+        //   ffn_down -> Q4_K16_S
+        //   ssm_alpha/ssm_beta -> untouched (bf16), everything else -> Q4_K16_M
+        if (name.find("ssm_alpha.weight") != std::string::npos ||
+            name.find("ssm_beta.weight")  != std::string::npos) {
+            return tensor->type;
+        }
+        if (category == tensor_category::OUTPUT || category == tensor_category::TOKEN_EMBD) {
+            new_type = GGML_TYPE_Q4_K16;
+        } else if (category == tensor_category::ATTENTION_OUTPUT) {
+            new_type = GGML_TYPE_Q4_K16;
+        } else if (category == tensor_category::FFN_DOWN) {
+            new_type = GGML_TYPE_Q4_K16_S;
+        } else if (category_is_attn_v(category) ||
+                   category == tensor_category::ATTENTION_Q   ||
+                   category == tensor_category::ATTENTION_K   ||
+                   category == tensor_category::FFN_GATE      ||
+                   category == tensor_category::FFN_UP         ||
+                   name.find("attn_gate.weight") != std::string::npos ||
+                   name.find("ssm_out.weight")   != std::string::npos) {
+            new_type = GGML_TYPE_Q4_K16_M;
+        }
+        return new_type;
+    }
     if (category == tensor_category::OUTPUT || (qs.has_tied_embeddings && category == tensor_category::TOKEN_EMBD)) {
         if (qs.params->output_tensor_type < GGML_TYPE_COUNT) {
             new_type = qs.params->output_tensor_type;
@@ -812,6 +839,7 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q3_K_L:  return GGML_TYPE_Q3_K;
         case LLAMA_FTYPE_MOSTLY_Q4_K_S:
         case LLAMA_FTYPE_MOSTLY_Q4_K_M:  return GGML_TYPE_Q4_K;
+        case LLAMA_FTYPE_MOSTLY_Q4_K16:  return GGML_TYPE_Q4_K16_M;
         case LLAMA_FTYPE_MOSTLY_Q5_K_S:
         case LLAMA_FTYPE_MOSTLY_Q5_K_M:  return GGML_TYPE_Q5_K;
         case LLAMA_FTYPE_MOSTLY_Q6_K:    return GGML_TYPE_Q6_K;

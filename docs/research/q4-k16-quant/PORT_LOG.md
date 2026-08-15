@@ -19,9 +19,17 @@ Step order follows `subProject_q4/docs/05_PORT_INSTRUCTIONS.md` §3.
 - [x] 3.1 `ggml/include/ggml.h` + `ggml-quants.h`: types Q4_K16_M/Q4_K16/Q4_K16_S (enum 49-51, COUNT=52), quantize/dequantize declarations.
 - [x] 3.2 `ggml-quants.c/.h` + `ggml.c` type tables: quantize/dequantize (shared impl, sc_bits/min_bits), blck_size 512, type_size 316/312/300, LSB-first bitstream sc->m, quantize_chunk cases.
 - [x] Bit-exact check vs dump_blocks.py — PASSED (see below).
+- [x] 3.5 `src/llama-quant.cpp` slim policy: LLAMA_FTYPE_MOSTLY_Q4_K16 (=142,
+  name "Q4_K16_M" in llama-quantize). Mapping (04_CANDIDATES.md, verified
+  by --dry-run on the bf16 27B, 851 tensors):
+  - attn_qkv/attn_gate/ffn_gate/ffn_up/attn_k/q/v/ssm_out (320) -> Q4_K16_M
+  - attn_output (16) + output + token_embd (18 total) -> Q4_K16
+  - ffn_down (64) -> Q4_K16_S
+  - ssm_alpha/ssm_beta -> untouched bf16; norms/ssm_a/dt/conv1d untouched
+  - quant size = 15677.83 MiB = 16.44 GB (4.89 bpw) == target 16.44 GB
+- [ ] Run llama-quantize with imatrix (long) + ppl/KLD verdict.
 - [ ] 3.3 CPU `vec_dot_q4_K16_q8_1` (scalar first, SIMD optional).
 - [ ] 3.4 GPU minimal (backend Vulkan first): type traits, dequant_row for ppl, model loads with -ngl all, ppl matches CPU.
-- [ ] 3.5 `src/llama-quant.cpp` slim policy (16.44 GB target).
 - [ ] Acceptance: bit-exact dumps, unit tests, quantize size, ppl/KLD table.
 
 ## 2026-08-15 — bit-exact check PASSED (variant A + 2 prototype fixes)
