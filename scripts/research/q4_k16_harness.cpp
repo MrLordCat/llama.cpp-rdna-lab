@@ -1,12 +1,12 @@
-// Q4_K16 bit-exactness harness (research/q4-k16-quant, WIP tool).
+// Q4_K16 bit-exactness harness (research/q4-k16-quant).
 // Reads f32 x (N x 512) and optional imatrix qw, quantizes with the C++
 // implementation via ggml_quantize_chunk, and dumps, per block:
 //   d (fp16 u16 LE), dmin (fp16 u16 LE), ls[32], lm[32], qs[256] (raw)
-// plus the dequantized f32 row (N x 512).
+// plus the dequantized f32 row (N x 512) as <out>.deq.
 // Compare against subProject_q4/prototype/quants.py via q4_k16_bitcheck.py.
 //
 // Build (git-bash, Strawberry MinGW in PATH):
-//   g++ -std=c++17 -O2 -I ggml/include -I ggml/src -o /tmp/q4_k16_harness.exe \
+//   g++ -std=c++17 -O2 -I ggml/include -I ggml/src -o scripts/research/q4_k16_harness.exe \
 //       scripts/research/q4_k16_harness.cpp build-cpu/ggml/src/ggml-base.a
 
 #include "ggml.h"
@@ -69,7 +69,7 @@ int main(int argc, char ** argv) {
     const float * qw_ptr = nullptr;
     if (argc >= 5) {
         FILE * fq = fopen(argv[4], "rb");
-        if (!fq) { fprintf(stderr, "cannot open %s\n", argv[5]); return 1; }
+        if (!fq) { fprintf(stderr, "cannot open %s\n", argv[4]); return 1; }
         fseek(fq, 0, SEEK_END);
         const int64_t qbytes = ftell(fq);
         fseek(fq, 0, SEEK_SET);
@@ -87,25 +87,6 @@ int main(int argc, char ** argv) {
     if (quantized != nrows * row_size) {
         fprintf(stderr, "quantize_chunk returned %zu, expected %zu\n", quantized, nrows * row_size);
         return 1;
-    }
-
-    if (argc >= 7 && strcmp(argv[6], "debugw") == 0 && qw_ptr) {
-        // debug: dump the imatrix weights as the C++ impl would see them
-        // (row 0, sub-blocks 0..2, first 16 entries each), f32 raw to stdout
-        const int64_t nb = n_per_row / 512;
-        for (int64_t i = 0; i < nb && i < 1; ++i) {
-            float sum_x2 = 0;
-            for (int l = 0; l < 512; ++l) sum_x2 += x[i*512 + l]*x[i*512 + l];
-            const float sigma2 = 2*sum_x2/512;
-            fprintf(stdout, "sigma2=%.9g\n", sigma2);
-            for (int j = 0; j < 3; ++j) {
-                for (int l = 0; l < 16; ++l) {
-                    const float w = qw_ptr[i*512 + 16*j + l] * sqrtf(sigma2 + x[i*512 + 16*j + l]*x[i*512 + 16*j + l]);
-                    fprintf(stdout, "%.9g%c", w, l == 15 ? '\n' : ' ');
-                }
-            }
-        }
-        return 0;
     }
 
     const int sc_bytes = (32 * sc_bits + 7) / 8;

@@ -67,6 +67,10 @@ def compare(cpp: dict, py: dict, x: np.ndarray, cfg: str, imatrix: bool) -> list
         if a.shape != b.shape:
             errs.append(f"{tag}: {field}: shape mismatch {a.shape} vs {b.shape}")
             continue
+        if field == "dmin":
+            # знак нуля: numpy max(-0.0) = -0.0 (f16 0x8000), C даёт +0.0 — значения равны
+            a = np.where(a == 0x8000, np.uint16(0), a)
+            b = np.where(b == 0x8000, np.uint16(0), b)
         n_diff = int((a != b).sum())
         if n_diff:
             idx = np.argwhere(a != b)[:5]
@@ -92,15 +96,15 @@ def check_random(blocks: int, seed: int) -> int:
             x[1] = 1.0
             if blocks > 2:
                 x[2, ::17] = 0.123
-            # без imatrix
-            py = q.quantize_q4_k16(x, **CFGS[cfg])
+            # без imatrix (exact = последовательные f32-суммы, как C)
+            py = q.quantize_q4_k16(x, exact=True, **CFGS[cfg])
             cpp, deq_cpp = run_harness(x, cfg, None, tmp)
             py["deq"] = q.dequantize_q4_k16(py)
             cpp["deq"] = deq_cpp
             fails += compare(cpp, py, x, cfg, False)
             # с imatrix
             qw = rng.random((blocks, 512)).astype(np.float32) + 0.5
-            py = q.quantize_q4_k16(x, quant_weights=qw, **CFGS[cfg])
+            py = q.quantize_q4_k16(x, quant_weights=qw, exact=True, **CFGS[cfg])
             cpp, deq_cpp = run_harness(x, cfg, qw, tmp)
             py["deq"] = q.dequantize_q4_k16(py)
             cpp["deq"] = deq_cpp
@@ -113,13 +117,38 @@ def check_random(blocks: int, seed: int) -> int:
 
 
 def check_dump(npz_path: Path) -> int:
-    data = np.load(npz_path)
-    x = data["x"]
+    """Сверка C++ против эталонного дампа dump_blocks.py (f32-exact прототип)."""
+    name = npz_path.name
     cfg = None
-    # определяем конфиг по форме (sc_bits неизвестны из npz — берём по имени файла/аргументу)
-    print("поля дампа:", {k: v.shape for k, v in data.items()})
-    print("x блоков:", x.shape)
-    # конфиг передаётся вторым аргументом в имени: dump_blocks.py имя не хранит — требуем явно
+    for c in CFGS:
+        if f"_{c}_" in name or name.startswith(c) or f"ref_{c}" in name:
+            cfg = c
+            break
+    if cfg is None:
+        # старые имена вида ref_b77_blk0_ffngate.npz
+        for c in CFGS:
+            if name.startswith(f"ref_{c}"):
+                cfg = c
+                break
+    if cfg is None:
+        print(f"не удалось определить конфиг из имени {name} (ожидаю b77/b76/e55)")
+        return 2
+
+    data = np.load(npz_path)
+    x = data["x"].astype(np.float32)
+    print(f"дамп {name}: конфиг {cfg}, блоков {x.shape[0]}")
+    with tempfile.TemporaryDirectory() as td:
+        cpp, deq_cpp = run_harness(x, cfg, None, Path(td))
+        py = {
+            "d": data["d"], "dmin": data["dmin"], "scales": data["scales"],
+            "mins": data["mins"], "qs": data["qs"],
+        }
+        cpp_no_deq = {k: v for k, v in cpp.items() if k != "deq"}
+        errs = compare(cpp_no_deq, py, x, cfg, False)
+        if errs:
+            print("\n".join(errs))
+            return 1
+        print(f"OK: {cfg} совпал байт-в-байт с эталоном ({x.shape[0]} блоков)")
     return 0
 
 
