@@ -435,7 +435,10 @@ extern "C" {
         GGML_TYPE_F8_E4M3 = 44, // FP8 E4M3 backend-safe finite subset (1 byte)
         GGML_TYPE_F8_E5M2 = 45, // FP8 E5M2 (1 byte)
         GGML_TYPE_PQ2_0   = 48, // Prism packed 2-bit, 128-value blocks (GGUF type 142)
-        GGML_TYPE_COUNT   = 49,
+        GGML_TYPE_Q4_K16_M = 49, // custom 4-bit, 16-element sub-blocks, 512 super-block (sc 7 + m 7 bits)
+        GGML_TYPE_Q4_K16   = 50, // custom 4-bit, 16-element sub-blocks, 512 super-block (sc 7 + m 6 bits)
+        GGML_TYPE_Q4_K16_S = 51, // custom 4-bit, 16-element sub-blocks, 512 super-block (sc 5 + m 5 bits)
+        GGML_TYPE_COUNT   = 52,
     };
 
     // precision

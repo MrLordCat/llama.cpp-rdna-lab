@@ -1620,6 +1620,243 @@ size_t quantize_q4_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
     return nrow * row_size;
 }
 
+// ====================== custom Q4_K16 (de)-quantization
+// research/q4-k16-quant: super-block 512, 32 sub-blocks x 16, uniform
+// 0..15 levels; per-sub-block scale/min packed as continuous LSB-first
+// bitstreams (sc stream first, then m stream). Math mirrors
+// subProject_q4/prototype/quants.py (quantize_q4_k16) bit-for-bit.
+
+static void pack_bits_u8(uint8_t * GGML_RESTRICT dst, const uint8_t * GGML_RESTRICT vals, int nvals, int nbits) {
+    int bitpos = 0;
+    for (int j = 0; j < nvals; ++j) {
+        const uint8_t v = vals[j];
+        for (int b = 0; b < nbits; ++b) {
+            if (v & (1u << b)) {
+                dst[bitpos >> 3] |= (uint8_t) (1u << (bitpos & 7));
+            }
+            ++bitpos;
+        }
+    }
+}
+
+static uint8_t unpack_bits_u8(const uint8_t * GGML_RESTRICT src, int j, int nbits) {
+    int bitpos = j * nbits;
+    uint8_t v = 0;
+    for (int b = 0; b < nbits; ++b) {
+        if (src[bitpos >> 3] & (1u << (bitpos & 7))) {
+            v |= (uint8_t) (1u << b);
+        }
+        ++bitpos;
+    }
+    return v;
+}
+
+static void quantize_row_q4_K16_impl(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t n_per_row,
+        const float * quant_weights, int sc_bits, int min_bits) {
+    assert(n_per_row % QK_K16 == 0);
+    const int64_t nb = n_per_row / QK_K16;
+
+    const int nqs = (1 << sc_bits) - 1;
+    const int nqm = (1 << min_bits) - 1;
+    const int sc_bytes = (NSUBBLOCKS_K16 * sc_bits + 7) / 8;
+    const int m_bytes   = (NSUBBLOCKS_K16 * min_bits + 7) / 8;
+
+    uint8_t L[QK_K16];
+    uint8_t Laux[16];
+    float   weights[16];
+    float   mins[NSUBBLOCKS_K16];
+    float   scales[NSUBBLOCKS_K16];
+
+    for (int i = 0; i < nb; i++) {
+
+        // block layout: d, dmin, sc stream, m stream, qs
+        ggml_half * d          = (ggml_half *) vy;
+        ggml_half * dmin       = d + 1;
+        uint8_t   * sc_stream  = (uint8_t *) (dmin + 1);
+        uint8_t   * m_stream   = sc_stream + sc_bytes;
+        uint8_t   * qs         = m_stream + m_bytes;
+
+        float sum_x2 = 0;
+        for (int l = 0; l < QK_K16; ++l) sum_x2 += x[l] * x[l];
+        const float sigma2 = 2*sum_x2/QK_K16;
+
+        float max_scale = 0; // as we are deducting the min, scales are always positive
+        float max_min = 0;
+        for (int j = 0; j < NSUBBLOCKS_K16; ++j) {
+            if (quant_weights) {
+                const float * qw = quant_weights + QK_K16*i + 16*j;
+                for (int l = 0; l < 16; ++l) weights[l] = qw[l] * sqrtf(sigma2 + x[16*j + l]*x[16*j + l]);
+            } else {
+                float sum_x2_sub = 0;
+                for (int l = 0; l < 16; ++l) sum_x2_sub += x[16*j + l] * x[16*j + l];
+                const float av_x = sqrtf(sum_x2_sub/16);
+                for (int l = 0; l < 16; ++l) weights[l] = av_x + fabsf(x[16*j + l]);
+            }
+            scales[j] = make_qkx2_quants(16, 15, x + 16*j, weights, L + 16*j, &mins[j], Laux, -1.f, 0.1f, 20, false);
+            if (scales[j] > max_scale) {
+                max_scale = scales[j];
+            }
+            if (mins[j] > max_min) {
+                max_min = mins[j];
+            }
+        }
+
+        uint8_t ls[NSUBBLOCKS_K16];
+        uint8_t lm[NSUBBLOCKS_K16];
+        {
+            const float inv_scale = max_scale > 0 ? (float) nqs/max_scale : 0.f;
+            const float inv_min   = max_min   > 0 ? (float) nqm/max_min   : 0.f;
+            for (int j = 0; j < NSUBBLOCKS_K16; ++j) {
+                uint8_t l = MIN(nqs, nearest_int(inv_scale*scales[j]));
+                uint8_t m = MIN(nqm, nearest_int(inv_min*mins[j]));
+                ls[j] = l;
+                lm[j] = m;
+            }
+        }
+        *d    = GGML_FP32_TO_FP16(max_scale/(float) nqs);
+        *dmin = GGML_FP32_TO_FP16(max_min/(float) nqm);
+
+        // final levels re-computed from the packed d/sc/dmin/m (as in the prototype;
+        // note: unlike q4_K_ref, degenerate sub-blocks fall back to denom == 1)
+        const float d_f    = GGML_FP16_TO_FP32(*d);
+        const float dmin_f = GGML_FP16_TO_FP32(*dmin);
+        for (int j = 0; j < NSUBBLOCKS_K16; ++j) {
+            const float dd = d_f * ls[j];
+            const float dm = dmin_f * lm[j];
+            const float denom = dd != 0.0f ? dd : 1.0f;
+            for (int ii = 0; ii < 16; ++ii) {
+                int l = nearest_int((x[16*j + ii] + dm)/denom);
+                l = MAX(0, MIN(15, l));
+                L[16*j + ii] = l;
+            }
+        }
+
+        for (int l = 0; l < QK_K16/2; ++l) {
+            qs[l] = L[2*l] | (L[2*l + 1] << 4);
+        }
+
+        {
+            uint8_t tmp_sc[NSUBBLOCKS_K16*7/8 + 1] = {0};
+            uint8_t tmp_m[NSUBBLOCKS_K16*7/8 + 1]  = {0};
+            pack_bits_u8(tmp_sc, ls, NSUBBLOCKS_K16, sc_bits);
+            pack_bits_u8(tmp_m, lm, NSUBBLOCKS_K16, min_bits);
+            memcpy(sc_stream, tmp_sc, sc_bytes);
+            memcpy(m_stream,  tmp_m,  m_bytes);
+        }
+
+        x  += QK_K16;
+        vy = (char *) vy + 2*sizeof(ggml_half) + sc_bytes + m_bytes + QK_K16/2;
+    }
+}
+
+void quantize_row_q4_K16_M_ref(const float * GGML_RESTRICT x, block_q4_K16_M * GGML_RESTRICT y, int64_t k) {
+    quantize_row_q4_K16_impl(x, y, k, NULL, 7, 7);
+}
+
+void quantize_row_q4_K16_ref(const float * GGML_RESTRICT x, block_q4_K16 * GGML_RESTRICT y, int64_t k) {
+    quantize_row_q4_K16_impl(x, y, k, NULL, 7, 6);
+}
+
+void quantize_row_q4_K16_S_ref(const float * GGML_RESTRICT x, block_q4_K16_S * GGML_RESTRICT y, int64_t k) {
+    quantize_row_q4_K16_impl(x, y, k, NULL, 5, 5);
+}
+
+static void dequantize_row_q4_K16_impl(const void * GGML_RESTRICT vx, float * GGML_RESTRICT y, int64_t k, int sc_bits, int min_bits) {
+    assert(k % QK_K16 == 0);
+    const int64_t nb = k / QK_K16;
+
+    const int sc_bytes = (NSUBBLOCKS_K16 * sc_bits + 7) / 8;
+    const int m_bytes   = (NSUBBLOCKS_K16 * min_bits + 7) / 8;
+
+    const uint8_t * x = (const uint8_t *) vx;
+
+    for (int i = 0; i < nb; ++i) {
+        const ggml_half * d          = (const ggml_half *) x;
+        const ggml_half * dmin       = d + 1;
+        const uint8_t   * sc_stream  = (const uint8_t *) (dmin + 1);
+        const uint8_t   * m_stream   = sc_stream + sc_bytes;
+        const uint8_t   * qs         = m_stream + m_bytes;
+
+        const float d_f    = GGML_FP16_TO_FP32(*d);
+        const float dmin_f = GGML_FP16_TO_FP32(*dmin);
+
+        for (int j = 0; j < NSUBBLOCKS_K16; ++j) {
+            const uint8_t sc = unpack_bits_u8(sc_stream, j, sc_bits);
+            const uint8_t m  = unpack_bits_u8(m_stream, j, min_bits);
+            const float dd = d_f * sc;
+            const float dm = dmin_f * m;
+            for (int ii = 0; ii < 16; ++ii) {
+                const uint8_t qv = qs[8*j + (ii >> 1)];
+                const uint8_t l = (ii & 1) ? (qv >> 4) : (qv & 0xF);
+                y[16*j + ii] = dd*l - dm;
+            }
+        }
+
+        x += 2*sizeof(ggml_half) + sc_bytes + m_bytes + QK_K16/2;
+        y += QK_K16;
+    }
+}
+
+void dequantize_row_q4_K16_M(const block_q4_K16_M * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    dequantize_row_q4_K16_impl(x, y, k, 7, 7);
+}
+
+void dequantize_row_q4_K16(const block_q4_K16 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    dequantize_row_q4_K16_impl(x, y, k, 7, 6);
+}
+
+void dequantize_row_q4_K16_S(const block_q4_K16_S * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    dequantize_row_q4_K16_impl(x, y, k, 5, 5);
+}
+
+size_t quantize_q4_K16_M(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    size_t row_size = ggml_row_size(GGML_TYPE_Q4_K16_M, n_per_row);
+    if (!quant_weights) {
+        quantize_row_q4_K16_impl(src, dst, (int64_t) nrow*n_per_row, NULL, 7, 7);
+    }
+    else {
+        char * qrow = (char *) dst;
+        for (int64_t row = 0; row < nrow; ++row) {
+            quantize_row_q4_K16_impl(src, qrow, n_per_row, quant_weights + row*n_per_row, 7, 7);
+            src += n_per_row;
+            qrow += row_size;
+        }
+    }
+    return nrow * row_size;
+}
+
+size_t quantize_q4_K16(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    size_t row_size = ggml_row_size(GGML_TYPE_Q4_K16, n_per_row);
+    if (!quant_weights) {
+        quantize_row_q4_K16_impl(src, dst, (int64_t) nrow*n_per_row, NULL, 7, 6);
+    }
+    else {
+        char * qrow = (char *) dst;
+        for (int64_t row = 0; row < nrow; ++row) {
+            quantize_row_q4_K16_impl(src, qrow, n_per_row, quant_weights + row*n_per_row, 7, 6);
+            src += n_per_row;
+            qrow += row_size;
+        }
+    }
+    return nrow * row_size;
+}
+
+size_t quantize_q4_K16_S(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    size_t row_size = ggml_row_size(GGML_TYPE_Q4_K16_S, n_per_row);
+    if (!quant_weights) {
+        quantize_row_q4_K16_impl(src, dst, (int64_t) nrow*n_per_row, NULL, 5, 5);
+    }
+    else {
+        char * qrow = (char *) dst;
+        for (int64_t row = 0; row < nrow; ++row) {
+            quantize_row_q4_K16_impl(src, qrow, n_per_row, quant_weights + row*n_per_row, 5, 5);
+            src += n_per_row;
+            qrow += row_size;
+        }
+    }
+    return nrow * row_size;
+}
+
 // ====================== 5-bit (de)-quantization
 
 void quantize_row_q5_K_ref(const float * GGML_RESTRICT x, block_q5_K * GGML_RESTRICT y, int64_t k) {

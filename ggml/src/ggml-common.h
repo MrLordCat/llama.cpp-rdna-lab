@@ -346,6 +346,42 @@ typedef struct {
 } block_q4_K;
 static_assert(sizeof(block_q4_K) == 2*sizeof(ggml_half) + K_SCALE_SIZE + QK_K/2, "wrong q4_K block size/padding");
 
+// Custom Q4_K16 (research/q4-k16-quant): super-block of 512 elements,
+// 32 sub-blocks of 16 elements. Per-sub-block scale (sc) and min (m) are
+// quantized to sc_bits/min_bits and packed as a continuous LSB-first
+// bitstream: first the sc stream, then the m stream. Value sc[j] lives in
+// bits [j*sc_bits, (j+1)*sc_bits-1] of the stream (little-endian shifts).
+// Uniform 0..15 levels: x = (d*sc/NQS)*L - (dmin*m/NQM).
+#define QK_K16      512
+#define NSUBBLOCKS_K16 32
+
+typedef struct {
+    ggml_half d;    // super-block scale for quantized scales
+    ggml_half dmin; // super-block scale for quantized mins
+    uint8_t sc[28]; // 32 x 7-bit scales, LSB-first bitstream
+    uint8_t m[28];  // 32 x 7-bit mins,   LSB-first bitstream
+    uint8_t qs[256];// 4-bit quants, 2 per byte (even index = low nibble)
+} block_q4_K16_M;
+static_assert(sizeof(block_q4_K16_M) == 316, "wrong q4_K16_M block size/padding");
+
+typedef struct {
+    ggml_half d;
+    ggml_half dmin;
+    uint8_t sc[28]; // 32 x 7-bit scales
+    uint8_t m[24];  // 32 x 6-bit mins
+    uint8_t qs[256];
+} block_q4_K16;
+static_assert(sizeof(block_q4_K16) == 312, "wrong q4_K16 block size/padding");
+
+typedef struct {
+    ggml_half d;
+    ggml_half dmin;
+    uint8_t sc[20]; // 32 x 5-bit scales
+    uint8_t m[20];  // 32 x 5-bit mins
+    uint8_t qs[256];
+} block_q4_K16_S;
+static_assert(sizeof(block_q4_K16_S) == 300, "wrong q4_K16_S block size/padding");
+
 // 5-bit quantization
 // 8 blocks of 32 elements each
 // weight is represented as x = a * q + b
