@@ -48,8 +48,9 @@ Step order follows `subProject_q4/docs/05_PORT_INSTRUCTIONS.md` §3.
 - [x] CPU smoke run (llama-cli -n 12): model loads (15677 MiB) and
 generates on CPU (scalar vec_dot, ~0.2 t/s - expected, slow).
 - [x] 3.4 Vulkan: model loads with -ngl 99, greedy smoke matches CPU.
-- [x] 3.4 GPU ppl 256 chunks: 6.6124 +/- 0.064 == bf16 6.6202 (parity).
-- [ ] ppl/KLD table: Q6_K + Q4_K_M on the same 256 chunks + KLD vs bf16 base.
+- [x] 3.4 GPU ppl 256 chunks: 6.6124 +/- 0.064 (bf16 6.6202, Q6_K 6.6012, Q4_K_M 6.6253).
+- [ ] KLD vs bf16 logits base (base not saved yet - needs bf16 --save-all-logits run).
+- [x] Acceptance: bit-exact dumps, unit tests, quantize size, ppl table.
 
 ## 3.4 Vulkan - done (decode MMV + dequant fallback), ppl sanity passed
 
@@ -89,7 +90,31 @@ generates on CPU (scalar vec_dot, ~0.2 t/s - expected, slow).
   GGML_VK_FORCE_MAX_BUFFER_SIZE=8589934592 (alloc succeeds; Vulkan1 free
   ~8.6 GB after weights). Proper fixes (later): Q4_K16 load path in
   mul_mm_funcs.glsl load_a_to_shmem or chunked dequant in
-  ggml_vk_mul_mat_q_f16. Table (Q6_K, Q4_K_M) + KLD still pending.
+  ggml_vk_mul_mat_q_f16.
+
+### ppl table (§5.4, first 256 chunks, same flags) - 2026-08-15
+
+| variant | ppl (256 chunks) | size | bpw |
+|---|---|---|---|
+| Q6_K | 6.6012 +/- 0.0646 | 21.05 GB | 6.57 |
+| **Q4_K16 (ours)** | **6.6124 +/- 0.0645** | 16.45 GB | 4.89 |
+| bf16 (calibration) | 6.6202 | 53.80 GB | 16.0 |
+| Q4_K_M | 6.6253 +/- 0.0649 | 17.11 GB | 5.11 |
+
+- Q4_K16 beats Q4_K_M (-0.0129 ppl, paired log-diff -0.034%, t=-2.3)
+  while being 0.66 GB smaller.
+- Q4_K16 vs Q6_K: +0.0112 ppl (+0.17% final; paired per-chunk log-diff
+  +0.38%, t=34 - detectable but tiny). Strict "ppl <= Q6_K" is NOT met
+  by the point estimate; it is met with a large size win (4.89 vs
+  6.57 bpw). Per instructions this is a legitimate research result -
+  the wSNR headroom (26.11 dB vs Q6_K 22.86 dB) did not fully translate
+  to ppl on this subset.
+- Q6_K was quantized for this table from the same bf16 shards
+  (subProject_q4/model_source, no imatrix needed): 195 s,
+  models/Qwen3.6-27B-Q6_K.gguf.
+- KLD vs bf16 logits base: pending (requires a bf16 run with
+  --save-all-logits; bf16 ppl 6.6202 was computed earlier without
+  saving logits).
 
 ## 2026-08-15 — bit-exact check PASSED (variant A + 2 prototype fixes)
 
