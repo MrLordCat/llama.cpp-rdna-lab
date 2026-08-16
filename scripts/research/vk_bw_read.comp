@@ -1,0 +1,30 @@
+#version 450
+// vk_bw_read.comp — linear device-local read stream benchmark.
+// Every lane reads consecutive float4 (16 B) elements with a stride of
+// total_threads, so the whole buffer is streamed front-to-back per pass.
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0, std430) buffer B { float data[]; };
+layout(binding = 1, std430) buffer O { float out_sum[]; };
+
+layout(push_constant) uniform PC {
+    uint total_vec4;
+    uint iters;
+    uint pad0;
+    uint pad1;
+} pc;
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    uint nthreads = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+    float acc = 0.0;
+    for (uint it = 0; it < pc.iters; ++it) {
+        for (uint i = gid; i < pc.total_vec4; i += nthreads) {
+            vec4 v = vec4(data[4 * i + 0], data[4 * i + 1], data[4 * i + 2], data[4 * i + 3]);
+            acc += v.x + v.y + v.z + v.w;
+        }
+    }
+    // Always write; one word per workgroup, keeps the loads alive.
+    out_sum[gl_WorkGroupID.x] = acc;
+}
