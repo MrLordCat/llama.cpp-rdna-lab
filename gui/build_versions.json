@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-13 11:30:00",
+  "updated_at": "2026-08-16 11:20:17",
   "builds": [
     {
       "id": "bld-20260508073132-4d3cb594",
@@ -421,6 +421,23 @@
       "toolchain": {},
       "created_at": "2026-08-13 11:30:00",
       "updated_at": "2026-08-13 11:30:00",
+      "status": "ready",
+      "notes": "Imported from existing build directory",
+      "bench_best_non_mtp_tps": null,
+      "bench_best_mtp_tps": null,
+      "bench_last_run_at": ""
+    },
+    {
+      "id": "bld-20260816112017-5e47f43a",
+      "name": "build-rocm-gfx1100-hardening",
+      "backend": "rocm",
+      "source_type": "fork",
+      "source_ref": "98ccc7d56",
+      "build_dir": "D:\\GitHub\\llama.cpp-with-GUI\\build-rocm-gfx1100-hardening",
+      "server_bin": "D:\\GitHub\\llama.cpp-with-GUI\\build-rocm-gfx1100-hardening\\bin\\llama-server.exe",
+      "toolchain": {},
+      "created_at": "2026-08-16 11:20:17",
+      "updated_at": "2026-08-16 11:20:17",
       "status": "ready",
       "notes": "Imported from existing build directory",
       "bench_best_non_mtp_tps": null,

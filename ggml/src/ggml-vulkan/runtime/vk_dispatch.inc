@@ -528,7 +528,11 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
         quantize_y = false;
     }
 
-    const bool qx_needs_dequant = mmp == nullptr || x_non_contig;
+    // D104 R1 (probe): force the generic predequant route for Q6_K
+    // (dequant_q6_k -> f16 staging -> f16 coopmat matmul). Measurement-only.
+    const bool q6k_predequant_probe =
+        std::getenv("GGML_VK_PREDEQUANT_Q6K") != nullptr && src0->type == GGML_TYPE_Q6_K;
+    const bool qx_needs_dequant = mmp == nullptr || x_non_contig || q6k_predequant_probe;
     // D094: pre-quantized Q8_1 src1 is consumed directly by MMQ kernels.
     const bool qy_needs_dequant = !quantize_y && src1->type != GGML_TYPE_Q8_1 && ((src1->type != f16_type && !y_f32_kernel) || y_non_contig);
 
