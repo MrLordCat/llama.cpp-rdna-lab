@@ -65,18 +65,22 @@ Gate: MTP acceptance at least q8-hybrid level at equal-or-better memory,
 decode above the current f8 25.56 baseline. Secondary gate: can the
 f16 tail N shrink (target: drop the 5376-vs-4680 MiB deficit).
 
-### C2 — clean A/B of `GGML_VK_FA_F8_DIRECT` vs preconvert (cheap)
+### C2 — clean A/B of `GGML_VK_FA_F8_DIRECT` vs preconvert — CLOSED 2026-08-19
 
-The direct cm1 f8-load route was never measured cleanly after the
-2026-08-13 env-inheritance audit (D130 tested NATIVE, not DIRECT).
-D095-D3 showed forced shmem staging can push coopmat1 over the 32 KiB
-limit (-36% scalar fallback), so the probe must verify route trace shows
-`f8_direct=1, preconvert=0, shmem_staging=0` before reading numbers.
-If it wins at 49K/98K, it removes the preconvert pass without the
-per-tile V-staging cost that sank the native kernel.
+Measured on the 49K lane (Qwen3.8-27B-Q4_K_M, f8 K/V, spec=none, dual
+Vulkan, b8192/ub1024, interleaved A-B-A-B, route-verified via
+`GGML_VK_FA_ROUTE_TRACE`): the direct runs really took
+`path=coopmat1, f8_direct=1, preconvert=0, shmem_staging=0`.
 
-Gate: prefill > preconvert at 49K and 98K, route trace clean, then
-default promotion + memory re-measure.
+| config | prompt t/s | decode t/s |
+|---|---:|---:|
+| preconvert (control x2, spread 0.09%) | 1553.95 / 1555.40 | 24.73 / 24.58 |
+| f8_direct (x2) | 1186.03 / 1191.43 | 24.52 / 24.55 |
+
+**-23.5% prefill, decode neutral.** Per-element f8->f16 conversion inside
+the cm1 A-stage costs more than converting the KV once. Preconvert stays
+the default; the direct route joins D130 in the closed set. Artifacts:
+`d131-c2-preconv-r{1,2}`, `d131-c2-direct-r{1,2}`.
 
 ### C3 — V-only / per-layer hybrid policy (medium)
 
@@ -99,6 +103,7 @@ decode pair exists post-audit. If it inverts, the lane-specific default
 - BFP8 int8+exp (R7): precision passes but int8 accumulators are closed.
 - symmetric K/V general-scale E4M3 (R8): V scale not factorable from P*V.
 - native fp8 coopmat prefill (D130): preconvert wins, -7.6% at 49K.
+- direct f8 cm1 prefill (C2 above): preconvert wins, -23.5% at 49K.
 - cooperative decode (D4.2): 13.28 vs 25.45 t/s scalar; needs KV-batched
   fragment design, not query-batched.
 - direct scalar f8 decode without staging (D095 R1): wall-time tie.
@@ -108,7 +113,7 @@ decode pair exists post-audit. If it inverts, the lane-specific default
 ## 5. Next branch shape
 
 `research/vulkan-fp8-kv`:
-1. C2 probe (no code, one session) — settle the prefill route.
+1. [x] C2 probe — CLOSED, preconvert wins by 23.5%.
 2. C1 R9 implementation (the real work) with the D096 R9 design as spec,
    acceptance + memory + decode gates against q8-hybrid.
 3. C4 clean 98K decode pair to decide lane policy.
