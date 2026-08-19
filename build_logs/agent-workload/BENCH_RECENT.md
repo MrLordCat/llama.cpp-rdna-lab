@@ -7,6 +7,10 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-08-19 14:34:11 | cold-first | vulkan | d129-wg-lg-r2 | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | none | 17.3007 | 1449.9650 | 27.3800 | 0 |
+| 2026-08-19 14:33:24 | cold-first | vulkan | d129-wg-sub-r2 | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | none | 17.9862 | 1458.2700 | 28.9950 | 0 |
+| 2026-08-19 14:32:37 | cold-first | vulkan | d129-wg-lg-r1 | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | none | 17.1071 | 1455.1800 | 26.8650 | 0 |
+| 2026-08-19 14:31:48 | cold-first | vulkan | d129-wg-sub-r1 | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | none | 17.9190 | 1437.6700 | 29.1200 | 0 |
 | 2026-08-16 15:03:33 | cold-first | vulkan | d105-p4b-mtp4-128-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | mtp | 15.2014 | 1364.5250 | 52.2150 | 0 |
 | 2026-08-16 15:02:55 | cold-first | vulkan | d105-p4b-mtp3-128-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | mtp | 15.8427 | 1433.5900 | 52.5150 | 0 |
 | 2026-08-16 15:02:20 | cold-first | vulkan | d105-p4b-mtp2-128-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | mtp | 15.4997 | 1404.3600 | 50.2000 | 0 |
@@ -83,7 +87,3 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-08-14 18:31:45 | cold-first | vulkan | q38-smoke-vulkan-r1 | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 4096/1024 | q8_0/q8_0 | none | 2.8213 | 1611.5200 | 26.6300 | 0 |
 | 2026-08-14 18:04:25 | cold-first | rocm | r001-w12-census-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 0.7721 | 775.8900 | 17.5000 | 0 |
 | 2026-08-14 16:38:38 | cold-first | rocm | r001-mtp-prod-none-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 5.5225 | 1756.1900 | 22.7200 | 0 |
-| 2026-08-14 16:37:18 | cold-first | rocm | r001-mtp-prod-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | mtp | 5.9553 | 1683.5000 | 39.9800 | 0 |
-| 2026-08-14 13:57:45 | cold-first | rocm | r001-h77-ab-cand-r2 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 5.2516 | 1682.7600 | 21.1400 | 0 |
-| 2026-08-14 13:56:29 | cold-first | - | r001-h77-ab-ctrl-r2 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 5.5350 | 1774.3000 | 22.2700 | 0 |
-| 2026-08-14 13:54:52 | cold-first | rocm | r001-h77-ab-cand-r1 | Qwen3.6-27B-Q4_K_M.gguf | 49152 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 5.4446 | 1747.9100 | 21.8400 | 0 |
