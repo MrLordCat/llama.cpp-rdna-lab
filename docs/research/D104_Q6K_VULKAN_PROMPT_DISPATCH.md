@@ -56,7 +56,9 @@ worse; wn32 l is the best available shape (wn48/bn64 collapse 4x).
 
 12K: agent_workload_bench.py quick tasks, runs 1, real-context 24576 chars,
 -n 99, -dev Vulkan1,Vulkan0 -sm layer -ts 1,1 -fit off, --cache-ram 0,
---ctx-checkpoints 0, --seed 42, no-warmup. GUI env baseline for Q6_K runs:
+--ctx-checkpoints 0, --seed 42, no-warmup. Canonical batch/ubatch from
+2026-08-19: b8192/ub1024 (the R3 49K runs below are the one exception,
+b512/ub128). GUI env baseline for Q6_K runs:
 GGML_VK_FORCE_AMD_LARGE_MATMUL=1, GGML_VK_AMD_LARGE_MATMUL_VARIANT=wn32,
 LLAMA_OUTPUT_DEVICE=Vulkan1 (985.8/24.1 reference).
 
@@ -86,7 +88,37 @@ Artifacts: build_logs/agent-workload/d104-*.
   244.0/23.6, block512 252.1/24.1 (both 4x collapse), joining wn48 252.5,
   bn64 246.0. The 256x128/wn32 l-tile is a sharp optimum; every alternative
   shape collapses 4x. bm64 skipped (pattern unambiguous).
-- [ ] R3 production gating + 49K gate
+- [x] R3 production gating + 49K gate — **closed 2026-08-19, gate NOT
+  passed** (details in the R3 section below).
+
+## R3: 49K gate (2026-08-19, Qwen3.6-27B-Q6_K, q8_0 KV, spec=none,
+dual Vulkan, b512/ub128 lane exception, interleaved controls)
+
+| config | prompt t/s | decode t/s |
+|---|---:|---:|
+| stock | 824.73 / 790.05 / 832.16 | 22.84 / 22.70 / 22.87 |
+| wn32 + OUTPUT_DEVICE=Vulkan1 | 831.12 / 838.12 | 22.25 / 22.11 |
+| wn32 only | 831.43 | 22.91 |
+| OUTPUT_DEVICE=Vulkan1 only | 833.13 | 22.21 |
+
+- The 12K prompt win (+6%) does not survive to 49K: in the warmed-up
+  final triple (wn32-only 831.43 / outdev-only 833.13 / stock 832.16) all
+  configs tie within 0.2%. The larger deltas in the first two pairs are
+  drift (stock-r2 790.05 is an outlier below both its neighbours).
+- `LLAMA_OUTPUT_DEVICE=Vulkan1` costs a stable -2.5..-3% decode
+  (22.21-22.25 vs 22.70-22.91) — the cross-device output move hurts the
+  per-token chain on Q6_K at 49K, more than the -0.5% measured for
+  Q4_K_M in D105 §5.
+- wn32 alone is decode-neutral (22.91, best single run) and prompt-
+  neutral at 49K.
+
+Verdict: no production gating change. The GUI checkboxes stay manual; do
+NOT add `LLAMA_OUTPUT_DEVICE=Vulkan1` to any Q6_K preset (measured decode
+cost on long context). The D104 12K recommendation (env pair for
+prefill-heavy 12K use) stays valid but is not promoted to a default.
+
+Artifacts: `d104-r3-stock-r{1,2,3}`, `d104-r3-wn32-r{1,2}`,
+`d104-r3-wn32only-r1`, `d104-r3-outdev-r1`.
 
 ## Verdict
 
@@ -96,6 +128,7 @@ micro-opt that would fix it (4 values/idx) costs 6% from register pressure,
 the predequant route costs 4.9x from staging bandwidth, int8 costs 3x, and
 the tile shape is already optimal (4x cliffs around it). The remaining gap
 vs Q4_K_M (1493 t/s) is the price of 6-bit weights + 2-byte loads; no
-shader-only fix found in this round. Production recommendation stays:
-GGML_VK_FORCE_AMD_LARGE_MATMUL=1 + GGML_VK_AMD_LARGE_MATMUL_VARIANT=wn32 +
-LLAMA_OUTPUT_DEVICE=Vulkan1 in the Q6_K GUI preset, KV q8_0.
+shader-only fix found in this round. Production recommendation after R3:
+for prefill-heavy 12K Q6_K use, enable wn32 via the manual GUI checkbox,
+KV q8_0; do NOT set LLAMA_OUTPUT_DEVICE=Vulkan1 (stable -2.5..-3% decode
+at 49K), and no automatic preset gating.
