@@ -205,7 +205,9 @@ ceiling) has no known fix without an AMD Vulkan kernel profiler. The
 `GGML_VK_DMMV_WG` probe env is retained for future experiments.
 
 Artifacts: `d129-wg-sub-r1`, `d129-wg-lg-r1`, `d129-wg-sub-r2`,
-`d129-wg-lg-r2` (build_logs/agent-workload).
+`d129-wg-lg-r2` (build_logs/agent-workload). Note these ran with
+b512/ub128 before the 2026-08-19 canonical b8192/ub1024 lane contract;
+they are relative A/B numbers, not canonical lane records.
 
 ### 5.3 P4 MTP draft-n sweep (Q4_K_M, 12K, q4_0 KV, dual Vulkan)
 
