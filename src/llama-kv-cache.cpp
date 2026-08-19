@@ -132,6 +132,14 @@ llama_kv_cache::llama_kv_cache(
     if (const char * env = getenv("LLAMA_VK_KV_HOST_LAYERS")) {
         vk_host_kv_layers = atoi(env);
     }
+    // D131 R9: opt-in per-block K scale for f8 KV (1 f16 per 256 values).
+    // The same env gates the FA side (score-column multiply) so the cache
+    // format and the readers can never disagree. Only the Vulkan FA path
+    // consumes the scales; other backends would silently read mis-scaled K.
+    const bool f8_k_scale = getenv("LLAMA_VK_F8_K_SCALE") != nullptr;
+    if (f8_k_scale) {
+        LLAMA_LOG_WARN("%s: LLAMA_VK_F8_K_SCALE enabled: f8 K block scales require the Vulkan FA path (D131 R9)\n", __func__);
+    }
     bool vk_host_kv_direct = false;
     bool vk_host_kv_direct_set = false;
     if (const char * env = getenv("LLAMA_VK_KV_HOST_DIRECT")) {
@@ -443,17 +451,27 @@ llama_kv_cache::llama_kv_cache(
         has_k && ggml_format_name(k, "cache_k_l%d", il);
         has_v && ggml_format_name(v, "cache_v_l%d", il);
 
+        // D131 R9: block scale satellite (1 f16 per 256 K values) exists only
+        // for f8 K layers. f16 tails / q8 bridges / disabled R9 keep nullptr.
+        ggml_tensor * k_scale = nullptr;
+        if (has_k && f8_k_scale && type_k_il == GGML_TYPE_F8_E4M3 && (n_embd_k_gqa % 256 == 0)) {
+            k_scale = ggml_new_tensor_3d(ctx_k, GGML_TYPE_F16, n_embd_k_gqa / 256, kv_size, n_stream);
+            ggml_format_name(k_scale, "cache_k_scale_l%d", il);
+        }
+
         std::vector<ggml_tensor *> k_stream;
         std::vector<ggml_tensor *> v_stream;
+        std::vector<ggml_tensor *> k_scale_stream;
 
         for (uint32_t s = 0; s < n_stream; ++s) {
             k_stream.push_back(has_k ? ggml_view_2d(ctx_k, k, n_embd_k_gqa, kv_size, k->nb[1], s*k->nb[2]) : nullptr);
             v_stream.push_back(has_v ? ggml_view_2d(ctx_v, v, n_embd_v_gqa, kv_size, v->nb[1], s*v->nb[2]) : nullptr);
+            k_scale_stream.push_back(k_scale ? ggml_view_2d(ctx_k, k_scale, n_embd_k_gqa / 256, kv_size, k_scale->nb[1], s*k_scale->nb[2]) : nullptr);
         }
 
         map_layer_ids[il] = layers.size();
 
-        layers.push_back({ il, k, v, k_stream, v_stream, });
+        layers.push_back({ il, k, v, k_scale, k_stream, v_stream, k_scale_stream, });
     }
 
     if (reuse) {
@@ -1011,6 +1029,11 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
                 if (layer.v_stream[ssrc]) {
                     ggml_backend_tensor_copy(layer.v_stream[ssrc], layer.v_stream[sdst]);
                 }
+
+                // D131 R9: the scale satellite moves with its K stream
+                if (layer.k_scale_stream[ssrc]) {
+                    ggml_backend_tensor_copy(layer.k_scale_stream[ssrc], layer.k_scale_stream[sdst]);
+                }
             }
         }
     }
@@ -1418,6 +1441,22 @@ ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_k
             ggml_row_size(k->type, n_embd_k_gqa*kv_size)*sinfo.s0);
 }
 
+ggml_tensor * llama_kv_cache::get_k_scale(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const {
+    const int32_t ikv = map_layer_ids.at(il);
+
+    ggml_tensor * k_scale = layers[ikv].k_scale;
+    if (k_scale == nullptr) {
+        return nullptr;
+    }
+
+    const uint64_t kv_size      = get_size();
+    const uint64_t n_blk        = k_scale->ne[0];
+
+    return ggml_view_2d(ctx, k_scale, n_blk, n_kv,
+            ggml_row_size(k_scale->type, n_blk),
+            ggml_row_size(k_scale->type, n_blk) * sinfo.s0);
+}
+
 ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const {
     const int32_t ikv = map_layer_ids.at(il);
 
@@ -1481,8 +1520,60 @@ ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggm
         k = ggml_reshape_2d(ctx, k, n_embd_gqa, kv_size*n_stream);
     }
 
+    // D131 R9: normalize K by its per-256-block max before the f8 encoder, so
+    // the block scale can be factored out of P*V and applied to the score
+    // column instead of inside the per-element dequant. cpy_k_scale stores the
+    // same max into the scale cache.
+    if (layers[ikv].k_scale != nullptr) {
+        const int64_t n_blk = n_embd_gqa / 256;
+
+        ggml_tensor * k_scale_new = ggml_pool_2d(ctx, k_cur, GGML_OP_POOL_MAX, 256, 1, 256, 1, 0.0f, 0.0f); // [n_blk, n_tokens]
+
+        // broadcast: insert a middle dim of 256 repeats. k_scale_new is
+        // [n_blk, n_tokens] (block-major); view it as [n_blk, 1, n_tokens]
+        // with both strides = row_size(n_blk), then repeat dim1 256x.
+        const size_t blk_stride = ggml_row_size(k_scale_new->type, n_blk);
+        ggml_tensor * k_scale_v = ggml_view_3d(ctx, k_scale_new, n_blk, 1, n_tokens, blk_stride, blk_stride, 0);
+        ggml_tensor * k_scale_rep = ggml_repeat_4d(ctx, k_scale_v, n_blk, 256, n_tokens, 1);
+        ggml_tensor * k_scale_b   = ggml_reshape_2d(ctx, k_scale_rep, n_embd_gqa, n_tokens);
+
+        k_cur = ggml_div(ctx, k_cur, k_scale_b);
+    }
+
     // store the current K values into the cache
     return ggml_set_rows(ctx, k, k_cur, k_idxs);
+}
+
+ggml_tensor * llama_kv_cache::cpy_k_scale(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const {
+    GGML_UNUSED(sinfo);
+
+    const int32_t ikv = map_layer_ids.at(il);
+
+    if (layers[ikv].k_scale == nullptr) {
+        return nullptr;
+    }
+
+    const int64_t n_embd_head = k_cur->ne[0];
+    const int64_t n_head      = k_cur->ne[1];
+    const int64_t n_tokens    = k_cur->ne[2];
+
+    const int64_t n_embd_gqa = n_embd_head * n_head;
+    const int64_t n_blk      = n_embd_gqa / 256;
+
+    GGML_ASSERT(ggml_row_size(k_cur->type, n_embd_head) == k_cur->nb[1]);
+
+    k_cur = ggml_view_2d(ctx, k_cur, n_embd_gqa, n_tokens, k_cur->nb[2], 0);
+
+    // per-256-block max over the same data cpy_k normalizes with
+    ggml_tensor * k_scale_new = ggml_pool_2d(ctx, k_cur, GGML_OP_POOL_MAX, 256, 1, 256, 1, 0.0f, 0.0f); // [n_blk, n_tokens]
+
+    ggml_tensor * k_scale_cache = layers[ikv].k_scale;
+    if (k_scale_cache->ne[2] > 1) {
+        const int64_t kv_size = get_size();
+        k_scale_cache = ggml_reshape_2d(ctx, k_scale_cache, n_blk, kv_size * k_scale_cache->ne[2]);
+    }
+
+    return ggml_set_rows(ctx, k_scale_cache, k_scale_new, k_idxs);
 }
 
 ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo) const {
@@ -2254,6 +2345,20 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
             const size_t buf_size = range_size * k_size_row;
             io.write_tensor(k, range.first * k_size_row, buf_size);
         }
+
+        // D131 R9: scale rows follow the K rows (same range walk)
+        ggml_tensor * k_scale = layer.k_scale_stream[cr.strm];
+        const bool has_scale = k_scale != nullptr;
+        io.write(&has_scale, sizeof(has_scale));
+        if (has_scale) {
+            const uint64_t s_size_row = ggml_row_size(k_scale->type, n_embd_k_gqa / 256);
+            io.write(&s_size_row, sizeof(s_size_row));
+
+            for (const auto & range : cr.data) {
+                const size_t range_size = range.second - range.first;
+                io.write_tensor(k_scale, range.first * s_size_row, range_size * s_size_row);
+            }
+        }
     }
 
     if (!v_trans) {
@@ -2502,6 +2607,37 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
                 }
             }
         }
+
+        // D131 R9: scale rows follow the K rows
+        bool has_scale_ref;
+        io.read(&has_scale_ref, sizeof(has_scale_ref));
+        ggml_tensor * k_scale = layer.k_scale_stream[strm];
+        const bool has_scale = k_scale != nullptr;
+        if (has_scale != has_scale_ref) {
+            LLAMA_LOG_ERROR("%s: mismatched K scale presence (%d != %d, layer %d)\n", __func__, (int) has_scale, (int) has_scale_ref, il);
+            return false;
+        }
+        if (has_scale) {
+            const size_t s_size_row = ggml_row_size(k_scale->type, n_embd_k_gqa / 256);
+
+            uint64_t s_size_row_ref;
+            io.read(&s_size_row_ref, sizeof(s_size_row_ref));
+            if (s_size_row != s_size_row_ref) {
+                LLAMA_LOG_ERROR("%s: mismatched K scale row size (%zu != %zu, layer %d)\n", __func__, s_size_row, (size_t) s_size_row_ref, il);
+                return false;
+            }
+
+            if (cell_count) {
+                if (sinfo.is_contiguous()) {
+                    io.read_tensor(k_scale, sinfo.head() * s_size_row, cell_count * s_size_row);
+                } else {
+                    for (uint32_t i = 0; i < cell_count; ++i) {
+                        const size_t dst_offset = sinfo.idxs[0][i] * s_size_row;
+                        io.read_tensor(k_scale, dst_offset, s_size_row);
+                    }
+                }
+            }
+        }
     }
 
     if (!this->v_trans) {
@@ -2710,12 +2846,23 @@ ggml_tensor * llama_kv_cache_context::get_v(ggml_context * ctx, int32_t il) cons
     return kv->get_v(ctx, il, n_kv, sinfos[i_cur]);
 }
 
+// D131 R9: expose the K scale satellite view to the FA builder. The cache
+// level is the source of truth (k_scale per layer); a layer without scales
+// returns nullptr and the FA node stays on the unscaled path.
+ggml_tensor * llama_kv_cache_context::get_k_scale(ggml_context * ctx, int32_t il) const {
+    return kv->get_k_scale(ctx, il, n_kv, sinfos[i_cur]);
+}
+
 ggml_tensor * llama_kv_cache_context::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const {
     return kv->cpy_k(ctx, k_cur, k_idxs, il, sinfos[i_cur]);
 }
 
 ggml_tensor * llama_kv_cache_context::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il) const {
     return kv->cpy_v(ctx, v_cur, v_idxs, il, sinfos[i_cur]);
+}
+
+ggml_tensor * llama_kv_cache_context::cpy_k_scale(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const {
+    return kv->cpy_k_scale(ctx, k_cur, k_idxs, il, sinfos[i_cur]);
 }
 
 ggml_tensor * llama_kv_cache_context::build_input_k_idxs(ggml_context * ctx, const llama_ubatch & ubatch) const {

@@ -2094,6 +2094,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
          ggml_tensor * kq_mask,
          ggml_tensor * sinks,
          ggml_tensor * v_mla,
+         ggml_tensor * k_scale,
                float   kq_scale,
                  int   il) const {
     const bool v_trans = v->nb[1] > v->nb[2];
@@ -2132,6 +2133,9 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         ggml_flash_attn_ext_add_sinks(cur, sinks);
         ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);
+
+        // D131 R9: K block-scale sidecar (nullptr for f16 tails / disabled R9)
+        ggml_flash_attn_ext_set_k_scale(cur, k_scale);
 
         if (v_mla) {
 #if 0
@@ -2277,7 +2281,7 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_tensor * k = k_cur;
     ggml_tensor * v = v_cur;
 
-    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
+    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, nullptr, kq_scale, il);
     cb(cur, "kqv_out", il);
 
     if (wo) {
@@ -2344,6 +2348,10 @@ void llm_graph_context::build_attn_kv_store(
     ggml_build_forward_expand(gf, v_cur);
     ggml_build_forward_expand(gf, inp->mctx->cpy_k(ctx0, k_cur, inp->get_k_idxs(), il));
     ggml_build_forward_expand(gf, inp->mctx->cpy_v(ctx0, v_cur, inp->get_v_idxs(), il));
+    // D131 R9: K block scales ride in the same graph as the K rows
+    if (ggml_tensor * k_scale_node = inp->mctx->cpy_k_scale(ctx0, k_cur, inp->get_k_idxs(), il)) {
+        ggml_build_forward_expand(gf, k_scale_node);
+    }
 }
 
 ggml_tensor * llm_graph_context::build_attn(
@@ -2386,6 +2394,11 @@ ggml_tensor * llm_graph_context::build_attn(
 
         ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs, il));
         ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs, il));
+        // D131 R9: K block scales ride in the same graph as the K rows they
+        // describe (nullptr when the layer has no scale cache)
+        if (ggml_tensor * k_scale_node = mctx_cur->cpy_k_scale(ctx0, k_cur, k_idxs, il)) {
+            ggml_build_forward_expand(gf, k_scale_node);
+        }
     }
 
     const auto & kq_mask = inp->get_kq_mask();
@@ -2394,7 +2407,7 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_tensor * k = mctx_cur->get_k(ctx0, il);
     ggml_tensor * v = mctx_cur->get_v(ctx0, il);
 
-    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
+    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, mctx_cur->get_k_scale(ctx0, il), kq_scale, il);
     cb(cur, "kqv_out", il);
 
     if (inp->self_v_rot) {
@@ -2477,6 +2490,10 @@ ggml_tensor * llm_graph_context::build_attn(
         const auto & k_idxs = inp->get_k_idxs();
 
         ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs, il));
+        // D131 R9: K block scales ride in the same graph as the K rows
+        if (ggml_tensor * k_scale_node = mctx_cur->cpy_k_scale(ctx0, k_cur, k_idxs, il)) {
+            ggml_build_forward_expand(gf, k_scale_node);
+        }
     }
 
     const auto & kq_mask = inp->get_kq_mask();
@@ -2485,7 +2502,7 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_tensor * k = mctx_cur->get_k(ctx0, il);
     ggml_tensor * v = ggml_view_4d(ctx0, k, v_cur->ne[0], k->ne[1], k->ne[2], k->ne[3], k->nb[1], k->nb[2], k->nb[3], 0);
 
-    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
+    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, mctx_cur->get_k_scale(ctx0, il), kq_scale, il);
     cb(cur, "kqv_out", il);
 
     if (wo) {
@@ -2559,6 +2576,10 @@ ggml_tensor * llm_graph_context::build_attn(
         const auto & k_idxs = is_swa ? inp->get_k_idxs_swa() : inp->get_k_idxs();
 
         ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs, il));
+        // D131 R9: K block scales ride in the same graph as the K rows
+        if (ggml_tensor * k_scale_node = mctx_cur->cpy_k_scale(ctx0, k_cur, k_idxs, il)) {
+            ggml_build_forward_expand(gf, k_scale_node);
+        }
     }
 
     if (v_cur) {
@@ -2573,7 +2594,7 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_tensor * k = mctx_cur->get_k(ctx0, il);
     ggml_tensor * v = mctx_cur->get_v(ctx0, il);
 
-    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
+    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, mctx_cur->get_k_scale(ctx0, il), kq_scale, il);
     cb(cur, "kqv_out", il);
 
     if (v_rot) {
@@ -2633,7 +2654,7 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_tensor * k = k_cur;
     ggml_tensor * v = v_cur;
 
-    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
+    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, nullptr, kq_scale, il);
     cb(cur, "kqv_out", il);
 
     if (wo) {

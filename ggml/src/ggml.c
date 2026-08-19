@@ -5528,6 +5528,29 @@ struct ggml_tensor * ggml_flash_attn_ext(
     return result;
 }
 
+// Local fork (D131 R9): K block-scale sidecar for the f8 KV cache.
+// Mirrors upstream f16_extra_data: an f16 tensor of per-block K scales that
+// Vulkan FA applies to the score column after Q*K. NULL keeps every path
+// unchanged (src[5] is ignored by the CPU reference and other backends).
+void ggml_flash_attn_ext_set_k_scale(
+        struct ggml_tensor * a,
+        struct ggml_tensor * k_scale) {
+    GGML_ASSERT(a->op == GGML_OP_FLASH_ATTN_EXT);
+
+    if (!k_scale) {
+        a->src[5] = NULL;
+        return;
+    }
+
+    GGML_ASSERT(a->src[5] == NULL);
+    GGML_ASSERT(k_scale->type == GGML_TYPE_F16);
+    // k is permuted here: ne[0] = head (256), ne[2] = kv heads, so the full
+    // GQA width is ne[0]*ne[2] and must equal the scale blocks * 256.
+    GGML_ASSERT(a->src[1]->ne[0] * a->src[1]->ne[2] == k_scale->ne[0] * 256);
+
+    a->src[5] = k_scale;
+}
+
 void ggml_flash_attn_ext_set_prec(
         struct ggml_tensor * a,
         enum ggml_prec       prec) {

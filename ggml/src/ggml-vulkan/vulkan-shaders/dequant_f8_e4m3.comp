@@ -6,13 +6,26 @@ layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 layout (binding = 0) readonly buffer A {block_f8_e4m3 data_a[];};
 layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
+// D131 R9: optional per-256-block f16 scales (K preconvert only). p.stride_a
+// doubles as the has-scale flag: 0 = unit scale (V path, q8_0 path).
+layout (binding = 2) readonly buffer S {float16_t data_scale[];};
 
 // D095-D3: f8_e4m3 -> f16 dequant pass used by the FA preconvert path
 // (mirrors dequant_q8_0: 4096 elements per workgroup, 16 per thread).
+// D131 R9: when p.stride_a != 0 the K copy folds in the per-block scale. The
+// input is the permuted K *view* [d=256][kv-head][token]; its physical layout
+// stays [d][kv-head][token], so the scale index is derived as
+//   tok = i / (256*p.K), hk = (i/256) % p.K   (p.M=n_kv, p.K=n_head_kv).
 void main() {
     const uint i0 = gl_WorkGroupID.x * 4096 + gl_LocalInvocationID.x * 16;
     const uint i1 = min(i0 + 16, p.nel);
     for (uint i = i0; i < i1; i++) {
-        data_b[i] = D_TYPE(fp8_e4m3_to_f32(data_a[i].v));
+        float v = fp8_e4m3_to_f32(data_a[i].v);
+        if (p.stride_a != 0) {
+            const uint tok = (i / (256u * p.K)) % p.M;
+            const uint hk  = (i / 256u) % p.K;
+            v *= float(data_scale[tok * p.K + hk]);
+        }
+        data_b[i] = D_TYPE(v);
     }
 }

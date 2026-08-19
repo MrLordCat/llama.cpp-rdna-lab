@@ -2407,6 +2407,12 @@ extern "C" {
             struct ggml_tensor * a,
             enum ggml_prec       prec);
 
+    // Local fork (D131 R9): attach the per-block K scale sidecar (f16) used by
+    // the f8 KV cache; NULL clears it. Ignored by CPU and non-Vulkan backends.
+    GGML_API void ggml_flash_attn_ext_set_k_scale(
+            struct ggml_tensor * a,
+            struct ggml_tensor * k_scale);
+
     GGML_API enum ggml_prec ggml_flash_attn_ext_get_prec(
             const struct ggml_tensor * a);
 
