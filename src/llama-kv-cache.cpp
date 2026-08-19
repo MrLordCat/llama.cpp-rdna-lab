@@ -1039,6 +1039,13 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
     }
 
     if (do_shift) {
+        // D131 R9: the f16 K scale satellite is not shifted alongside its K
+        // rows, so K-shift would silently desync the scale cache from K.
+        for (const auto & layer : layers) {
+            if (layer.k_scale != nullptr) {
+                GGML_ABORT("K-shift is not supported with LLAMA_VK_F8_K_SCALE (per-block K scale)");
+            }
+        }
         if (!get_can_shift()) {
             GGML_ABORT("The current KV cache / model configuration does not support K-shift");
         }
