@@ -1,7 +1,9 @@
 # D105: Vulkan decode — VRAM bandwidth ceiling measured (synthetic read bench)
 
 Branch: `research/vulkan-decode` · 2026-08-16 · author: coordinator + tools
-Status: measurement baseline done; decode-side hypotheses open.
+Status: CLOSED 2026-08-19. P1/P4 done; P2 workgroup-size lever rejected
+(D129, §5.4); P3 moot — the Q4_K16/VQ quant line was closed as not worth
+its cost, so the MMVQ port for it no longer has a customer.
 
 ## 1. Question
 
@@ -159,31 +161,51 @@ rates, so real utilization is at least this good.
       with event dependencies) + GGML_SCHED_SPLIT_TIMING trace run
       (d105-split-trace-r1): token = CPU-embed → Vulkan1 (layers 0-32,
       ~16.6 ms) → Vulkan0 (layers 33-63+output, ~16.8 ms), wall = sum.
-- [~] P2 (diagnosed, kernel fix is fork-owner work): decode matmuls go
+- [x] P2 (closed 2026-08-19, D129): decode matmuls go
       through the MMVQ path (AMD n=1 k≥2048 → MMVQ; verified by
       FORCE/DISABLE_MMVQ being neutral). Per-kernel BW in decode
       (d105-perf-clean-r1): q4_K MMVs 526-602 GB/s, q6_K 594-622 GB/s,
       output q6_K m=248320 = 622 GB/s (100% of synthetic peak). FFN
       q4_K m=17408 (fused gate+up) is the low outlier at 526 GB/s
       (85%); dispatch geometry is NOT a tail issue (blocks_m=272 ×
-      k-slabs over 64 CU). The ~15% gap needs either an AMD Vulkan
-      kernel profiler or an MMVQ-pattern synthetic — candidates:
-      q4_K dequant/scale layout, q8_1 src1 staging sync, L2/row
-      swizzle. No env lever exists in this branch (low-tile split_k
-      gates are prefill-only, n≥128). Expected gain if FFN reaches
-      output-kernel efficiency: ~+4% decode.
-- [~] P3 (measured 2026-08-16, d105-p3-k16-r1): Q4_K16.gguf loads on
+      k-slabs over 64 CU). D129 then tested the one found lever
+      (DMMV_WG_SIZE_LARGE for AMD) and rejected it — see the D129
+      verdict below. Expected gain if FFN reaches output-kernel
+      efficiency: ~+4% decode; no known lever achieves it.
+- [x] P3 (closed 2026-08-19 as moot): Q4_K16.gguf loads on
       this binary (320×q4_K16_M + 18×q4_K16 tensors) but runs on the
       fallback direct MMV path (no Q8_1 MMVQ kernels generated for
       K16 by design). Result vs Q4_K_M (same lane): prefill 212.7 vs
       1472.6 tps (−86%), decode 27.64 vs 29.69 (−6.9%) despite −3.8%
-      bytes/token. VERDICT: Q4_K16 is not usable on Vulkan until the
-      MMVQ (decode) and batched (prefill) kernels are ported — this is
-      q4-k16-quant branch §3.4 work. The −6.9% decode matches the
-      DISABLE_MMVQ probe (−2.1%) plus K16 row layout overhead.
+      bytes/token. The MMVQ + batched-kernel port was later done on
+      research/q4-k16-quant (decode ratio 0.925→0.99), but the quant
+      line itself was closed: −2.4% size for parity quality/speed and
+      no MTP head. P3 has no customer and is left closed.
 - [x] P4 (MTP draft-n sweep, same lane, Q4_K_M): 128-token honest
       results — none 28.66; n=2 50.20 (1.75x); n=3 52.52 (1.83x);
       n=4 52.22 (1.82x). Sweet spot n=3. Table in §5.3.
+
+### 5.4 D129 (2026-08-19): workgroup-size lever for the FFN gap — REJECTED
+
+The one env-free lever found for P2 was the AMD exclusion from the
+`DMMV_WG_SIZE_LARGE` heuristic in `vk_transfer.inc`. A probe
+(`GGML_VK_DMMV_WG`) was added and A/B'd on gfx1201.
+
+- llama-bench, single GPU (Vulkan1), Qwen3.6-27B-Q4_K_M: subgroup
+  33.38/33.39 t/s, large (m≥4096) 33.79/33.81 — looked like +1.2%.
+  But the 15.9 GiB model does not fit in 16 GiB VRAM, so that lane
+  spills through PCIe and the wide workgroup was hiding PCIe latency.
+- Canonical dual-GPU harness (12K lane, spec=none, Qwen3.8-27B-Q4_K_M,
+  all weights in VRAM, interleaved subgroup/large/subgroup/large):
+  subgroup 29.12/29.00, large 26.86/27.38 t/s = **−5.6/−7.8%**.
+
+Verdict: AMD stays on `DMMV_WG_SIZE_SUBGROUP`. The workgroup-size
+dimension is closed; the ~15% FFN-kernel gap (and its ~4% decode
+ceiling) has no known fix without an AMD Vulkan kernel profiler. The
+`GGML_VK_DMMV_WG` probe env is retained for future experiments.
+
+Artifacts: `d129-wg-sub-r1`, `d129-wg-lg-r1`, `d129-wg-sub-r2`,
+`d129-wg-lg-r2` (build_logs/agent-workload).
 
 ### 5.3 P4 MTP draft-n sweep (Q4_K_M, 12K, q4_0 KV, dual Vulkan)
 

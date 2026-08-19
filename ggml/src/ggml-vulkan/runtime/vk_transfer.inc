@@ -116,6 +116,31 @@ static vk_matmul_pipeline ggml_vk_get_mul_mat_mat_pipeline(ggml_backend_vk_conte
     return (ctx->device->fp16 && prec == GGML_PREC_DEFAULT) ? ctx->device->pipeline_dequant_mul_mat_mat[src0_type].f16acc : ctx->device->pipeline_dequant_mul_mat_mat[src0_type].f32acc;
 }
 
+// D105 P2 probe: the workgroup-size heuristic below is gated to NVIDIA/Intel,
+// so AMD always gets DMMV_WG_SIZE_SUBGROUP (subgroup_size threads, subgroup
+// reduction) and never DMMV_WG_SIZE_LARGE (subgroup_size*4, hybrid reduction).
+// GGML_VK_DMMV_WG=large|subgroup forces the choice on any vendor so the two
+// can be A/B'd; GGML_VK_DMMV_WG_M bounds "large" to m <= that value.
+// Unset => stock behaviour.
+static uint32_t ggml_vk_dmmv_wg_override(uint32_t dmmv_wg, uint32_t m) {
+    static const char * mode = getenv("GGML_VK_DMMV_WG");
+    if (mode == nullptr) {
+        return dmmv_wg;
+    }
+    static const char * m_env     = getenv("GGML_VK_DMMV_WG_M");
+    static const uint32_t m_max   = m_env ? (uint32_t) std::stoul(m_env) : UINT32_MAX;
+    static const char * m_min_env = getenv("GGML_VK_DMMV_WG_M_MIN");
+    static const uint32_t m_min   = m_min_env ? (uint32_t) std::stoul(m_min_env) : 0;
+
+    if (strcmp(mode, "large") == 0) {
+        return (m >= m_min && m <= m_max) ? DMMV_WG_SIZE_LARGE : DMMV_WG_SIZE_SUBGROUP;
+    }
+    if (strcmp(mode, "subgroup") == 0) {
+        return DMMV_WG_SIZE_SUBGROUP;
+    }
+    return dmmv_wg;
+}
+
 static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec(ggml_backend_vk_context * ctx, ggml_type a_type, ggml_type b_type, uint32_t num_cols, uint32_t m, uint32_t k) {
     VK_LOG_DEBUG("ggml_vk_get_dequantize_mul_mat_vec()");
     GGML_ASSERT(b_type == GGML_TYPE_F32 || b_type == GGML_TYPE_F16 || b_type == GGML_TYPE_Q8_1);
@@ -191,7 +216,18 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec(ggml_backend_vk_context * 
                 dmmv_wg = DMMV_WG_SIZE_LARGE;
             }
         }
+    } else if (ctx->device->vendor_id == VK_VENDOR_ID_AMD &&
+               ctx->device->architecture == vk_device_architecture::AMD_RDNA3) {
+        // D129 A/B (2026-08-19): an AMD mirror of the NVIDIA rule above
+        // (DMMV_WG_SIZE_LARGE for m >= 4096) was measured and REJECTED.
+        // llama-bench on one GPU showed +1.2% decode, but that configuration
+        // spills the 15.9 GiB model past VRAM, so the wide workgroup was
+        // hiding PCIe latency. On the canonical dual-GPU harness (all weights
+        // in VRAM, 12K lane, Qwen3.8-27B Q4_K_M, spec=none) it cost -5.6% to
+        // -7.8% decode (29.1/29.0 -> 26.9/27.4 t/s, interleaved controls).
+        // Keep AMD on subgroup workgroups; GGML_VK_DMMV_WG remains as probe.
     }
+    dmmv_wg = ggml_vk_dmmv_wg_override(dmmv_wg, m);
 
     if (b_type == GGML_TYPE_Q8_1) {
         if (ctx->device->vendor_id == VK_VENDOR_ID_INTEL) {
@@ -357,6 +393,11 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec_id(ggml_backend_vk_context
             }
         }
     }
+    // Deliberately no AMD rule here: the RDNA large-workgroup win was measured
+    // on the plain mat-vec path with a dense model. MoE mat-vec-id splits the
+    // rows per expert, so the occupancy argument does not carry over untested.
+    // GGML_VK_DMMV_WG=large still reaches this path for probing.
+    dmmv_wg = ggml_vk_dmmv_wg_override(dmmv_wg, m);
 
     if (b_type == GGML_TYPE_Q8_1) {
         if (ctx->device->vendor_id == VK_VENDOR_ID_INTEL) {
