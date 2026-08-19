@@ -2068,7 +2068,7 @@ static bool ggml_vk_flash_attn_coopmat_shmem_support(const vk_device& device, co
     return supported;
 }
 
-static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * q, const ggml_tensor * k, const ggml_tensor * v, const ggml_tensor * mask, const ggml_tensor * sinks, ggml_tensor * dst) {
+static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * q, const ggml_tensor * k, const ggml_tensor * v, const ggml_tensor * mask, const ggml_tensor * sinks, const ggml_tensor * k_scale, ggml_tensor * dst) {
     VK_LOG_DEBUG("ggml_vk_flash_attn((" << q << ", name=" << q->name << ", type=" << q->type << ", ne0=" << q->ne[0] << ", ne1=" << q->ne[1] << ", ne2=" << q->ne[2] << ", ne3=" << q->ne[3] << ", nb0=" << q->nb[0] << ", nb1=" << q->nb[1] << ", nb2=" << q->nb[2] << ", nb3=" << q->nb[3];
     std::cerr << "), (" << k << ", name=" << k->name << ", type=" << k->type << ", ne0=" << k->ne[0] << ", ne1=" << k->ne[1] << ", ne2=" << k->ne[2] << ", ne3=" << k->ne[3] << ", nb0=" << k->nb[0] << ", nb1=" << k->nb[1] << ", nb2=" << k->nb[2] << ", nb3=" << k->nb[3];
     std::cerr << "), (" << v << ", name=" << v->name << ", type=" << v->type << ", ne0=" << v->ne[0] << ", ne1=" << v->ne[1] << ", ne2=" << v->ne[2] << ", ne3=" << v->ne[3] << ", nb0=" << v->nb[0] << ", nb1=" << v->nb[1] << ", nb2=" << v->nb[2] << ", nb3=" << v->nb[3];
@@ -2169,6 +2169,7 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     // staging switch.
     const bool fa_f8_direct = !fa_f8_native &&
                               (k->type == GGML_TYPE_F8_E4M3) && v->type == k->type && neq1 > 1 &&
+                              k_scale == nullptr &&
                               getenv("GGML_VK_FA_F8_DIRECT") != nullptr;
 
     // D096 D4.3 (local fork): preconvert quantized prefill K/V to f16 before
@@ -2426,6 +2427,9 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     vk_subbuffer mask_buf = mask ? ggml_vk_tensor_subbuffer(ctx, mask) : q_buf;
     vk_subbuffer sinks_buf = sinks ? ggml_vk_tensor_subbuffer(ctx, sinks) : q_buf;
     vk_subbuffer mask_opt_buf = use_mask_opt ? ggml_vk_subbuffer(ctx, ctx->prealloc_y, 0) : q_buf;
+    // D131 R9: windowed f16 K block scales (one per 256 values), aligned with
+    // the K view this call reads. Nullptr keeps binding 7 unused (flag 0).
+    vk_subbuffer k_scale_buf = k_scale ? ggml_vk_tensor_subbuffer(ctx, k_scale) : q_buf;
 
     if (fa_preconvert) {
         // q8_0 / f8_e4m3 -> f16 conversion passes (dequant shaders, f16 output)
@@ -2435,14 +2439,29 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         const uint32_t v_nelem = (uint32_t)(nev0 * nev1 * nev2 * nev3);
         const vk_subbuffer k16_buf{ ctx->prealloc_fa_k16, 0, fa_k16_sz };
         const vk_subbuffer v16_buf{ ctx->prealloc_fa_v16, 0, fa_v16_sz };
-        const std::vector<uint32_t> pc_k = { 1, k_nelem, 0, 0, k_nelem };
-        ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_dequant[kv_type],
-                                  { k_buf, k16_buf }, pc_k,
-                                  { CEIL_DIV(k_nelem, 4096), 1, 1 });
+        // D131 R9: K dequant folds the block scale into the f16 copy (pc[2]=1);
+        // V has no scale (pc[2]=0). M=n_kv, K=n_head_kv drive the permuted-K
+        // scale indexing inside the f8 dequant shader.
+        const std::vector<uint32_t> pc_k = { (uint32_t)nek1, (uint32_t)nek2, k_scale != nullptr ? 1u : 0u, 0, k_nelem };
+        if (kv_type == GGML_TYPE_F8_E4M3) {
+            ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_dequant[kv_type],
+                                      { k_buf, k16_buf, k_scale_buf }, pc_k,
+                                      { CEIL_DIV(k_nelem, 4096), 1, 1 });
+        } else {
+            ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_dequant[kv_type],
+                                      { k_buf, k16_buf }, pc_k,
+                                      { CEIL_DIV(k_nelem, 4096), 1, 1 });
+        }
         const std::vector<uint32_t> pc_v = { 1, v_nelem, 0, 0, v_nelem };
-        ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_dequant[kv_type],
-                                  { v_buf, v16_buf }, pc_v,
-                                  { CEIL_DIV(v_nelem, 4096), 1, 1 });
+        if (kv_type == GGML_TYPE_F8_E4M3) {
+            ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_dequant[kv_type],
+                                      { v_buf, v16_buf, q_buf }, pc_v,
+                                      { CEIL_DIV(v_nelem, 4096), 1, 1 });
+        } else {
+            ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_dequant[kv_type],
+                                      { v_buf, v16_buf }, pc_v,
+                                      { CEIL_DIV(v_nelem, 4096), 1, 1 });
+        }
         ggml_vk_sync_buffers(ctx, subctx);
         k_buf = k16_buf;
         v_buf = v16_buf;
@@ -2575,6 +2594,10 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         }
     }
     uint32_t mask_n_head_log2 = ((sinks != nullptr) << 24) | n_head_log2;
+    // D131 R9: bit 26 tells the scalar shader to apply binding 7 (K scales)
+    if (k_scale != nullptr && tuning_params.path == FA_SCALAR && !fa_preconvert) {
+        mask_n_head_log2 |= (1u << 26);
+    }
     if (fa_pipeline_state.path == FA_F8_NATIVE && fa_f8_dbg_write) {
         mask_n_head_log2 |= (1u << 25);
         fa_f8_dbg_write = false;  // one-shot: only the arm call writes the debug buffer
@@ -2600,6 +2623,9 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         ggml_vk_sync_buffers(ctx, subctx);
     }
 
+    // D131 R9: the scale multiplies the finished score inside the main kernel
+    // (before the partial sums land in split_k_buffer), so split_k needs no
+    // changes in the reduce pass.
     const vk_flash_attn_push_constants pc = { N, KV,
                                               (uint32_t)ne1, (uint32_t)ne2, (uint32_t)ne3,
                                               (uint32_t)neq2, (uint32_t)neq3,
@@ -2632,7 +2658,7 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
 
         vk_subbuffer split_k_buf = ggml_vk_subbuffer(ctx, ctx->prealloc_split_k, 0);
         ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
-                                  {q_buf, k_buf, v_buf, mask_buf, sinks_buf, split_k_buf, mask_opt_buf},
+                                  {q_buf, k_buf, v_buf, mask_buf, sinks_buf, split_k_buf, mask_opt_buf, k_scale_buf},
                                   pc, { dispatch_x, workgroups_y, workgroups_z });
 
         ggml_vk_sync_buffers(ctx, subctx);
@@ -2657,9 +2683,13 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
             ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
                                       {q_buf, k_buf, v_buf, mask_buf, sinks_buf, dst_buf, mask_opt_buf, mask_opt_buf},
                                       pc, { workgroups_x, workgroups_y, workgroups_z });
+        } else if (tuning_params.path == FA_SCALAR) {
+            ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
+                                      {q_buf, k_buf, v_buf, mask_buf, sinks_buf, dst_buf, mask_opt_buf, k_scale_buf},
+                                      pc, { workgroups_x, workgroups_y, workgroups_z });
         } else {
             ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
-                                      {q_buf, k_buf, v_buf, mask_buf, sinks_buf, dst_buf, mask_opt_buf},
+                                      {q_buf, k_buf, v_buf, mask_buf, sinks_buf, dst_buf, mask_opt_buf, k_scale_buf},
                                       pc, { workgroups_x, workgroups_y, workgroups_z });
         }
         fa_f8_dbg_write = false;  // single-write: bit 25 applies to the arm call only

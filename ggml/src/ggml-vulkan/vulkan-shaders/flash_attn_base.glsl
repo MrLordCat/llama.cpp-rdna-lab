@@ -74,6 +74,8 @@ layout (push_constant) uniform parameter {
 
 #define SINK_ENABLE_BIT (1<<24)
 #define N_LOG2_MASK 0xFFFF
+// D131 R9: binding 7 holds per-block K scales when this bit is set
+#define K_SCALE_BIT (1u<<26)
 
 layout (binding = 4) readonly buffer S {float data_s[];};
 

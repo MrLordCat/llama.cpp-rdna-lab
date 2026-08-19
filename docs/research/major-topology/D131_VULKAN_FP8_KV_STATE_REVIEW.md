@@ -43,27 +43,51 @@ items below attack exactly those two deficits.
 
 ## 3. Candidate work items
 
-### C1 — R9 K-only block scale (main candidate)
+### C1 — R9 K-only block scale (main candidate) — IMPLEMENTED, validating
 
 K stored as 256 E4M3 + 1 f16 scale per block (258/256 = 1.0078 B/value);
 V stays raw f8. K-scale multiplies the score column AFTER Q*K and before
 softmax (factored out of P*V), so decode pays 1 FMUL per (q,k) pair
 instead of 64 per-element scale muls — cheaper AND more accurate.
-Offline gate already passed (D096 R9): logit MSE -20.5%, metadata
-+0.78%. Runtime does not exist yet (no `F8_K_SCALE` code anywhere).
+Offline gate passed (D096 R9): logit MSE -20.5%, metadata +0.78%.
+
+Implementation (branch `research/vulkan-fp8-kv`, opt-in
+`LLAMA_VK_F8_K_SCALE`):
+
+- encoder: `ggml_pool_2d(MAX, 256)` + repeat-broadcast + `ggml_div`
+  before the existing f32->f8 set_rows; the same pool result is stored
+  into a per-layer f16 satellite cache via a second set_rows
+  (`cpy_k` / `cpy_k_scale` in llama-kv-cache.cpp);
+- storage: `cache_k_scale_l%d` 3d [n_blk, kv_size, n_stream] f16,
+  windowed views, stream copy and state save/load mirrored;
+- graph: `ggml_flash_attn_ext_set_k_scale()` attaches the windowed scale
+  view to the FA node (new src[5], upstream f16_extra_data pattern);
+- Vulkan FA decode: binding 7 + `K_SCALE_BIT` in `mask_n_head_log2`
+  (push constants were full at 128 B); the scalar kernel multiplies the
+  finished score column, scale index `kv_col * 4 + ik2` (block == head
+  for Qwen; `ik2 = iq2/rk2` — NOT `iq2/gqa_ratio`, which is wrong on the
+  non-GQA prefill);
+- Vulkan prefill preconvert: f8 dequant shader gains a 3rd binding and
+  folds the scale into the f16 K copy (`p.stride_a` = has-scale flag);
+  the permuted-K physical layout is `[d][kv-head][token]` (index
+  `tok=(i/(256*p.K))%p.M, hk=(i/256)%p.K`); `GGML_VK_FA_F8_DIRECT` is
+  disabled while scales are present;
+- all FA pipelines now use a uniform 8 descriptors (the scalar shader's
+  extra binding 7); split_k needs no reduce change because the scale is
+  applied inside the main kernel before the partial sums.
+
+First smoke (12K, f8 K/V, spec=none, dual Vulkan) after all four
+index/layout fixes: decode 27.87 t/s vs 27.78 control, coherent output,
+prompt 1630.95 vs 1638.39. Numeric confirmation still open.
 
 R8 explains why this must be K-only: a V scale differs per key row inside
 the Bc reduction and cannot be applied after the coopmat product; the
 symmetric K/V format is closed.
 
-Scope (from the D096 R9 design): encoder max-reduce over 256 + scale
-write; two-buffer K lifecycle (data + scale satellite tensor through
-SET_ROWS/copy/MTP window); FA decode `Sf *= scale[j]`; P5-class prefill
-column multiply; descriptor set 7->8 across all FA paths.
-
-Gate: MTP acceptance at least q8-hybrid level at equal-or-better memory,
-decode above the current f8 25.56 baseline. Secondary gate: can the
-f16 tail N shrink (target: drop the 5376-vs-4680 MiB deficit).
+Not yet done: numeric cross-check (greedy logits vs control, then
+perplexity), K-shift path (Qwen never shifts; abort/warn still missing),
+MTP window path audit, acceptance + memory + decode gates vs q8-hybrid,
+f16-tail N shrink test.
 
 ### C2 — clean A/B of `GGML_VK_FA_F8_DIRECT` vs preconvert — CLOSED 2026-08-19
 

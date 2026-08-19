@@ -41,6 +41,10 @@ layout (binding = 2) readonly buffer V {float16_t data_v[];};
 layout (binding = 2) readonly buffer VV4 {f16vec4 data_vv4[];};
 layout (binding = 3) readonly buffer M {float16_t data_m[];};
 
+// D131 R9: per-block K scales, one f16 per (kv head, token). Only bound on
+// the scalar path when the dispatch sets has_k_scale.
+layout (binding = 7) readonly buffer KS {float16_t data_k_scale[];};
+
 // If SubGroupSize is set to 0 then only use shmem reductions
 const uint32_t tmpsh_size = (SubGroupSize > 0) ? (row_split == 1 ? num_subgroups * D_split : num_subgroups) : WorkGroupSize;
 shared float tmpsh[tmpsh_size];
@@ -456,6 +460,24 @@ void main() {
             }
         }
 #endif // MMQ
+
+        // D131 R9: factor the per-block K scale out of P*V and apply it to the
+        // finished score column (block == kv head for Qwen, so one scale per
+        // (head, token)). Commutes with the D_split reduction below.
+        if ((p.mask_n_head_log2 & K_SCALE_BIT) != 0) {
+            // iq2 is the query head index in GQA; the KV head is iq2 / gqa_ratio
+            const uint kv_head = iq2 / p.gqa_ratio;
+            [[unroll]] for (uint32_t c = 0; c < cols_per_thread; ++c) {
+                const uint kv_col = j * Bc + c * cols_per_iter + col_tid;
+                if (KV_bounds_check && kv_col >= KV) {
+                    continue;
+                }
+                const FLOAT_TYPE ks = FLOAT_TYPE(data_k_scale[kv_col * 4 + kv_head]);
+                [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
+                    Sf[r][c] *= ACC_TYPE(ks);
+                }
+            }
+        }
 
         [[unroll]] for (uint32_t c = 0; c < cols_per_thread; ++c) {
             // Compute sum across the D_split

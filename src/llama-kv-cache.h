@@ -168,9 +168,18 @@ public:
     ggml_tensor * get_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
     ggml_tensor * get_v(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
 
+    // D131 R9: K scale satellite view for the FA node, windowed like get_k
+    // (nullptr when the layer's K is not f8 or R9 is off)
+    ggml_tensor * get_k_scale(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
+
     // store k_cur and v_cur in the cache based on the provided head location
     ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const;
     ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo) const;
+
+    // D131 R9: store the per-256-block max of k_cur into the scale cache
+    // (nullptr when the layer has no scale cache). Must be called alongside
+    // cpy_k so the normalized K and its scales land in the same graph.
+    ggml_tensor * cpy_k_scale(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const;
 
     //
     // preparation API
@@ -231,8 +240,13 @@ private:
         ggml_tensor * k;
         ggml_tensor * v;
 
+        // D131 R9: per-block K scale satellite for f8 K (1 f16 per 256 values).
+        // nullptr when the layer's K is not f8 or R9 is disabled.
+        ggml_tensor * k_scale;
+
         std::vector<ggml_tensor *> k_stream;
         std::vector<ggml_tensor *> v_stream;
+        std::vector<ggml_tensor *> k_scale_stream;
     };
 
     bool v_trans = true;  // the value tensor is transposed
@@ -372,7 +386,8 @@ public:
     // get views of the current state of the cache
     ggml_tensor * get_k(ggml_context * ctx, int32_t il) const;
     ggml_tensor * get_v(ggml_context * ctx, int32_t il) const;
-
+    // D131 R9: view of the K scale satellite (nullptr when the layer has none)
+    ggml_tensor * get_k_scale(ggml_context * ctx, int32_t il) const;
     // store k_cur and v_cur in the cache based on the provided head location
     // note: the heads in k_cur and v_cur should be laid out contiguously in memory
     //   - k_cur  [n_embd_head_k, n_head_k, n_tokens]
@@ -381,6 +396,8 @@ public:
     //   - v_idxs [n_tokens] or [n_tokens*n_embd_v_gqa] depending if V cache is transposed
     ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const;
     ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il) const;
+    // D131 R9: store the per-256-block max of k_cur (nullptr without scales)
+    ggml_tensor * cpy_k_scale(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const;
 
     // create destination indices for each head of the current batch for where it would be written in the KV cache
     // the indices address the global KV cache (not per stream) - this is not relevant for the user of this API, but
