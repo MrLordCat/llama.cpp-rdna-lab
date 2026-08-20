@@ -1168,6 +1168,7 @@ def parse_server_log_diagnostics(server_log: Path) -> dict[str, Any]:
         mtp_acc_tokens = sum(int(m[1]) for m in draft_accept_matches)
         mtp_gen_tokens = sum(int(m[2]) for m in draft_accept_matches)
 
+    dflash_present = "draft-dflash" in text or "statistics dflash" in text
     mtp_present = (
         mtp_gen_tokens > 0
         or bool(draft_accept_matches)
@@ -1175,6 +1176,7 @@ def parse_server_log_diagnostics(server_log: Path) -> dict[str, Any]:
         or "statistics dflash" in text
         or "speculative decoding context initialized" in text
     )
+    spec_kind = "dflash" if dflash_present else ("mtp" if mtp_present else "none")
     mtp_acceptance = (mtp_acc_tokens / mtp_gen_tokens) if mtp_gen_tokens > 0 else 0.0
 
     # Newer stats also print "#verify tokens = N, eff acceptance = X%" — the honest
@@ -1229,6 +1231,7 @@ def parse_server_log_diagnostics(server_log: Path) -> dict[str, Any]:
         "decode_degenerate_count": decode_degenerate,
         "decode_sample_count": len(decode_tps),
         "mtp_present": mtp_present,
+        "spec_kind": spec_kind,
         "mtp_gen_tokens": mtp_gen_tokens,
         "mtp_acc_tokens": mtp_acc_tokens,
         "mtp_acceptance": round(mtp_acceptance, 4),
@@ -1276,13 +1279,17 @@ def build_bottleneck_hints(rows: list[dict[str, Any]], server_diag: dict[str, An
     if server_diag.get("mtp_present"):
         gen = int(server_diag.get("mtp_gen_tokens", 0) or 0)
         acc = float(server_diag.get("mtp_acceptance", 0.0) or 0.0)
+        spec_kind = str(server_diag.get("spec_kind", "mtp") or "mtp")
+        spec_label = "DFlash2" if spec_kind == "dflash" else "MTP"
         if gen == 0:
-            hints.append("MTP active but 0 draft tokens generated; draft head never ran (check spec gating / max-tokens)")
+            hints.append(
+                f"{spec_label} active but 0 draft tokens generated; "
+                "draft path never ran (check spec gating / max-tokens)"
+            )
         elif acc < 0.30:
             hints.append(
-                f"MTP draft acceptance is low ({acc:.2%}); drafts are mostly rejected so "
-                "MTP is net overhead -- check the hidden-state fed to the draft head "
-                "(pre- vs post-norm) and the conditioning token/position"
+                f"{spec_label} draft acceptance is low ({acc:.2%}); compare measured end-to-end "
+                "speedup before deciding whether to tune or disable speculation"
             )
 
     if prompt_tps_mean > 0 and decode_tps_mean > 0:
@@ -1410,8 +1417,10 @@ def write_diagnostics_report(
             f"- batch_chunks mean/max: {server_diag.get('batch_chunks', {}).get('mean', 0.0)}/{server_diag.get('batch_chunks', {}).get('max', 0)}",
         ]
         if server_diag.get("mtp_present"):
+            spec_kind = str(server_diag.get("spec_kind", "mtp") or "mtp")
+            acceptance_label = "DFlash2" if spec_kind == "dflash" else "MTP"
             lines.append(
-                f"- mtp acceptance: {server_diag.get('mtp_acceptance', 0.0):.2%} "
+                f"- {acceptance_label} acceptance: {server_diag.get('mtp_acceptance', 0.0):.2%} "
                 f"({server_diag.get('mtp_acc_tokens', 0)} acc / {server_diag.get('mtp_gen_tokens', 0)} gen draft tokens)"
             )
     else:
@@ -1495,6 +1504,8 @@ def normalize_spec_mode(value: str) -> str:
     value = value.strip().lower()
     if value in {"draft-mtp", "draft_mtp"}:
         return "mtp"
+    if value in {"draft-dflash", "draft_dflash", "dflash", "dflash2"}:
+        return "dflash2"
     if value in {"mtp", "ngram-mtp", "ngram-mod", "draft", "none", "eagle", "eagle3"}:
         return value
     if value.startswith("eagle3"):

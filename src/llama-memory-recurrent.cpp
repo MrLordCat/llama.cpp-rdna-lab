@@ -147,6 +147,30 @@ void llama_memory_recurrent::clear(bool data) {
     }
 }
 
+void llama_memory_recurrent::zero_state_cell(uint32_t cell_id) {
+    GGML_ASSERT(cell_id < size);
+
+    std::vector<uint8_t> zeros;
+
+    const auto zero_row = [&](ggml_tensor * tensor) {
+        if (!tensor) {
+            return;
+        }
+
+        const size_t row_size = ggml_row_size(tensor->type, tensor->ne[0]);
+        if (zeros.size() < row_size) {
+            zeros.resize(row_size, 0);
+        }
+
+        ggml_backend_tensor_set(tensor, zeros.data(), cell_id * tensor->nb[1], row_size);
+    };
+
+    for (uint32_t il = 0; il < hparams.n_layer; ++il) {
+        zero_row(r_l[il]);
+        zero_row(s_l[il]);
+    }
+}
+
 bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
     uint32_t new_head = size;
 
@@ -203,6 +227,11 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
                 continue;
             }
             if (cells[i].is_empty()) {
+                // The next owner of this cell must start from a real zero
+                // state. Relying only on an unconnected graph-side in-place
+                // zero can race a get_rows on asynchronous GPU backends.
+                zero_state_cell(i);
+
                 // keep count of the number of used cells
                 if (cells[i].pos >= 0) {
                     used--;

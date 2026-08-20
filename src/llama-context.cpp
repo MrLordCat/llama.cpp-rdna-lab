@@ -815,6 +815,18 @@ void llama_context::sched_reserve() {
 
     // reserve again with pp graph to avoid ggml-alloc reallocations during inference
     {
+        // Encoder-only models can consume embeddings that are wider than their
+        // regular token input (for example, fused target features in DFlash).
+        // Reserve that graph explicitly so the scheduler does not grow its
+        // compute buffers during the first encode call.
+        if (model.hparams.n_embd_inp_enc() != model.hparams.n_embd_inp()) {
+            auto * gf = graph_reserve_type(cparams.n_ubatch, 1, cparams.n_ubatch, nullptr,
+                    LLM_GRAPH_TYPE_ENCODER, model.hparams.no_alloc);
+            if (!gf) {
+                throw std::runtime_error("failed to allocate compute encoder buffers");
+            }
+        }
+
         // TODO: not sure if the following graph would be worst case for multi-stream KV caches:
         //
         // auto * gf = graph_reserve(n_tokens, 1, n_tokens, mctx.get());
@@ -1884,7 +1896,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     const bool can_reuse_graph = !graph_reuse_disable && res->can_reuse(gparams);
     if (trace_dflash) {
         LLAMA_LOG_INFO("%s: DFlash graph reuse check: disable=%d can_reuse=%d gf=%p\n",
-                __func__, graph_reuse_disable ? 1 : 0, can_reuse_graph ? 1 : 0, (void *) gf);
+            __func__, graph_reuse_disable ? 1 : 0, can_reuse_graph ? 1 : 0, (void *) gf);
     }
 
     if (can_reuse_graph) {
@@ -2013,7 +2025,9 @@ int llama_context::encode(const llama_batch & batch_inp) {
 
     const auto & hparams = model.hparams;
 
-    const int64_t n_embd  = hparams.n_embd_inp();
+    // Encoder-only models such as EAGLE3 and DFlash consume fused target
+    // features whose width can differ from the model's regular token input.
+    const int64_t n_embd  = hparams.n_embd_inp_enc();
     const int64_t n_vocab = model.vocab.n_tokens();
 
     // note: during encode, we always pass the full sequence starting from pos = 0
@@ -3061,6 +3075,13 @@ llm_graph_result * llama_context::get_gf_res_reserve() const {
 
 ggml_cgraph * llama_context::graph_reserve(
         uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx, bool split_only, size_t * sizes) {
+    return graph_reserve_type(n_tokens, n_seqs, n_outputs, mctx,
+        llama_ctx_type_to_graph_type(cparams.ctx_type), split_only, sizes);
+}
+
+ggml_cgraph * llama_context::graph_reserve_type(
+    uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx,
+    llm_graph_type gtype, bool split_only, size_t * sizes) {
     LLAMA_LOG_DEBUG("%s: reserving a graph for ubatch with n_tokens = %4u, n_seqs = %2u, n_outputs = %4u\n", __func__, n_tokens, n_seqs, n_outputs);
     GGML_ASSERT(n_outputs >= 1);
 
@@ -3096,7 +3117,7 @@ ggml_cgraph * llama_context::graph_reserve(
 
     auto * res = gf_res_reserve.get();
 
-    const auto gparams = graph_params(res, ubatch, mctx, llama_ctx_type_to_graph_type(cparams.ctx_type));
+    const auto gparams = graph_params(res, ubatch, mctx, gtype);
 
     res->reset();
 
@@ -3621,6 +3642,7 @@ size_t llama_context::state_seq_set_data(llama_seq_id seq_id, const uint8_t * sr
     try {
         const size_t staging_size = size == SIZE_MAX ? state_seq_get_size(seq_id, flags) : size;
         uint8_t * staging = state_pinned_staging(staging_size);
+
         if (!staging) {
             llama_io_read_buffer io(src, size, backends);
             return state_seq_read_data(io, seq_id, flags);

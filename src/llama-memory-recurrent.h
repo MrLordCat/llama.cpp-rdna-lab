@@ -125,6 +125,11 @@ private:
     size_t size_r_bytes() const;
     size_t size_s_bytes() const;
 
+    // Recurrent cache rows are reused after seq_rm(). Clear the released base
+    // row explicitly so GPU backends cannot observe stale state before the
+    // graph-side zeroing operation has completed.
+    void zero_state_cell(uint32_t cell_id);
+
     void state_write_meta(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges, llama_seq_id seq_id = -1) const;
     void state_write_data(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges) const;
 

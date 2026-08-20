@@ -78,6 +78,37 @@ def test_different_draft_min_draft_max():
         last_content = res.body["content"]
 
 
+@pytest.mark.parametrize("n_predict", [1, 2, 7, 8, 9, 15, 16])
+def test_request_draft_max_preserves_full_output(n_predict: int):
+    global server
+    server.draft_min = 0
+    server.draft_max = 8
+    server.start()
+
+    request = {
+        "prompt": f"Once upon a time in a quiet forest number {n_predict}",
+        "temperature": 0.0,
+        "top_k": 1,
+        "n_predict": n_predict,
+        "speculative.p_min": 0.0,
+    }
+
+    res_no_draft = server.make_request("POST", "/completion", data={
+        **request,
+        "speculative.n_max": 0,
+    })
+    res_draft = server.make_request("POST", "/completion", data={
+        **request,
+        "speculative.n_max": 8,
+    })
+
+    assert res_no_draft.status_code == 200
+    assert res_draft.status_code == 200
+    assert res_no_draft.body["tokens_predicted"] == n_predict
+    assert res_draft.body["tokens_predicted"] == n_predict
+    assert res_draft.body["content"] == res_no_draft.body["content"]
+
+
 def test_slot_ctx_not_exceeded():
     global server
     server.n_ctx = 256
