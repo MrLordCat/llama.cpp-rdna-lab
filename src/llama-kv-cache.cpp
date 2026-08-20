@@ -1456,7 +1456,6 @@ ggml_tensor * llama_kv_cache::get_k_scale(ggml_context * ctx, int32_t il, uint32
         return nullptr;
     }
 
-    const uint64_t kv_size      = get_size();
     const uint64_t n_blk        = k_scale->ne[0];
 
     return ggml_view_2d(ctx, k_scale, n_blk, n_kv,
@@ -1538,11 +1537,15 @@ ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggm
 
         // broadcast: insert a middle dim of 256 repeats. k_scale_new is
         // [n_blk, n_tokens] (block-major); view it as [n_blk, 1, n_tokens]
-        // with both strides = row_size(n_blk), then repeat dim1 256x.
+        // with both strides = row_size(n_blk), then repeat dim1 256x. reshape
+        // merges dim0*dim1 row-major (b = rep + blk*256), which repeats with
+        // period 4 instead of 256, so permute to [rep, blk, tok] first.
         const size_t blk_stride = ggml_row_size(k_scale_new->type, n_blk);
-        ggml_tensor * k_scale_v = ggml_view_3d(ctx, k_scale_new, n_blk, 1, n_tokens, blk_stride, blk_stride, 0);
-        ggml_tensor * k_scale_rep = ggml_repeat_4d(ctx, k_scale_v, n_blk, 256, n_tokens, 1);
-        ggml_tensor * k_scale_b   = ggml_reshape_2d(ctx, k_scale_rep, n_embd_gqa, n_tokens);
+        ggml_tensor * k_scale_v    = ggml_view_3d(ctx, k_scale_new, n_blk, 1, n_tokens, blk_stride, blk_stride, 0);
+        ggml_tensor * k_scale_rep  = ggml_repeat_4d(ctx, k_scale_v, n_blk, 256, n_tokens, 1);
+        ggml_tensor * k_scale_perm = ggml_permute(ctx, k_scale_rep, 1, 0, 2, 3);
+        ggml_tensor * k_scale_cont = ggml_cont(ctx, k_scale_perm);
+        ggml_tensor * k_scale_b    = ggml_reshape_2d(ctx, k_scale_cont, n_embd_gqa, n_tokens);
 
         k_cur = ggml_div(ctx, k_cur, k_scale_b);
     }
