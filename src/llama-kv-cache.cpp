@@ -1456,11 +1456,15 @@ ggml_tensor * llama_kv_cache::get_k_scale(ggml_context * ctx, int32_t il, uint32
         return nullptr;
     }
 
+    const uint64_t kv_size      = get_size();
     const uint64_t n_blk        = k_scale->ne[0];
 
+    // stream offset mirrors get_k(): the cache is [n_blk, kv_size, n_stream],
+    // so a stream s0 begins at s0 * row_size(n_blk) * kv_size, not at
+    // s0 * row_size(n_blk).
     return ggml_view_2d(ctx, k_scale, n_blk, n_kv,
             ggml_row_size(k_scale->type, n_blk),
-            ggml_row_size(k_scale->type, n_blk) * sinfo.s0);
+            ggml_row_size(k_scale->type, n_blk) * kv_size * sinfo.s0);
 }
 
 ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const {

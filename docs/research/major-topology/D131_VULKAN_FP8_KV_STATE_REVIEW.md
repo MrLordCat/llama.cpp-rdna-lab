@@ -92,16 +92,106 @@ Numeric confirmation (wikitext-2 perplexity, dual Vulkan, b512/ub512,
 
 R9 is never worse than plain f8; the block scale removes underflow /
 overflow and is mildly better (up to ~2.9% on the 16-chunk head). This
-closes the perplexity half of the numeric gate; greedy-logits parity and
-the decode/MTP acceptance gates remain.
+closes the perplexity half of the numeric gate.
+
+Greedy decode logits (first token of a 14-token prompt, greedy, top-8
+logprobs via llama-server): R9's top-4 set is `{young, little, group,
+very}`, the same set as the f16-KV reference (`{group, young, little,
+very}`), while plain f8 diverges to `{young, princess, girl, king}`. So
+the K scale keeps the decode distribution closer to f16 than raw f8 does;
+decode parity (vs the f16 reference, not bit-exact vs plain f8) is
+confirmed. Remaining gates: MTP acceptance, decode t/s, memory vs
+q8-hybrid.
+
+Memory gate (analytic, 16 full-attention layers x 1024 K + 1024 V per
+token, q8_0=1.125 B/val, f8=1.0, f16=2.0, R9 K = f8 + 4x f16 scale per
+block; MTP tail = last N layers f16, N=8 below 98K / N=12 at 98K):
+
+| ctx | q8 (no tail) | f8-R9 (no tail) | q8-hybrid | f8-R9-hybrid |
+|---|---:|---:|---:|---:|
+| 49K | 1728 MiB | 1542 MiB | 2400 MiB | 2307 MiB |
+| 98K | 3456 MiB | 3084 MiB | 5472 MiB | 5379 MiB |
+
+The K scale costs only ~6 MiB (49K) / ~12 MiB (98K) = +0.4% over raw f8,
+so R9 keeps the ~11% KV savings vs q8 in the no-tail lane; the MTP f16
+tail dominates both. Memory gate PASSED.
+
+Decode + acceptance gates (49K lane, dual Vulkan, b8192/ub1024,
+`--real-context-chars 147456` -> ~30.8K tokens, Qwen3.8-27B-Q4_K_M,
+`agent_workload_bench.py`, q8-hybrid vs f8-R9 on the fixed commit):
+
+| gate | q8-hybrid | f8-R9 | delta |
+|---|---:|---:|---:|
+| decode t/s (spec=none) | 23.45 | 22.48 | -4.1% |
+| decode t/s (draft-mtp n=2) | 48.83 | 47.88 | -1.9% |
+| MTP acceptance (n=2, 128 tok) | 81.3% | 74.9% | -6.4 pt |
+| KV memory 49K (no tail) | 1728 MiB | 1542 MiB | -10.8% |
+
+Artifacts: `d131-r9-decode-{q8,r9}-r1`, `d131-r9-mtp128-{q8,r9}-r1`.
+R9 does not close the f8 acceptance gap vs q8-hybrid: the K scale fixes
+K underflow, but V stays raw f8 and V precision (not K) is the dominant
+acceptance cost (R8). So R9 remains a memory option, same verdict as the
+wider f8 line: ~11% less KV, ~4% slower spec=none decode, ~6 pt lower
+MTP acceptance. Gates vs q8-hybrid: memory PASS, decode/acceptance do NOT
+pass.
 
 R8 explains why this must be K-only: a V scale differs per key row inside
 the Bc reduction and cannot be applied after the coopmat product; the
 symmetric K/V format is closed.
 
-Not yet done: greedy-logits parity vs control, K-shift path (Qwen never
-shifts; abort/warn still missing), MTP window path audit, acceptance +
-memory + decode gates vs q8-hybrid, f16-tail N shrink test.
+### R10 — where fp8 quality is actually lost (diagnostic, 2026-08-20)
+
+Greedy top-logprobs of the first token isolate K vs V (14-token prompt):
+
+| config | group | young | little | very |
+|---|---:|---:|---:|---:|
+| f16 K+V (reference) | -0.72 | -1.46 | -1.84 | -3.43 |
+| K=f16, V=f8 | -0.74 | -1.44 | -1.83 | -3.36 |
+| K=f8-R9, V=f16 | -1.01 | -0.93 | -2.03 | -3.58 |
+| K=f8-R9, V=f8 | -2.17 | -0.93 | -1.69 | -2.47 |
+
+`K=f16,V=f8` ~= f16, so V=f8 is nearly harmless and **K dominates the
+residual error**; swapping V to f16 barely moves the distribution, so the
+remaining gap is the e4m3 3-bit mantissa (6.25% relative error), not a
+scale-addressable artifact. A synthetic V-quantization sweep agrees:
+per-head V scale adds only +0.25 dB SNR (25.54 -> 25.79), and per-64-block
++0.74 dB — both too small to close an acceptance gate.
+
+Mixed K/V on Vulkan is closed by hardware: the device reports `mixed K/V
+Flash Attention requires coopmat2` and falls back to a non-Vulkan (CPU)
+backend, so a `K=f16,V=f8` hybrid cannot run its prefill on Vulkan.
+
+Conclusion: e4m3 (3-bit mantissa) is fundamentally coarser than q8_0
+(8-bit integer, ~0.4%); R9 removed the underflow outlier but not the 6%
+mantissa floor, and the only quality-parity lever (f16 K) needs coopmat2.
+So fp8 quality parity with q8 is not reachable in e4m3 on this device; the
+remaining actionable axis is decode efficiency (the -4..-5% scalar-decode
+gap), i.e. D1-style f8->f16 dot work.
+
+### MTP window path audit — PASSED (2026-08-20)
+
+Checked every R9 scale touchpoint along the speculative path:
+
+- graph wiring: `build_attn` for kv/k/iswa paths attach `get_k_scale`;
+  the NextN drafter cross-attends through `build_attn(k)` (llama-graph.cpp
+  `build_attn(k)` -> `build_attn_mha(..., get_k_scale, ...)`), so draft
+  tokens read the scaled K. Only encoder-decoder cross (VLM) passes
+  `nullptr`, which is correct (encoder K/V are f16);
+- `k_idxs` are absolute `strm[s]*kv_size + idx` (set_input_k_idxs), and
+  `cpy_k_scale` flattens to `[n_blk, kv_size*n_stream]` before set_rows, so
+  the write side is stream-correct;
+- state save/load and stream copy mirror the K ranges for the scale
+  satellite (llama-kv-cache.cpp state_write/read, update);
+- K-shift aborts when the scale satellite is present (Qwen never shifts).
+
+One latent bug found and fixed: `get_k_scale` offset was
+`row_size(n_blk)*sinfo.s0` (one row per stream) instead of
+`row_size(n_blk)*kv_size*sinfo.s0` (a full stream, matching `get_k`/`get_v`).
+It only mattered for multi-stream (s0>0); single-stream MTP (s0=0) is
+unaffected, which is why the gates above were already correct. Smoke after
+the fix: coherent output, 29.49 t/s.
+
+Not yet done: f16-tail N shrink test.
 
 ### C2 — clean A/B of `GGML_VK_FA_F8_DIRECT` vs preconvert — CLOSED 2026-08-19
 
