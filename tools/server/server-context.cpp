@@ -268,6 +268,7 @@ struct server_slot {
 
     // speculative decoding
     llama_tokens spec_draft;
+    std::vector<common_speculative_token_dist> spec_dists;
     std::vector<int32_t> spec_i_batch;
     server_prompt_checkpoint spec_ckpt;
     common_speculative * spec = nullptr;
@@ -397,6 +398,7 @@ struct server_slot {
 
         if (can_speculate()) {
             spec_draft.clear();
+            spec_dists.clear();
             spec_i_batch.clear();
             spec_ckpt.clear();
         }
@@ -562,6 +564,9 @@ struct server_slot {
                     /* .id_last  = */ sampled,
                     /* .prompt   = */ &tokens,
                     /* .result   = */ &spec_draft,
+                    /* .dists    = */ &spec_dists,
+                    /* .temperature = */ task->params.sampling.temp,
+                    /* .seed     = */ common_sampler_get_seed(smpl.get()),
                 };
                 const bool trace_spec_phase = server_env_enabled("LLAMA_SPEC_SERVER_PHASE_TIMING");
                 const int64_t t_draft_start = trace_spec_phase ? ggml_time_us() : 0;
@@ -3395,7 +3400,13 @@ private:
                     GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
                     const bool trace_spec_phase = server_env_enabled("LLAMA_SPEC_SERVER_PHASE_TIMING");
                     const int64_t t_verify_start = trace_spec_phase ? ggml_time_us() : 0;
-                    auto accepted = common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx, slot.spec_i_batch, slot.spec_draft);
+                    const bool can_rollback =
+                        slot.ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_PART ||
+                        (slot.ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_PART_BOUNDED && n_draft <= (size_t) llama_n_rs_seq(slot.ctx));
+                    auto accepted = can_rollback && slot.task->params.sampling.temp > 0.0f &&
+                                    slot.spec_dists.size() == slot.spec_draft.size()
+                        ? common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx, slot.spec_i_batch, slot.spec_draft, slot.spec_dists)
+                        : common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx, slot.spec_i_batch, slot.spec_draft);
                     const int64_t t_verify_sample = trace_spec_phase ? ggml_time_us() : 0;
                     slot.spec_i_batch.clear();
 
@@ -3415,6 +3426,7 @@ private:
 
                             // partial acceptance is not supported by the context -> truncate the draft and restore the state
                             slot.spec_draft = std::move(accepted);
+                            slot.spec_dists.clear();
 
                             const auto & ckpt = slot.spec_ckpt;
 
@@ -3459,6 +3471,7 @@ private:
                     }
 
                     slot.spec_draft = std::move(accepted);
+                    slot.spec_dists.clear();
                 }
 
                 const int64_t t_current = ggml_time_us();

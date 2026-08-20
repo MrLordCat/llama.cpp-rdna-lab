@@ -13,12 +13,14 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
 #include <limits>
 #include <map>
+#include <random>
 #include <cinttypes>
 
 #define SPC_DBG(fmt, ...) LOG_DBG("spec %12.*s: " fmt, 12, __func__, __VA_ARGS__)
@@ -1003,6 +1005,11 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
     int32_t     block_size    = 0;
     llama_token mask_token_id = 0;
 
+    bool    is_dflash2     = false;
+    int32_t selector_top_k = 0;
+    std::vector<std::mt19937> selector_rng;
+    std::vector<bool> selector_reset;
+
     const int32_t * target_layer_ids   = nullptr; // model_dft's extract layer indices
     uint32_t        target_layer_ids_n = 0;
 
@@ -1043,6 +1050,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                 llama_model_meta_val_str(model_dft, "dflash-draft.dflash.block_size", buf, sizeof(buf)) >= 0) {
                 block_size = std::atoi(buf);
             }
+            if (llama_model_meta_val_str(model_dft, "dflash.selector_top_k", buf, sizeof(buf)) >= 0) {
+                selector_top_k = std::atoi(buf);
+                is_dflash2 = selector_top_k > 0;
+            }
         }
         mask_token_id = llama_vocab_mask(llama_model_get_vocab(model_dft));
         if (mask_token_id < 0) {
@@ -1074,17 +1085,21 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         for (auto & s : smpls) {
             common_params_sampling sparams;
             sparams.no_perf  = false;
-            sparams.top_k    = 10;
+            sparams.top_k    = is_dflash2 ? selector_top_k : 10;
             sparams.samplers = { COMMON_SAMPLER_TYPE_TOP_K };
             s.reset(common_sampler_init(model_dft, sparams));
         }
+
+        selector_rng.resize(n_seq);
+        selector_reset.assign(n_seq, true);
 
         // turn on extraction of the target layers' input embeddings
         for (uint32_t k = 0; k < target_layer_ids_n; ++k) {
             llama_set_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k], true);
         }
 
-        llama_set_embeddings_nextn(ctx_dft, true, /*masked*/ true);
+        // DFlash2 reads its selector lattice from h_nextn and never consumes raw logits.
+        llama_set_embeddings_nextn(ctx_dft, true, /*masked*/ !is_dflash2);
         llama_set_causal_attn(ctx_dft, false); // DFlash needs non-causal attention
     }
 
@@ -1102,6 +1117,8 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         if (N <= 0) {
             return;
         }
+
+        selector_reset[seq_id] = true;
 
         const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(params.ctx_dft), seq_id);
         if (pos_max < N - 1) {
@@ -1298,7 +1315,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             i_block_beg[seq_id] = batch.n_tokens;
             n_block    [seq_id] = n_block_tokens;
             for (int32_t i = 0; i < n_block_tokens; ++i) {
-                common_batch_add(batch, i == 0 ? dp.id_last : mask_token_id, n + i, { seq_id }, true);
+                common_batch_add(batch, i == 0 ? dp.id_last : mask_token_id, n + i, { seq_id }, !is_dflash2);
             }
         }
 
@@ -1347,6 +1364,63 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             auto * smpl = smpls[seq_id].get();
 
             auto & result = *dp.result;
+
+            if (dp.dists) {
+                dp.dists->clear();
+            }
+
+            if (is_dflash2) {
+                GGML_ASSERT(dp.temperature <= 0.0f || dp.dists);
+                const float * lattice = llama_get_embeddings_nextn(ctx_dft);
+                GGML_ASSERT(lattice && "DFlash2 selector produced no lattice");
+
+                if (selector_reset[seq_id]) {
+                    uint32_t seed = dp.seed;
+                    if (seed == LLAMA_DEFAULT_SEED) {
+                        seed = (uint32_t) std::chrono::high_resolution_clock::now().time_since_epoch().count();
+                    }
+                    selector_rng[seq_id].seed(seed ^ 0x85ebca6bU);
+                    selector_reset[seq_id] = false;
+                }
+
+                int32_t predecessor = 0;
+                for (int32_t i = 1; i < n_block_tokens; ++i) {
+                    const float * row = lattice + (size_t) (beg + i) * n_embd_dec;
+                    const float * scores = row + selector_top_k + (size_t) predecessor * selector_top_k;
+
+                    if (dp.temperature > 0.0f) {
+                        common_speculative_token_dist dist;
+                        dist.ids.resize(selector_top_k);
+                        dist.probs.resize(selector_top_k);
+                        const float max_score = *std::max_element(scores, scores + selector_top_k);
+                        float sum = 0.0f;
+                        for (int32_t k = 0; k < selector_top_k; ++k) {
+                            dist.ids[k] = (llama_token) row[k];
+                            dist.probs[k] = std::exp((scores[k] - max_score) / dp.temperature);
+                            sum += dist.probs[k];
+                        }
+                        for (float & p : dist.probs) {
+                            p /= sum;
+                        }
+                        std::discrete_distribution<int32_t> sample(dist.probs.begin(), dist.probs.end());
+                        predecessor = sample(selector_rng[seq_id]);
+                        result.push_back(dist.ids[predecessor]);
+                        dp.dists->push_back(std::move(dist));
+                    } else {
+                        predecessor = (int32_t) std::distance(scores,
+                                std::max_element(scores, scores + selector_top_k));
+                        result.push_back((llama_token) row[predecessor]);
+                    }
+                }
+
+                if (result.size() < (size_t) params.n_min) {
+                    result.clear();
+                    if (dp.dists) {
+                        dp.dists->clear();
+                    }
+                }
+                continue;
+            }
 
             // greedily read the predicted block at this sequence's noise positions 1..n_block_tokens-1
             for (int32_t i = 1; i < n_block_tokens; ++i) {
