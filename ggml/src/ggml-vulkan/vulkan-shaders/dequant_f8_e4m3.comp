@@ -13,17 +13,18 @@ layout (binding = 2) readonly buffer S {float16_t data_scale[];};
 // D095-D3: f8_e4m3 -> f16 dequant pass used by the FA preconvert path
 // (mirrors dequant_q8_0: 4096 elements per workgroup, 16 per thread).
 // D131 R9: when p.stride_a != 0 the K copy folds in the per-block scale. The
-// input is the permuted K *view* [d=256][kv-head][token]; its physical layout
-// stays [d][kv-head][token], so the scale index is derived as
-//   tok = i / (256*p.K), hk = (i/256) % p.K   (p.M=n_kv, p.K=n_head_kv).
+// scheduler materializes the permuted K as a CONTIGUOUS tensor [d=256][token]
+// [kv-head], so the physical flat index is i = d + tok*256 + hk*256*n_kv and
+// the scale index is
+//   tok = (i/256) % p.M,  hk = i / (256*p.M)   (p.M=n_kv, p.K=n_head_kv).
 void main() {
     const uint i0 = gl_WorkGroupID.x * 4096 + gl_LocalInvocationID.x * 16;
     const uint i1 = min(i0 + 16, p.nel);
     for (uint i = i0; i < i1; i++) {
         float v = fp8_e4m3_to_f32(data_a[i].v);
         if (p.stride_a != 0) {
-            const uint tok = (i / (256u * p.K)) % p.M;
-            const uint hk  = (i / 256u) % p.K;
+            const uint tok = (i / 256u) % p.M;
+            const uint hk  = i / (256u * p.M);
             v *= float(data_scale[tok * p.K + hk]);
         }
         data_b[i] = D_TYPE(v);

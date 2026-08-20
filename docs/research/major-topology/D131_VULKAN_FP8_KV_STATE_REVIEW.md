@@ -69,25 +69,39 @@ Implementation (branch `research/vulkan-fp8-kv`, opt-in
   non-GQA prefill);
 - Vulkan prefill preconvert: f8 dequant shader gains a 3rd binding and
   folds the scale into the f16 K copy (`p.stride_a` = has-scale flag);
-  the permuted-K physical layout is `[d][kv-head][token]` (index
-  `tok=(i/(256*p.K))%p.M, hk=(i/256)%p.K`); `GGML_VK_FA_F8_DIRECT` is
-  disabled while scales are present;
+  the scheduler materializes the permuted K as a CONTIGUOUS tensor
+  `[d=256][token][kv-head]` (flat `i = d + tok*256 + hk*256*n_kv`), so
+  the scale index is `tok=(i/256)%p.M, hk=i/(256*p.M)` (the earlier view
+  `[d][kv-head][token]` assumption was wrong and cost ~+4.7% ppl);
+  `GGML_VK_FA_F8_DIRECT` is disabled while scales are present;
 - all FA pipelines now use a uniform 8 descriptors (the scalar shader's
   extra binding 7); split_k needs no reduce change because the scale is
   applied inside the main kernel before the partial sums.
 
 First smoke (12K, f8 K/V, spec=none, dual Vulkan) after all four
 index/layout fixes: decode 27.87 t/s vs 27.78 control, coherent output,
-prompt 1630.95 vs 1638.39. Numeric confirmation still open.
+prompt 1630.95 vs 1638.39.
+
+Numeric confirmation (wikitext-2 perplexity, dual Vulkan, b512/ub512,
+`-ctk f8_e4m3 -ctv f8_e4m3`): R9 vs plain-f8 control on the same binary.
+
+| chunks | control (plain f8) | R9 (scale) |
+|---|---:|---:|
+| 16 | 45.93 ± 0.77 | 44.60 ± 0.74 |
+| 72 (full) | 48.833 ± 0.393 | 48.440 ± 0.389 |
+
+R9 is never worse than plain f8; the block scale removes underflow /
+overflow and is mildly better (up to ~2.9% on the 16-chunk head). This
+closes the perplexity half of the numeric gate; greedy-logits parity and
+the decode/MTP acceptance gates remain.
 
 R8 explains why this must be K-only: a V scale differs per key row inside
 the Bc reduction and cannot be applied after the coopmat product; the
 symmetric K/V format is closed.
 
-Not yet done: numeric cross-check (greedy logits vs control, then
-perplexity), K-shift path (Qwen never shifts; abort/warn still missing),
-MTP window path audit, acceptance + memory + decode gates vs q8-hybrid,
-f16-tail N shrink test.
+Not yet done: greedy-logits parity vs control, K-shift path (Qwen never
+shifts; abort/warn still missing), MTP window path audit, acceptance +
+memory + decode gates vs q8-hybrid, f16-tail N shrink test.
 
 ### C2 — clean A/B of `GGML_VK_FA_F8_DIRECT` vs preconvert — CLOSED 2026-08-19
 
