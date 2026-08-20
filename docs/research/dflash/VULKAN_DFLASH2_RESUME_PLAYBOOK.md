@@ -192,6 +192,79 @@ Long-lane artifacts:
 - `build_logs/agent-workload/vk-{target,mtp2,dflash2-n3-vk0}-ctx32k-out2048-real-r1-20260820.*`
 - `build_logs/agent-workload/vk-{target,mtp2,dflash2-n3-vk0}-ctx32k-out2048-real-r1b-20260820.*`
 
+### DFlash2 prefill auto-ubatch promotion
+
+The initial long lane used the minimal DFlash draft-context ubatch (`n_max+1`,
+four rows for n=3), even though `LLAMA_DFLASH_UBATCH=8` was requested and then
+clamped by the context. Each 2048-token target prefill block was therefore
+split into hundreds of tiny encoder + KV-injection cycles with explicit
+synchronization around them.
+
+An adjacent 21,982-prompt-token sweep kept acceptance fixed at 66.67% and had
+no request errors:
+
+| DFlash encoder/context ubatch | Prompt TPS | Decode TPS |
+| ---: | ---: | ---: |
+| 64 | 1298.47 | 55.90 |
+| **128** | **1313.16** | 53.92 |
+| 256 | 1302.52 | 52.85 |
+| 512 | 1278.04 | 55.70 |
+
+DFlash2 now auto-selects 128 rows for both the draft context and fusion chunk,
+while legacy DFlash retains its conservative defaults. `LLAMA_DFLASH_CTX_UBATCH`
+and `LLAMA_DFLASH_UBATCH` remain explicit overrides.
+
+The promoted auto-128 configuration completed two fresh 32K/2048 requests at
+38.93 end-to-end TPS, 1320.79 prompt TPS, 56.62 decode TPS, 52.61 seconds mean
+wall time, and 61.15% acceptance. Relative to the pre-change DFlash2 mean this
+is **+26.9% prompt TPS** and **+8.9% end-to-end TPS**. It raises the matched
+lead to **1.143x end-to-end / 1.313x decode versus MTP n=2**, and to **1.637x
+end-to-end / 2.035x decode versus target-only**.
+
+The no-override strict gate remained `STABLE_AND_BIT_EXACT` with all 8/8
+output boundaries passing.
+
+Auto-ubatch artifacts:
+
+- `build_logs/agent-workload/vk-dflash2-n3-vk0-ctx32k-out64-dub{64,128,256,512}-r1-20260820.*`
+- `build_logs/agent-workload/vk-dflash2-n3-vk0-auto128-ctx32k-out2048-r2-20260820.*`
+- `build_logs/dflash2-lab/20260820T172342Z-vk-np1-n3-auto128-boundaries.*`
+
+### Reused-prefix agent session
+
+A second matched lane kept one server and slot alive for four sequential
+requests: two different agent tasks sharing the same 65,536-character
+repository snapshot, followed by the same pair again. Each prompt contained
+21,982-22,060 tokens and every response reached 512 tokens. Context
+checkpoints restored the long recurrent prefix three times with no forced full
+reprocessing.
+
+| Candidate | Session TPS | Cold pair TPS | Warm pair TPS | Decode TPS | Total wall | Acceptance |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| target-only | 23.00 | 19.99 | 27.08 | 28.32 | 89.04 s | - |
+| MTP n=2 | 31.93 | **26.64** | 39.85 | 44.69 | 64.13 s | 59.84% |
+| DFlash2 n=3 auto-128 | **33.17** | 26.25 | **45.02** | **50.13** | **61.75 s** | 49.92% |
+
+DFlash2 is **1.039x end-to-end / 1.122x decode versus MTP** across the complete
+session. Once both task prefixes are warm, its lead grows to **1.130x**. Versus
+target-only it reaches **1.442x** over the whole session and **1.662x** on the
+warm pair. The first cold DFlash2 request still takes 28.25 seconds versus
+24.59 seconds for MTP, so DFlash2 trails MTP by 1.5% over the first two-request
+pair before reuse amortizes its encoder prefill cost.
+
+All 12 requests completed without errors and each candidate was internally
+stable across the repeated task. The saved 500-character previews match across
+all candidates for `v2_write_function`, but differ near the beginning of the
+thinking trace for `v2_code_review`. Because all responses stopped at the
+512-token length boundary and the old artifacts retained only previews, this
+lane is performance and stability evidence, not a semantic parity gate.
+
+Reused-session artifacts:
+
+- `build_logs/agent-workload/vk-target-ctx32k-out512-reuse2x2-20260820.*`
+- `build_logs/agent-workload/vk-mtp2-ctx32k-out512-reuse2x2-20260820.*`
+- `build_logs/agent-workload/vk-dflash2-n3-vk0-auto128-ctx32k-out512-reuse2x2-20260820.*`
+
 ## New tools
 
 ### Owned lifecycle + parity/stability matrix
@@ -205,8 +278,7 @@ python scripts/research/dflash2_lab.py `
   --parallel 1 --ctx-size 4096 --spec-n-max 3 --max-tokens 64 `
   --boundary-tokens 1,2,3,7,8,9,15,16 `
   --require-serial-parity --require-identical-slot-stability `
-  --require-boundary-parity --label vk-np1-n3-devd-vk0 `
-  --env LLAMA_DFLASH_UBATCH=8
+  --require-boundary-parity --label vk-np1-n3-auto128
 ```
 
 The tool refuses to start while another `llama-server` process exists, chooses
@@ -224,7 +296,7 @@ is needed; hashes, byte counts, usage, timings, and finish reasons are retained
 by default. To attach without owning a process, omit the three model/binary
 arguments and pass `--url`.
 
-Add `--boundary-tokens 1,2,7,8,9,15,16 --require-boundary-parity` to validate
+Add `--boundary-tokens 1,2,3,7,8,9,15,16 --require-boundary-parity` to validate
 speculative output accounting in the same owned-server run. Degenerate
 single-token timing sentinels are excluded from decode-TPS means.
 
@@ -242,6 +314,41 @@ This allows classification rules to improve without rerunning the GPUs.
 ```powershell
 python scripts/research/test_dflash2_tools.py
 ```
+
+### Full-response workload artifacts
+
+`scripts/agent_workload_bench.py` now records `response_sha256` and
+`finish_reason` for every request. Pass `--include-response` to retain the full
+generated text in JSONL when a quality or semantic-parity review is required;
+the default remains preview-only to keep ordinary performance artifacts small.
+
+The first 21,579-prompt-token full-response gate disabled thinking and allowed
+up to 2,048 output tokens. All candidates stopped naturally before the limit:
+
+| Candidate | Output tokens | Wall time | End-to-end TPS | Decode TPS | Finish |
+| --- | ---: | ---: | ---: | ---: | --- |
+| target-only | 1593 | 69.24 s | 23.01 | 28.07 | `stop` |
+| MTP n=2 | 1504 | 40.31 s | 37.31 | 54.37 | `stop` |
+| DFlash2 n=3 auto-128 | 1375 | **36.42 s** | **37.76** | **69.47** | `stop` |
+
+The different natural output lengths make this a quality/behavior probe rather
+than a strictly token-matched performance promotion. Full SHA-256 values differ.
+DFlash2 shares the first 1,254 response characters with target-only, while MTP
+shares 512. The extracted Python from every response parses successfully,
+defines `BuildRegistry`, implements every requested method, handles corrupt
+JSON, and uses a temporary file plus `os.replace` for atomic persistence. None
+of the three generated implementations adds an explicit cross-process lock, so
+that is a shared answer-quality weakness rather than a DFlash-specific failure.
+
+Full-response artifacts:
+
+- `build_logs/agent-workload/vk-target-ctx32k-fullresp-r2-20260820.*`
+- `build_logs/agent-workload/vk-mtp2-ctx32k-fullresp-20260820.*`
+- `build_logs/agent-workload/vk-dflash2-n3-vk0-auto128-ctx32k-fullresp-20260820.*`
+
+The earlier `vk-target-ctx32k-fullresp-20260820` attempt is intentionally
+invalid: the runner's default 45-second task guard fired. The `r2` artifact is
+the valid target control with both hard and fail timeouts raised to 180 seconds.
 
 ## Decision gates
 
@@ -266,17 +373,18 @@ sampling, cache policy, and background load.
 
 ## Next commands
 
-1. Add an opt-in full-response field or semantic judge to the benchmark; the
-  current preview hash is insufficient for full quality comparison.
-2. Repeat the distance sweep on a reused multi-turn chat, where the cold
-  DFlash2 prefill penalty should be paid less often.
+1. Localize the first target/DFlash divergence at token and verification-batch
+  level on the 22K full-response prompt, then classify it as expected numerical
+  batch-invariance or a DFlash state/verification defect.
+2. Repeat the full-response semantic gate on a second task before treating the
+  first structurally valid answer as a broad quality conclusion.
 3. Run a full multi-wave `np=2` identical-prompt matrix and retain full text for
   the divergent phase; the quick probe already establishes `np=1` pass and
   `np=2` fail.
 4. Instrument per-slot draft state ownership and verification batch row/seq-id
   mapping; graph reuse and DFlash ubatch are already excluded.
-5. Profile and reduce DFlash encoder prefill cost on `Vulkan0`; it is now the
-  dominant short-session regression. The next decode speed target is draft
-  compute/synchronization rather than wider speculation.
+5. Profile the remaining DFlash encoder prefill gap on `Vulkan0`, especially
+  host feature copies and encode/inject synchronization. The next decode speed
+  target is draft compute/synchronization rather than wider speculation.
 6. Keep `np=4` DFlash2 disabled for production-style use until identical-slot
   stability passes; target-only `np=4` and DFlash2 `np=1` remain valid controls.

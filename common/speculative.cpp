@@ -1035,11 +1035,6 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         n_embd_tgt    = llama_model_n_embd(model_tgt);
         n_embd_dec    = llama_model_n_embd(model_dft);
         n_embd_enc    = (int32_t) target_layer_ids_n * n_embd_tgt;
-        n_dflash_ubatch = 1;
-        if (const char * env = std::getenv("LLAMA_DFLASH_UBATCH")) {
-            n_dflash_ubatch = std::max(1, std::atoi(env));
-        }
-        n_dflash_ubatch = std::min(n_dflash_ubatch, (int32_t) llama_n_ubatch(ctx_dft));
         trace_dflash = std::getenv("LLAMA_DFLASH_TRACE") != nullptr;
 
         // read the trained block size from the dflash.block_size metadata key
@@ -1055,6 +1050,18 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                 is_dflash2 = selector_top_k > 0;
             }
         }
+
+        // DFlash2 prefill otherwise decomposes every target batch into tiny
+        // n_max + 1 fusion/injection cycles.  A 128-row encoder chunk was the
+        // measured Vulkan optimum for the 27B DFlash2 model, while legacy
+        // DFlash keeps its conservative one-row default.  Both knobs remain
+        // explicit environment overrides for backend-specific tuning.
+        n_dflash_ubatch = is_dflash2 ? std::min<int32_t>(128, llama_n_ubatch(ctx_dft)) : 1;
+        if (const char * env = std::getenv("LLAMA_DFLASH_UBATCH")) {
+            n_dflash_ubatch = std::max(1, std::atoi(env));
+        }
+        n_dflash_ubatch = std::min(n_dflash_ubatch, (int32_t) llama_n_ubatch(ctx_dft));
+
         mask_token_id = llama_vocab_mask(llama_model_get_vocab(model_dft));
         if (mask_token_id < 0) {
             char buf[32] = {};
@@ -2791,25 +2798,17 @@ common_speculative_init_result::common_speculative_init_result(
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
     uint32_t dflash_rs_seq = 0;
+    uint32_t min_dflash_ctx_ubatch = 0;
 
     if (spec_mtp) {
         cparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
     }
     if (spec_dflash) {
-        // The DFlash fusion path may use tiny injection chunks via LLAMA_DFLASH_UBATCH,
-        // while the non-causal draft noise block only needs n_max + 1 slots.
-        // Keeping this small avoids unnecessary ROCm scheduler churn in the draft context.
-        const uint32_t min_dflash_ctx_ubatch = std::max<uint32_t>(2, (uint32_t) std::max(0, params.speculative.draft.n_max) + 1);
+        // The recurrent state only needs the non-causal draft noise block.
+        // The larger DFlash2 encoder ubatch is selected after model metadata is
+        // available and does not increase this per-sequence state allocation.
+        min_dflash_ctx_ubatch = std::max<uint32_t>(2, (uint32_t) std::max(0, params.speculative.draft.n_max) + 1);
         dflash_rs_seq = min_dflash_ctx_ubatch;
-
-        uint32_t dflash_ctx_ubatch = min_dflash_ctx_ubatch;
-        if (const char * env = std::getenv("LLAMA_DFLASH_CTX_UBATCH")) {
-            dflash_ctx_ubatch = std::max<uint32_t>(min_dflash_ctx_ubatch, (uint32_t) std::max(1, std::atoi(env)));
-        }
-
-        cparams.n_ubatch = std::min<uint32_t>(cparams.n_batch, dflash_ctx_ubatch);
-        LOG_INF("%s: DFlash draft context n_ubatch=%u n_rs_seq=%u (target n_ubatch=%d, min draft block=%u, override with LLAMA_DFLASH_CTX_UBATCH)\n",
-                __func__, cparams.n_ubatch, dflash_rs_seq, params.n_ubatch, min_dflash_ctx_ubatch);
     }
 
     // note: for small models maybe we can set this to the maximum possible draft from all speculative types
@@ -2829,6 +2828,28 @@ common_speculative_init_result::common_speculative_init_result(
         }
 
         pimpl->model.reset(model_dft);
+
+        if (spec_dflash) {
+            char selector_buf[32] = {};
+            const bool is_dflash2 =
+                llama_model_meta_val_str(model_dft, "dflash.selector_top_k", selector_buf, sizeof(selector_buf)) >= 0 &&
+                std::atoi(selector_buf) > 0;
+
+            const uint32_t auto_ubatch = is_dflash2 ?
+                std::max<uint32_t>(min_dflash_ctx_ubatch,
+                    std::min<uint32_t>(128, (uint32_t) std::max(1, params.n_ubatch))) :
+                min_dflash_ctx_ubatch;
+            uint32_t dflash_ctx_ubatch = auto_ubatch;
+            if (const char * env = std::getenv("LLAMA_DFLASH_CTX_UBATCH")) {
+                dflash_ctx_ubatch = std::max<uint32_t>(
+                    min_dflash_ctx_ubatch, (uint32_t) std::max(1, std::atoi(env)));
+            }
+
+            cparams.n_ubatch = std::min<uint32_t>(cparams.n_batch, dflash_ctx_ubatch);
+            LOG_INF("%s: DFlash draft context n_ubatch=%u n_rs_seq=%u (DFlash2=%d, auto=%u, target n_ubatch=%d, min draft block=%u, override with LLAMA_DFLASH_CTX_UBATCH)\n",
+                    __func__, cparams.n_ubatch, dflash_rs_seq, is_dflash2 ? 1 : 0, auto_ubatch,
+                    params.n_ubatch, min_dflash_ctx_ubatch);
+        }
 
         llama_context * ctx_dft = llama_init_from_model(model_dft, cparams);
         if (ctx_dft == nullptr) {

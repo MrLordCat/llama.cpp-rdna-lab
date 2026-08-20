@@ -884,6 +884,7 @@ def run_task(
     response: dict[str, Any] | None = None
     caught_exc: BaseException | None = None
     content = ""
+    finish_reason = ""
     request_timeout = float(args.request_timeout)
     if args.task_hard_timeout > 0:
         request_timeout = min(request_timeout, float(args.task_hard_timeout))
@@ -900,8 +901,10 @@ def run_task(
         progress_thread.start()
     try:
         response = http_json("POST", base_url + "/v1/chat/completions", payload, timeout=request_timeout)
-        message = response["choices"][0].get("message", {})
+        choice = response["choices"][0]
+        message = choice.get("message", {})
         content = message.get("content") or message.get("reasoning_content") or ""
+        finish_reason = str(choice.get("finish_reason") or "")
     except Exception as exc:  # noqa: BLE001 - benchmark records failures as rows
         caught_exc = exc
         error = repr(exc)
@@ -946,7 +949,7 @@ def run_task(
     if isinstance(completion_tokens, int) and wall_s > 0:
         completion_tps = completion_tokens / wall_s
 
-    return {
+    result = {
         "label": args.label,
         "task_id": task["id"],
         "title": task["title"],
@@ -956,12 +959,17 @@ def run_task(
         "total_tokens": total_tokens,
         "completion_tps_wall": round(completion_tps, 4) if completion_tps is not None else None,
         "response_chars": len(content),
+        "response_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "finish_reason": finish_reason,
         "error": error,
         "hard_timeout": hard_timeout,
         "terminated_server": terminated_server,
         "timings": timings,
         "response_preview": content[:500],
     }
+    if args.include_response:
+        result["response_text"] = content
+    return result
 
 
 def write_results(
@@ -985,7 +993,8 @@ def write_results(
     fieldnames = [
         "label", "run", "task_id", "title", "wall_s", "prompt_tokens",
         "completion_tokens", "total_tokens", "completion_tps_wall",
-        "response_chars", "error", "hard_timeout", "terminated_server",
+        "response_chars", "response_sha256", "finish_reason", "error",
+        "hard_timeout", "terminated_server",
     ]
     if artifact_mode == "full":
         with csv_path.open("w", encoding="utf-8", newline="") as f:
@@ -2339,6 +2348,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--build-id", default="", help="build registry ID linked to this benchmark run")
     parser.add_argument("--artifact-mode", choices=["full", "unified"], default="full",
                         help="artifact mode: full writes per-run CSV/JSONL, unified writes only history")
+    parser.add_argument(
+        "--include-response",
+        action="store_true",
+        help="store the complete generated response in JSONL artifacts (off by default)",
+    )
     parser.add_argument("--history-version", default="v1",
                         help="history namespace/version, e.g. v1 (default), v2 -> BENCH_HISTORY_V2.csv/.md")
     parser.add_argument("--cleanup-legacy-artifacts", action="store_true",
