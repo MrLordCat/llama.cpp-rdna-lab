@@ -47,7 +47,14 @@ struct rpc_tensor {
     uint64_t data;
     char name[GGML_MAX_NAME];
 
-    char padding[4];
+    uint8_t rpc_flags;
+    char padding[3];
+};
+
+enum {
+    // Single-sequence causal attention mask: the server regenerates it locally
+    // (ggml flash-attn with mask == NULL is causal), so data is never transmitted.
+    GGML_RPC_TENSOR_FLAG_CAUSAL_MASK = 1 << 0,
 };
 
 static_assert(sizeof(rpc_tensor) % 8 == 0, "rpc_tensor size must be multiple of 8");
@@ -456,9 +463,15 @@ static rpc_tensor serialize_tensor(const ggml_tensor * tensor) {
 
     // Avoid sending uninitialized data over the wire
     memset(result.name, 0, sizeof(result.name));
-    memset(result.padding, 0, sizeof(result.padding));
+    memset(&result.rpc_flags, 0, sizeof(result.rpc_flags) + sizeof(result.padding));
 
     snprintf(result.name, GGML_MAX_NAME, "%s", tensor->name);
+
+    // Single-sequence causal attention masks are regenerated on the server
+    // (n_kv x n_tokens x 2 bytes per batch is never transmitted).
+    if (strcmp(result.name, "attn_inp_kq_mask") == 0) {
+        result.rpc_flags |= GGML_RPC_TENSOR_FLAG_CAUSAL_MASK;
+    }
     return result;
 }
 
@@ -482,6 +495,13 @@ static enum ggml_status ggml_backend_rpc_buffer_init_tensor(ggml_backend_buffer_
 static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)buffer->context;
     rpc_tensor rpc_tensor = serialize_tensor(tensor);
+    if (RPC_DEBUG) {
+        fprintf(stderr, "[rpc-client] tensor '%s' size=%zu\n", tensor->name, size);
+    }
+    if (rpc_tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_CAUSAL_MASK) {
+        // causal mask is regenerated on the server; skip the transfer entirely
+        return;
+    }
     if (size > HASH_THRESHOLD) {
         rpc_msg_set_tensor_hash_req request;
         request.tensor = rpc_tensor;
@@ -1317,6 +1337,18 @@ ggml_tensor * rpc_server::create_node(uint64_t id,
                 // Must return nullptr to signal failure up the call stack
                 return nullptr;
             }
+        }
+    }
+
+    // Causal attention masks (single-seq prefill/decode) are regenerated on the
+    // server: substitute NULL so ggml_flash_attn_ext uses the causal path.
+    if (result->op == GGML_OP_FLASH_ATTN_EXT && result->src[3] != nullptr) {
+        const char * mask_name = result->src[3]->name;
+        // llama-graph casts the F32 mask to F16 before flash-attn ("<name> (copy)")
+        const bool causal_mask = strcmp(mask_name, "attn_inp_kq_mask") == 0 ||
+                                 strcmp(mask_name, "attn_inp_kq_mask (copy)") == 0;
+        if (causal_mask) {
+            result->src[3] = nullptr;
         }
     }
 
