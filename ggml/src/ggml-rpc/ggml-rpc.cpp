@@ -428,6 +428,25 @@ static bool ggml_backend_buffer_is_rpc(ggml_backend_buffer_t buffer) {
     return buffer->iface.free_buffer == ggml_backend_rpc_buffer_free_buffer;
 }
 
+// Single-sequence causal attention masks are regenerated on the server and
+// must never be transferred. The scheduler decorates cross-backend copy
+// tensors as "<backend>#<name>#<idx>", so match both the plain names and the
+// decorated form ("#attn_inp_kq_mask#N" / "#attn_inp_kq_mask (copy)#N").
+static bool is_causal_mask_name(const char * name) {
+    if (strcmp(name, "attn_inp_kq_mask") == 0 ||
+        strcmp(name, "attn_inp_kq_mask (copy)") == 0) {
+        return true;
+    }
+    const char * p = strstr(name, "#attn_inp_kq_mask");
+    if (p == nullptr) {
+        return false;
+    }
+    p += strlen("#attn_inp_kq_mask");
+    // F32 mask: "#attn_inp_kq_mask#<idx>"; F16 cast: "#attn_inp_kq_mask (copy)#<idx>";
+    // multi-seq/SWA mask keeps the "_ms" suffix and is excluded.
+    return p[0] == '#' || p[0] == ' ';
+}
+
 static rpc_tensor serialize_tensor(const ggml_tensor * tensor) {
     rpc_tensor result;
     if (!tensor) {
@@ -469,7 +488,11 @@ static rpc_tensor serialize_tensor(const ggml_tensor * tensor) {
 
     // Single-sequence causal attention masks are regenerated on the server
     // (n_kv x n_tokens x 2 bytes per batch is never transmitted).
-    if (strcmp(result.name, "attn_inp_kq_mask") == 0) {
+    // The F16 cast of the mask ("(copy)") must be skipped as well: when the
+    // mask is pinned to a local backend, the scheduler copies the cast into
+    // the RPC buffer for the remote flash-attention split, and that copy is
+    // discarded on the server (FA src[3] is substituted with NULL).
+    if (is_causal_mask_name(result.name)) {
         result.rpc_flags |= GGML_RPC_TENSOR_FLAG_CAUSAL_MASK;
     }
     return result;
@@ -495,9 +518,7 @@ static enum ggml_status ggml_backend_rpc_buffer_init_tensor(ggml_backend_buffer_
 static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)buffer->context;
     rpc_tensor rpc_tensor = serialize_tensor(tensor);
-    if (RPC_DEBUG) {
-        fprintf(stderr, "[rpc-client] tensor '%s' size=%zu\n", tensor->name, size);
-    }
+    auto t0 = std::chrono::steady_clock::now();
     if (rpc_tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_CAUSAL_MASK) {
         // causal mask is regenerated on the server; skip the transfer entirely
         return;
@@ -523,6 +544,10 @@ static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggm
     memcpy(input.data() + sizeof(rpc_tensor) + sizeof(offset), data, size);
     bool status = send_rpc_cmd(ctx->sock, RPC_CMD_SET_TENSOR, input.data(), input.size());
     RPC_STATUS_ASSERT(status);
+    if (RPC_DEBUG) {
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        fprintf(stderr, "[rpc-client] tensor '%s' size=%zu time=%.2fms\n", tensor->name, size, ms);
+    }
 }
 
 static void ggml_backend_rpc_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
@@ -531,8 +556,13 @@ static void ggml_backend_rpc_buffer_get_tensor(ggml_backend_buffer_t buffer, con
     request.tensor = serialize_tensor(tensor);
     request.offset = offset;
     request.size = size;
+    auto t0 = std::chrono::steady_clock::now();
     bool status = send_rpc_cmd(ctx->sock, RPC_CMD_GET_TENSOR, &request, sizeof(request), data, size);
     RPC_STATUS_ASSERT(status);
+    if (RPC_DEBUG) {
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        fprintf(stderr, "[rpc-client] get_tensor '%s' size=%zu time=%.1fms\n", tensor->name, size, ms);
+    }
 }
 
 static bool ggml_backend_rpc_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * src, ggml_tensor * dst) {
@@ -738,6 +768,7 @@ static enum ggml_status ggml_backend_rpc_graph_compute(ggml_backend_t backend, g
     ggml_backend_rpc_context * rpc_ctx = (ggml_backend_rpc_context *)backend->context;
 
     GGML_ASSERT(cgraph->n_nodes > 0);
+    auto t0 = std::chrono::steady_clock::now();
     bool reuse = rpc_ctx->gc.is_cached(cgraph);
     if (reuse) {
         rpc_msg_graph_recompute_req request;
@@ -752,6 +783,10 @@ static enum ggml_status ggml_backend_rpc_graph_compute(ggml_backend_t backend, g
         auto sock = get_socket(rpc_ctx->endpoint);
         bool status = send_rpc_cmd(sock, RPC_CMD_GRAPH_COMPUTE, input.data(), input.size());
         RPC_STATUS_ASSERT(status);
+        if (RPC_DEBUG) {
+            double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            fprintf(stderr, "[rpc-client] graph_compute nodes=%zu ser=%zu time=%.1fms\n", cgraph->n_nodes, input.size(), ms);
+        }
     }
     return GGML_STATUS_SUCCESS;
 }
@@ -1342,12 +1377,12 @@ ggml_tensor * rpc_server::create_node(uint64_t id,
 
     // Causal attention masks (single-seq prefill/decode) are regenerated on the
     // server: substitute NULL so ggml_flash_attn_ext uses the causal path.
+    // The mask may be the F32 tensor, its F16 cast ("(copy)"), or a decorated
+    // scheduler copy ("<backend>#<name>#<idx>") when the cast is pinned to a
+    // local backend.
     if (result->op == GGML_OP_FLASH_ATTN_EXT && result->src[3] != nullptr) {
         const char * mask_name = result->src[3]->name;
-        // llama-graph casts the F32 mask to F16 before flash-attn ("<name> (copy)")
-        const bool causal_mask = strcmp(mask_name, "attn_inp_kq_mask") == 0 ||
-                                 strcmp(mask_name, "attn_inp_kq_mask (copy)") == 0;
-        if (causal_mask) {
+        if (is_causal_mask_name(mask_name)) {
             result->src[3] = nullptr;
         }
     }

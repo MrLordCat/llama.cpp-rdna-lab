@@ -1,6 +1,7 @@
 #include "llama-context.h"
 
 #include "ggml.h"
+#include "ggml-rpc.h"
 #include "llama-arch.h"
 #include "llama-impl.h"
 #include "llama-batch.h"
@@ -25,6 +26,33 @@ static llm_graph_type llama_ctx_type_to_graph_type(llama_context_type ctx_type) 
     }
 
     return LLM_GRAPH_TYPE_DECODER;
+}
+
+// RPC: pin the F16 cast of the single-sequence causal attention mask to the
+// first non-RPC backend. The RPC server regenerates causal masks internally
+// (FA src[3] = NULL), so the cast must not live on the RPC backend: the set is
+// skipped by name in the RPC buffer, and the get is avoided by locality. The
+// F32 mask itself must stay on host (llama_kv_cache::set_input_kq_mask asserts
+// a host buffer) and is filled locally.
+static void pin_causal_mask_to_local_backend(ggml_backend_sched_t sched, ggml_cgraph * gf) {
+    ggml_backend_t local = nullptr;
+    for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+        ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
+        if (!ggml_backend_is_rpc(backend)) {
+            local = backend;
+            break;
+        }
+    }
+    if (local == nullptr) {
+        return; // no local backend, keep the default placement
+    }
+
+    for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+        ggml_tensor * t = ggml_graph_node(gf, i);
+        if (strcmp(ggml_get_name(t), "attn_inp_kq_mask (copy)") == 0) {
+            ggml_backend_sched_set_tensor_backend(sched, t, local);
+        }
+    }
 }
 
 static uint32_t llama_env_u32_clamped(const char * name, uint32_t fallback, uint32_t min_value, uint32_t max_value) {
@@ -1929,6 +1957,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             return nullptr;
         }
 
+        pin_causal_mask_to_local_backend(sched.get(), gf);
+
         const int64_t t_alloc_start_us = trace_timing ? ggml_time_us() : 0;
         if (trace_dflash) {
             LLAMA_LOG_INFO("%s: DFlash graph rebuild: before alloc_graph\n", __func__);
@@ -3096,6 +3126,8 @@ ggml_cgraph * llama_context::graph_reserve(
     auto * gf = model.build_graph(gparams);
 
     this->n_outputs = save_n_outputs;
+
+    pin_causal_mask_to_local_backend(sched.get(), gf);
 
     // initialize scheduler with the specified graph
     if (split_only) {

@@ -99,6 +99,22 @@ static void ggml_vk_load_shaders(vk_device& device) {
         m_mmq_wg_denoms_k = { 128, 128, 1 };
         s_mmq_wg_denoms_k = { 32,  64,  1 };
 
+        // NV coopmat2 MMQ tile override for A/B tuning:
+        // GGML_VK_NV_MMQ_TILE=BLOCK,BM,BN,BK,enable_smaller
+        if (const char * nv_mmq_tile = getenv("GGML_VK_NV_MMQ_TILE")) {
+            uint32_t t[5] = { 0, 0, 0, 0, 0 };
+            if (sscanf(nv_mmq_tile, "%u,%u,%u,%u,%u", &t[0], &t[1], &t[2], &t[3], &t[4]) == 5 &&
+                t[0] >= 32 && t[1] >= 16 && t[2] >= 16 && (t[3] == 16 || t[3] == 32 || t[3] == 64 || t[3] == 128)) {
+                const std::vector<uint32_t> tile = { t[0], t[1], t[2], t[3], t[4] };
+                l_warptile_mmq = m_warptile_mmq = s_warptile_mmq = tile;
+                l_warptile_mmq_k = m_warptile_mmq_k = s_warptile_mmq_k = tile;
+                GGML_LOG_INFO("ggml_vulkan: NV coopmat2 MMQ tile override: BLOCK=%u BM=%u BN=%u BK=%u enable_smaller=%u\n",
+                               t[0], t[1], t[2], t[3], t[4]);
+            } else {
+                GGML_LOG_WARN("ggml_vulkan: invalid GGML_VK_NV_MMQ_TILE='%s', ignoring\n", nv_mmq_tile);
+            }
+        }
+
         // spec constants and tile sizes for quant matmul_id
         l_warptile_mmqid = { 256, 128, 128, 32, 1, device->subgroup_size };
         m_warptile_mmqid = { 256, 128, 64, 32, 0, device->subgroup_size };
