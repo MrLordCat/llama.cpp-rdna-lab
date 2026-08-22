@@ -7,6 +7,9 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-08-22 22:28:59 | cold-first | vulkan | q9-16k-split5050-b2-f16act-r1 | Qwen3.5-9B-Q5_K_M.gguf | 16384 | 8192/1024 | q8_0/q8_0 | none | 2.9375 | 2312.5050 | 40.4450 | 0 |
+| 2026-08-22 22:14:58 | cold-first | vulkan | q9-16k-split5050-b1-fapin-r1 | Qwen3.5-9B-Q5_K_M.gguf | 16384 | 8192/1024 | q8_0/q8_0 | none | 2.3979 | 1878.4200 | 34.7300 | 0 |
+| 2026-08-22 21:59:48 | cold-first | vulkan | q9-16k-split5050-vk1-rpc3080-r1 | Qwen3.5-9B-Q5_K_M.gguf | 16384 | 8192/1024 | q8_0/q8_0 | none | 0.6461 | 1125.8050 | 22.1650 | 0 |
 | 2026-08-22 21:47:23 | cold-first | vulkan | q9-16k-local3080-q5-r1 | Qwen3.5-9B-Q5_K_M.gguf | 16384 | 8192/1024 | q8_0/q8_0 | none | 0.7347 | - | - | 0 |
 | 2026-08-22 21:23:09 | cold-first | vulkan | q9-16k-local9070xt-q5-r1 | Qwen3.5-9B-Q5_K_M.gguf | 16384 | 8192/1024 | q8_0/q8_0 | none | 4.1149 | 3214.1150 | 70.6050 | 0 |
 | 2026-08-22 21:16:23 | cold-first | vulkan | q9-16k-rpc3080-q5-r1 | Qwen3.5-9B-Q5_K_M.gguf | 16384 | 8192/1024 | q8_0/q8_0 | none | 1.9925 | 1657.2850 | 27.7100 | 0 |
@@ -84,6 +87,3 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-08-16 14:58:16 | cold-first | vulkan | d105-p3-k16-r1 | Qwen3.6-27B-Q4_K16.gguf | 12288 | 512/128 | q4_0/q4_0 | none | 0.4197 | 213.6100 | 28.1100 | 0 |
 | 2026-08-16 14:50:15 | cold-first | vulkan | d105-split-trace-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | none | 1.5397 | 816.9150 | 29.8050 | 0 |
 | 2026-08-16 14:40:45 | cold-first | vulkan | d105-perf-clean-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | none | 1.3477 | 720.4550 | 22.8500 | 0 |
-| 2026-08-16 14:39:08 | cold-first | vulkan | d105-perf-trace-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | none | 1.3348 | 712.5400 | 22.8750 | 0 |
-| 2026-08-16 14:37:37 | cold-first | vulkan | d105-outdev-vk1-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | none | 2.6621 | 1476.1300 | 29.5350 | 0 |
-| 2026-08-16 14:37:02 | cold-first | vulkan | d105-mmvq-off-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | none | 2.6422 | 1468.5250 | 29.0600 | 0 |

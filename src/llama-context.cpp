@@ -34,7 +34,13 @@ static llm_graph_type llama_ctx_type_to_graph_type(llama_context_type ctx_type) 
 // skipped by name in the RPC buffer, and the get is avoided by locality. The
 // F32 mask itself must stay on host (llama_kv_cache::set_input_kq_mask asserts
 // a host buffer) and is filled locally.
-static void pin_causal_mask_to_local_backend(ggml_backend_sched_t sched, ggml_cgraph * gf) {
+//
+// Additionally, pin every FA node ("__fattn__-<il>") to the backend that owns
+// the layer's weights. Otherwise the mask pin above can pull the FA node (and
+// with it the per-token KV-cache reads) to the local backend via the scheduler
+// input-placement heuristic, which was measured to collapse decode throughput
+// (RPC-3080 16k 27B: 3.5 tok/s vs 22.9 baseline).
+static void pin_causal_mask_to_local_backend(ggml_backend_sched_t sched, ggml_cgraph * gf, const llama_model * model) {
     ggml_backend_t local = nullptr;
     for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
         ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
@@ -43,14 +49,33 @@ static void pin_causal_mask_to_local_backend(ggml_backend_sched_t sched, ggml_cg
             break;
         }
     }
-    if (local == nullptr) {
-        return; // no local backend, keep the default placement
-    }
 
     for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
         ggml_tensor * t = ggml_graph_node(gf, i);
-        if (strcmp(ggml_get_name(t), "attn_inp_kq_mask (copy)") == 0) {
-            ggml_backend_sched_set_tensor_backend(sched, t, local);
+        const char * name = ggml_get_name(t);
+        if (strcmp(name, "attn_inp_kq_mask (copy)") == 0) {
+            if (local != nullptr) {
+                ggml_backend_sched_set_tensor_backend(sched, t, local);
+            }
+        } else if (model != nullptr && strncmp(name, "__fattn__-", strlen("__fattn__-")) == 0) {
+            // pin the FA node to the backend that owns this layer's weights
+            const int il = atoi(name + strlen("__fattn__-"));
+            if (il >= 0 && il < (int) model->layers.size()) {
+                ggml_tensor * w = model->layers[il].attn_norm;
+                if (w == nullptr) {
+                    w = model->layers[il].wq;
+                }
+                if (w != nullptr && w->buffer != nullptr) {
+                    ggml_backend_buffer_type_t wbuft = ggml_backend_buffer_get_type(w->buffer);
+                    for (int b = 0; b < ggml_backend_sched_get_n_backends(sched); ++b) {
+                        ggml_backend_t backend = ggml_backend_sched_get_backend(sched, b);
+                        if (ggml_backend_get_default_buffer_type(backend) == wbuft) {
+                            ggml_backend_sched_set_tensor_backend(sched, t, backend);
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1957,7 +1982,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             return nullptr;
         }
 
-        pin_causal_mask_to_local_backend(sched.get(), gf);
+        pin_causal_mask_to_local_backend(sched.get(), gf, &model);
 
         const int64_t t_alloc_start_us = trace_timing ? ggml_time_us() : 0;
         if (trace_dflash) {
@@ -3127,7 +3152,7 @@ ggml_cgraph * llama_context::graph_reserve(
 
     this->n_outputs = save_n_outputs;
 
-    pin_causal_mask_to_local_backend(sched.get(), gf);
+    pin_causal_mask_to_local_backend(sched.get(), gf, &model);
 
     // initialize scheduler with the specified graph
     if (split_only) {

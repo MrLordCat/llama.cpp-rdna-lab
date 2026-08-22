@@ -55,6 +55,10 @@ enum {
     // Single-sequence causal attention mask: the server regenerates it locally
     // (ggml flash-attn with mask == NULL is causal), so data is never transmitted.
     GGML_RPC_TENSOR_FLAG_CAUSAL_MASK = 1 << 0,
+    // F32 activation tensors that cross the RPC boundary (layer-split output
+    // "l_out-<il>" and "result_output" logits): transmitted as F16 to halve
+    // the network traffic and converted back at the receiving end.
+    GGML_RPC_TENSOR_FLAG_ACT_F16 = 1 << 1,
 };
 
 static_assert(sizeof(rpc_tensor) % 8 == 0, "rpc_tensor size must be multiple of 8");
@@ -447,6 +451,13 @@ static bool is_causal_mask_name(const char * name) {
     return p[0] == '#' || p[0] == ' ';
 }
 
+// F32 activations that cross the RPC boundary are transmitted as F16. Match
+// the scheduler-decorated names of the layer-split output and the logits:
+// "RPC0[host]#l_out-16#0" and "result_output".
+static bool is_act_f16_name(const char * name) {
+    return strstr(name, "l_out-") != nullptr || strstr(name, "result_output") != nullptr;
+}
+
 static rpc_tensor serialize_tensor(const ggml_tensor * tensor) {
     rpc_tensor result;
     if (!tensor) {
@@ -495,6 +506,9 @@ static rpc_tensor serialize_tensor(const ggml_tensor * tensor) {
     if (is_causal_mask_name(result.name)) {
         result.rpc_flags |= GGML_RPC_TENSOR_FLAG_CAUSAL_MASK;
     }
+    if (result.type == GGML_TYPE_F32 && is_act_f16_name(result.name)) {
+        result.rpc_flags |= GGML_RPC_TENSOR_FLAG_ACT_F16;
+    }
     return result;
 }
 
@@ -523,7 +537,8 @@ static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggm
         // causal mask is regenerated on the server; skip the transfer entirely
         return;
     }
-    if (size > HASH_THRESHOLD) {
+    const bool act_f16 = (rpc_tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
+    if (size > HASH_THRESHOLD && !act_f16) {
         rpc_msg_set_tensor_hash_req request;
         request.tensor = rpc_tensor;
         request.offset = offset;
@@ -537,11 +552,21 @@ static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggm
         }
     }
     // input serialization format: | rpc_tensor | offset (8 bytes) | data (size bytes)
-    size_t input_size = sizeof(rpc_tensor) + sizeof(uint64_t) + size;
+    size_t data_size = size;
+    std::vector<uint8_t> tmp;
+    const void * data_ptr = data;
+    if (act_f16) {
+        // transmit F32 activations as F16 (halves the LAN traffic)
+        data_size = size / 2;
+        tmp.resize(data_size);
+        ggml_fp32_to_fp16_row((const float *) data, (ggml_fp16_t *) tmp.data(), (int64_t) size / sizeof(float));
+        data_ptr = tmp.data();
+    }
+    size_t input_size = sizeof(rpc_tensor) + sizeof(uint64_t) + data_size;
     std::vector<uint8_t> input(input_size, 0);
     memcpy(input.data(), &rpc_tensor, sizeof(rpc_tensor));
     memcpy(input.data() + sizeof(rpc_tensor), &offset, sizeof(offset));
-    memcpy(input.data() + sizeof(rpc_tensor) + sizeof(offset), data, size);
+    memcpy(input.data() + sizeof(rpc_tensor) + sizeof(offset), data_ptr, data_size);
     bool status = send_rpc_cmd(ctx->sock, RPC_CMD_SET_TENSOR, input.data(), input.size());
     RPC_STATUS_ASSERT(status);
     if (RPC_DEBUG) {
@@ -557,8 +582,21 @@ static void ggml_backend_rpc_buffer_get_tensor(ggml_backend_buffer_t buffer, con
     request.offset = offset;
     request.size = size;
     auto t0 = std::chrono::steady_clock::now();
-    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_GET_TENSOR, &request, sizeof(request), data, size);
+    const bool act_f16 = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
+    std::vector<uint8_t> tmp;
+    void * rsp_ptr = data;
+    size_t rsp_size = size;
+    if (act_f16) {
+        // server sends F32 activations as F16; convert back after receive
+        rsp_size = size / 2;
+        tmp.resize(rsp_size);
+        rsp_ptr = tmp.data();
+    }
+    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_GET_TENSOR, &request, sizeof(request), rsp_ptr, rsp_size);
     RPC_STATUS_ASSERT(status);
+    if (act_f16) {
+        ggml_fp16_to_fp32_row((const ggml_fp16_t *) rsp_ptr, (float *) data, (int64_t) size / sizeof(float));
+    }
     if (RPC_DEBUG) {
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         fprintf(stderr, "[rpc-client] get_tensor '%s' size=%zu time=%.1fms\n", tensor->name, size, ms);
@@ -1149,7 +1187,17 @@ bool rpc_server::set_tensor(const std::vector<uint8_t> & input) {
     }
 
     const void * data = input.data() + sizeof(rpc_tensor) + sizeof(offset);
-    if (cache_dir && size > HASH_THRESHOLD) {
+    const bool act_f16 = (in_tensor->rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
+    std::vector<uint8_t> f32_data;
+    size_t f32_size = size;
+    if (act_f16) {
+        // client sent the F32 activation as F16; convert back before storing
+        f32_size = size * 2;
+        f32_data.resize(f32_size);
+        ggml_fp16_to_fp32_row((const ggml_fp16_t *) data, (float *) f32_data.data(), (int64_t) size / sizeof(ggml_fp16_t));
+        data = f32_data.data();
+    }
+    if (cache_dir && size > HASH_THRESHOLD && !act_f16) {
         uint64_t hash = fnv_hash((const uint8_t*)data, size);
         char hash_str[17];
         snprintf(hash_str, sizeof(hash_str), "%016" PRIx64, hash);
@@ -1159,7 +1207,7 @@ bool rpc_server::set_tensor(const std::vector<uint8_t> & input) {
         ofs.write((const char *)data, size);
         GGML_LOG_INFO("[%s] saved to '%s'\n", __func__, cache_file.string().c_str());
     }
-    ggml_backend_tensor_set(tensor, data, offset, size);
+    ggml_backend_tensor_set(tensor, data, offset, f32_size);
     return true;
 }
 
@@ -1290,8 +1338,17 @@ bool rpc_server::get_tensor(const rpc_msg_get_tensor_req & request, std::vector<
         }
     }
 
-    response.resize(request.size, 0);
-    ggml_backend_tensor_get(tensor, response.data(), request.offset, request.size);
+    const bool act_f16 = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
+    if (act_f16) {
+        // send F32 activations as F16 (halves the LAN traffic)
+        std::vector<uint8_t> f32_buf(request.size, 0);
+        ggml_backend_tensor_get(tensor, f32_buf.data(), request.offset, request.size);
+        response.resize(request.size / 2, 0);
+        ggml_fp32_to_fp16_row((const float *) f32_buf.data(), (ggml_fp16_t *) response.data(), (int64_t) request.size / sizeof(float));
+    } else {
+        response.resize(request.size, 0);
+        ggml_backend_tensor_get(tensor, response.data(), request.offset, request.size);
+    }
     return true;
 }
 
