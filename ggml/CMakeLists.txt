@@ -190,6 +190,8 @@ set(GGML_BLAS_VENDOR ${GGML_BLAS_VENDOR_DEFAULT} CACHE STRING
                                             "ggml: BLAS library vendor")
 option(GGML_LLAMAFILE                       "ggml: use LLAMAFILE"                             ${GGML_LLAMAFILE_DEFAULT})
 
+option(GGML_RPC                             "ggml: use RPC"                                   OFF)
+
 option(GGML_HIP                             "ggml: use HIP"                                   OFF)
 option(GGML_HIP_FORCE_MMQ                   "ggml: force HIP MMQ kernels"                     OFF)
 option(GGML_HIP_FORCE_HIPBLAS               "ggml: force hipBLAS instead of MMQ kernels"      OFF)
@@ -277,6 +279,7 @@ set(GGML_PUBLIC_HEADERS
     # HIP currently shares the upstream CUDA-compatible public ABI.
     include/ggml-cuda.h
     include/ggml-opt.h
+    include/ggml-rpc.h
     include/ggml-vulkan.h
     include/gguf.h)
 
