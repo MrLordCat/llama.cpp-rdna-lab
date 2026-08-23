@@ -42,11 +42,15 @@ static llm_graph_type llama_ctx_type_to_graph_type(llama_context_type ctx_type) 
 // (RPC-3080 16k 27B: 3.5 tok/s vs 22.9 baseline).
 static void pin_causal_mask_to_local_backend(ggml_backend_sched_t sched, ggml_cgraph * gf, const llama_model * model) {
     ggml_backend_t local = nullptr;
+    ggml_backend_t host  = nullptr;
     for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
         ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
-        if (!ggml_backend_is_rpc(backend)) {
+        if (!ggml_backend_is_rpc(backend) && local == nullptr) {
             local = backend;
-            break;
+        }
+        if (ggml_backend_get_device(backend) != nullptr &&
+            ggml_backend_dev_type(ggml_backend_get_device(backend)) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+            host = backend;
         }
     }
 
@@ -56,6 +60,15 @@ static void pin_causal_mask_to_local_backend(ggml_backend_sched_t sched, ggml_cg
         if (strcmp(name, "attn_inp_kq_mask (copy)") == 0) {
             if (local != nullptr) {
                 ggml_backend_sched_set_tensor_backend(sched, t, local);
+            }
+        } else if (strncmp(name, "rs_s_copy", strlen("rs_s_copy")) == 0) {
+            // recurrent state-copy indices (s_copy and its " (view)" slices):
+            // llm_graph_input_rs::set_input asserts a host buffer, so pin to
+            // the CPU backend. Local GDN/SSM layers then read the indices
+            // locally instead of pulling 4 bytes from the RPC server each
+            // ubatch (which forced a server-side GPU sync, ~90 ms per ubatch).
+            if (host != nullptr) {
+                ggml_backend_sched_set_tensor_backend(sched, t, host);
             }
         } else if (model != nullptr && strncmp(name, "__fattn__-", strlen("__fattn__-")) == 0) {
             // pin the FA node to the backend that owns this layer's weights

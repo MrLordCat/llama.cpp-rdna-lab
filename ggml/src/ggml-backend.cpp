@@ -503,10 +503,18 @@ void ggml_backend_tensor_copy(const struct ggml_tensor * src, struct ggml_tensor
 #ifndef NDEBUG
         GGML_LOG_DEBUG("%s: warning: slow copy from %s to %s\n", __func__, ggml_backend_buffer_name(src->buffer), ggml_backend_buffer_name(dst->buffer));
 #endif // NDEBUG
+        const bool trace = getenv("GGML_SCHED_SPLIT_TIMING") != nullptr;
         size_t nbytes = ggml_nbytes(src);
         void * data = malloc(nbytes);
+        const int64_t t_get_us = trace ? ggml_time_us() : 0;
         ggml_backend_tensor_get(src, data, 0, nbytes);
+        const int64_t t_set_us = trace ? ggml_time_us() : 0;
         ggml_backend_tensor_set(dst, data, 0, nbytes);
+        if (trace) {
+            GGML_LOG_INFO("%s: slow copy %s -> %s bytes=%zu get=%.3f set=%.3f ms\n", __func__,
+                    ggml_backend_buffer_name(src->buffer), ggml_backend_buffer_name(dst->buffer),
+                    nbytes, (t_set_us - t_get_us) / 1000.0, (ggml_time_us() - t_set_us) / 1000.0);
+        }
         free(data);
     }
 }
@@ -1576,17 +1584,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
 
         // copy the input tensors to the split backend
         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+            const int64_t t_input_start_us = trace_split_timing ? ggml_time_us() : 0;
             ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, split->inputs[input_id]);
             struct ggml_tensor * input = split->inputs[input_id];
             struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, sched->cur_copy);
-
-            if (trace_split_timing) {
-                GGML_LOG_INFO(
-                    "%s: split input split=%d input=%d/%d name=%s bytes=%zu src=%s dst=%s flags=%d usage=%d\n",
-                    __func__, split_id + 1, input_id + 1, split->n_inputs, input->name,
-                    ggml_nbytes(input), ggml_backend_name(input_backend), ggml_backend_name(split_backend),
-                    input->flags, (int) ggml_backend_buffer_get_usage(input->buffer));
-            }
 
             if (input->flags & GGML_TENSOR_FLAG_INPUT) {
                 // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
@@ -1703,6 +1704,15 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     }
                 }
             }
+            if (trace_split_timing) {
+                GGML_LOG_INFO("%s: split input done split=%d input=%d/%d name=%s bytes=%zu src=%s dst=%s copy=%.3f ms\n",
+                        __func__, split_id + 1, input_id + 1, split->n_inputs, input->name,
+                        ggml_nbytes(input), ggml_backend_name(input_backend), ggml_backend_name(split_backend),
+                        (ggml_time_us() - t_input_start_us) / 1000.0);
+            }
+        }
+        if (trace_split_timing) {
+            GGML_LOG_INFO("%s: split inputs split=%d/%d backend=%s copy=%.3f ms\n", __func__, split_id + 1, sched->n_splits, ggml_backend_name(split_backend), (ggml_time_us() - t_copy_start_us) / 1000.0);
         }
         if (trace_split_timing) {
             t_copy_us = ggml_time_us() - t_copy_start_us;

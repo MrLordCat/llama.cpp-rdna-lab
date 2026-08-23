@@ -1,56 +1,65 @@
 # RPC / Nvidia-prefill: RESUME PLAYBOOK (handoff)
 
-Дата: 2026-08-22. Ветка: `rpc-vulkan`. Задача: ускорить prompt eval в RPC-схеме
-(Qwen3.8-27B Q4_K_M, 16k, клиент = 2×RX 9070 XT Vulkan, сервер = RTX 3080 по сети).
+Дата: 2026-08-23. Ветка: `rpc-vulkan`. Задача: ускорить prompt eval в RPC-схеме
+(Qwen3.8-27B Q4_K_M, 12k, клиент = 2×RX 9070 XT Vulkan, сервер = RTX 3080 по LAN).
 
-## Статус одним абзацем
+## Статус одним абзацем (2026-08-23, ЦЕЛЬ ДОСТИГНУТА)
 
-RPC-оффлоад работает (16k: 540-571 ptps, decode 23-25 tok/s; 160k decode 25.8 tok/s).
-Prompt eval медленный НЕ из-за слабого compute 3080 (q4_K MMQ = 76 TFLOPS FP16-экв,
-~64% пика FP16 tensor, FA cm2 = 62), а из-за суммы: локальная часть (~0.65 с/батч)
-+ сеть (~0.45 с: F32-активации 20МБ туда + 20МБ обратно + МАСКА обратно 2×(19→167 мс))
-+ накладные протокола. Последняя правка B3 (убрать маску из FA, src[3]=NULL)
-СЛОМАЛА клиента: ассерт при старте в RPC-режиме. Локализовать → заменить B3 на
-вариант C2 (маска остаётся в графе, но назначается на локальный бэкенд).
+RPC 3-GPU 12K (Vulkan1,Vulkan0,RPC0→3080): **1314 ptps / 23.6 t/s** (r14-final,
+чистый прогон) при цели ≥1277 ptps / ≥21.7 t/s (80% соло 1596.8/27.1). PPL
+4.0148 = эталон (4.017-4.021). Три рычага дали 839 → 1314 ptps (+57%):
 
-## Текущее сломанное состояние (первое, что чинить)
+1. **Кэш alloc_size на RPC-клиенте** (ggml-rpc.cpp `g_rpc_alloc_size_cache`,
+   ключ = endpoint + type/ne/nb/op/op_params/view_src, srcs НЕ включать — иначе
+   FA kv-view растёт с n_past и кэш не попадает): alloc 537→1.3 мс/убатч
+   (было: ~1200 round-trip GET_ALLOC_SIZE на сервер при каждом reserve —
+   маска растёт каждый убатч → пересборка графа → переreserve).
+2. **SO_SNDBUF 16MB на клиентском сокете** (transport.cpp `set_large_send_buf`):
+   убрал блокировку 88 мс/убатч (rs_s_copy set ждал дренажа 10.5 МБ l_out-43
+   в 1 GbE-буфере); дренаж теперь перекрывается локальным compute следующего
+   убатча.
+3. **-ts 0.9,0.6,1.5** (слои: VK1 0-19, VK0 20-32, RPC0 33-64=32 слоя на 3080,
+   8.9/10 ГБ VRAM): дисплейная VK0 на 40% медленнее VK1 (15.9 vs 11.4 мс/слой
+   prefill) — убрали с критического пути, сервер вне пути (его compute
+   перекрывается клиентом).
 
-```
-src/llama-graph.cpp  — B3-правка в build_attn_mha: для имён "attn_inp_kq_mask" и
-  "attn_inp_kq_mask (copy)" передаёт kq_mask=nullptr в ggml_flash_attn_ext.
-  РЕЗУЛЬТАТ: llama-server в RPC-режиме падает при старте:
-  ggml/src/ggml-backend.cpp:186: GGML_ASSERT(buffer) failed
-  (exit code 3221226505 = 0xC0000409). Без --rpc НЕ падает (проверено loopback).
-```
+Диагностика: `LLAMA_UBATCH_TIMING=1` (process_ubatch: build/alloc/inputs/
+compute_call) + `GGML_SCHED_SPLIT_TIMING=1` (split-копии; копии l_out делают
+sync src-бэкенда = ожидание GPU предыдущего сплита — это и есть "скрытое"
+GPU-время: compute=submit, compute_sync=реальное GPU-время).
+`GGML_RPC_DEBUG=1` slow-copy get/set: копия VK0→RPC0 = 4 мс get + 13 мс set —
+копии НЕ горлышко; горлышко = vkQueueWaitIdle в copy-фазе следующего сплита.
 
-Механика ассерта: в `ggml_backend_sched` цикл по split->inputs вызывает
-`ggml_backend_buffer_get_usage(input->buffer)` (ggml-backend.cpp:1588 и 1610) для
-тензора с NULL-буфером. Гипотеза: после B3 маска/каст `(copy)` не попадают в
-граф (не аллоцируются), но остаются src какой-то ноды в сплите (потребитель
-вне build_attn_mha: возможно, GDN-код qwen35 или MTP-граф берёт get_kq_mask()).
-`GGML_SCHED_SPLIT_TIMING=1` НЕ помогает: fprintf в :1588 вычисляет get_usage
-в аргументах ДО печати → ассерт раньше вывода.
+## Карта тёплого убатча (r12, ts 0.9,0.7,1.4, 1024 ток, ~700 мс/убатч)
 
-Шаг 1 (диагностика): в ggml-backend.cpp перед :1588 (в цикле по split->inputs,
-под `trace_split_timing` или безусловно) добавить:
-```cpp
-fprintf(stderr, "[split-input] name='%s' buffer=%s flags=%d\n",
-        input->name, input->buffer ? "OK" : "NULL", input->flags);
-```
-Пересобрать ggml+llama-server, воспроизвести (см. команды ниже), увидеть имя.
+VK1 GPU ~240 мс (20 слоёв, асинхронный submit 56 мс, ожидание в copy-фазе
+split3 l_out-19) + staged-копия l_out-19 20 МБ ~20 мс + VK0 GPU ~240 мс
+(16 слоёв, ожидание в split4 copy l_out-35) + readback 4 мс + F16 13 мс
+(send в буфер, не блокирует) + финальный get result_output 350-440 мс
+(первый decode убатч) + хвостовой убатч (другая форма → разовый alloc ~517 мс).
 
-Шаг 2 (фикс, вариант C2 — приоритетный): откатить B3 (вернуть kq_mask в FA),
-вместо этого после построения графа (llama-context.cpp, место reserve) для
-тензоров с именами "attn_inp_kq_mask" и "attn_inp_kq_mask (copy)" вызвать
-`ggml_backend_sched_set_tensor_backend` на первый НЕ-RPC бэкенд (Vulkan1/Vulkan0).
-Тогда: fill_mask+cast вычисляются локально; на RPC0 маска не живёт; в сеть не
-идёт ни set (клиентский serialize_tensor уже пропускает CAUSAL_MASK-имена),
-ни get (маска не на RPC0). Сервер продолжает генерировать маску сам
-(fill_mask в его графе, src[3]=NULL в FA — уже работает, проверено).
-Ожидание: 16k prefill 540 → ~600-650 ptps (это убирает 2×(19→167) мс/батч
-и на 49k/160k даст кратно больше — маска обратно была n_kv×1024×4Б×2 копии).
+## Что НЕ трогать / уроки
 
-## Разложение prefill-батча 1.9 с (измерено, GGML_RPC_DEBUG=1, 16k, ubatch 1024)
+- `GGML_RPC_ENABLE_MASK_NULL` СЛОМАН (ppl-регрессия): NULL-маска = full
+  attention в локальном FA. Не включать.
+- Правки gui/*.py и docs/research/dflash/*.md — чужие, не трогать.
+- rpc-server на 3080 = сборка битпак-маски (клиентские изменения libllama
+  серверу не нужны; transport/alloc-cache — клиентские). Деплой на 3080 нужен
+  только при изменении ggml-rpc.cpp/server: stop task WinRM, scp rpc-server.exe
+  Chriswork@192.168.1.60:C:/rpc-3080/, start, Test-NetConnection :50052.
+- Ветка rpc-vulkan: 3080 = Vulkan0 10 ГБ (32 слоя = ~8.9 ГБ — потолок;
+  для 160k KV серверные слои уменьшать).
+
+## Открытые идеи (не тестировались)
+
+- Skip output-слоя сервера на промежуточных убатчах (флаг в GRAPH_COMPUTE;
+  серверное время и так вне критического пути — выгода малая).
+- Ping-pong VK1(N+1)||VK0(N): текущий sched сериализует GPU внутри убатча
+  (copy-фаза sync'ит src), но VK1(N+1) уже перекрывается с VK0(N) через
+  асинхронный submit; дальше — sub-ubatch 512 (VK1(h2)||VK0(h1)).
+- F8 l_out (10.5→5.2 МБ): −10-45 мс/убатч, нужна ppl-валидация.
+
+## Разложение prefill-батча 1.9 с (2026-08-22, 16k, ubatch 1024 — УСТАРЕЛО)
 
 | Фаза | мс | Комментарий |
 |---|---:|---|

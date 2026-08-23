@@ -579,6 +579,20 @@ static bool set_no_delay(sockfd_t sockfd) {
     return ret == 0;
 }
 
+// RPC: enlarge the client send buffer so a full ubatch activation (l_out F16,
+// ~10.5 MB on the 12K lane) is accepted by the kernel without blocking the
+// caller. Without this the per-ubatch send drains at 1 GbE line rate inside
+// the scheduler copy phase (~90 ms serialized per ubatch); with a large
+// buffer the drain overlaps the next ubatch's local GPU compute.
+static bool set_large_send_buf(sockfd_t sockfd) {
+    int size = 16 * 1024 * 1024;
+    int ret = setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, (char *)&size, sizeof(int));
+    if (ret != 0) {
+        GGML_LOG_ERROR("Failed to set SO_SNDBUF\n");
+    }
+    return ret == 0;
+}
+
 static bool set_reuse_addr(sockfd_t sockfd) {
     int flag = 1;
     int ret = setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&flag, sizeof(int));
@@ -631,6 +645,10 @@ socket_ptr socket_t::connect(const char * host, int port) {
     }
     if (!set_no_delay(sockfd)) {
         GGML_LOG_ERROR("Failed to set TCP_NODELAY\n");
+        return nullptr;
+    }
+    if (!set_large_send_buf(sockfd)) {
+        GGML_LOG_ERROR("Failed to set SO_SNDBUF\n");
         return nullptr;
     }
     struct sockaddr_in addr;

@@ -19,6 +19,10 @@
 #include <algorithm>
 
 static const char * RPC_DEBUG = std::getenv("GGML_RPC_DEBUG");
+static const auto RPC_T0 = std::chrono::steady_clock::now();
+static double rpc_wall_ms() {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - RPC_T0).count();
+}
 
 #define LOG_DBG(...) \
     do { if (RPC_DEBUG) GGML_LOG_DEBUG(__VA_ARGS__); } while (0)
@@ -82,6 +86,9 @@ enum rpc_cmd {
     RPC_CMD_HELLO,
     RPC_CMD_DEVICE_COUNT,
     RPC_CMD_GRAPH_RECOMPUTE,
+    // Causal attention mask transmitted as 1 bit per element (0.0 vs -inf).
+    // Format: | rpc_tensor | offset (8) | n_elems (8) | bits ((n_elems+7)/8) |
+    RPC_CMD_SET_TENSOR_MASK,
     RPC_CMD_COUNT,
 };
 
@@ -529,6 +536,64 @@ static enum ggml_status ggml_backend_rpc_buffer_init_tensor(ggml_backend_buffer_
     return GGML_STATUS_SUCCESS;
 }
 
+// Bit-pack a causal attention mask (0.0 / -inf) for RPC_CMD_SET_TENSOR_MASK.
+// Returns false when the data contains values other than 0.0 and -inf (alibi
+// masks etc.); the caller then falls back to a plain F16/F32 transfer.
+static bool pack_causal_mask(const void * data, size_t n_elems, ggml_type type, std::vector<uint8_t> & bits) {
+    bits.resize((n_elems + 7) / 8, 0);
+    uint8_t * dst = bits.data();
+    if (type == GGML_TYPE_F16) {
+        const uint16_t * src = (const uint16_t *) data;
+        for (size_t i = 0; i < n_elems; ++i) {
+            uint16_t h = src[i];
+            if (h == 0x0000) {
+                // bit 0
+            } else if (h == 0xFC00) { // -inf in f16
+                dst[i >> 3] |= (uint8_t) (1u << (i & 7));
+            } else {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (type == GGML_TYPE_F32) {
+        const float * src = (const float *) data;
+        for (size_t i = 0; i < n_elems; ++i) {
+            float f = src[i];
+            if (f == 0.0f) {
+                // bit 0
+            } else if (f == -INFINITY) {
+                dst[i >> 3] |= (uint8_t) (1u << (i & 7));
+            } else {
+                return false;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+// Unpack a 1-bit causal mask into 0.0 / -inf values of the tensor type.
+static bool unpack_causal_mask(const std::vector<uint8_t> & bits, size_t n_elems, ggml_type type, std::vector<uint8_t> & out) {
+    const size_t elem_size = ggml_type_size(type);
+    if (elem_size != 2 && elem_size != 4) {
+        return false;
+    }
+    out.resize(n_elems * elem_size);
+    uint8_t * dst = out.data();
+    for (size_t i = 0; i < n_elems; ++i) {
+        uint8_t bit = (bits[i >> 3] >> (i & 7)) & 1;
+        if (elem_size == 2) {
+            uint16_t v = bit ? (uint16_t) 0xFC00 : (uint16_t) 0x0000;
+            memcpy(dst + i * 2, &v, 2);
+        } else {
+            uint32_t v = bit ? 0xFF800000u : 0u; // -inf / 0.0f
+            memcpy(dst + i * 4, &v, 4);
+        }
+    }
+    return true;
+}
+
 static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)buffer->context;
     rpc_tensor rpc_tensor = serialize_tensor(tensor);
@@ -542,6 +607,33 @@ static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggm
         return;
     }
     const bool act_f16 = (rpc_tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
+    if ((rpc_tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_CAUSAL_MASK) != 0) {
+        // Single-sequence causal masks are binary (0.0 / -inf): transmit as a
+        // bitmask instead of raw F16. Fall back to the plain transfer when the
+        // data is not binary (e.g. alibi masks).
+        const size_t elem_size = ggml_type_size(tensor->type);
+        if (offset % elem_size == 0 && size % elem_size == 0) {
+            std::vector<uint8_t> bits;
+            if (pack_causal_mask(data, size / elem_size, tensor->type, bits)) {
+                size_t input_size = sizeof(rpc_tensor) + sizeof(uint64_t) + sizeof(uint64_t) + bits.size();
+                std::vector<uint8_t> input(input_size, 0);
+                memcpy(input.data(), &rpc_tensor, sizeof(rpc_tensor));
+                memcpy(input.data() + sizeof(rpc_tensor), &offset, sizeof(offset));
+                uint64_t n_elems = size / elem_size;
+                memcpy(input.data() + sizeof(rpc_tensor) + sizeof(uint64_t), &n_elems, sizeof(n_elems));
+                memcpy(input.data() + sizeof(rpc_tensor) + 2 * sizeof(uint64_t), bits.data(), bits.size());
+                bool status = send_rpc_cmd(ctx->sock, RPC_CMD_SET_TENSOR_MASK, input.data(), input.size());
+                RPC_STATUS_ASSERT(status);
+                if (RPC_DEBUG) {
+                    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                    fprintf(stderr, "[rpc-client] mask '%s' size=%zu -> packed %zu bytes time=%.2fms t+=%.1fms\n",
+                            tensor->name, size, bits.size(), ms, rpc_wall_ms());
+                }
+                return;
+            }
+        }
+        // fall through to the plain transfer below
+    }
     if (size > HASH_THRESHOLD && !act_f16) {
         rpc_msg_set_tensor_hash_req request;
         request.tensor = rpc_tensor;
@@ -575,7 +667,7 @@ static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggm
     RPC_STATUS_ASSERT(status);
     if (RPC_DEBUG) {
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        fprintf(stderr, "[rpc-client] tensor '%s' size=%zu time=%.2fms\n", tensor->name, size, ms);
+        fprintf(stderr, "[rpc-client] tensor '%s' size=%zu time=%.2fms t+=%.1fms\n", tensor->name, size, ms, rpc_wall_ms());
     }
 }
 
@@ -699,6 +791,18 @@ static size_t ggml_backend_rpc_get_max_size(ggml_backend_buffer_type_t buft) {
     return buft_ctx->max_size;
 }
 
+// RPC: cache of server-reported alloc sizes, keyed by the endpoint plus a
+// deterministic fingerprint of the tensor layout (type/ne/nb/op/op_params).
+// The server-side size is a pure function of the tensor layout on the server
+// backend (e.g. Vulkan device block padding for quantized types), so a
+// hit is safe across graph rebuilds. Without this cache every
+// sched reserve/allocation round re-queries the server once per node
+// (quantized tensors, FLASH_ATTN_EXT, MUL_MAT_ID), which costs ~0.5 s per
+// prefill ubatch on the 12K RPC lane (measured 537 ms alloc in
+// process_ubatch).
+static std::mutex g_rpc_alloc_size_cache_mu;
+static std::unordered_map<uint64_t, size_t> g_rpc_alloc_size_cache;
+
 static size_t ggml_backend_rpc_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
     // should we query the remote server for the actual size
     bool rpc_get = false;
@@ -714,6 +818,37 @@ static size_t ggml_backend_rpc_buffer_type_get_alloc_size(ggml_backend_buffer_ty
 
     if (rpc_get) {
         ggml_backend_rpc_buffer_type_context * buft_ctx = (ggml_backend_rpc_buffer_type_context *)buft->context;
+
+        // fingerprint: endpoint + deterministic tensor layout fields only
+        // (no pointers - tensor instances are recreated on graph rebuilds)
+        // NOTE: srcs are intentionally NOT part of the key: the supported
+        // server backends (Vulkan, CPU) return a size that depends only on
+        // the tensor's own layout, and FA kv-cache view srcs grow with n_past
+        // every prefill ubatch, which would defeat the cache.
+        std::array<uint8_t, sizeof(uint64_t) + 1 + GGML_MAX_DIMS*2*sizeof(int64_t) + sizeof(int) + GGML_MAX_OP_PARAMS + 1> fp;
+        size_t fp_len = 0;
+        const uint64_t endpoint_hash = fnv_hash((const uint8_t *) buft_ctx->endpoint.c_str(), buft_ctx->endpoint.size());
+        memcpy(fp.data() + fp_len, &endpoint_hash, sizeof(endpoint_hash)); fp_len += sizeof(endpoint_hash);
+        fp[fp_len++] = (uint8_t) tensor->type;
+        for (uint32_t i = 0; i < GGML_MAX_DIMS; i++) {
+            memcpy(fp.data() + fp_len, &tensor->ne[i], sizeof(tensor->ne[i])); fp_len += sizeof(tensor->ne[i]);
+        }
+        for (uint32_t i = 0; i < GGML_MAX_DIMS; i++) {
+            memcpy(fp.data() + fp_len, &tensor->nb[i], sizeof(tensor->nb[i])); fp_len += sizeof(tensor->nb[i]);
+        }
+        memcpy(fp.data() + fp_len, &tensor->op, sizeof(tensor->op)); fp_len += sizeof(tensor->op);
+        memcpy(fp.data() + fp_len, tensor->op_params, sizeof(tensor->op_params)); fp_len += sizeof(tensor->op_params);
+        fp[fp_len++] = tensor->view_src != nullptr ? 1 : 0;
+        const uint64_t key = fnv_hash(fp.data(), fp_len);
+
+        {
+            std::lock_guard<std::mutex> lock(g_rpc_alloc_size_cache_mu);
+            auto it = g_rpc_alloc_size_cache.find(key);
+            if (it != g_rpc_alloc_size_cache.end()) {
+                return it->second;
+            }
+        }
+
         auto sock = get_socket(buft_ctx->endpoint);
 
         rpc_msg_get_alloc_size_req request = {
@@ -727,10 +862,14 @@ static size_t ggml_backend_rpc_buffer_type_get_alloc_size(ggml_backend_buffer_ty
             request.srcs[i] = serialize_tensor(tensor->src[i]);
         }
 
-        // TODO: cache the alloc responses to avoid extra RPC calls?
         rpc_msg_get_alloc_size_rsp response;
         bool status = send_rpc_cmd(sock, RPC_CMD_GET_ALLOC_SIZE, &request, sizeof(request), &response, sizeof(response));
         RPC_STATUS_ASSERT(status);
+
+        {
+            std::lock_guard<std::mutex> lock(g_rpc_alloc_size_cache_mu);
+            g_rpc_alloc_size_cache[key] = response.alloc_size;
+        }
 
         return response.alloc_size;
     }
@@ -827,7 +966,7 @@ static enum ggml_status ggml_backend_rpc_graph_compute(ggml_backend_t backend, g
         RPC_STATUS_ASSERT(status);
         if (RPC_DEBUG) {
             double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-            fprintf(stderr, "[rpc-client] graph_compute nodes=%zu ser=%zu time=%.1fms\n", cgraph->n_nodes, input.size(), ms);
+            fprintf(stderr, "[rpc-client] graph_compute nodes=%zu ser=%zu time=%.1fms t+=%.1fms\n", cgraph->n_nodes, input.size(), ms, rpc_wall_ms());
         }
     }
     return GGML_STATUS_SUCCESS;
@@ -946,6 +1085,7 @@ public:
     bool free_buffer(const rpc_msg_free_buffer_req & request);
     bool buffer_clear(const rpc_msg_buffer_clear_req & request);
     bool set_tensor(const std::vector<uint8_t> & input);
+    bool set_tensor_mask(const std::vector<uint8_t> & input);
     bool set_tensor_hash(const rpc_msg_set_tensor_hash_req & request, rpc_msg_set_tensor_hash_rsp & response);
     bool get_tensor(const rpc_msg_get_tensor_req & request, std::vector<uint8_t> & response);
     bool copy_tensor(const rpc_msg_copy_tensor_req & request, rpc_msg_copy_tensor_rsp & response);
@@ -1212,6 +1352,62 @@ bool rpc_server::set_tensor(const std::vector<uint8_t> & input) {
         GGML_LOG_INFO("[%s] saved to '%s'\n", __func__, cache_file.string().c_str());
     }
     ggml_backend_tensor_set(tensor, data, offset, f32_size);
+    return true;
+}
+
+bool rpc_server::set_tensor_mask(const std::vector<uint8_t> & input) {
+    // serialization format: | rpc_tensor | offset (8 bytes) | n_elems (8 bytes) | bits ((n_elems+7)/8) |
+    if (input.size() < sizeof(rpc_tensor) + 2 * sizeof(uint64_t)) {
+        return false;
+    }
+    const rpc_tensor * in_tensor = (const rpc_tensor *) input.data();
+    uint64_t offset;
+    memcpy(&offset, input.data() + sizeof(rpc_tensor), sizeof(offset));
+    uint64_t n_elems;
+    memcpy(&n_elems, input.data() + sizeof(rpc_tensor) + sizeof(uint64_t), sizeof(n_elems));
+    const size_t bits_size = input.size() - sizeof(rpc_tensor) - 2 * sizeof(uint64_t);
+    if (bits_size != (size_t) (n_elems + 7) / 8) {
+        return false;
+    }
+
+    struct ggml_init_params params {
+        /*.mem_size   =*/ ggml_tensor_overhead(),
+        /*.mem_buffer =*/ NULL,
+        /*.no_alloc   =*/ true,
+    };
+    ggml_context_ptr ctx_ptr { ggml_init(params) };
+    GGML_ASSERT(ctx_ptr != nullptr);
+    ggml_context * ctx = ctx_ptr.get();
+    ggml_tensor * tensor = deserialize_tensor(ctx, in_tensor);
+    if (tensor == nullptr || tensor->buffer == nullptr) {
+        GGML_LOG_ERROR("[%s] error deserializing tensor\n", __func__);
+        return false;
+    }
+
+    const size_t elem_size = ggml_type_size(tensor->type);
+    if (elem_size != 2 && elem_size != 4) {
+        GGML_LOG_ERROR("[%s] mask tensor type %s is not f16/f32\n", __func__, ggml_type_name(tensor->type));
+        return false;
+    }
+
+    // sanitize tensor->data
+    {
+        const size_t p0 = (size_t) ggml_backend_buffer_get_base(tensor->buffer);
+        const size_t p1 = p0 + ggml_backend_buffer_get_size(tensor->buffer);
+        const uint64_t size = n_elems * elem_size;
+        if (in_tensor->data + offset < p0 || in_tensor->data + offset >= p1 || size > (p1 - in_tensor->data - offset)) {
+            GGML_LOG_ERROR("[%s] mask tensor data region out of buffer bounds\n", __func__);
+            return false;
+        }
+    }
+
+    const uint8_t * bits = input.data() + sizeof(rpc_tensor) + 2 * sizeof(uint64_t);
+    std::vector<uint8_t> bits_vec(bits, bits + bits_size);
+    std::vector<uint8_t> out;
+    if (!unpack_causal_mask(bits_vec, n_elems, tensor->type, out)) {
+        return false;
+    }
+    ggml_backend_tensor_set(tensor, out.data(), offset, out.size());
     return true;
 }
 
@@ -1737,6 +1933,16 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
                     return;
                 }
                 if (!server.set_tensor(input)) {
+                    return;
+                }
+                break;
+            }
+            case RPC_CMD_SET_TENSOR_MASK: {
+                std::vector<uint8_t> input;
+                if (!recv_msg(sock, input)) {
+                    return;
+                }
+                if (!server.set_tensor_mask(input)) {
                     return;
                 }
                 break;

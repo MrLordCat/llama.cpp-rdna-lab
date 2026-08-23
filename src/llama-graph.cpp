@@ -2758,6 +2758,11 @@ static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
 
     inp->s_copy = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_rs);
     ggml_set_input(inp->s_copy);
+    // RPC: named so the client scheduler can pin it to a local backend
+    // (see pin_causal_mask_to_local_backend in llama-context.cpp); keeping the
+    // recurrent state-copy indices local avoids a per-ubatch get_tensor from
+    // the RPC server that forces a full server GPU sync (~90 ms measured).
+    ggml_set_name(inp->s_copy, "rs_s_copy");
 
     inp->s_copy_main  = ggml_view_1d(ctx0, inp->s_copy, n_seqs, 0);
     inp->s_copy_extra = ggml_view_1d(ctx0, inp->s_copy, n_rs - n_seqs, n_seqs * inp->s_copy->nb[0]);
