@@ -1,6 +1,10 @@
 # llama.cpp-rdna-lab instruction router
 
-Always read and follow `AGENTS.md` first.
+**This worktree (`D:\GitHub\llama.cpp-gui2`, branch `gui-2.0`) is the GUI 2.0
+rewrite. Read `GUI2.md` first — it overrides the checkout location and task
+scope described in `AGENTS.md`.**
+
+Then read and follow `AGENTS.md`.
 
 - For delegated, parallel, reviewed, or BYOK-model work, also read
   `AGENT_WORKFLOW.md`.

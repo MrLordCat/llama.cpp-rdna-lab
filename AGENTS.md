@@ -1,5 +1,10 @@
 # Agent Instructions
 
+> **Branch `gui-2.0` / worktree `D:\GitHub\llama.cpp-gui2`:** read `GUI2.md`
+> first. The canonical-root statement below applies to the performance lab in
+> `D:\GitHub\llama.cpp-with-GUI`, where another agent is working on branch
+> `rpc-vulkan`. Driver-safety, backend and worktree rules below still apply.
+
 ## Project identity
 
 This is `llama.cpp-rdna-lab`, a local fork for Windows and two AMD Radeon RX
