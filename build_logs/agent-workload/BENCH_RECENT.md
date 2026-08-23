@@ -7,6 +7,8 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-08-23 09:36:56 | cold-first | vulkan | q38-3gpu-49k-q8-none-r1 | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 8192/1024 | q8_0/q8_0 | none | 2.7438 | 770.4650 | 19.6950 | 0 |
+| 2026-08-23 09:33:47 | cold-first | vulkan | q38-3gpu-12k-q8-none-r1 | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | none | 6.4083 | 647.1750 | 19.5200 | 0 |
 | 2026-08-22 22:28:59 | cold-first | vulkan | q9-16k-split5050-b2-f16act-r1 | Qwen3.5-9B-Q5_K_M.gguf | 16384 | 8192/1024 | q8_0/q8_0 | none | 2.9375 | 2312.5050 | 40.4450 | 0 |
 | 2026-08-22 22:14:58 | cold-first | vulkan | q9-16k-split5050-b1-fapin-r1 | Qwen3.5-9B-Q5_K_M.gguf | 16384 | 8192/1024 | q8_0/q8_0 | none | 2.3979 | 1878.4200 | 34.7300 | 0 |
 | 2026-08-22 21:59:48 | cold-first | vulkan | q9-16k-split5050-vk1-rpc3080-r1 | Qwen3.5-9B-Q5_K_M.gguf | 16384 | 8192/1024 | q8_0/q8_0 | none | 0.6461 | 1125.8050 | 22.1650 | 0 |
@@ -85,5 +87,3 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-08-16 14:59:30 | cold-first | vulkan | d105-p4-mtp3-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | mtp | 2.7247 | 1453.2800 | 53.4350 | 0 |
 | 2026-08-16 14:58:59 | cold-first | vulkan | d105-p4-mtp2-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | mtp | 2.7394 | 1457.5450 | 54.0150 | 0 |
 | 2026-08-16 14:58:16 | cold-first | vulkan | d105-p3-k16-r1 | Qwen3.6-27B-Q4_K16.gguf | 12288 | 512/128 | q4_0/q4_0 | none | 0.4197 | 213.6100 | 28.1100 | 0 |
-| 2026-08-16 14:50:15 | cold-first | vulkan | d105-split-trace-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | none | 1.5397 | 816.9150 | 29.8050 | 0 |
-| 2026-08-16 14:40:45 | cold-first | vulkan | d105-perf-clean-r1 | Qwen3.6-27B-Q4_K_M.gguf | 12288 | 512/128 | q4_0/q4_0 | none | 1.3477 | 720.4550 | 22.8500 | 0 |

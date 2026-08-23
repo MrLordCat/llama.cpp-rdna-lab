@@ -533,8 +533,12 @@ static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggm
     ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)buffer->context;
     rpc_tensor rpc_tensor = serialize_tensor(tensor);
     auto t0 = std::chrono::steady_clock::now();
-    if (rpc_tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_CAUSAL_MASK) {
+    if ((rpc_tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_CAUSAL_MASK) &&
+        (getenv("GGML_RPC_ENABLE_MASK_NULL") != nullptr)) {
         // causal mask is regenerated on the server; skip the transfer entirely
+        // NOTE: disabled by default - the local Vulkan FA kernel applies NO
+        // causal masking when the mask tensor is NULL (MASK_ENABLE=0 means
+        // full attention), so a NULL mask silently breaks prefill quality.
         return;
     }
     const bool act_f16 = (rpc_tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
@@ -1437,7 +1441,8 @@ ggml_tensor * rpc_server::create_node(uint64_t id,
     // The mask may be the F32 tensor, its F16 cast ("(copy)"), or a decorated
     // scheduler copy ("<backend>#<name>#<idx>") when the cast is pinned to a
     // local backend.
-    if (result->op == GGML_OP_FLASH_ATTN_EXT && result->src[3] != nullptr) {
+    if (result->op == GGML_OP_FLASH_ATTN_EXT && result->src[3] != nullptr &&
+        (getenv("GGML_RPC_ENABLE_MASK_NULL") != nullptr)) {
         const char * mask_name = result->src[3]->name;
         if (is_causal_mask_name(mask_name)) {
             result->src[3] = nullptr;
