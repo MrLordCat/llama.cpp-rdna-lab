@@ -141,7 +141,7 @@ create_tensor) не срабатывает для head-only nextn (tn.bid == -1?
 | r33 без graph cache | 89/149 (0.597) | 36.9 | контроль |
 | r35+r36 ФИКС (кэш работает) | 89/149 (0.597) | 37.0 | **итог** |
 
-## 160K A/B: local dual против 3-GPU RPC (2026-08-25, r37-r39)
+## 160K A/B: local dual против 3-GPU RPC (2026-08-25, r37-r44)
 
 Одинаковый длинный лейн: Qwen3.8-27B Q4_K_M, `-c 163840`, prompt 94651
 токен, b8192/ub1024, KV f8 с последними 12 attention-слоями f16, MTP n=2.
@@ -157,6 +157,8 @@ decode/network эксперименты только при том же prompt, 
 |---|---:|---:|---:|---:|
 | r38 local dual, 94651 tok | **1213.88** | **35.50** | 74/104 (0.7115) | 81.83 s |
 | r39 + RTX 3080 RPC, 94651 tok | 816.94 | 21.00 | 74/104 (0.7115) | 122.17 s |
+| r40 + RTX 3080 RPC, spec=none | 809.32 | 16.91 | n/a | 124.76 s |
+| r41 local dual, spec=none | 187.26 | 22.11 | n/a | 511.46 s |
 
 3-GPU освободил VRAM: веса+KV без compute-буферов составили примерно
 9551/7804/7908 MiB на Vulkan1/Vulkan0/RPC0 против 11295/13968 MiB на двух
@@ -168,12 +170,45 @@ acceptance и текст совпадают с local dual. В этом изме�
 `-c 163840`, короткий prompt 8809) дал 1540.75/48.59 t/s и показывает
 отдельную цену длинного заполненного KV.
 
-**Статус исследования: OPEN.** Следующая цель — разложить decode-регрессию
-35.50 → 21.00 t/s на базовый RPC decode, MTP draft/verify, сетевые копии и
-server compute. Первый разделяющий A/B: соседний r39-compatible `spec=none`
-прогон; затем decode-only RPC trace с подсчётом байт/времени по tensor name,
-не меняя baseline split. Любое решение о принятии или отказе от RPC делает
-пользователь после этих измерений.
+Разделяющий r40 `spec=none` дал 16.91 t/s: MTP n=2 в r39 ускоряет RPC decode
+на 24.2%, а основное узкое место находится в базовом target RPC path. r41-r44
+ниже уточняют влияние VRAM residency, сетевых копий и server graph submit.
+
+r41 подтвердил локальный VRAM/residency cliff именно для `spec=none`: третий GPU
+в r40 поднял prompt 187.26 -> 809.32 t/s (4.32x), но снизил decode 22.11 ->
+16.91 t/s. Это не заменяет canonical local baseline r38: MTP windowed prefill в
+r38 не попал в тот же медленный режим и сохранил 1213.88 prompt t/s.
+
+### Decode RPC trace и output-head A/B (r42-r44)
+
+r42/r43 — диагностические прогоны `spec=none`, max 32, с `GGML_RPC_DEBUG=1`;
+trace почти не изменил r40 lane. В steady decode (31 RPC-вызов) получено:
+
+| Прогон | Prompt t/s | Decode t/s | Remote graph submit | Output readback |
+|---|---:|---:|---:|---:|
+| r42 default output на RPC0 | 804.16 | 16.78 | 11.11 ms avg | `result_output`, 0.497 MiB, 6.10 ms avg |
+| r43 `LLAMA_OUTPUT_DEVICE=Vulkan1` | 787.41 | 18.84 | 9.21 ms avg | `norm`, 20 KiB, 0.94 ms avg |
+
+Мелкие hidden/mask set-копии в r42 занимали только 0.06/0.11 ms. Основные
+явные RPC-центры decode — round-trip remote graph submit и синхронизирующий
+readback logits. Перенос output-head на Vulkan1 переместил примерно 1.0 GiB
+весов с RPC0 на Vulkan1, заменил 0.497 MiB/token logits на 20 KiB/token hidden
+state и дал +12.25% decode при -2.08% prompt в `spec=none`.
+
+r44 — чистый max-128 MTP n=2 A/B с тем же output-head placement: **512.06
+prompt / 25.19 decode t/s**, acceptance 74/104 (0.7115), wall 190.16 s. Относительно
+r39 это +19.9% decode, но -37.3% prompt. Следовательно, глобальный перенос
+output-head не включается по умолчанию: он подтверждает сетевую цену logits,
+однако конфликтует с MTP windowed prefill/target-output residency. Решение о
+принятии варианта остаётся за пользователем.
+
+**Статус исследования: OPEN.** Decode-регрессия 35.50 -> 21.00 t/s теперь
+локализована до target RPC path: r42 показывает около 11.1 ms remote graph
+submit и 6.1 ms logits readback на токен. Следующие кандидаты для измерения —
+phase-specific output placement (remote в PP, local в TG) без r44
+prompt-регрессии и снижение Vulkan server-submit overhead для 852-854-node
+decode graph. Любое решение о принятии или отказе от RPC и этих вариантов
+делает пользователь.
 
 ## КОМАНДЫ (ветка rpc-vulkan, лайв-лог обязателен — tee)
 

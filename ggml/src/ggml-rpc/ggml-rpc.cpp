@@ -1002,10 +1002,14 @@ static enum ggml_status ggml_backend_rpc_graph_compute(ggml_backend_t backend, g
         auto sock = get_socket(rpc_ctx->endpoint);
         bool status = send_rpc_cmd(sock, RPC_CMD_GRAPH_RECOMPUTE, &request, sizeof(request), &response, sizeof(response));
         RPC_STATUS_ASSERT(status);
+        const double recompute_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0).count();
         if (response.result) {
             if (RPC_DEBUG) {
-                fprintf(stderr, "[rpc-client] graph_recompute nodes=%zu hash=%016" PRIx64 " first='%s' op=%d src0='%s'\n",
+                fprintf(stderr, "[rpc-client] graph_recompute nodes=%d hash=%016" PRIx64
+                    " time=%.1fms t+=%.1fms first='%s' op=%d src0='%s'\n",
                         cgraph->n_nodes, request.hash,
+                    recompute_ms, rpc_wall_ms(),
                         cgraph->nodes[0] ? cgraph->nodes[0]->name : "-",
                         cgraph->nodes[0] ? (int) cgraph->nodes[0]->op : -1,
                         (cgraph->nodes[0] && cgraph->nodes[0]->src[0]) ? cgraph->nodes[0]->src[0]->name : "-");
