@@ -59,6 +59,137 @@ split3 l_out-19) + staged-копия l_out-19 20 МБ ~20 мс + VK0 GPU ~240 м
   асинхронный submit; дальше — sub-ubatch 512 (VK1(h2)||VK0(h1)).
 - F8 l_out (10.5→5.2 МБ): −10-45 мс/убатч, нужна ppl-валидация.
 
+---
+
+# MTP-DECODE НА RPC: ДИАГНОСТИКА (r15-r36, ЗАКРЫТО 2026-08-23)
+
+Дата: 2026-08-23. Вопрос пользователя: можно ли получить 40 t/s decode с MTP
+на RPC-лейне (сейчас spec=none 23.6 t/s).
+
+## РЕЗУЛЬТАТ (r36, loopback, фикс задеплоен)
+
+**MTP через RPC ПОЧИНЕН**: acceptance **0.4% → 59.7%** (89/149, r36), decode
+**7.9 → 37.0 t/s**, текст осмысленный (r25: "user user user..." ×120). Корень —
+не NVIDIA, не KV, не handoff, а **баг graph-recompute в RPC-протоколе**.
+
+## КОРЕНЬ БАГА (r34): RPC_CMD_GRAPH_RECOMPUTE без идентификации графа
+
+Сервер хранил ОДИН stored_graph на устройство. Клиентский graph_cache (по
+memcmp полной структуры ggml_tensor) — ПЕР-КОНТЕКСТ (ggml_backend_rpc_init
+создаёт новый backend с новым gc на каждый llama_context). В MTP на одном
+RPC0 живут ДВА контекста (target+дraft): клиентский кэш target-контекста
+попадает для verify-графа (nodes=2413) → шлёт RECOMPUTE → **сервер
+пересчитывает СВОЙ последний полный граф — а это драфт-граф (nodes=1/24/16/3),
+присланный между verify-вызовами** → verify-логиты = мусор ("user"), acceptance
+1.4%. spec=none не ломался (один контекст → рекомпуты подряд корректны).
+
+Доказательства:
+- r34-трейс: `graph_recompute nodes=2413` ×237 (клиент верит в кэш) при том,
+  что между verify-вызовами сервер получал полные драфт-графы (nodes=1 ×813,
+  24 ×267, 16 ×264 — они НЕ кэшируются: их входы leaf_* меняют remote_ptr).
+- r33: `GGML_RPC_NO_GRAPH_CACHE=1` → acc 0.597 / 36.9 t/s — чистый контроль.
+
+## ФИКС (ggml-rpc.cpp, собран и задеплоен в build-vulkan)
+
+1. **Клиент**: `graph_cache` хранит структурный hash графа
+   (`graph_structure_hash`: type/op/op_params/ne/nb/name нод + имена src; БЕЗ
+   указателей и data — иначе хеши клиента и сервера не совпадут).
+2. **Протокол**: `rpc_msg_graph_recompute_req` + `uint64_t hash`, ответ
+   `rpc_msg_graph_recompute_rsp { uint8_t result }` (сервер раньше не отвечал).
+3. **Сервер**: `stored_graphs[device]` → `unordered_map<hash, stored_graph>`
+   (лимит 16, при переполнении clear → клиент получает MISS и шлёт полный
+   граф — fallback работает, r35: 1 MISS за прогон). `graph_recompute` ищет
+   по hash; не нашёл → result=0 (клиент пересылает полный).
+4. Версия протокола НЕ поднята (форк собирает клиент+сервер вместе) — при
+   смешивании старого сервера с новым клиентом соединение сломается (старый
+   сервер не шлёт rsp).
+
+Проверено: r35 (debug): acc 0.597, 66 recompute hit + 1 MISS; r36 (чистый):
+acc 0.597, decode 37.0 t/s. Кэш verify-графа работает (экономит сериализацию
+~750 КБ/verify) — производительность не хуже полного отключения кэша.
+
+## ПРОВЕРЕННЫЕ ФАКТЫ (бенчи r15-r36, артефакты в build_logs/agent-workload/)
+
+| Факт | Значение |
+|---|---|
+| Модель имеет MTP | `nextn_predict_layers=1` в GGUF + head-only nextn (eh_proj/enorm/hnorm/shared_head_norm; блочных nextn_0.* НЕТ — это норма) |
+| Локальный MTP (без RPC, r16/r31) | **decode 34.9-47.6 t/s, acceptance 0.44 / 0.69** — работает |
+| RPC MTP (3080 r15-r23 / loopback r25-r30) | acceptance 0.4-3% ПРИ ЛЮБЫХ конфигах — сломан (протокол, не NVIDIA: r25 loopback AMD-сервер = 1.46%) |
+| spec=none через RPC (r32 loopback) | текст ПРАВИЛЬНЫЙ — target-граф через RPC корректен |
+| STORE/SETINPUT CHECK (r21/r23) | maxdiff=0 — h-копии (staging→h) корректны |
+| `-devd Vulkan1` (r28) | ИГНОРИРУЕТСЯ для MTP: контекст создаётся с main-девайсами (common/speculative.cpp:2722) |
+| `LLAMA_MTP_DEVICE_HANDOFF=0` (r29) | acc тот же 1.46% — handoff не причина |
+| `LLAMA_VK_MTP_NEXTN_MAIN_DEVICE=0` (r30) | acc тот же 1.46% — сплит графа не причина |
+| Драфт-граф через RPC (r27) | split на 5 кусков: norm-64×2 (сервер), eh_proj (клиент), attn/ffn (сервер, nodes=24/16), head (сервер, nodes=3) — ВСЁ численно корректно по составу; ломался только verify-рекомпут |
+| Веса nextn | enorm/hnorm/eh_proj на клиенте (Vulkan0), shared_head_norm/head на сервере (RPC0) — head = output.weight (shared_head_head.weight в GGUF НЕТ) |
+| Вход драфт-графа `mtp_h_input` | через RPC_CMD_COPY_TENSOR (серверный copy_tensor, не get/set) — корректно |
+
+## ПРИМЕЧАНИЕ (старая гипотеза)
+
+Ранняя гипотеза "1-нодный драфт-граф (nodes=1) считает неверно на NVIDIA"
+ОТВЕРГНУТА: nodes=1 — это только первый сплит (RMS_NORM mtp_h_input); весь
+драфт-граф = 1+1+24+16+3 нод. Пин nextn-весов на Vulkan1 (llama-model.cpp
+create_tensor) не срабатывает для head-only nextn (tn.bid == -1?) — но это
+НЕ причина бага (r30 подтвердил).
+
+## ЧИСТЫЕ ЧИСЛА (loopback, Vulkan1-сервер + Vulkan0,RPC0-клиент, 12k, n=4)
+
+| Прогон | acceptance | decode t/s | примечание |
+|---|---|---|---|
+| r25-r30 (кэш-баг) | 1.46% (7/479) | ~8 | мусорный текст |
+| r31 локальный без RPC | 0.44/0.69 | 40.15 | контроль |
+| r33 без graph cache | 89/149 (0.597) | 36.9 | контроль |
+| r35+r36 ФИКС (кэш работает) | 89/149 (0.597) | 37.0 | **итог** |
+
+## 160K A/B: local dual против 3-GPU RPC (2026-08-25, r37-r39)
+
+Одинаковый длинный лейн: Qwen3.8-27B Q4_K_M, `-c 163840`, prompt 94651
+токен, b8192/ub1024, KV f8 с последними 12 attention-слоями f16, MTP n=2.
+Local dual использовал `-dev Vulkan1,Vulkan0 -ts 1,1`; 3-GPU —
+`-dev Vulkan1,Vulkan0,RPC0 -ts 1,0.8,0.625` через 1 GbE.
+
+**Baseline-контракт с 2026-08-25:** r38 — canonical local-dual long-prompt
+baseline; r39 — canonical 3-GPU RPC long-prompt baseline. Сравнивать дальнейшие
+decode/network эксперименты только при том же prompt, KV, MTP depth, split и
+отсутствии фоновой GPU-нагрузки либо с отдельным явно записанным A/B.
+
+| Прогон | Prompt t/s | Decode t/s | Acceptance | Wall |
+|---|---:|---:|---:|---:|
+| r38 local dual, 94651 tok | **1213.88** | **35.50** | 74/104 (0.7115) | 81.83 s |
+| r39 + RTX 3080 RPC, 94651 tok | 816.94 | 21.00 | 74/104 (0.7115) | 122.17 s |
+
+3-GPU освободил VRAM: веса+KV без compute-буферов составили примерно
+9551/7804/7908 MiB на Vulkan1/Vulkan0/RPC0 против 11295/13968 MiB на двух
+локальных GPU. OOM и прежнего connection reset нет; hash-фикс корректен,
+acceptance и текст совпадают с local dual. В этом измерении 3-GPU медленнее на
+32.7% по prompt и на 40.8% по decode; вероятный фактор — цена RPC/1 GbE.
+Решение принять или отклонить 3-GPU подход не принято: оно остаётся за
+пользователем, включая выбор следующих split/network A/B. r37 (тот же
+`-c 163840`, короткий prompt 8809) дал 1540.75/48.59 t/s и показывает
+отдельную цену длинного заполненного KV.
+
+**Статус исследования: OPEN.** Следующая цель — разложить decode-регрессию
+35.50 → 21.00 t/s на базовый RPC decode, MTP draft/verify, сетевые копии и
+server compute. Первый разделяющий A/B: соседний r39-compatible `spec=none`
+прогон; затем decode-only RPC trace с подсчётом байт/времени по tensor name,
+не меняя baseline split. Любое решение о принятии или отказе от RPC делает
+пользователь после этих измерений.
+
+## КОМАНДЫ (ветка rpc-vulkan, лайв-лог обязателен — tee)
+
+Бенч: `python scripts/agent_workload_bench.py --server-bin build-vulkan/bin/llama-server.exe
+--model models/Qwen3.8-27B-Q4_K_M.gguf --label <name> --tasks quick --ctx-size 12288
+--batch-size 8192 --ubatch-size 1024 --max-tokens 128 --cache-type-k q8_0 --cache-type-v q8_0
+--flash-attn --no-warmup --server-seed 42 --real-context-mode repo-snapshot --real-context-chars 24576
+--server-extra "--rpc 192.168.1.60:50052 -fit off --cache-ram 0 --ctx-checkpoints 0
+-dev Vulkan1,Vulkan0,RPC0 -sm layer -ts 1,0.8,1.2 --spec-type draft-mtp --spec-draft-n-max 4" | tee log`
+
+Диагностика: `LLAMA_MTP_DEVICE_HANDOFF_TRACE=1` (staging alloc/set_input rows),
+`LLAMA_MTP_STORE_CHECK=1` (data compare), `GGML_RPC_DEBUG=1` (все RPC-операции,
+nodes=1 ×N = драфт-граф), `GGML_SCHED_SPLIT_TIMING=1`. Acceptance:
+`grep "draft acceptance" <label>.server.log` или timings.draft_n_accepted/draft_n
+в jsonl. Сборка: `export PATH="/c/Strawberry/c/bin:$PATH" && ninja -C build-vulkan llama-server`.
+
 ## Разложение prefill-батча 1.9 с (2026-08-22, 16k, ubatch 1024 — УСТАРЕЛО)
 
 | Фаза | мс | Комментарий |

@@ -183,6 +183,24 @@ void llm_graph_input_embd_h::set_input(const llama_ubatch * ubatch) {
             }
         }
         ggml_backend_tensor_copy_async(ubatch->embd_device_backend, backend_dst, &src, h);
+        if (getenv("LLAMA_MTP_STORE_CHECK")) {
+            static bool checked = false;
+            if (!checked) {
+                checked = true;
+                const int64_t nelem = (int64_t) n_tokens * h->ne[0];
+                std::vector<float> a(nelem), b(nelem);
+                ggml_backend_tensor_get(&src, a.data(), 0, nelem * sizeof(float));
+                ggml_backend_tensor_get(h, b.data(), 0, nelem * sizeof(float));
+                float maxdiff = 0.0f;
+                for (int64_t i = 0; i < nelem; i++) {
+                    float d = std::fabs(a[i] - b[i]);
+                    if (d > maxdiff) { maxdiff = d; }
+                }
+                LLAMA_LOG_INFO("%s: SETINPUT CHECK rows=%lld first=%u nelem=%lld maxdiff=%g src=%s dst=%s\n",
+                        __func__, (long long) n_tokens, ubatch->embd_device_row, (long long) nelem, maxdiff,
+                        ggml_backend_name(ubatch->embd_device_backend), ggml_backend_name(backend_dst));
+            }
+        }
     } else if (ubatch->embd) {
         GGML_ASSERT(n_embd == h->ne[0]);
 

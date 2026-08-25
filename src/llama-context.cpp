@@ -1440,7 +1440,34 @@ bool llama_context::store_nextn_device_output(
     }
 
     auto dst = nextn_tensor_row_view(nextn_device_output.tensor, first_row, n_rows);
+    if (getenv("LLAMA_MTP_DEVICE_HANDOFF_TRACE")) {
+        static int trace_count = 0;
+        if (trace_count++ < 16) {
+            LLAMA_LOG_INFO("%s: store rows=%u first=%u cap=%u src=%s dst=%s valid=%u\n",
+                    __func__, n_rows, first_row, nextn_device_output.rows_capacity,
+                    ggml_backend_name(backend), ggml_backend_name(nextn_device_output.backend),
+                    nextn_device_output.rows_valid);
+        }
+    }
     ggml_backend_tensor_copy_async(backend, nextn_device_output.backend, src, &dst);
+    if (getenv("LLAMA_MTP_STORE_CHECK")) {
+        static bool checked = false;
+        if (!checked) {
+            checked = true;
+            const int64_t nelem = (int64_t) n_rows * dst.ne[0];
+            std::vector<float> a(nelem), b(nelem);
+            ggml_backend_tensor_get(src, a.data(), 0, nelem * sizeof(float));
+            ggml_backend_tensor_get(&dst, b.data(), 0, nelem * sizeof(float));
+            float maxdiff = 0.0f;
+            for (int64_t i = 0; i < nelem; i++) {
+                float d = std::fabs(a[i] - b[i]);
+                if (d > maxdiff) { maxdiff = d; }
+            }
+            LLAMA_LOG_INFO("%s: STORE CHECK rows=%u first=%u nelem=%lld maxdiff=%g src=%s dst=%s\n",
+                    __func__, n_rows, first_row, (long long) nelem, maxdiff,
+                    ggml_backend_name(backend), ggml_backend_name(nextn_device_output.backend));
+        }
+    }
     nextn_device_output.rows_valid = std::max(nextn_device_output.rows_valid, first_row + n_rows);
     return true;
 }

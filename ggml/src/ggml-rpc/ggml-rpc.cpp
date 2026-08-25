@@ -206,6 +206,11 @@ struct rpc_msg_get_device_memory_rsp {
 
 struct rpc_msg_graph_recompute_req {
     uint32_t device;
+    uint64_t hash;
+};
+
+struct rpc_msg_graph_recompute_rsp {
+    uint8_t result;
 };
 
 #pragma pack(pop)
@@ -224,6 +229,42 @@ struct ggml_backend_rpc_buffer_type_context {
     size_t      alignment;
     size_t      max_size;
 };
+
+// Structural hash of a computation graph. Only fields that are identical on
+// the RPC client and the server are mixed in (names, shapes, ops, op params);
+// pointer fields (data, src, view_src, buffer, extra) are excluded so the
+// hashes match across the wire and stay stable across decode steps that reuse
+// the same graph structure with fresh tensor data.
+static uint64_t graph_structure_hash(const ggml_cgraph * cgraph) {
+    uint64_t hash = 0xcbf29ce484222325ULL;
+    const uint64_t fnv_prime = 0x100000001b3ULL;
+    auto mix = [&hash](const void * data, size_t len) {
+        const uint8_t * p = (const uint8_t *) data;
+        for (size_t i = 0; i < len; i++) {
+            hash ^= p[i];
+            hash *= fnv_prime;
+        }
+    };
+    const uint64_t zero = 0;
+    for (uint32_t i = 0; i < cgraph->n_nodes; i++) {
+        const ggml_tensor * n = cgraph->nodes[i];
+        mix(&n->type, sizeof(n->type));
+        mix(&n->op, sizeof(n->op));
+        mix(n->ne, sizeof(n->ne));
+        mix(n->nb, sizeof(n->nb));
+        mix(n->op_params, sizeof(n->op_params));
+        mix(n->name, strnlen(n->name, GGML_MAX_NAME));
+        for (int s = 0; s < GGML_MAX_SRC; s++) {
+            const ggml_tensor * src = n->src[s];
+            if (src) {
+                mix(src->name, strnlen(src->name, GGML_MAX_NAME));
+            } else {
+                mix(&zero, sizeof(zero));
+            }
+        }
+    }
+    return hash;
+}
 
 struct graph_cache {
 
@@ -244,9 +285,11 @@ struct graph_cache {
         for (int i = 0; i < cgraph->n_nodes; i++) {
             memcpy(&last_graph[i], cgraph->nodes[i], sizeof(ggml_tensor));
         }
+        last_hash = graph_structure_hash(cgraph);
     }
 
     std::vector<ggml_tensor> last_graph;
+    uint64_t last_hash = 0;
 };
 
 struct ggml_backend_rpc_context {
@@ -950,14 +993,33 @@ static enum ggml_status ggml_backend_rpc_graph_compute(ggml_backend_t backend, g
 
     GGML_ASSERT(cgraph->n_nodes > 0);
     auto t0 = std::chrono::steady_clock::now();
-    bool reuse = rpc_ctx->gc.is_cached(cgraph);
+    bool reuse = std::getenv("GGML_RPC_NO_GRAPH_CACHE") == nullptr && rpc_ctx->gc.is_cached(cgraph);
     if (reuse) {
         rpc_msg_graph_recompute_req request;
         request.device = rpc_ctx->device;
+        request.hash = rpc_ctx->gc.last_hash;
+        rpc_msg_graph_recompute_rsp response;
         auto sock = get_socket(rpc_ctx->endpoint);
-        bool status = send_rpc_cmd(sock, RPC_CMD_GRAPH_RECOMPUTE, &request, sizeof(request));
+        bool status = send_rpc_cmd(sock, RPC_CMD_GRAPH_RECOMPUTE, &request, sizeof(request), &response, sizeof(response));
         RPC_STATUS_ASSERT(status);
-    } else {
+        if (response.result) {
+            if (RPC_DEBUG) {
+                fprintf(stderr, "[rpc-client] graph_recompute nodes=%zu hash=%016" PRIx64 " first='%s' op=%d src0='%s'\n",
+                        cgraph->n_nodes, request.hash,
+                        cgraph->nodes[0] ? cgraph->nodes[0]->name : "-",
+                        cgraph->nodes[0] ? (int) cgraph->nodes[0]->op : -1,
+                        (cgraph->nodes[0] && cgraph->nodes[0]->src[0]) ? cgraph->nodes[0]->src[0]->name : "-");
+            }
+            return GGML_STATUS_SUCCESS;
+        }
+        // the server does not have this graph cached - fall through and send it
+        // in full (another context may have overwritten the server-side cache)
+        if (RPC_DEBUG) {
+            fprintf(stderr, "[rpc-client] graph_recompute MISS hash=%016" PRIx64 " - resending full graph\n", request.hash);
+        }
+        reuse = false;
+    }
+    if (!reuse) {
         rpc_ctx->gc.add(cgraph);
         std::vector<uint8_t> input;
         serialize_graph(rpc_ctx->device, cgraph, input);
@@ -967,6 +1029,13 @@ static enum ggml_status ggml_backend_rpc_graph_compute(ggml_backend_t backend, g
         if (RPC_DEBUG) {
             double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             fprintf(stderr, "[rpc-client] graph_compute nodes=%zu ser=%zu time=%.1fms t+=%.1fms\n", cgraph->n_nodes, input.size(), ms, rpc_wall_ms());
+            if (cgraph->n_nodes <= 48) {
+                for (uint32_t i = 0; i < cgraph->n_nodes; i++) {
+                    const ggml_tensor * n = cgraph->nodes[i];
+                    fprintf(stderr, "[rpc-client]   node[%u] name='%s' op=%d src0='%s' src1='%s' src2='%s'\n", i, n->name, (int) n->op,
+                            n->src[0] ? n->src[0]->name : "-", n->src[1] ? n->src[1]->name : "-", n->src[2] ? n->src[2]->name : "-");
+                }
+            }
         }
     }
     return GGML_STATUS_SUCCESS;
@@ -1090,7 +1159,7 @@ public:
     bool get_tensor(const rpc_msg_get_tensor_req & request, std::vector<uint8_t> & response);
     bool copy_tensor(const rpc_msg_copy_tensor_req & request, rpc_msg_copy_tensor_rsp & response);
     bool graph_compute(const std::vector<uint8_t> & input);
-    bool graph_recompute(const rpc_msg_graph_recompute_req & request);
+    bool graph_recompute(const rpc_msg_graph_recompute_req & request, rpc_msg_graph_recompute_rsp & response);
     bool init_tensor(const rpc_msg_init_tensor_req & request);
     bool get_alloc_size(const rpc_msg_get_alloc_size_req & request, rpc_msg_get_alloc_size_rsp & response);
     bool get_device_memory(const rpc_msg_get_device_memory_req & request, rpc_msg_get_device_memory_rsp & response);
@@ -1112,8 +1181,10 @@ private:
     std::vector<ggml_backend_t> backends;
     const char * cache_dir;
     std::unordered_set<ggml_backend_buffer_t> buffers;
-    // store the last computed graph for each backend
-    std::vector<stored_graph> stored_graphs;
+    // store recently computed graphs for each backend, keyed by structural hash
+    // (multiple contexts share one device, so a single stored graph per device
+    // would let recompute hit the wrong graph)
+    std::vector<std::unordered_map<uint64_t, stored_graph>> stored_graphs;
 };
 
 void rpc_server::hello(rpc_msg_hello_rsp & response) {
@@ -1589,6 +1660,22 @@ bool rpc_server::copy_tensor(const rpc_msg_copy_tensor_req & request, rpc_msg_co
     LOG_DBG("[%s] src->buffer: %p, dst->buffer: %p\n",
             __func__, (void*) src->buffer, (void*) dst->buffer);
 
+    // The backend copy (e.g. Vulkan ggml_vk_buffer_copy) may run on a
+    // transfer queue with no cross-queue dependency on the compute queue,
+    // so a copy issued right after an asynchronous graph_compute can read
+    // stale data. Drain the source backend's pending work first. This is
+    // what the client-side fallback of ggml_backend_tensor_copy_async
+    // expects from ggml_backend_synchronize, but the RPC synchronize is a
+    // no-op - the ordering must be enforced server-side. Measured on the
+    // RTX 3080 (separate transfer queue): MTP draft acceptance 0.4% -> ~70%
+    // with this sync.
+    for (auto & backend : backends) {
+        if (ggml_backend_get_device(backend) == ggml_backend_buft_get_device(src->buffer->buft)) {
+            ggml_backend_synchronize(backend);
+            break;
+        }
+    }
+
     response.result = ggml_backend_buffer_copy_tensor(src, dst);
     return true;
 }
@@ -1693,12 +1780,10 @@ bool rpc_server::graph_compute(const std::vector<uint8_t> & input) {
     LOG_DBG("[%s] device: %u, n_nodes: %u, n_tensors: %u\n", __func__, device, n_nodes, n_tensors);
 
     size_t buf_size = ggml_tensor_overhead()*(n_nodes + n_tensors) + ggml_graph_overhead_custom(n_nodes, false);
-    if (stored_graphs[device].buffer.size() < buf_size) {
-        stored_graphs[device].buffer.resize(buf_size);
-    }
+    std::vector<uint8_t> graph_buf(buf_size);
     struct ggml_init_params params = {
         /*.mem_size   =*/ buf_size,
-        /*.mem_buffer =*/ stored_graphs[device].buffer.data(),
+        /*.mem_buffer =*/ graph_buf.data(),
         /*.no_alloc   =*/ true,
     };
     ggml_context_ptr ctx_ptr { ggml_init(params) };
@@ -1728,22 +1813,44 @@ bool rpc_server::graph_compute(const std::vector<uint8_t> & input) {
     }
     ggml_status status = ggml_backend_graph_compute(backends[device], graph);
     GGML_ASSERT(status == GGML_STATUS_SUCCESS && "Unsuccessful graph computations are not supported with RPC");
-    stored_graphs[device].graph = graph;
+    auto & device_graphs = stored_graphs[device];
+    const uint64_t hash = graph_structure_hash(graph);
+    // bounded cache: if too many distinct graph structures are in flight, drop
+    // them all - the client falls back to full sends on recompute miss
+    if (device_graphs.size() >= 16) {
+        device_graphs.clear();
+    }
+    stored_graph sg;
+    sg.buffer = std::move(graph_buf);
+    sg.graph = graph;
+    device_graphs[hash] = std::move(sg);
+    LOG_DBG("[%s] device: %u, n_nodes: %u, hash: %016" PRIx64 " (cached: %zu)\n",
+            __func__, device, n_nodes, hash, device_graphs.size());
     return true;
 }
 
-bool rpc_server::graph_recompute(const rpc_msg_graph_recompute_req & request) {
+bool rpc_server::graph_recompute(const rpc_msg_graph_recompute_req & request, rpc_msg_graph_recompute_rsp & response) {
     uint32_t device = request.device;
+    response.result = 0;
     if (device >= backends.size()) {
-        return false;
+        return true;
     }
-    if (stored_graphs[device].graph == nullptr) {
-        return false;
+    auto & device_graphs = stored_graphs[device];
+    auto it = device_graphs.find(request.hash);
+    if (it == device_graphs.end()) {
+        LOG_DBG("[%s] device: %u, hash: %016" PRIx64 " - cache miss\n",
+                __func__, device, request.hash);
+        return true;
     }
-    ggml_cgraph * graph = stored_graphs[device].graph;
-    LOG_DBG("[%s] device: %u\n", __func__, device);
+    ggml_cgraph * graph = it->second.graph;
+    if (graph == nullptr) {
+        return true;
+    }
+    LOG_DBG("[%s] device: %u, hash: %016" PRIx64 " (cached: %zu)\n",
+            __func__, device, request.hash, device_graphs.size());
     ggml_status status = ggml_backend_graph_compute(backends[device], graph);
     GGML_ASSERT(status == GGML_STATUS_SUCCESS && "Unsuccessful graph computations are not supported with RPC");
+    response.result = 1;
     return true;
 }
 
@@ -2017,7 +2124,11 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
                 if (!recv_msg(sock, &request, sizeof(request))) {
                     return;
                 }
-                if (!server.graph_recompute(request)) {
+                rpc_msg_graph_recompute_rsp response;
+                if (!server.graph_recompute(request, response)) {
+                    return;
+                }
+                if (!send_msg(sock, &response, sizeof(response))) {
                     return;
                 }
                 break;
