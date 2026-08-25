@@ -110,7 +110,9 @@ td.label { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
 /* Server page */
 .split { display: grid; grid-template-columns: minmax(520px, 1fr) minmax(420px, 0.9fr); gap: 14px; align-items: start; }
 .split > * { min-width: 0; }
-#preview { position: sticky; top: 14px; }
+/* the command, the process and its log stay in view while the form scrolls */
+.stack { position: sticky; top: 14px; max-height: calc(100vh - 28px); overflow: auto; }
+.stack > *:last-child { margin-bottom: 0; }
 
 .paramform h3, #preview h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px 14px; }
@@ -118,7 +120,8 @@ td.label { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
 .field > span:first-child { color: var(--text); font-size: 12px; }
 .field.inline { flex-direction: row; align-items: center; gap: 8px; }
 .field.inline > span:first-child { order: 2; }
-.field.inline input[type="checkbox"] { order: 1; }
+/* .field input is 100% wide; a checkbox must not be */
+.field.inline input[type="checkbox"] { order: 1; width: auto; flex: none; }
 .field.inline .hint { display: none; }
 .field select, .field input { width: 100%; }
 .hint { color: var(--muted); font-size: 10.5px; }
@@ -146,5 +149,44 @@ pre {
 
 .problem { padding: 3px 0; font-size: 12px; }
 details > summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+
+/* Process control and log */
+button, a.button {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 5px 12px;
+    font: inherit;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+}
+button:hover, a.button:hover { border-color: var(--accent); }
+button.primary { border-color: var(--accent); color: var(--accent); }
+button.danger { border-color: var(--warn); color: var(--warn); }
+
+.runbar { display: flex; align-items: center; gap: 12px; }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.inline-details { margin-left: auto; }
+.inline-details > summary { margin-bottom: 0; }
+.inline-details .hint { display: block; max-width: 320px; margin: 6px 0; }
+
+.runline { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.runline .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge { border-radius: 3px; padding: 1px 7px; font-size: 11px; background: var(--panel-2); color: var(--muted); }
+.badge.running { color: var(--good); border: 1px solid var(--good); }
+.badge.starting, .badge.stopping { color: var(--accent); border: 1px solid var(--accent); }
+.badge.failed { color: var(--warn); border: 1px solid var(--warn); }
+
+.logbox {
+    max-height: 340px;
+    overflow: auto;
+    background: var(--panel-2);
+    border-radius: 4px;
+    padding: 8px;
+    font: 11.5px/1.45 Consolas, "Cascadia Mono", monospace;
+}
+.logline { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .htmx-request .chart { opacity: 0.45; }

@@ -10,6 +10,8 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from fasthtml.common import (
+    A,
+    Button,
     Details,
     Div,
     Form,
@@ -29,6 +31,7 @@ from gui2.core.bench import BenchSpec, to_bench_argv
 from gui2.core.inventory import Build, discover_builds, discover_models, find_build
 from gui2.core.params import GROUPS, SCHEMA, Param
 from gui2.core.runspec import DEFAULTS, Problem, RunSpec, mask_api_key, to_argv, validate
+from gui2.proc import Busy, Supervisor
 from gui2.web.layout import shell
 
 #: Never echoed into the address bar, browser history or the access log.
@@ -123,6 +126,14 @@ def form(config: AppConfig, spec: RunSpec) -> Form:
         cls="panel",
     ))
 
+    panels.append(Div(
+        # type=button: the form never submits natively, htmx owns every request
+        Button("Start server", type="button", cls="primary",
+               hx_post="/server/start", hx_target="#runstate", hx_swap="outerHTML"),
+        Span("Runs exactly the command shown on the right.", cls="hint"),
+        cls="panel runbar",
+    ))
+
     return Form(
         *panels,
         cls="paramform",
@@ -192,8 +203,137 @@ def preview(config: AppConfig, spec: RunSpec) -> Div:
     )
 
 
-def page(config: AppConfig, spec: RunSpec):
+def _endpoint(argv: tuple[str, ...]) -> str:
+    """The URL a running server listens on, read back from its own argv."""
+    host, port = "127.0.0.1", ""
+    for flag, value in zip(argv, argv[1:]):
+        if flag == "--host":
+            host = "127.0.0.1" if value in {"0.0.0.0", "::"} else value
+        elif flag == "--port":
+            port = value
+    return f"http://{host}:{port}" if port else ""
+
+
+def run_panel(supervisor: Supervisor, message: str = "", level: str = "note") -> Div:
+    snapshot = supervisor.snapshot()
+    alive = bool(snapshot and snapshot.alive)
+
+    body: list = []
+    if message:
+        body.append(Div(("⚠ " if level == "error" else "") + message,
+                        cls="problem err" if level == "error" else "problem muted"))
+
+    if snapshot is None:
+        body.append(Div("Nothing has been started from this GUI.", cls="muted"))
+    else:
+        body.append(Div(
+            Span(snapshot.status, cls=f"badge {snapshot.status}"),
+            Span(snapshot.label, cls="label"),
+            Span(f"pid {snapshot.pid}" if snapshot.pid else "", cls="muted"),
+            Span(snapshot.runtime_text, cls="muted"),
+            cls="runline",
+        ))
+        if not alive:
+            body.append(Div(snapshot.outcome, cls="muted"))
+
+    controls: list = []
+    if alive and snapshot is not None:
+        controls.append(Button("Stop", type="button", hx_post="/server/stop",
+                               hx_target="#runstate", hx_swap="outerHTML"))
+        endpoint = _endpoint(snapshot.argv)
+        if endpoint:
+            controls.append(A("Open web UI", href=endpoint, target="_blank", cls="button"))
+        controls.append(Details(
+            Summary("force stop"),
+            Div("A hard kill interrupts GPU work mid-flight and can leave the driver "
+                "unhappy. Use it only when a graceful stop was ignored.", cls="hint"),
+            Button("Force stop", type="button", cls="danger", hx_post="/server/kill",
+                   hx_target="#runstate", hx_swap="outerHTML"),
+            cls="inline-details",
+        ))
+
+    return Div(
+        H3("Process"),
+        *body,
+        Div(*controls, cls="row") if controls else None,
+        id="runstate",
+        cls="panel",
+        # Poll only while something is alive; the last response has no trigger,
+        # so an idle page makes no requests at all.
+        hx_get="/server/status" if alive else None,
+        hx_trigger="every 2s" if alive else None,
+        hx_swap="outerHTML" if alive else None,
+    )
+
+
+def _poller(supervisor: Supervisor, cursor: int):
+    """Self-replacing tail marker: new lines land in front of it."""
+    snapshot = supervisor.snapshot()
+    alive = bool(snapshot and snapshot.alive)
+    unread = bool(snapshot and cursor < snapshot.log_total)
+    trigger = "every 1s" if alive else ("load delay:300ms" if unread else None)
+    return Span(
+        # the marker carries the placeholder, so the first real line replaces it
+        Div("no output yet", cls="muted") if not snapshot or not snapshot.log_total else None,
+        id="logtail",
+        hx_get=f"/server/log?cursor={cursor}",
+        hx_trigger=trigger,
+        hx_swap="outerHTML",
+    )
+
+
+def log_since(supervisor: Supervisor, cursor: int):
+    cursor, lines = supervisor.log_since(cursor)
+    return (*[Div(line, cls="logline") for line in lines], _poller(supervisor, cursor))
+
+
+def log_panel(supervisor: Supervisor, oob: bool = False) -> Div:
+    cursor, lines = supervisor.log_since(0)
+    return Div(
+        H3("Log"),
+        Div(
+            *[Div(line, cls="logline") for line in lines],
+            _poller(supervisor, cursor),
+            id="log",
+            cls="logbox",
+            # htmx's own event hook, not a JS dependency: keep the tail in view
+            **{"hx-on::after-settle": "this.scrollTop = this.scrollHeight"},
+        ),
+        id="logpanel",
+        cls="panel",
+        hx_swap_oob="true" if oob else None,
+    )
+
+
+def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec):
+    """Validate, then hand the command to the supervisor."""
+    build = find_build(discover_builds(config.builds), spec.build_dir)
+    blocking = [problem.message for problem
+                in validate(spec, backend=build.backend if build else "",
+                            supports_rpc=build.supports_rpc if build else None)
+                if problem.level == "error"]
+    if build is None:
+        blocking.append("Select a build")
+    elif not build.usable:
+        blocking.append(f"{build.name} has no llama-server binary")
+    if blocking:
+        return run_panel(supervisor, "; ".join(dict.fromkeys(blocking)), "error")
+
+    assert build is not None and build.server_bin is not None
+    label = f"llama-server · {Path(spec.model).name} · {build.name}"
+    try:
+        supervisor.start("server", label, to_argv(spec, build.server_bin), cwd=build.path)
+    except Busy as busy:
+        return run_panel(supervisor, f"{busy.current.label} is still running", "error")
+    return run_panel(supervisor), log_panel(supervisor, oob=True)
+
+
+def page(config: AppConfig, spec: RunSpec, supervisor: Supervisor):
     return shell(
         "Server", "/server", config,
-        Div(form(config, spec), preview(config, spec), cls="split"),
+        Div(
+            form(config, spec),
+            Div(preview(config, spec), run_panel(supervisor), log_panel(supervisor), cls="stack"),
+            cls="split",
+        ),
     )
