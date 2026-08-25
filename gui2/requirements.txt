@@ -1,0 +1,6 @@
+# GUI 2.0 runtime. Server-rendered, no npm and no build step.
+python-fasthtml>=0.14
+uvicorn>=0.30
+
+# tests
+pytest>=8.0

@@ -168,6 +168,7 @@ a.out.*
 # GUI specific
 gui/__pycache__/
 gui/*.pyc
+/gui2.config.json
 *.ini
 *.conf
 .DS_Store
