@@ -42,15 +42,20 @@ from backend_names import backend_key_from_display, display_backend_from_key
 from bench_history import BenchHistoryMixin
 from bench_runner import BenchCommandThread, console_python_executable, send_windows_console_break
 from server_backend_panels import (
+    CUSTOM_DEVICE_CHOICE,
     ROCM_BALANCED_DUAL_CHOICE,
     ROCM_DEVICE_CHOICES,
     ROCM_Q4KM_LONG_CONTEXT_CHOICE,
     ROCM_Q4KM_LONG_CONTEXT_MIN,
     VULKAN_BALANCED_DUAL_CHOICE,
     VULKAN_DEVICE_CHOICES,
+    DevicePlacementFields,
+    RpcServersPanel,
+    build_supports_rpc,
     device_choice_args,
     is_qwen36_q4km_model,
     recommended_rocm_device_choice,
+    rpc_device_choices,
 )
 from bench_widgets import (
     NumericTableWidgetItem,
@@ -369,6 +374,17 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.autotune_device_sweep_check.setChecked(
                 self.settings.value("benchmark/autotune/device_sweep", False, type=bool)
             )
+            # RPC first: the saved device profile may reference an RPC0.. entry
+            self.rpc_panel.from_settings({
+                "enabled": self.settings.value("benchmark/rpc/enabled", False, type=bool),
+                "endpoints": self.settings.value("benchmark/rpc/endpoints", ""),
+            })
+            self.device_custom_fields.from_settings({
+                "devices": self.settings.value("benchmark/devices_custom/dev", ""),
+                "split_mode": self.settings.value("benchmark/devices_custom/sm", "layer"),
+                "tensor_split": self.settings.value("benchmark/devices_custom/ts", ""),
+            })
+            self._refresh_device_choices()
             device_text = self.settings.value("benchmark/devices", "")
             if device_text:
                 idx = self.device_combo.findText(device_text)
@@ -434,6 +450,8 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self._history_lane_filter_saved = self.settings.value("benchmark/history/lane_filter", "All lanes")
             self._history_backend_filter_saved = self.settings.value("benchmark/history/backend_filter", "All backends")
 
+            self._sync_device_custom_fields()
+            self._refresh_rpc_build_support()
             self._update_autotune_grid_preview()
         except Exception as exc:
             self.log_output.append(f"[WARN] Failed to load autotune settings: {exc}")
@@ -474,6 +492,13 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             )
             self.settings.setValue("benchmark/autotune/device_sweep", self.autotune_device_sweep_check.isChecked())
             self.settings.setValue("benchmark/devices", self.device_combo.currentText())
+            custom_placement = self.device_custom_fields.to_settings()
+            self.settings.setValue("benchmark/devices_custom/dev", custom_placement["devices"])
+            self.settings.setValue("benchmark/devices_custom/sm", custom_placement["split_mode"])
+            self.settings.setValue("benchmark/devices_custom/ts", custom_placement["tensor_split"])
+            rpc_state = self.rpc_panel.to_settings()
+            self.settings.setValue("benchmark/rpc/enabled", rpc_state["enabled"])
+            self.settings.setValue("benchmark/rpc/endpoints", rpc_state["endpoints"])
             self.settings.setValue("benchmark/scale_prompt", self.scale_prompt_check.isChecked())
             self.settings.setValue("benchmark/mtp_draft_n", self.mtp_draft_spin.value())
             self.settings.setValue("benchmark/autotune/mtp_draft_values", self.at_mtp_draft_input.text().strip())
@@ -572,10 +597,19 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.device_combo.setToolTip(
             "GPU selection for bench/autotune server runs (-dev/-sm/-ts).\n"
             "Vulkan recommendation is Vulkan1,Vulkan0; ROCm is ROCm1,ROCm0.\n"
-            "Auto = backend default. Applies to both Single Bench and Auto-tune;\n"
-            "ignored by Auto-tune when the single-vs-dual sweep is enabled."
+            "Auto = backend default, Custom exposes the raw flags below.\n"
+            "Applies to both Single Bench and Auto-tune; ignored by Auto-tune\n"
+            "when the single-vs-dual sweep is enabled."
         )
         build_layout.addWidget(self.device_combo, 2, 1)
+
+        self.device_custom_fields = DevicePlacementFields()
+        self.device_custom_fields.setVisible(False)
+        build_layout.addWidget(self.device_custom_fields, 3, 0, 1, 2)
+
+        self.rpc_panel = RpcServersPanel()
+        build_layout.addWidget(self.rpc_panel, 4, 0, 1, 2)
+
         build_layout.setColumnStretch(1, 1)
         build_group.setLayout(build_layout)
         left_layout.addWidget(build_group)
@@ -951,7 +985,9 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.autotune_custom_extra_input.setToolTip(
             "Optional extra presets; separate presets with ||.\n"
             "A preset's --spec-draft-n-max overrides the MTP draft N default,\n"
-            "so several presets sweep draft budgets in one run."
+            "so several presets sweep draft budgets in one run.\n"
+            "Placement probes work here too, e.g.\n"
+            "ts-16-16-10::-dev Vulkan1,Vulkan0,RPC0 -sm layer -ts 16,16,10"
         )
         self.autotune_custom_extra_input.setMinimumWidth(0)
         custom_extra_row.addWidget(self.autotune_custom_extra_input)
@@ -960,9 +996,10 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.autotune_device_sweep_check = QCheckBox("Sweep GPU order + single GPUs")
         self.autotune_device_sweep_check.setChecked(False)
         self.autotune_device_sweep_check.setToolTip(
-            "Cross-multiplies every extra preset with four device configurations:\n"
-            "both dual-GPU orders and each GPU by itself. This overrides the\n"
-            "Devices selection above and multiplies the autotune grid by four."
+            "Cross-multiplies every extra preset with the backend device\n"
+            "configurations: both dual-GPU orders, each GPU by itself, plus the\n"
+            "local+RPC and RPC-only placements while remote workers are enabled.\n"
+            "This overrides the Devices selection above and grows the grid."
         )
         autotune_expert_layout.addWidget(self.autotune_device_sweep_check)
 
@@ -1084,10 +1121,14 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.lane_custom_ctx_spin.valueChanged.connect(self.save_settings)
         self.autotune_device_sweep_check.toggled.connect(self._update_autotune_grid_preview)
         self.autotune_device_sweep_check.toggled.connect(self.save_settings)
+        self.device_combo.currentIndexChanged.connect(self._sync_device_custom_fields)
         self.device_combo.currentIndexChanged.connect(
             lambda _index: self._update_autotune_grid_preview()
         )
         self.device_combo.currentIndexChanged.connect(lambda _index: self.save_settings())
+        self.device_custom_fields.changed.connect(self._update_autotune_grid_preview)
+        self.device_custom_fields.changed.connect(self.save_settings)
+        self.rpc_panel.changed.connect(self._on_rpc_config_changed)
         self.scale_prompt_check.toggled.connect(self.save_settings)
         self.mtp_draft_spin.valueChanged.connect(self.save_settings)
         self.at_mtp_draft_input.textChanged.connect(self._update_autotune_grid_preview)
@@ -1293,6 +1334,7 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
     def _on_backend_changed(self, *_args):
         self.refresh_versions_for_backend(select_latest=True)
         self._refresh_device_choices()
+        self._refresh_rpc_build_support()
         if hasattr(self, "autotune_grid_preview_label"):
             self._update_autotune_grid_preview()
 
@@ -2082,9 +2124,11 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
 
     def _active_lane_base_server_extra(self, ctx_size: int) -> list[str]:
         backend_key = self._backend_key_from_display(self.build_backend_combo.currentText().strip()).lower()
+        # --rpc first: it registers RPC0..RPCn before -dev is parsed
+        extra = list(self.rpc_panel.args())
         if backend_key == "vulkan" and ctx_size >= 131072:
-            return ["--no-mmap"]
-        return []
+            extra.append("--no-mmap")
+        return extra
 
     # -- device selection -------------------------------------------------------
     def _backend_device_choices(self) -> list[tuple]:
@@ -2095,15 +2139,37 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             return VULKAN_DEVICE_CHOICES
         return []
 
-    def _refresh_device_choices(self) -> None:
-        choices: list[tuple[str, list[str]]] = [("Auto — backend default", [])]
-        for choice in self._backend_device_choices():
-            choices.append((choice[0], device_choice_args(choice)))
+    def _rpc_device_count(self) -> int:
+        panel = getattr(self, "rpc_panel", None)
+        return panel.device_count() if panel is not None else 0
 
-        previous = self.device_combo.currentText()
+    def _on_rpc_config_changed(self, *_args) -> None:
+        self._refresh_device_choices()
+        self._refresh_rpc_build_support()
+        if hasattr(self, "autotune_grid_preview_label"):
+            self._update_autotune_grid_preview()
+        self.save_settings()
+
+    def _refresh_rpc_build_support(self, *_args) -> None:
+        panel = getattr(self, "rpc_panel", None)
+        if panel is None:
+            return
+        server_bin, _build_id = self._resolve_selected_server()
+        build_dir = server_bin.parent.parent if server_bin is not None else None
+        panel.set_build_support(build_supports_rpc(build_dir))
+
+    def _refresh_device_choices(self) -> None:
         backend_key = self._backend_key_from_display(
             self.build_backend_combo.currentText().strip()
         ).lower()
+        choices: list[tuple[str, list[str]]] = [("Auto — backend default", [])]
+        for choice in self._backend_device_choices():
+            choices.append((choice[0], device_choice_args(choice)))
+        for choice in rpc_device_choices(backend_key, self._rpc_device_count()):
+            choices.append((choice[0], device_choice_args(choice)))
+        choices.append((CUSTOM_DEVICE_CHOICE[0], []))
+
+        previous = self.device_combo.currentText()
         initialize_recommendation = (
             backend_key in {"rocm", "vulkan"} and
             not getattr(self, "_device_recommendation_initialized", False)
@@ -2153,11 +2219,17 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
                 return idx
         return 0
 
+    def _is_custom_device_selected(self) -> bool:
+        return self.device_combo.currentText() == CUSTOM_DEVICE_CHOICE[0]
+
+    def _sync_device_custom_fields(self, *_args) -> None:
+        self.device_custom_fields.setVisible(self._is_custom_device_selected())
+
     def _apply_recommended_device_choice(self, ctx_size: int) -> None:
         backend_key = self._backend_key_from_display(
             self.build_backend_combo.currentText().strip()
         ).lower()
-        if backend_key != "rocm" or not self._device_choices:
+        if backend_key != "rocm" or not self._device_choices or self._is_custom_device_selected():
             return
 
         selected_args = self._selected_device_args()
@@ -2172,14 +2244,27 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
             self.device_combo.setCurrentIndex(self._recommended_device_choice_index(ctx_size))
 
     def _selected_device_args(self) -> list[str]:
+        if self._is_custom_device_selected():
+            return self.device_custom_fields.args()
         idx = self.device_combo.currentIndex()
         if 0 <= idx < len(self._device_choices):
             return list(self._device_choices[idx][1])
         return []
 
+    def _rpc_sweep_presets(self, backend_key: str) -> list[tuple[str, str]]:
+        """Placement variants that include the remote RPC workers."""
+        presets: list[tuple[str, str]] = []
+        for choice in rpc_device_choices(backend_key, self._rpc_device_count()):
+            _display, dev, split_mode, ratio = choice
+            name = "rpc-only" if dev and dev.startswith("RPC") else "local+rpc"
+            presets.append((name, " ".join(device_choice_args(choice))))
+            del split_mode, ratio
+        return presets
+
     def _device_sweep_presets(self, ctx_size: int | None = None) -> list[tuple[str, str]]:
         """(name, server-args) pairs for the explicit device-placement sweep."""
         backend_key = self._backend_key_from_display(self.build_backend_combo.currentText().strip()).lower()
+        rpc_presets = self._rpc_sweep_presets(backend_key)
         if backend_key == "rocm":
             effective_ctx = self._active_device_profile_context() if ctx_size is None else ctx_size
             if is_qwen36_q4km_model(self._selected_model_name()):
@@ -2191,21 +2276,21 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
                         "dual-1-0-q4-long",
                         "-dev ROCm1,ROCm0 -sm layer -ts 27,37",
                     ))
-                return presets
+                return presets + rpc_presets
             return [
                 ("dual-1-0", "-dev ROCm1,ROCm0 -sm layer -ts 1,1"),
                 ("dual-0-1", "-dev ROCm0,ROCm1 -sm layer -ts 1,1"),
                 ("single-1", "-dev ROCm1 -sm none"),
                 ("single-0", "-dev ROCm0 -sm none"),
-            ]
+            ] + rpc_presets
         if backend_key == "vulkan":
             return [
                 ("dual-0-1", "-dev Vulkan0,Vulkan1 -sm layer -ts 1,1"),
                 ("dual-1-0", "-dev Vulkan1,Vulkan0 -sm layer -ts 1,1"),
                 ("single-1", "-dev Vulkan1 -sm none"),
                 ("single-0", "-dev Vulkan0 -sm none"),
-            ]
-        return []
+            ] + rpc_presets
+        return rpc_presets
 
     def _selected_mtp_draft_values(self) -> list[int]:
         """Draft-N budgets from the CSV field; invalid chunks are dropped."""
@@ -2478,7 +2563,13 @@ class BenchmarkTabWidget(BenchHistoryMixin, QWidget):
         self.autotune_ctx_badge.setText(f"CTX {lane_ctx:,}")
         self.autotune_prompt_badge.setText(f"Prompt target ≤ {target_text}")
 
-        device_text = self.device_combo.currentText().split(" — ", 1)[0].strip()
+        if self._is_custom_device_selected():
+            device_text = self.device_custom_fields.summary()
+        else:
+            device_text = self.device_combo.currentText().split(" — ", 1)[0].strip()
+        rpc_summary = self.rpc_panel.summary()
+        if rpc_summary:
+            device_text = f"{device_text or 'backend default'} · RPC {rpc_summary}"
         self.autotune_device_badge.setText(f"Devices {device_text or 'backend default'}")
         mode_kv_text = ", ".join(kv_values[:2]) + ("…" if len(kv_values) > 2 else "")
         mode_spec_text = ", ".join(selected_spec_values[:2]) + (

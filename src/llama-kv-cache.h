@@ -107,9 +107,8 @@ public:
                llama_swa_type   swa_type,
         const layer_filter_cb & filter,
             const  layer_reuse_cb & reuse,
-                     bool   is_mtp_context = false);
-
-    ~llama_kv_cache() = default;
+                     bool   is_mtp_context = false,
+        const llama_hparams * hparams_override = nullptr);
 
     //
     // llama_memory_i
@@ -152,6 +151,9 @@ public:
 
     uint32_t get_size()     const;
     uint32_t get_n_stream() const;
+
+    // cells of the stream that owns seq_id (used by the QSA block indexer)
+    const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
 
     bool get_has_shift() const;
 

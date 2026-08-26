@@ -119,6 +119,7 @@ These are diagnostic-only and have no effect on results.
 | `LLAMA_DFLASH_*` | DFlash chunk/ubatch controls |
 | `LLAMA_DELTA_NET_*` | Delta-Net chunk policy |
 | `LLAMA_CHECKPOINT_TIMING` | checkpoint timing trace |
+| `LLAMA_KEEP_MMAPPED_WEIGHTS` | keep whole model file mappings after load (disables the default release of ranges copied to device buffers) |
 
 ## Bench harness (`scripts/agent_workload_bench.py`)
 

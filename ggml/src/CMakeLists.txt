@@ -444,6 +444,7 @@ endif()
 
 ggml_add_backend(BLAS)
 ggml_add_backend(HIP)
+ggml_add_backend(RPC)
 ggml_add_backend(Vulkan)
 
 foreach (target ggml-base ggml)

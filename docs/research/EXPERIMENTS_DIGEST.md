@@ -1,6 +1,6 @@
 # Experiment Digest
 
-Updated: 2026-08-13.
+Updated: 2026-08-26.
 
 This is the compact historical base for performance work. `RESULTS_LOG.md` remains the detailed ledger; this file groups the evidence so agents can pick the next route without rereading every E/D note.
 
@@ -9,6 +9,8 @@ This is the compact historical base for performance work. `RESULTS_LOG.md` remai
 | Area | Current conclusion |
 | --- | --- |
 | Primary dense model | D089 promotes `Qwen3.6-27B-Q4_K_M.gguf`. Safe baseline: dual ROCm `ctx=49152,b8192/ub1024,q8/q8`, spec-none `1778.59/21.98` prompt/decode tok/s; MTP n3 `1731.71/39.58`, `6.2802` aggregate TPS, `74.36%` acceptance. D096 is the active primary research queue. Q3_K_S 130K Vulkan D012/P003 is parked secondary evidence, not a Q4 comparator. |
+| Model RAM footprint | 2026-08-26 default-on fix on rpc-vulkan: model file mappings are released per-range after weights are copied into device buffers (CPU_Mapped/zero-copy ranges stay). Full VRAM offload of 6.28 GiB model released 5606 MiB with only input embeddings left mapped; `LLAMA_KEEP_MMAPPED_WEIGHTS=1` restores old behavior. This is the enabler for the 30 GB VRAM + 50 GB RAM partial offload of large models. |
+| RPC 3-GPU prefill | D132 accepts an opt-in Q8_0 activation wire plus prefill run-ahead: 94K rf62/rf63 center `1063.87/39.47`, `+4.63%` prompt versus adjacent F16 rf59 with `0.29%` repeat spread. Local rf64 is unchanged. Keep F16 default until a PPL/quality gate; true H81/P2 overlap remains open. |
 | 130k residency constraint | RX 9070 XT 16 GB is not expected to keep dense 27B + 130k KV/context/working set fully VRAM-resident. RAM-spill/residency/PCIe/startup diagnostics are part of the metric, not noise. |
 | Archived dense Vulkan 12k | E257 remains the short-context reference: `ctx=12288,b=7168,ub=1024,q4_0/q4_0,spec=none`, cold/no-reuse/no-prime, thinking on, `7.0319 TPS` r3. |
 | Vulkan post-E265 | D005/D012 show the historical 130k Vulkan path: split-K plus q3quad/GLU stack clears 2 TPS with documented opt-in env and `--no-mmap`; D034-D039 retain stability and tool-call quality outcomes. D028-D033 exhaust and close the later `2.4 TPS` topology gate. Reopen only for a genuinely new Q3_K compute-body/compressed-dot design. |

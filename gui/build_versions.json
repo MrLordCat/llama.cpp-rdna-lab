@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-16 11:20:17",
+  "updated_at": "2026-08-21 12:50:26",
   "builds": [
     {
       "id": "bld-20260508073132-4d3cb594",
@@ -438,6 +438,23 @@
       "toolchain": {},
       "created_at": "2026-08-16 11:20:17",
       "updated_at": "2026-08-16 11:20:17",
+      "status": "ready",
+      "notes": "Imported from existing build directory",
+      "bench_best_non_mtp_tps": null,
+      "bench_best_mtp_tps": null,
+      "bench_last_run_at": ""
+    },
+    {
+      "id": "bld-20260821125026-c7889f47",
+      "name": "build-vulkan-symbols",
+      "backend": "vulkan",
+      "source_type": "fork",
+      "source_ref": "7bdc4a2b0",
+      "build_dir": "D:\\GitHub\\llama.cpp-with-GUI\\build-vulkan-symbols",
+      "server_bin": "D:\\GitHub\\llama.cpp-with-GUI\\build-vulkan-symbols\\bin\\llama-server.exe",
+      "toolchain": {},
+      "created_at": "2026-08-21 12:50:26",
+      "updated_at": "2026-08-21 12:50:26",
       "status": "ready",
       "notes": "Imported from existing build directory",
       "bench_best_non_mtp_tps": null,

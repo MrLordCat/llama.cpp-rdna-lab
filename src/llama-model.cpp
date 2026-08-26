@@ -12,6 +12,7 @@
 #include "llama-kv-cache-iswa.h"
 #include "llama-memory-hybrid.h"
 #include "llama-memory-hybrid-iswa.h"
+#include "llama-memory-hybrid-idx.h"
 #include "llama-memory-recurrent.h"
 
 #include "models/models.h"
@@ -279,11 +280,13 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_qwen35(params);
         case LLM_ARCH_QWEN35MOE:
             return new llama_model_qwen35moe(params);
+        case LLM_ARCH_QWEN4EXP:
+            return new llama_model_qwen4exp(params);
+        case LLM_ARCH_MISTRAL3:
+            return new llama_model_mistral3(params);
         case LLM_ARCH_DFLASH:
         case LLM_ARCH_DFLASH_DRAFT:
             return new llama_model_dflash(params);
-        case LLM_ARCH_MISTRAL3:
-            return new llama_model_mistral3(params);
         case LLM_ARCH_MIMO2:
             return new llama_model_mimo2(params);
         case LLM_ARCH_KIMI_LINEAR:
@@ -780,6 +783,7 @@ const char * llm_type_name(llm_type type) {
         case LLM_TYPE_35B_A3B:       return "35B.A3B";
         case LLM_TYPE_48B_A3B:       return "48B.A3B";
         case LLM_TYPE_80B_A3B:       return "80B.A3B";
+        case LLM_TYPE_A3B:           return "A3B";
         case LLM_TYPE_100B_A6B:      return "100B.A6B";
         case LLM_TYPE_102B_A12B:     return "102B.A12B";
         case LLM_TYPE_106B_A12B:     return "106B.A12B";
@@ -1599,8 +1603,86 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     }
 
     if (use_mmap_buffer) {
+        // A model file mapping only needs to survive for the ranges that are
+        // still the actual backing memory of some tensor (CPU-side weights,
+        // zero-copy host-pointer buffers). Ranges that were uploaded into
+        // device buffers used to stay mapped for the whole model lifetime, so
+        // even a fully VRAM-resident model pinned its entire file in host
+        // memory - especially on Windows, where unmap_fragment is a no-op.
+        // Release unreferenced ranges right after load unless
+        // LLAMA_KEEP_MMAPPED_WEIGHTS is set. This both frees RAM for a model
+        // that fits in VRAM and keeps a partly offloaded model (e.g. 30 GB
+        // VRAM + 50 GB RAM) from pinning the GPU-copied part too.
+        const bool keep_mmapped_weights = std::getenv("LLAMA_KEEP_MMAPPED_WEIGHTS") != nullptr;
+
+        uint64_t released_bytes = 0;
+        uint32_t n_released = 0;
         for (auto & mapping : ml.mappings) {
-            pimpl->mappings.emplace_back(std::move(mapping));
+            if (keep_mmapped_weights || mapping->addr() == nullptr) {
+                pimpl->mappings.emplace_back(std::move(mapping));
+                continue;
+            }
+
+            const uint8_t * mfirst = (const uint8_t *) mapping->addr();
+            const uint8_t * mlast  = mfirst + mapping->size();
+
+            std::vector<std::pair<size_t, size_t>> keep;
+            for (const auto & [ctx, bufs] : pimpl->ctxs_bufs) {
+                for (ggml_tensor * t = ggml_get_first_tensor(ctx.get()); t != nullptr;
+                        t = ggml_get_next_tensor(ctx.get(), t)) {
+                    if (t->data == nullptr) {
+                        continue;
+                    }
+                    const uint8_t * data = (const uint8_t *) t->data;
+                    if (data >= mfirst && data < mlast) {
+                        const size_t off = (size_t) (data - mfirst);
+                        keep.emplace_back(off, off + ggml_nbytes(t));
+                    }
+                }
+                for (const auto & buf : bufs) {
+                    const uint8_t * base = (const uint8_t *) ggml_backend_buffer_get_base(buf.get());
+                    if (base >= mfirst && base < mlast) {
+                        const size_t off = (size_t) (base - mfirst);
+                        keep.emplace_back(off, off + ggml_backend_buffer_get_size(buf.get()));
+                    }
+                }
+            }
+
+            // merge overlapping/adjacent intervals
+            std::sort(keep.begin(), keep.end());
+            std::vector<std::pair<size_t, size_t>> merged;
+            for (const auto & k : keep) {
+                if (merged.empty() || k.first > merged.back().second) {
+                    merged.emplace_back(k);
+                } else if (k.second > merged.back().second) {
+                    merged.back().second = k.second;
+                }
+            }
+
+            if (merged.empty()) {
+                mapping->unmap();
+                released_bytes += mapping->size();
+                n_released++;
+            } else if (merged.size() == 1 && merged[0].first == 0 && merged[0].second == mapping->size()) {
+                pimpl->mappings.emplace_back(std::move(mapping));
+            } else {
+                uint64_t keep_bytes = 0;
+                for (const auto & k : merged) {
+                    keep_bytes += k.second - k.first;
+                }
+                released_bytes += mapping->size() - keep_bytes;
+                mapping->unmap_ranges(merged);
+                n_released++;
+                // The mapping must stay alive: CPU-side tensors still point
+                // into the kept ranges, and on Windows they are remapped
+                // views owned by this mapping object until model teardown.
+                pimpl->mappings.emplace_back(std::move(mapping));
+            }
+        }
+        if (n_released > 0) {
+            LLAMA_LOG_INFO("%s: released %u model file mappings / %.1f MiB (weights copied to device buffers)%s\n",
+                    __func__, n_released, released_bytes / 1024.0 / 1024.0,
+                    keep_mmapped_weights ? " [LLAMA_KEEP_MMAPPED_WEIGHTS]" : "");
         }
     }
 
@@ -2032,6 +2114,10 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     // layer filters, so pick the right one here
                     llama_memory_hybrid::layer_filter_cb filter_attn = nullptr;
                     llama_memory_hybrid::layer_filter_cb filter_recr = nullptr;
+                    // llama_memory_hybrid_idx is used only by the sparse-attention architectures;
+                    // filter_idx null within it means the GGUF carries no indexer tensors
+                    llama_memory_hybrid::layer_filter_cb filter_idx  = nullptr;
+                    const bool needs_mem_idx = (arch == LLM_ARCH_QWEN4EXP);
                     if (arch == LLM_ARCH_FALCON_H1) {
                         filter_attn = [&](int32_t) { return true; };
                         filter_recr = [&](int32_t) { return true; };
@@ -2042,7 +2128,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         filter_recr = [&](int32_t il) {
                             return hparams.is_recurrent(il) && hparams.n_ff(il) == 0;
                         };
-                    } else if (arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE) {
+                    } else if (arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE || arch == LLM_ARCH_QWEN4EXP || arch == LLM_ARCH_MINIMAX_01) {
                         const uint32_t n_main = hparams.n_layer - hparams.nextn_predict_layers;
                         filter_attn = [&, n_main](int32_t il) {
                             return (uint32_t) il < n_main && !hparams.is_recurrent(il);
@@ -2050,6 +2136,13 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         filter_recr = [&, n_main](int32_t il) {
                             return (uint32_t) il < n_main && hparams.is_recurrent(il);
                         };
+
+                        if (arch == LLM_ARCH_QWEN4EXP && hparams.indexer_head_size > 0) {
+                            // QSA runs on the dense-attention layers only
+                            filter_idx = [&, n_main](uint32_t il) {
+                                return (uint32_t) il < n_main && !hparams.is_recurrent(il);
+                            };
+                        }
                     }
 
                     if (hparams.swa_type != LLAMA_SWA_TYPE_NONE) {
@@ -2072,6 +2165,28 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* unified           */ cparams.kv_unified,
                             /* filter_attn       */ std::move(filter_attn),
                             /* filter_recr       */ std::move(filter_recr));
+                    } else if (needs_mem_idx) {
+                        // sparse attention over a per-token indexer cache: a separate memory
+                        // type, so the plain hybrid path is untouched
+                        res = new llama_memory_hybrid_idx(
+                            /* model             */ *this,
+                            /* attn_type_k       */ params.type_k,
+                            /* attn_type_v       */ params.type_v,
+                            /* attn_v_trans      */ !cparams.flash_attn,
+                            /* attn_kv_size      */ cparams.n_ctx_seq,
+                            /* attn_n_pad        */ 1,
+                            /* attn_n_swa        */ hparams.n_swa,
+                            /* attn_swa_type     */ hparams.swa_type,
+                            /* recurrent_type_k  */ GGML_TYPE_F32,
+                            /* recurrent_type_v  */ GGML_TYPE_F32,
+                            /* recurrent_kv_size */ std::max((uint32_t) 1, cparams.n_seq_max),
+                            /* n_seq_max         */ cparams.n_seq_max,
+                            /* n_rs_seq          */ cparams.n_rs_seq,
+                            /* offload           */ cparams.offload_kqv,
+                            /* unified           */ cparams.kv_unified,
+                            /* filter_attn       */ std::move(filter_attn),
+                            /* filter_recr       */ std::move(filter_recr),
+                            /* filter_idx        */ std::move(filter_idx));
                     } else {
                         res = new llama_memory_hybrid(
                             /* model             */ *this,
@@ -2434,6 +2549,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_QWEN3VLMOE:
         case LLM_ARCH_QWEN35:
         case LLM_ARCH_QWEN35MOE:
+        case LLM_ARCH_QWEN4EXP:
             return LLAMA_ROPE_TYPE_IMROPE;
 
         case LLM_ARCH_GLM4:

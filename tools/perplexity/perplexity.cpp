@@ -2015,6 +2015,10 @@ int main(int argc, char ** argv) {
 
     common_init();
 
+    // init backends before parsing so that llama_supports_rpc() is true
+    // and the --rpc option is registered (matches tools/server order)
+    llama_backend_init();
+
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_PERPLEXITY)) {
         return 1;
     }
@@ -2041,7 +2045,6 @@ int main(int argc, char ** argv) {
         params.n_ctx += params.ppl_stride/2;
     }
 
-    llama_backend_init();
     llama_numa_init(params.numa);
 
     // load the model and apply lora adapter, if any

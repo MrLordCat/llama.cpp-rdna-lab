@@ -38,6 +38,10 @@
 #include "ggml-vulkan.h"
 #endif
 
+#ifdef GGML_USE_RPC
+#include "ggml-rpc.h"
+#endif
+
 #ifdef GGML_USE_BLAS
 #include "ggml-blas.h"
 #endif
@@ -79,6 +83,9 @@ struct ggml_backend_registry {
     } else {
         GGML_LOG_DEBUG("Vulkan backend disabled by GGML_DISABLE_VULKAN environment variable\n");
     }
+#endif
+#ifdef GGML_USE_RPC
+        register_backend(ggml_backend_rpc_reg());
 #endif
 #ifdef GGML_USE_BLAS
         register_backend(ggml_backend_blas_reg());
