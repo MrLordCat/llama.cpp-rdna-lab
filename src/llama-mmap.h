@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 #include <cstdio>
 
@@ -49,6 +50,22 @@ struct llama_mmap {
     void * addr() const;
 
     void unmap_fragment(size_t first, size_t last);
+
+    // Unmap the whole remaining mapping and release its file handle. Safe to
+    // call more than once; used after model load when no tensor still
+    // references the file-mapped pages (e.g. weights fully copied to device
+    // buffers), so a fully offloaded model does not keep the file pinned in
+    // host memory for its lifetime.
+    void unmap();
+
+    // Keep only the given [first, last) intervals (sorted, non-overlapping,
+    // within the file) and release the file pages for everything else. Used
+    // after model load: CPU-side / zero-copy tensors keep their ranges, while
+    // ranges whose weights were uploaded into device buffers stop consuming
+    // host memory. POSIX unmaps the gaps; Windows remaps the kept ranges at
+    // their original addresses because a file view cannot be partially
+    // released.
+    void unmap_ranges(const std::vector<std::pair<size_t, size_t>> & keep);
 
     static const bool SUPPORTED;
 
