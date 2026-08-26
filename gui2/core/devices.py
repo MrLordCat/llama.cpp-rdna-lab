@@ -22,7 +22,10 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import TYPE_CHECKING, Iterable, Literal
+
+if TYPE_CHECKING:  # only for the annotation: this module must not need a probe
+    from gui2.core.rpc import Fleet
 
 LOG_GLOB = "*.server.log"
 #: newest logs only: a topology from months ago is not worth the read
@@ -194,8 +197,51 @@ def reachable(endpoint: str, timeout: float = 0.4) -> bool:
         return False
 
 
+def rpc_entries(endpoints: Iterable[str], fleet: "Fleet | None" = None,
+                known: dict[str, Device] | None = None) -> list[Device]:
+    """Remote devices, numbered the way llama.cpp numbers them.
+
+    The names are positional and run straight through the workers: if the
+    first address offers two GPUs it takes RPC0 and RPC1, and the second
+    address starts at RPC2. Until a worker has been asked how many devices it
+    has, one name per address is the only honest guess -- and it is wrong for
+    exactly the machine that has two cards, which is why the check exists.
+    """
+    known = known or {}
+    answered = {worker.endpoint: worker for worker in fleet.workers} if fleet else {}
+    entries: list[Device] = []
+    for endpoint in endpoints:
+        worker = answered.get(endpoint)
+        if worker is not None and worker.devices:
+            for remote in worker.devices:
+                entries.append(Device(
+                    name=f"RPC{len(entries)}",
+                    description=f"{endpoint} · device {remote.index}",
+                    backend="rpc",
+                    free_mib=int(remote.free_mib),
+                    total_mib=int(remote.total_mib),
+                    source="reported by the worker itself",
+                    confirmed=True,
+                ))
+            continue
+
+        name = f"RPC{len(entries)}"
+        alive = worker.reachable if worker is not None else reachable(endpoint)
+        previous = known.get(name)
+        entries.append(Device(
+            name=name,
+            description=endpoint if alive else f"{endpoint} (not answering)",
+            backend="rpc",
+            free_mib=(previous.free_mib if previous
+                      and previous.description.startswith(endpoint) else None),
+            source="--rpc order",
+            confirmed=alive,
+        ))
+    return entries
+
+
 def scan(log_roots: Iterable[Path], endpoints: Iterable[str] = (),
-         backend_hint: str = "") -> Scan:
+         backend_hint: str = "", fleet: "Fleet | None" = None) -> Scan:
     """One discovery pass. Safe to call at any time, including under load."""
     notes: list[str] = []
     known, newest = _from_logs(log_roots)
@@ -224,21 +270,12 @@ def scan(log_roots: Iterable[Path], endpoints: Iterable[str] = (),
 
     ordered = sorted(known.values(), key=lambda device: (device.backend != "rpc", device.name))
 
-    rpc: list[Device] = []
-    for index, endpoint in enumerate(endpoints):
-        name = f"RPC{index}"
-        alive = reachable(endpoint)
-        previous = known.get(name)
-        rpc.append(Device(
-            name=name,
-            description=endpoint if alive else f"{endpoint} (not answering)",
-            backend="rpc",
-            free_mib=previous.free_mib if previous and previous.description.startswith(endpoint) else None,
-            source="--rpc order",
-            confirmed=alive,
-        ))
+    rpc = rpc_entries(endpoints, fleet, known)
     if endpoints and not any(device.confirmed for device in rpc):
         notes.append("RPC workers are configured but none answered a TCP connect")
+    if fleet is None and endpoints:
+        notes.append("one RPC name per worker until one is checked; a worker with two GPUs "
+                     "takes two of the names")
 
     devices = [device for device in ordered if device.backend != "rpc"] + rpc
     return Scan(
@@ -259,10 +296,22 @@ class DeviceService:
         self._scan = Scan(status="idle")
         self._thread: threading.Thread | None = None
         self._signature: tuple[str, ...] = ()
+        #: what the last worker check found, if anyone has asked
+        self._fleet: "Fleet | None" = None
 
     def state(self) -> Scan:
         with self._lock:
             return self._scan
+
+    def remember(self, fleet: "Fleet") -> None:
+        """Keep what a worker check learned, and redo the list with it.
+
+        The probe is the only thing that knows a worker has two GPUs rather
+        than one, and that changes every RPC name after it.
+        """
+        with self._lock:
+            self._fleet = fleet
+            self._signature = ()
 
     def start(self, endpoints: Iterable[str] = (), backend_hint: str = "") -> None:
         """Kick off a scan unless an identical one already ran or is running."""
@@ -274,8 +323,9 @@ class DeviceService:
                 return
             self._signature = signature
             self._scan = replace(self._scan, status="scanning")
+            fleet = self._fleet
             self._thread = threading.Thread(
-                target=self._run, args=(tuple(endpoints), backend_hint),
+                target=self._run, args=(tuple(endpoints), backend_hint, fleet),
                 name="gui2-devices", daemon=True,
             )
             self._thread.start()
@@ -285,7 +335,8 @@ class DeviceService:
             self._signature = ()
         self.start(endpoints, backend_hint)
 
-    def _run(self, endpoints: tuple[str, ...], backend_hint: str) -> None:
-        result = scan(self._log_roots, endpoints, backend_hint)
+    def _run(self, endpoints: tuple[str, ...], backend_hint: str,
+             fleet: "Fleet | None" = None) -> None:
+        result = scan(self._log_roots, endpoints, backend_hint, fleet)
         with self._lock:
             self._scan = result

@@ -279,3 +279,29 @@ def test_a_worker_that_is_not_there_is_named_as_the_one_that_is_missing(client):
         "rpc_endpoints": "127.0.0.1:9,192.0.2.1:50052"}).text
     assert "RPC0" in html and "RPC1" in html
     assert "devrow bad" in html
+
+
+def test_checking_a_worker_renames_the_devices_it_actually_offers(client):
+    import time
+
+    from gui2.tests.test_rpc import FakeWorker, GIB
+
+    fake = FakeWorker(devices=((15 * GIB, 16 * GIB), (7 * GIB, 8 * GIB)))
+    fake.start()
+    try:
+        html = client.post("/server/rpc/check", data={"rpc_endpoints": fake.endpoint}).text
+        assert "RPC0" in html and "RPC1" in html, "one worker, two GPUs, two names"
+
+        # the picker is rescanned from the same answer, off the request thread
+        query = f"/server/devices?backend=vulkan&rpc_endpoints={fake.endpoint}"
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            field = client.get(query).text
+            if "looking for devices" not in field:
+                break
+            time.sleep(0.1)
+    finally:
+        fake.close()
+
+    assert re.findall(r'devname">(RPC\d)', field) == ["RPC0", "RPC1"]
+    assert "15.0 GiB free" in field and "7.0 GiB free" in field

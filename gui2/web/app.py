@@ -113,7 +113,15 @@ def create_app(config: AppConfig | None = None):
     @rt("/server/rpc/check", methods=["POST"])
     async def server_rpc_check(req):
         spec = server_page.spec_from_params(await req.form())
-        return server_page.rpc_status(spec, server_page.check_workers(spec))
+        fleet = server_page.check_workers(spec)
+        # only the probe knows a worker has two GPUs, and that renames every
+        # RPC device after it — so the picker is redrawn from the same answer
+        devices.remember(fleet)
+        scan, backend = scanned(spec)
+        return (
+            server_page.rpc_status(spec, fleet),
+            server_page.devices_field(spec, scan, backend, oob=True),
+        )
 
     @rt("/server/devices", methods=["GET"])
     def server_devices(req):

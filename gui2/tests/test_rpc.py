@@ -172,3 +172,27 @@ def test_the_guide_says_the_dangerous_part_out_loud():
     said = " ".join(guide(WorkerPlan()).warnings).lower()
     assert "no authentication" in said
     assert "network" in said
+
+
+def test_a_worker_with_two_gpus_takes_two_of_the_names():
+    """The count is positional, so guessing one per address renumbers the rest."""
+    from gui2.core.devices import rpc_entries
+    from gui2.core.rpc import Fleet, RemoteDevice, Worker
+
+    endpoints = ["a:1", "b:2"]
+
+    # before any check: one name per address, and it is wrong
+    guessed = rpc_entries(endpoints)
+    assert [device.name for device in guessed] == ["RPC0", "RPC1"]
+
+    fleet = Fleet((
+        Worker("a:1", reachable=True, protocol=KNOWN_PROTOCOL, devices=(
+            RemoteDevice(0, 15 * GIB, 16 * GIB), RemoteDevice(1, 7 * GIB, 8 * GIB))),
+        Worker("b:2", reachable=True, protocol=KNOWN_PROTOCOL, devices=(
+            RemoteDevice(0, 23 * GIB, 24 * GIB),)),
+    ))
+    known = rpc_entries(endpoints, fleet)
+    assert [device.name for device in known] == ["RPC0", "RPC1", "RPC2"]
+    assert known[2].description.startswith("b:2")
+    assert known[0].free_mib == 15 * 1024 and known[0].total_mib == 16 * 1024
+    assert all(device.confirmed for device in known)
