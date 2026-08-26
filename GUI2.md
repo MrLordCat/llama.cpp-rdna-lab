@@ -138,7 +138,8 @@ download, dependency install. That is ~3 300 lines of the old GUI
 
 - `--rpc` must appear **before** `-dev` on the command line: `-dev` resolves
   device names while parsing. RPC devices are named `RPC0`, `RPC1`, … in
-  `--rpc` order, one per remote device.
+  `--rpc` order, one per remote device — *per device*, not per address, so a
+  worker with two GPUs takes two of the names and shifts every one after it.
 - Never probe `llama-server --help` / `--version` to detect capabilities: it
   starts backend discovery and risks a driver drop. Read `CMakeCache.txt`
   (`GGML_RPC:BOOL=ON`, `GGML_VULKAN:BOOL=ON`, `GGML_HIP:BOOL=ON`) or a sidecar
@@ -153,7 +154,53 @@ download, dependency install. That is ~3 300 lines of the old GUI
 
 **History & Analytics page, read-only.** `BENCH_RUNS.csv` → filterable table +
 TPS chart. No process control, no GPU, nothing to break. It proves both the
-stack and the code-size claim before anything risky is written.
+stack and the code-size claim before anything risky is written. **Done.**
+
+## What exists now
+
+`gui2/` is 5 815 lines of Python plus 1 570 of tests, against the old GUI's
+15 458 with none. The suite is 113 tests and runs in about 13 seconds without
+touching a GPU.
+
+| Module | What it answers |
+|---|---|
+| `core/gguf.py` | what a model file says about itself — layers, context, head counts, SSM shape. Header only, a few KB, no binary |
+| `core/params.py` | one `Param` per flag; forms and argv both generated from it |
+| `core/runspec.py` | the single description of a run, `to_argv`, `validate`, and the slot arithmetic `slot_context` |
+| `core/memory.py` | what a run *will* cost: weights + KV + compute, from the header |
+| `core/measured.py` | what a run *did* cost, read from its own log as it is written |
+| `core/memstore.py` | the same, kept between runs and rescaled across contexts |
+| `core/machine.py` | cores, free ports, this machine's LAN address |
+| `core/devices.py` | the device list, from past logs and the registry — never from a driver |
+| `core/rpc.py` | the worker command to paste, and the handshake that checks it answered |
+| `proc/` | one GPU slot, a bounded log with stable line numbers, a finish callback |
+| `web/` | FastHTML routes; every panel is an htmx fragment |
+
+The Server page is written for someone who has not read llama.cpp's help
+text. Every section says what it is for; every number that a person cannot be
+expected to know is either read from the machine or declared automatic with
+the automatic value spelled out.
+
+## Facts about llama.cpp worth not rediscovering
+
+- `--parallel N` **divides** the context: `n_ctx_seq = pad256(n_ctx / N)`, and
+  `n_ctx` is then re-derived as `n_ctx_seq * N`. `--kv-unified` pools it
+  instead. Source: `src/llama-context.cpp`.
+- `--threads-http` left unset becomes `max(n_parallel + 4, hardware_concurrency
+  - 1)`; `-t` unset becomes the *physical* core count. Sources:
+  `tools/server/server-http.cpp`, `common/common.cpp`.
+- In a shutdown memory breakdown, `CPU_Mapped` is the model file mapped into
+  RAM and `Vulkan_Host` is pinned host memory. Neither is VRAM; counting
+  either lands the total gigabytes high.
+- A draft model's weights are missing from the breakdown table's `model`
+  column and appear in `unaccounted`. Summing the allocation lines is more
+  accurate than the table.
+- RPC protocol: `HELLO` is pinned to command 14 by a `static_assert` so a
+  client may ask the version before agreeing to anything. Every other command
+  number is only valid within a matching major version. Framing is
+  `cmd(1) | size(8) | payload` out, `size(8) | payload` back.
+- `rpc-server` exposes **all** its accelerators unless `-d` says otherwise, so
+  one address can occupy several `RPCn` names.
 
 ## Validation
 
