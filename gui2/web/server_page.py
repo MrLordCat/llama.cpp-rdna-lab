@@ -48,7 +48,16 @@ from gui2.core.memory import (
     MIB,
 )
 from gui2.core.measured import Measurement, notes as measured_notes
-from gui2.core.params import BY_NAME, HOST_HELP, KV_HELP, SCHEMA, Param, bounds
+from gui2.core.rpc import (
+    DEFAULT_PORT,
+    Fleet,
+    KNOWN_PROTOCOL,
+    Worker,
+    WorkerPlan,
+    guide,
+    probe_all,
+)
+from gui2.core.params import BY_NAME, HOST_HELP, KV_HELP, SPLIT_HELP, SCHEMA, Param, bounds
 from gui2.core.runspec import (
     DEFAULTS,
     Problem,
@@ -98,8 +107,10 @@ LAYOUT: tuple[Section, ...] = (
     Section("Server", ("host", "port", "threads_http", "metrics", "embeddings", "api_key"),
             hint="Who may talk to this server, and on which door. None of it changes what "
                  "the model does or how much memory it takes."),
-    Section("More than one GPU", ("rpc_endpoints", "split_mode", "tensor_split"),
-            hint="RPC workers join as RPC0, RPC1 … in the order listed here."),
+    Section("More than one machine", ("rpc_endpoints", "split_mode", "tensor_split"),
+            hint="A second computer can lend its GPU over the network. It runs a small "
+                 "program called rpc-server; this machine then treats its cards as "
+                 "RPC0, RPC1 … in the order they are listed here."),
     Section("Speculative decoding", ("spec_type", "spec_draft_n_max",
                                      "ngram_n_min", "ngram_n_match", "ngram_n_max")),
     Section("Prompt cache", ("conversation_cache", "cache_ram",
@@ -285,7 +296,45 @@ def _control(param: Param, spec: RunSpec, options: dict, facts: ModelFacts | Non
 def _choice_label(param: Param, choice: str) -> str:
     if param.name.startswith("cache_type") and choice in KV_HELP:
         return f"{choice} — {KV_HELP[choice]}"
+    if param.name == "split_mode" and choice in SPLIT_HELP:
+        return f"{choice or 'default'} — {SPLIT_HELP[choice]}"
     return choice or "— default —"
+
+
+def split_line(spec: RunSpec, facts: ModelFacts | None,
+               devices: tuple[Device, ...]) -> Span:
+    """What the ratio in the box works out to, per device and in gigabytes.
+
+    "3,2" is not a quantity of anything until it is divided by five and
+    multiplied by the size of the model, which is the arithmetic nobody wants
+    to do in their head next to a text box.
+    """
+    names = [device.name for device in devices] or ["the first device", "the second"]
+    shares = [value for value in re.split(r"[,;\s]+", spec.tensor_split.strip()) if value]
+    if not shares:
+        return Span("Empty means llama.cpp decides — with layer mode it gives each device a "
+                    "share of the model in proportion to the memory it has free.",
+                    cls="hint block")
+    try:
+        weights = [float(value) for value in shares]
+    except ValueError:
+        return Span("Not numbers — a share list looks like 3,2", cls="problem err")
+    total = sum(weights)
+    if total <= 0:
+        return Span("The shares add up to nothing, so nothing would be placed anywhere",
+                    cls="problem err")
+    if devices and len(weights) != len(devices):
+        return Span(f"{len(weights)} share(s) for {len(devices)} device(s): llama.cpp reads "
+                    f"them in device order and ignores the rest — {', '.join(names)}",
+                    cls="problem warn")
+
+    report = estimate(spec, facts, devices=max(1, len(devices)))
+    parts = []
+    for name, weight in zip(names, weights):
+        fraction = weight / total
+        size = f" ≈ {gib(report.total_mib * fraction)}" if report.terms else ""
+        parts.append(f"{name} {fraction:.0%}{size}")
+    return Span(" · ".join(parts), cls="hint block")
 
 
 def _hint(param: Param, spec: RunSpec, facts: ModelFacts | None) -> str:
@@ -438,11 +487,165 @@ def devices_field(spec: RunSpec, scan: Scan, backend: str, oob: bool = False):
     )
 
 
+# -- more than one machine -------------------------------------------------
+
+#: names for the worker-setup boxes. They configure the *other* machine, so
+#: they are not RunSpec fields and never reach a llama-server command line.
+WORKER_FIELDS = ("rpc_port", "rpc_devices", "rpc_open", "rpc_cache")
+
+
+def worker_plan(params) -> WorkerPlan:
+    """The worker command's settings, from the form or from the defaults."""
+    if not params or "rpc_port" not in params:
+        return WorkerPlan()
+    def text(name: str) -> str:
+        return str(params.get(name, "") or "").strip()
+    try:
+        port = int(text("rpc_port"))
+    except ValueError:
+        port = DEFAULT_PORT
+    return WorkerPlan(
+        port=port if 1 <= port <= 65535 else DEFAULT_PORT,
+        devices=tuple(name for name in re.split(r"[,\s]+", text("rpc_devices")) if name),
+        open_to_network="rpc_open" in params,
+        cache="rpc_cache" in params,
+    )
+
+
+def _copyable(command: str) -> Div:
+    """A command and a button that puts it on the clipboard, nothing more.
+
+    Deliberately not a "run it for me": the command has to run on the other
+    machine, and a GUI that reached over there would need credentials it has
+    no business holding.
+    """
+    return Div(
+        Pre(command, cls="copytext"),
+        Button("Copy", type="button", cls="small",
+               onclick="navigator.clipboard.writeText("
+                       "this.previousElementSibling.textContent);"
+                       "this.textContent='Copied';"
+                       "setTimeout(()=>this.textContent='Copy',1200)"),
+        cls="copyrow",
+    )
+
+
+def worker_panel(params, oob: bool = False) -> Div:
+    """The command to run on the other machine, built from its own boxes."""
+    plan = worker_plan(params)
+    return Div(
+        Div(
+            Label(Span("Worker port"),
+                  Input(type="number", name="rpc_port", value=str(plan.port),
+                        min=1, max=65535),
+                  Span("both machines have to agree on this one", cls="hint"),
+                  cls="field"),
+            Label(Span("Devices to expose"),
+                  Input(type="text", name="rpc_devices", value=",".join(plan.devices),
+                        placeholder="empty = every device that machine has"),
+                  Span("names as that machine sees them, e.g. Vulkan0", cls="hint"),
+                  cls="field"),
+            Label(Input(type="checkbox", name="rpc_open", checked=plan.open_to_network),
+                  Span("Reachable from this machine"),
+                  cls="field inline"),
+            Label(Input(type="checkbox", name="rpc_cache", checked=plan.cache),
+                  Span("Cache tensors on the worker's disk"),
+                  cls="field inline"),
+            cls="grid",
+        ),
+        Span("Run this on the other machine:", cls="hint block"),
+        _copyable(plan.text()),
+        id="rpcworker",
+        cls="rpcworker",
+        hx_post="/server/rpc/command",
+        # 'consume' so this change does not also fire the form's own preview
+        hx_trigger="change consume",
+        hx_target="#rpcworker",
+        hx_swap="outerHTML",
+        hx_swap_oob="true" if oob else None,
+    )
+
+
+def _worker_row(name_and: tuple[str, Worker, object]) -> Div:
+    name, found, device = name_and
+    if not found.reachable:
+        detail, cls = found.error or "no answer", "devrow bad"
+    elif not found.compatible:
+        detail = (f"speaks protocol {found.version_text}, this build needs "
+                  f"{KNOWN_PROTOCOL[0]}.x — llama-server will refuse it")
+        cls = "devrow bad"
+    elif device is None:
+        detail, cls = f"protocol {found.version_text}, no device reported", "devrow"
+    else:
+        detail = (f"protocol {found.version_text} · {gib(device.free_mib)} free of "
+                  f"{gib(device.total_mib)}")
+        cls = "devrow"
+    return Div(
+        Span(name, cls="devname"),
+        Span(found.endpoint, cls="devdesc"),
+        Span(detail, cls="devmem"),
+        cls=cls,
+    )
+
+
+def rpc_status(spec: RunSpec, fleet: Fleet | None = None, oob: bool = False) -> Div:
+    """What the configured addresses turned out to be, in --rpc order."""
+    endpoints = parse_rpc_endpoints(spec.rpc_endpoints)
+    body: list = []
+    if not endpoints:
+        body.append(Span("No workers configured — this machine's GPUs are all that will "
+                         "be used.", cls="hint"))
+    elif fleet is None:
+        body.append(Span(f"{len(endpoints)} configured: {', '.join(endpoints)}. "
+                         "Press Check to ask them who they are.", cls="hint"))
+    else:
+        body.append(Div(*[_worker_row(entry) for entry in fleet.naming()], cls="devlist"))
+        total = sum(worker.free_bytes for worker in fleet.workers)
+        if total:
+            body.append(Span(f"{gib(total / MIB)} free on the workers, on top of this "
+                             "machine's own cards. These names are what the device list "
+                             "and the tensor split refer to.", cls="hint"))
+    return Div(
+        Div(
+            Span("Workers"),
+            Button("Check", type="button", cls="small",
+                   hx_post="/server/rpc/check", hx_target="#rpcstatus", hx_swap="outerHTML",
+                   hx_include=".paramform"),
+            cls="fieldhead",
+        ),
+        *body,
+        id="rpcstatus",
+        cls="field wide",
+        hx_swap_oob="true" if oob else None,
+    )
+
+
+def check_workers(spec: RunSpec) -> Fleet:
+    """Ask the configured addresses who they are. Only ever on a button press.
+
+    A worker serves one client at a time, so this waits behind whatever the
+    worker is already doing rather than interrupting it -- which is exactly
+    why it is not on a timer.
+    """
+    return probe_all(parse_rpc_endpoints(spec.rpc_endpoints))
+
+
+def rpc_guide(plan: WorkerPlan) -> Details:
+    advice = guide(plan, machine.hostname())
+    return Details(
+        Summary("How to set up the second machine"),
+        Div(*[Div(f"{number}. {step}", cls="step")
+              for number, step in enumerate(advice.steps, start=1)], cls="steps"),
+        *[Div("⚠ " + warning, cls="problem warn") for warning in advice.warnings],
+        cls="inline-details",
+    )
+
+
 # -- form ------------------------------------------------------------------
 
 
 def _section(section: Section, spec: RunSpec, options: dict, facts: ModelFacts | None,
-             scan: Scan, backend: str):
+             scan: Scan, backend: str, params=None):
     named = [name for name in section.names if name != "devices"]
     fields = [_build_field(spec, options) if name == "build_dir"
               else _field(BY_NAME[name], spec, options, facts)
@@ -454,18 +657,27 @@ def _section(section: Section, spec: RunSpec, options: dict, facts: ModelFacts |
     if set(BOUNDED) <= set(named):
         body.append(bounded_fields(spec, facts))
         fields = [field for name, field in zip(named, fields) if name not in BOUNDED]
+    if "rpc_endpoints" in named:
+        # the guide and the worker command come before the boxes they fill in
+        body.append(rpc_guide(WorkerPlan()))
+        body.append(worker_panel(params))
     if fields:
         body.append(Div(*fields, cls="grid"))
+    if "tensor_split" in named:
+        body.append(split_line(spec, facts, run_devices(scan, spec, backend)))
+    if "rpc_endpoints" in named:
+        body.append(rpc_status(spec))
     if "devices" in section.names:
         body.append(devices_field(spec, scan, backend))
 
     return Details(Summary(section.title), *body, cls="panel", open=True if section.open else None)
 
 
-def form(config: AppConfig, spec: RunSpec, scan: Scan, backend: str) -> Form:
+def form(config: AppConfig, spec: RunSpec, scan: Scan, backend: str, params=None) -> Form:
     options = _options(config, spec)
     facts = model_facts(spec)
-    panels = [_section(section, spec, options, facts, scan, backend) for section in LAYOUT]
+    panels = [_section(section, spec, options, facts, scan, backend, params)
+              for section in LAYOUT]
 
     panels.append(Details(
         Summary("Extra arguments"),
@@ -906,11 +1118,12 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, scan: Scan):
     return run_panel(supervisor), log_panel(supervisor, oob=True)
 
 
-def page(config: AppConfig, spec: RunSpec, supervisor: Supervisor, scan: Scan, backend: str):
+def page(config: AppConfig, spec: RunSpec, supervisor: Supervisor, scan: Scan, backend: str,
+         params=None):
     return shell(
         "Server", "/server", config,
         Div(
-            form(config, spec, scan, backend),
+            form(config, spec, scan, backend, params),
             Div(preview(config, spec, scan, supervisor=supervisor),
                 run_panel(supervisor), log_panel(supervisor), cls="stack"),
             cls="split",

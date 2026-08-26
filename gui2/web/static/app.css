@@ -199,6 +199,19 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; margi
 .memory .hint.block { margin: 8px 0 0; }
 .problem.ok { color: var(--good); }
 
+/* A second machine: a recipe, a command to paste, and what answered */
+.steps { margin: 4px 0 10px; }
+.steps .step {
+    padding: 3px 0 3px 2px;
+    font-size: 12px;
+    color: var(--muted);
+    max-width: 76ch;
+}
+.copyrow { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 10px; }
+.copyrow .copytext { flex: 1; margin: 0; user-select: all; }
+.rpcworker { margin-bottom: 6px; }
+.devrow.bad .devmem { color: var(--warn); }
+
 /* Device picker */
 .field.wide { grid-column: 1 / -1; }
 .fieldhead { display: flex; align-items: center; gap: 10px; }

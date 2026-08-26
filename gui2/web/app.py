@@ -74,7 +74,9 @@ def create_app(config: AppConfig | None = None):
     def server(req):
         spec = server_page.spec_from_params(req.query_params)
         scan, backend = scanned(spec)
-        return server_page.page(config, spec, supervisor, scan, backend)
+        # the query string also carries the worker-setup boxes, which are not
+        # llama-server flags and so are not part of the spec
+        return server_page.page(config, spec, supervisor, scan, backend, req.query_params)
 
     @rt("/server/preview", methods=["POST"])
     async def server_preview(req):
@@ -102,6 +104,16 @@ def create_app(config: AppConfig | None = None):
             server_page.preview(config, spec, scan, oob=True, supervisor=supervisor),
             HtmxResponseHeaders(push_url="/server?" + server_page.state_query(params, spec)),
         )
+
+    @rt("/server/rpc/command", methods=["POST"])
+    async def server_rpc_command(req):
+        # pure text generation: the command is for the other machine to run
+        return server_page.worker_panel(await req.form())
+
+    @rt("/server/rpc/check", methods=["POST"])
+    async def server_rpc_check(req):
+        spec = server_page.spec_from_params(await req.form())
+        return server_page.rpc_status(spec, server_page.check_workers(spec))
 
     @rt("/server/devices", methods=["GET"])
     def server_devices(req):

@@ -28,6 +28,13 @@ KV_HELP = {
 }
 SPEC_TYPES = ("none", "mtp", "ngram-mod")
 SPLIT_MODES = ("", "auto", "layer", "none", "row")
+SPLIT_HELP = {
+    "": "whatever llama.cpp does by default, which is layer",
+    "auto": "let llama.cpp choose",
+    "layer": "each GPU holds whole layers — the usual answer",
+    "none": "no split; the whole model goes on one device",
+    "row": "every GPU works on every layer — needs a fast link, rarely worth it over a network",
+}
 
 #: offered as suggestions, not as the only answers: a machine with two network
 #: cards may have to name one of them, and that is still a legitimate --host
@@ -153,14 +160,17 @@ SCHEMA: tuple[Param, ...] = (
     Param("disable_thinking", "Disable thinking", "bool", G_ADVANCED, "--chat-template-kwargs",
           emit="composite"),
     Param("fit", "Auto fit", "choice", G_ADVANCED, "-fit", choices=("on", "off"), skip_default=True),
-    Param("rpc_endpoints", "RPC workers", "text", G_DEVICE, "--rpc", emit="composite",
-          help="host:port of remote llama-rpc-server workers, comma separated"),
+    Param("rpc_endpoints", "Worker addresses", "text", G_DEVICE, "--rpc", emit="composite",
+          help="where the rpc-server processes are, as host:port, separated by commas — "
+               "the order decides which one is RPC0"),
     Param("devices", "Devices", "devices", G_DEVICE, "-dev",
           help="nothing selected means every device the build finds"),
-    Param("split_mode", "Split mode", "choice", G_DEVICE, "-sm", choices=SPLIT_MODES,
-          help="layer without a tensor split fills each GPU by free VRAM"),
-    Param("tensor_split", "Tensor split", "text", G_DEVICE, "-ts",
-          help="manual ratio per device, e.g. 3,2 — leave empty unless you must"),
+    Param("split_mode", "How to spread the model", "choice", G_DEVICE, "-sm",
+          choices=SPLIT_MODES,
+          help="left alone, llama.cpp fills each GPU in proportion to its free memory"),
+    Param("tensor_split", "Share per device", "text", G_DEVICE, "-ts",
+          help="numbers in device order, e.g. 3,2 — only needed when the automatic "
+               "share puts too much on one card"),
     Param("api_key", "API key", "text", G_SERVER, "--api-key", help="masked in previews"),
 )
 

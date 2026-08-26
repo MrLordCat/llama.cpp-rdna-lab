@@ -232,3 +232,50 @@ def test_a_port_someone_else_holds_is_reported_with_a_free_one():
         listener.close()
 
     assert _port_problems(DEFAULTS.with_values({"port": port})) == []
+
+
+# -- the second machine ----------------------------------------------------
+
+
+def test_the_worker_command_is_generated_from_its_own_boxes(client):
+    html = client.post("/server/rpc/command", data={
+        "rpc_port": "50055", "rpc_devices": "Vulkan0, Vulkan1", "rpc_open": "on"}).text
+
+    assert "rpc-server -H 0.0.0.0 -p 50055 -d Vulkan0,Vulkan1" in html
+    # generated, never executed: the command belongs to the other machine
+    assert "hx-post=\"/server/rpc/command\"" in html
+
+
+def test_an_unchecked_box_makes_the_worker_private_again(client):
+    html = client.post("/server/rpc/command", data={"rpc_port": "50052"}).text
+    assert "-H 127.0.0.1" in html
+
+
+def test_workers_are_only_asked_who_they_are_when_someone_asks(client):
+    page = client.get("/server?rpc_endpoints=192.168.1.9:50052").text
+    # no probe on render: a worker serves one client at a time, and the page
+    # must not queue behind whatever it is already doing
+    assert "Press Check to ask them who they are" in page
+    assert "192.168.1.9:50052" in page
+
+
+def test_checking_a_worker_reports_the_version_and_the_memory(client):
+    from gui2.tests.test_rpc import FakeWorker
+
+    fake = FakeWorker()
+    fake.start()
+    try:
+        html = client.post("/server/rpc/check", data={"rpc_endpoints": fake.endpoint}).text
+    finally:
+        fake.close()
+
+    assert "RPC0" in html and fake.endpoint in html
+    assert "protocol 5.0.0" in html
+    assert "8.0 GiB free of 16.0 GiB" in html
+
+
+def test_a_worker_that_is_not_there_is_named_as_the_one_that_is_missing(client):
+    html = client.post("/server/rpc/check", data={
+        "rpc_endpoints": "127.0.0.1:9,192.0.2.1:50052"}).text
+    assert "RPC0" in html and "RPC1" in html
+    assert "devrow bad" in html
