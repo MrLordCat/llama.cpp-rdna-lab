@@ -9,9 +9,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 
 from gui2.core import params
+from gui2.core.gguf import context_text, read_facts
 from gui2.core.params import SCHEMA, Param, aliases_of, flags_in, parse_extra
 
 THINKING_OFF = '{"enable_thinking":false,"preserve_thinking":false}'
@@ -31,7 +32,8 @@ class RunSpec:
     batch_size: int = 512
     ubatch_size: int = 128
     parallel: int = 1
-    gpu_layers: int = 999
+    gpu_layers_all: bool = True
+    gpu_layers: int = 64
     cache_type_k: str = "f16"
     cache_type_v: str = "f16"
     conversation_cache: bool = False
@@ -125,7 +127,12 @@ def _emit_spec_type(spec: RunSpec) -> list[str]:
     return []
 
 
+#: -ngl 999 is llama.cpp's idiom for "as many layers as fit"
+ALL_LAYERS = "999"
+
 COMPOSITES = {
+    "gpu_layers_all": lambda spec: [],
+    "gpu_layers": lambda spec: ["-ngl", ALL_LAYERS if spec.gpu_layers_all else str(spec.gpu_layers)],
     "spec_type": _emit_spec_type,
     "spec_draft_n_max": lambda spec: [],
     "ngram_n_min": lambda spec: [],
@@ -216,20 +223,25 @@ class Problem:
     message: str
 
 
-def validate(spec: RunSpec, backend: str = "", supports_rpc: bool | None = None) -> list[Problem]:
+def validate(spec: RunSpec, backend: str = "", supports_rpc: bool | None = None,
+             available_devices: Iterable[str] | None = None) -> list[Problem]:
     """Blocking errors and behaviour notes for a spec.
 
-    `backend` and `supports_rpc` come from the selected build's CMakeCache;
-    the binary is never probed.
+    `backend` and `supports_rpc` come from the selected build's CMakeCache and
+    `available_devices` from the device scan; no binary is ever probed. Model
+    limits are read from the GGUF header, which is a plain file read.
     """
     problems: list[Problem] = []
     extra = parse_extra(spec.extra_args)
     extra_flags = flags_in(extra)
 
+    facts = None
     if not spec.model:
         problems.append(Problem("error", "Select a model file"))
     elif not Path(spec.model).is_file():
         problems.append(Problem("error", f"Model file not found: {spec.model}"))
+    else:
+        facts = read_facts(spec.model)
 
     if not spec.build_dir:
         problems.append(Problem("error", "Select a build"))
@@ -237,8 +249,20 @@ def validate(spec: RunSpec, backend: str = "", supports_rpc: bool | None = None)
     if spec.ubatch_size > spec.batch_size:
         problems.append(Problem("error", "Ubatch size must not exceed batch size"))
 
+    if facts is not None and facts.n_ctx_train and spec.ctx_size > facts.n_ctx_train:
+        problems.append(Problem(
+            "note",
+            f"{context_text(spec.ctx_size)} context exceeds the "
+            f"{context_text(facts.n_ctx_train)} this model was trained for",
+        ))
+
+    if not spec.gpu_layers_all and spec.gpu_layers == 0:
+        problems.append(Problem("note", "No layer is offloaded: the model will run on the CPU"))
+
     kv_types = {spec.cache_type_k, spec.cache_type_v}
     flash_on = spec.flash_attn == "on" or "-fa" in extra_flags or "--flash-attn" in extra_flags
+    if kv_types & {"q8_0", "q4_0"} and spec.flash_attn == "off":
+        problems.append(Problem("error", "A quantized KV cache needs flash attention"))
     if "f8_e4m3" in kv_types:
         if backend and backend not in {"vulkan", "rocm"}:
             problems.append(Problem("error", "f8_e4m3 KV requires a Vulkan or ROCm build"))
@@ -267,15 +291,23 @@ def validate(spec: RunSpec, backend: str = "", supports_rpc: bool | None = None)
     if endpoints:
         problems.append(Problem("note", f"Remote RPC workers: {', '.join(endpoints)}"))
 
-    requested_rpc_devices = {
-        name for name in re.split(r"[,\s]+", spec.devices) if name.upper().startswith("RPC")
-    }
-    unavailable = requested_rpc_devices - set(rpc_device_names(len(endpoints)))
+    requested = [name for name in re.split(r"[,\s]+", spec.devices) if name]
+    unavailable = {name for name in requested if name.upper().startswith("RPC")} - set(
+        rpc_device_names(len(endpoints)))
     if unavailable:
         problems.append(Problem(
             "error",
             f"-dev references {', '.join(sorted(unavailable))} but no matching --rpc worker is configured",
         ))
+
+    if available_devices is not None:
+        known = set(available_devices)
+        unknown = [name for name in requested if name not in known and name not in unavailable]
+        if unknown:
+            problems.append(Problem(
+                "error",
+                f"{', '.join(unknown)} is not among the devices found: {', '.join(sorted(known)) or 'none'}",
+            ))
 
     if spec.tensor_split and spec.split_mode not in {"layer", "row"}:
         problems.append(Problem("note", "-ts is only used with -sm layer or -sm row"))

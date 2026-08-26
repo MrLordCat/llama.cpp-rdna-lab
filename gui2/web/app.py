@@ -8,7 +8,9 @@ from pathlib import Path
 from fasthtml.common import Div, HtmxResponseHeaders, Link, RedirectResponse, Script, fast_app
 
 from gui2.config import AppConfig
+from gui2.core.devices import DeviceService
 from gui2.core.history import HistoryStore
+from gui2.core.runspec import parse_rpc_endpoints
 from gui2.proc import Supervisor
 from gui2.proc.hidden import suppress_error_dialogs
 from gui2.web import history_page, models_page, server_page
@@ -22,6 +24,11 @@ def create_app(config: AppConfig | None = None):
     # One supervisor per app: the GPU slot is a process-wide resource.
     supervisor = Supervisor()
     suppress_error_dialogs()
+
+    # Device discovery reads logs and the registry only, so it is safe to run
+    # at startup even while the GPUs are busy.
+    devices = DeviceService([config.artifacts_dir, config.builds / "build_logs" / "agent-workload"])
+    devices.start()
 
     app, rt = fast_app(
         pico=False,
@@ -57,22 +64,65 @@ def create_app(config: AppConfig | None = None):
             return Div("Run not found", cls="panel muted")
         return history_page.detail(run)
 
+    def scanned(spec):
+        """Current device list, kept in step with the build and the RPC workers."""
+        build = server_page.build_of(config, spec)
+        backend = build.backend if build else ""
+        return server_page.rescan(devices, spec, backend), backend
+
     @rt("/server", methods=["GET"])
     def server(req):
-        return server_page.page(config, server_page.spec_from_params(req.query_params), supervisor)
+        spec = server_page.spec_from_params(req.query_params)
+        scan, backend = scanned(spec)
+        return server_page.page(config, spec, supervisor, scan, backend)
 
     @rt("/server/preview", methods=["POST"])
     async def server_preview(req):
         params = await req.form()
+        spec = server_page.spec_from_params(params)
+        scan, backend = scanned(spec)
         return (
-            server_page.preview(config, server_page.spec_from_params(params)),
+            server_page.preview(config, spec, scan),
+            server_page.devices_field(spec, scan, backend, oob=True),
+            # the context slider carries the price of the context: it has to
+            # follow the same change that moved it
+            server_page.kv_line(spec, server_page.model_facts(spec), oob=True),
             HtmxResponseHeaders(push_url="/server?" + server_page.state_query(params)),
         )
+
+    @rt("/server/bounds", methods=["POST"])
+    async def server_bounds(req):
+        params = await req.form()
+        spec = server_page.spec_from_params(params)
+        facts = server_page.model_facts(spec)
+        spec = server_page.refit(spec, facts, server_page.read_ceilings(params))
+        scan, _backend = scanned(spec)
+        return (
+            server_page.bounded_fields(spec, facts),
+            server_page.preview(config, spec, scan, oob=True),
+            HtmxResponseHeaders(push_url="/server?" + server_page.state_query(params, spec)),
+        )
+
+    @rt("/server/devices", methods=["GET"])
+    def server_devices(req):
+        spec = server_page.spec_from_params(req.query_params)
+        backend = req.query_params.get("backend", "")
+        devices.start(parse_rpc_endpoints(spec.rpc_endpoints), backend)
+        return server_page.devices_field(spec, devices.state(), backend)
+
+    @rt("/server/devices", methods=["POST"])
+    async def server_devices_rescan(req):
+        spec = server_page.spec_from_params(await req.form())
+        build = server_page.build_of(config, spec)
+        backend = build.backend if build else ""
+        devices.refresh(parse_rpc_endpoints(spec.rpc_endpoints), backend)
+        return server_page.devices_field(spec, devices.state(), backend)
 
     @rt("/server/start", methods=["POST"])
     async def server_start(req):
         params = await req.form()
-        return server_page.start(config, supervisor, server_page.spec_from_params(params))
+        spec = server_page.spec_from_params(params)
+        return server_page.start(config, supervisor, spec, devices.state())
 
     @rt("/server/status", methods=["GET"])
     def server_status():
@@ -100,4 +150,5 @@ def create_app(config: AppConfig | None = None):
     # is no reason to interrupt GPU work. The supervisor is exposed so tests and
     # future pages talk to the same GPU slot.
     app.state.supervisor = supervisor
+    app.state.devices = devices
     return app

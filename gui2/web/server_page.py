@@ -1,11 +1,15 @@
-"""Server launch page: the form and the command are both generated from the
-parameter schema, so a new flag is one line in `gui2.core.params`.
+"""Server launch page.
 
-The page previews and validates; starting processes belongs to the supervisor.
+The form, the command and the validation all come from one schema, so a new
+flag stays a one-line change in `gui2.core.params`. What this module adds is
+the part a schema cannot express: which settings a newcomer meets first, and
+which limits the chosen model and the discovered devices impose on them.
 """
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -28,19 +32,81 @@ from fasthtml.common import (
 
 from gui2.config import AppConfig
 from gui2.core.bench import BenchSpec, to_bench_argv
+from gui2.core.devices import Device, DeviceService, Scan, reachable
+from gui2.core.gguf import ModelFacts, context_text, read_facts
 from gui2.core.inventory import Build, discover_builds, discover_models, find_build
-from gui2.core.params import GROUPS, SCHEMA, Param
-from gui2.core.runspec import DEFAULTS, Problem, RunSpec, mask_api_key, to_argv, validate
+from gui2.core.memory import (
+    Estimate,
+    context_for_budget,
+    estimate,
+    gib,
+    kv_alternatives,
+    kv_bytes,
+    MIB,
+)
+from gui2.core.params import BY_NAME, KV_HELP, SCHEMA, Param, bounds
+from gui2.core.runspec import (
+    DEFAULTS,
+    Problem,
+    RunSpec,
+    mask_api_key,
+    parse_rpc_endpoints,
+    to_argv,
+    validate,
+)
 from gui2.proc import Busy, Supervisor
 from gui2.web.layout import shell
 
 #: Never echoed into the address bar, browser history or the access log.
 SECRET_PARAMS = frozenset({"api_key"})
 
+#: Form plumbing rather than run settings; not part of the shareable URL.
+INTERNAL_PARAMS = frozenset({"_ceiling"})
 
-def state_query(params) -> str:
+#: Re-rendered when the model changes, because the model sets their limits.
+BOUNDED = ("ctx_size", "gpu_layers_all", "gpu_layers")
+SLIDERS = tuple(name for name in BOUNDED if BY_NAME[name].kind == "slider")
+CEILING_SEPARATOR = ":"
+
+
+@dataclass(frozen=True, slots=True)
+class Section:
+    """A block of the form. SCHEMA fixes argv order; this fixes reading order."""
+
+    title: str
+    names: tuple[str, ...]
+    open: bool = False
+    hint: str = ""
+
+
+LAYOUT: tuple[Section, ...] = (
+    Section("Model and build", ("model", "build_dir"), open=True),
+    Section("Context and GPU", ("ctx_size", "gpu_layers_all", "gpu_layers", "devices"), open=True,
+            hint="The two questions that decide whether a model loads at all: how much "
+                 "context to reserve, and which GPUs may hold it."),
+    Section("Speed and memory", ("batch_size", "ubatch_size", "threads",
+                                 "cache_type_k", "cache_type_v", "flash_attn"), open=True,
+            hint="A smaller KV cache type buys context at some quality; batch sizes trade "
+                 "prompt speed for memory."),
+    Section("Server", ("host", "port", "threads_http", "metrics", "embeddings", "api_key")),
+    Section("More than one GPU", ("rpc_endpoints", "split_mode", "tensor_split"),
+            hint="RPC workers join as RPC0, RPC1 … in the order listed here."),
+    Section("Speculative decoding", ("spec_type", "spec_draft_n_max",
+                                     "ngram_n_min", "ngram_n_match", "ngram_n_max")),
+    Section("Prompt cache", ("conversation_cache", "cache_ram",
+                             "ctx_checkpoints", "checkpoint_every_n_tokens")),
+    Section("Vision", ("mmproj", "mmproj_offload")),
+    Section("Advanced", ("parallel", "no_warmup", "no_mmap", "disable_thinking", "fit")),
+)
+
+
+def state_query(params, refit: RunSpec | None = None) -> str:
     """Query string that reproduces the form on reload, without the secrets."""
-    return urlencode([(key, params[key]) for key in params.keys() if key not in SECRET_PARAMS])
+    items = params.multi_items() if hasattr(params, "multi_items") else list(params.items())
+    skip = SECRET_PARAMS | INTERNAL_PARAMS
+    # a slider the new model just moved has to reach the address bar as it now reads
+    moved = {name: str(getattr(refit, name)) for name in SLIDERS} if refit else {}
+    return urlencode([(key, moved.get(key, value)) for key, value in items if key not in skip])
 
 
 def spec_from_params(params) -> RunSpec:
@@ -51,7 +117,30 @@ def spec_from_params(params) -> RunSpec:
     for param in SCHEMA:
         if param.kind == "bool":
             values[param.name] = param.name in params
+        elif param.kind == "devices" and hasattr(params, "getlist"):
+            values[param.name] = ",".join(params.getlist(param.name))
     return DEFAULTS.with_values(values)
+
+
+def selected_devices(spec: RunSpec) -> set[str]:
+    return {name for name in re.split(r"[,\s]+", spec.devices) if name}
+
+
+def model_facts(spec: RunSpec) -> ModelFacts | None:
+    return read_facts(spec.model) if spec.model and Path(spec.model).is_file() else None
+
+
+def build_of(config: AppConfig, spec: RunSpec) -> Build | None:
+    return find_build(discover_builds(config.builds), spec.build_dir)
+
+
+def rescan(service: DeviceService, spec: RunSpec, backend: str) -> Scan:
+    """Keep the device list in step with the build and the RPC list."""
+    service.start(parse_rpc_endpoints(spec.rpc_endpoints), backend)
+    return service.state()
+
+
+# -- controls --------------------------------------------------------------
 
 
 def _options(config: AppConfig, spec: RunSpec) -> dict[str, list[tuple[str, str]]]:
@@ -68,15 +157,74 @@ def _options(config: AppConfig, spec: RunSpec) -> dict[str, list[tuple[str, str]
     }
 
 
-def _control(param: Param, spec: RunSpec, options: dict[str, list[tuple[str, str]]]):
+def _ceiling_text(param: Param, high: int, facts: ModelFacts | None) -> str:
+    """The right end of a model-bounded slider, said out loud."""
+    if param.name == "ctx_size":
+        if facts and facts.n_ctx_train:
+            return f"max {context_text(high)} — what this model was trained for"
+        return f"max {context_text(high)} — " + (
+            "this file does not state a context length" if facts else "no model selected yet")
+    if param.name == "gpu_layers" and facts and facts.n_layers:
+        return f"max {high} — the model has {facts.n_layers} layers"
+    return f"max {high}"
+
+
+def kv_line(spec: RunSpec, facts: ModelFacts | None, oob: bool = False) -> Span:
+    """What the chosen context costs, said where the context is chosen.
+
+    The other cache types are priced alongside it, because that choice is only
+    meaningful once its saving is a number.
+    """
+    body = ""
+    if facts is not None and facts.n_embd_k_gqa:
+        cost = kv_bytes(facts, spec.ctx_size, spec.cache_type_k, spec.cache_type_v) / MIB
+        uniform = spec.cache_type_k == spec.cache_type_v
+        parts = [f"KV cache {gib(cost)}" + (f" at {spec.cache_type_k}" if uniform else "")]
+        if uniform:
+            parts += [f"{gib(other)} at {name}"
+                      for name, other in kv_alternatives(facts, spec.ctx_size, spec.cache_type_k)]
+        body = " · ".join(parts)
+    return Span(body, id="kvline", cls="ceiling", hx_swap_oob="true" if oob else None)
+
+
+def _slider(param: Param, spec: RunSpec, facts: ModelFacts | None):
+    low, high, step = bounds(param,
+                             facts.n_layers if facts else None,
+                             facts.n_ctx_train if facts else None)
+    value = min(max(int(getattr(spec, param.name)), int(low)), int(high))
+    return Div(
+        Div(
+            # the range is nameless: the number box is what the form submits
+            Input(type="range", value=str(value), min=low, max=high, step=step, cls="range",
+                  aria_label=param.label, oninput="this.nextElementSibling.value=this.value"),
+            Input(type="number", name=param.name, value=str(value), min=low, max=high, step=step,
+                  cls="numberbox", oninput="this.previousElementSibling.value=this.value"),
+            cls="slider",
+        ),
+        # only where the ceiling is the model's doing and therefore worth explaining
+        Span(_ceiling_text(param, int(high), facts), cls="ceiling") if param.name in SLIDERS else None,
+        kv_line(spec, facts) if param.name == "ctx_size" else None,
+        cls="sliderbox",
+    )
+
+
+def _control(param: Param, spec: RunSpec, options: dict, facts: ModelFacts | None):
     value = getattr(spec, param.name)
     if param.name in options:
+        # the model sets the slider limits, so it refreshes them itself; 'consume'
+        # keeps the change from also reaching the form's own preview trigger,
+        # which would race this request with the pre-refit values
+        hooks = {"hx_post": "/server/bounds", "hx_trigger": "change consume",
+                 "hx_target": "#bounded", "hx_swap": "outerHTML"} \
+            if param.name == "model" else {}
         return Select(*[Option(label, value=item, selected=item == value)
-                        for label, item in options[param.name]], name=param.name)
+                        for label, item in options[param.name]], name=param.name, **hooks)
     if param.kind == "bool":
         return Input(type="checkbox", name=param.name, checked=bool(value))
+    if param.kind == "slider":
+        return _slider(param, spec, facts)
     if param.kind == "choice":
-        return Select(*[Option(choice or "— default —", value=choice, selected=choice == value)
+        return Select(*[Option(_choice_label(param, choice), value=choice, selected=choice == value)
                         for choice in param.choices], name=param.name)
     if param.kind in {"int", "float"}:
         return Input(type="number", name=param.name, value=str(value),
@@ -88,38 +236,181 @@ def _control(param: Param, spec: RunSpec, options: dict[str, list[tuple[str, str
     return Input(type="text", name=param.name, value=str(value))
 
 
-def _field(param: Param, spec: RunSpec, options: dict[str, list[tuple[str, str]]]):
-    hint = param.help or (f"emits {param.flag}" if param.flag else "")
+def _choice_label(param: Param, choice: str) -> str:
+    if param.name.startswith("cache_type") and choice in KV_HELP:
+        return f"{choice} — {KV_HELP[choice]}"
+    return choice or "— default —"
+
+
+def _hint(param: Param, facts: ModelFacts | None) -> str:
+    # a slider's ceiling caption already names the model's limit; no need to repeat it
+    if param.name == "ctx_size":
+        if facts is None:
+            return f"{param.help} · the range follows the model once one is selected"
+        if facts.n_embd_k_gqa:
+            return ""  # the ceiling and the KV line say the same thing in numbers
+    return param.help or (f"emits {param.flag}" if param.flag else "")
+
+
+def _field(param: Param, spec: RunSpec, options: dict, facts: ModelFacts | None):
+    hint = _hint(param, facts)
     return Label(
         Span(param.label),
-        _control(param, spec, options),
+        _control(param, spec, options, facts),
         Span(hint, cls="hint") if hint else None,
         cls="field inline" if param.kind == "bool" else "field",
         title=hint,
     )
 
 
-def _build_field(spec: RunSpec, options: dict[str, list[tuple[str, str]]]):
+def _build_field(spec: RunSpec, options: dict):
     return Label(
         Span("Build"),
         Select(*[Option(label, value=item, selected=item == spec.build_dir)
                  for label, item in options["build_dir"]], name="build_dir"),
-        Span("supplies llama-server; capabilities are read from CMakeCache", cls="hint"),
+        Span("supplies llama-server; its capabilities are read from CMakeCache", cls="hint"),
         cls="field",
     )
 
 
-def form(config: AppConfig, spec: RunSpec) -> Form:
-    options = _options(config, spec)
-    panels = []
-    for group in GROUPS:
-        fields = [_field(param, spec, options) for param in SCHEMA if param.group == group]
-        if group == "Model & build":
-            fields.insert(1, _build_field(spec, options))
-        panels.append(Div(H3(group), Div(*fields, cls="grid"), cls="panel"))
+def _ceiling_of(name: str, facts: ModelFacts | None) -> int:
+    _low, high, _step = bounds(BY_NAME[name],
+                               facts.n_layers if facts else None,
+                               facts.n_ctx_train if facts else None)
+    return int(high)
 
-    panels.append(Div(
-        H3("Extra arguments"),
+
+def refit(spec: RunSpec, facts: ModelFacts | None, ceilings: dict[str, int]) -> RunSpec:
+    """Re-aim the sliders the new model's limits invalidate, and only those.
+
+    A value sitting on the previous model's ceiling asked for "as much as this
+    model gives", so it follows the new ceiling; a value that no longer fits has
+    to come down. A smaller number was chosen on purpose and is left alone.
+    Growth stops at the default, so a roomier model does not silently reserve a
+    KV cache nobody asked for.
+    """
+    updates = {}
+    for name, previous in ceilings.items():
+        ceiling = _ceiling_of(name, facts)
+        value = getattr(spec, name, 0)
+        if value >= previous or value > ceiling:
+            updates[name] = min(max(getattr(DEFAULTS, name), previous), ceiling)
+    return spec.with_values(updates) if updates else spec
+
+
+def read_ceilings(params) -> dict[str, int]:
+    ceilings: dict[str, int] = {}
+    for item in (params.getlist("_ceiling") if hasattr(params, "getlist") else []):
+        name, _, value = str(item).partition(CEILING_SEPARATOR)
+        if name in SLIDERS and value.isdigit():
+            ceilings[name] = int(value)
+    return ceilings
+
+
+def bounded_fields(spec: RunSpec, facts: ModelFacts | None):
+    options: dict = {}
+    fields = [_field(BY_NAME[name], spec, options, facts) for name in BOUNDED]
+    markers = [Input(type="hidden", name="_ceiling",
+                     value=f"{name}{CEILING_SEPARATOR}{_ceiling_of(name, facts)}")
+               for name in SLIDERS]
+    return Div(*fields, *markers, id="bounded", cls="grid")
+
+
+# -- device picker ---------------------------------------------------------
+
+
+def _device_query(spec: RunSpec, backend: str) -> str:
+    return urlencode(
+        [("backend", backend), ("rpc_endpoints", spec.rpc_endpoints)]
+        + [("devices", name) for name in sorted(selected_devices(spec))]
+    )
+
+
+def devices_field(spec: RunSpec, scan: Scan, backend: str, oob: bool = False):
+    chosen = selected_devices(spec)
+    body: list = []
+
+    if not scan.ready:
+        body.append(Div(
+            Span("looking for devices…", cls="hint"),
+            hx_get="/server/devices?" + _device_query(spec, backend),
+            hx_trigger="load delay:500ms",
+            hx_target="#devicefield",
+            hx_swap="outerHTML",
+        ))
+    else:
+        found = scan.for_backend(backend)
+        if found:
+            body.append(Div(*[
+                Label(
+                    Input(type="checkbox", name="devices", value=device.name,
+                          checked=device.name in chosen),
+                    Span(device.name, cls="devname"),
+                    Span(device.description, cls="devdesc"),
+                    Span(device.memory_text, cls="devmem"),
+                    cls="devrow" if device.confirmed else "devrow unconfirmed",
+                    title=f"{device.source}" + ("" if device.confirmed else " · not confirmed by a run"),
+                )
+                for device in found
+            ], cls="devlist"))
+            body.append(Span(
+                "Nothing checked means llama-server uses every device it finds."
+                if not chosen else f"-dev {','.join(name for name in sorted(chosen))}",
+                cls="hint",
+            ))
+        else:
+            body.append(Input(type="text", name="devices", value=spec.devices,
+                              placeholder="Vulkan0,RPC0"))
+            body.append(Span("No device found for this build — select a build first.", cls="hint"))
+
+    for note in scan.notes:
+        body.append(Span(note, cls="hint"))
+
+    return Div(
+        Div(
+            Span("Devices"),
+            Button("Rescan", type="button", cls="small",
+                   hx_post="/server/devices", hx_target="#devicefield", hx_swap="outerHTML"),
+            cls="fieldhead",
+        ),
+        *body,
+        id="devicefield",
+        cls="field wide",
+        hx_swap_oob="true" if oob else None,
+    )
+
+
+# -- form ------------------------------------------------------------------
+
+
+def _section(section: Section, spec: RunSpec, options: dict, facts: ModelFacts | None,
+             scan: Scan, backend: str):
+    named = [name for name in section.names if name != "devices"]
+    fields = [_build_field(spec, options) if name == "build_dir"
+              else _field(BY_NAME[name], spec, options, facts)
+              for name in named]
+
+    body: list = []
+    if section.hint:
+        body.append(Span(section.hint, cls="hint block"))
+    if set(BOUNDED) <= set(named):
+        body.append(bounded_fields(spec, facts))
+        fields = [field for name, field in zip(named, fields) if name not in BOUNDED]
+    if fields:
+        body.append(Div(*fields, cls="grid"))
+    if "devices" in section.names:
+        body.append(devices_field(spec, scan, backend))
+
+    return Details(Summary(section.title), *body, cls="panel", open=True if section.open else None)
+
+
+def form(config: AppConfig, spec: RunSpec, scan: Scan, backend: str) -> Form:
+    options = _options(config, spec)
+    facts = model_facts(spec)
+    panels = [_section(section, spec, options, facts, scan, backend) for section in LAYOUT]
+
+    panels.append(Details(
+        Summary("Extra arguments"),
         Textarea(spec.extra_args, name="extra_args", rows=3,
                  placeholder="--spec-type draft-mtp --spec-draft-n-max 3"),
         Span("Anything here wins over the generated flag with the same name.", cls="hint"),
@@ -153,6 +444,133 @@ def form(config: AppConfig, spec: RunSpec) -> Form:
     )
 
 
+# -- memory ----------------------------------------------------------------
+
+
+def run_devices(scan: Scan, spec: RunSpec, backend: str) -> tuple[Device, ...]:
+    """The devices this run will use: the checked ones, or all of them."""
+    found = scan.for_backend(backend) if scan.ready else ()
+    chosen = selected_devices(spec)
+    return tuple(device for device in found if device.name in chosen) or found
+
+
+def _budget(devices: tuple[Device, ...]) -> tuple[float, list[str], bool]:
+    """Device memory to spend, and whether a real run is what measured it."""
+    total = 0.0
+    parts: list[str] = []
+    measured = bool(devices)
+    for device in devices:
+        value = device.free_mib if device.free_mib is not None else device.total_mib
+        if value is None:
+            measured = False
+            continue
+        measured = measured and device.free_mib is not None
+        total += value
+        parts.append(f"{device.name} {gib(value)}")
+    return total, parts, measured
+
+
+def _file_size(path: str) -> int:
+    try:
+        return Path(path).stat().st_size if path else 0
+    except OSError:
+        return 0
+
+
+def _kv_term(report: Estimate) -> float:
+    return next((term.mib for term in report.terms if term.label == "KV cache"), 0.0)
+
+
+def _ways_out(spec: RunSpec, facts: ModelFacts, report: Estimate, budget: float) -> list[str]:
+    """Concrete ways to make it fit, priced. Two at most; more is noise."""
+    tips: list[str] = []
+    kv = _kv_term(report)
+    room = budget - (report.total_mib - kv)
+    fits = context_for_budget(facts, room, spec.cache_type_k, spec.cache_type_v)
+    _low, _high, step = bounds(BY_NAME["ctx_size"], None, facts.n_ctx_train)
+    if fits >= step:
+        tips.append(f"{context_text(int(fits // step * step))} of context would fit as configured")
+    for name, other in kv_alternatives(facts, spec.ctx_size, spec.cache_type_k):
+        if kv - other > 0 and spec.cache_type_k == spec.cache_type_v:
+            tips.append(f"a {name} KV cache saves {gib(kv - other)}")
+            break
+    return tips[:2]
+
+
+def memory_panel(spec: RunSpec, facts: ModelFacts | None, scan: Scan, backend: str) -> Div:
+    """The VRAM bill, next to the command that will run up.
+
+    Everything here is arithmetic on the model header: no process is started to
+    find out, so the answer is available before the first run rather than after
+    the first out-of-memory.
+    """
+    devices = run_devices(scan, spec, backend)
+    report = estimate(spec, facts, devices=max(1, len(devices)),
+                      mmproj_bytes=_file_size(spec.mmproj))
+
+    rows = [
+        Div(Span(term.label, cls="memlabel"),
+            Span(gib(term.mib), cls="memnum"),
+            Span(term.detail, cls="memdetail"),
+            cls="memrow")
+        for term in report.terms
+    ]
+    if rows:
+        rows.append(Div(Span("Estimated total", cls="memlabel"),
+                        Span(gib(report.total_mib), cls="memnum"),
+                        Span("", cls="memdetail"),
+                        cls="memrow total"))
+
+    budget, parts, measured = _budget(devices)
+    notes = list(report.notes)
+    verdict: list = []
+    if not report.terms:
+        pass
+    elif not scan.ready:
+        verdict.append(Div("looking for devices…", cls="problem muted"))
+    elif budget <= 0:
+        verdict.append(Div(
+            "Select a build to know which devices this would run on." if not devices
+            else "No device memory known yet, so there is nothing to compare this against. "
+                 "One finished run teaches the GUI the real numbers.",
+            cls="problem muted"))
+    else:
+        headroom = budget - report.total_mib
+        source = "free" if measured else "installed"
+        summary = " + ".join(parts)
+        if headroom >= 0:
+            verdict.append(Div(f"Fits: {gib(headroom)} to spare of {gib(budget)} {source} "
+                               f"({summary})", cls="problem ok"))
+        else:
+            verdict.append(Div(f"⚠ {gib(-headroom)} over the {gib(budget)} {source} "
+                               f"({summary})", cls="problem err"))
+            if facts is not None:
+                verdict += [Div(tip, cls="problem muted")
+                            for tip in _ways_out(spec, facts, report, budget)]
+        if len(parts) > 1:
+            notes.append("this is the total across the devices; how much lands on each is "
+                         "the split mode's decision, and llama.cpp fills by free memory")
+
+    # the scan runs off the request thread, so the first render can be too early
+    # to compare against anything; ask the form for one more once it has landed
+    pending = bool(report.terms) and not scan.ready
+    return Div(
+        H3("Memory"),
+        *verdict,
+        *rows,
+        *[Span(note, cls="hint block") for note in notes],
+        cls="panel memory",
+        hx_post="/server/preview" if pending else None,
+        hx_trigger="load delay:700ms" if pending else None,
+        hx_include=".paramform" if pending else None,
+        hx_target="#preview" if pending else None,
+        hx_swap="outerHTML" if pending else None,
+    )
+
+
+# -- preview ---------------------------------------------------------------
+
+
 def _command_lines(argv: list[str]) -> str:
     lines = [Path(argv[0]).name]
     current = ""
@@ -168,14 +586,20 @@ def _command_lines(argv: list[str]) -> str:
     return "\n".join(lines)
 
 
-def preview(config: AppConfig, spec: RunSpec) -> Div:
-    build: Build | None = find_build(discover_builds(config.builds), spec.build_dir)
+def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False) -> Div:
+    build = build_of(config, spec)
     backend = build.backend if build else ""
     binary = build.server_bin if build and build.server_bin else Path("llama-server")
+    facts = model_facts(spec)
 
-    problems = list(validate(spec, backend=backend, supports_rpc=build.supports_rpc if build else None))
+    known = [device.name for device in scan.for_backend(backend)] if scan.ready else None
+    problems = list(validate(spec, backend=backend,
+                             supports_rpc=build.supports_rpc if build else None,
+                             available_devices=known))
     if build is not None and not build.usable:
         problems.insert(0, Problem("error", f"{build.name} has no llama-server binary"))
+    if spec.host in {"127.0.0.1", "0.0.0.0", "::"} and reachable(f"127.0.0.1:{spec.port}", 0.15):
+        problems.append(Problem("note", f"port {spec.port} already answers — something is listening"))
 
     argv = to_argv(spec, binary)
     bench_argv = to_bench_argv(spec, BenchSpec(), config.bench_script, binary)
@@ -191,16 +615,22 @@ def preview(config: AppConfig, spec: RunSpec) -> Div:
             H3("Command"),
             *messages,
             Pre(f"# build: {build.name} ({build.backend})" if build else "# build: not selected"),
+            Pre(f"# model: {facts.summary}") if facts and facts.summary else None,
             Pre(_command_lines(mask_api_key(argv))),
             cls="panel",
         ),
+        memory_panel(spec, facts, scan, backend),
         Details(
             Summary("Benchmark command from the same spec"),
             Pre(_command_lines(mask_api_key(bench_argv))),
             cls="panel",
         ),
         id="preview",
+        hx_swap_oob="true" if oob else None,
     )
+
+
+# -- process ---------------------------------------------------------------
 
 
 def _endpoint(argv: tuple[str, ...]) -> str:
@@ -305,12 +735,15 @@ def log_panel(supervisor: Supervisor, oob: bool = False) -> Div:
     )
 
 
-def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec):
+def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, scan: Scan):
     """Validate, then hand the command to the supervisor."""
-    build = find_build(discover_builds(config.builds), spec.build_dir)
+    build = build_of(config, spec)
+    known = [device.name for device in scan.for_backend(build.backend if build else "")] \
+        if scan.ready else None
     blocking = [problem.message for problem
                 in validate(spec, backend=build.backend if build else "",
-                            supports_rpc=build.supports_rpc if build else None)
+                            supports_rpc=build.supports_rpc if build else None,
+                            available_devices=known)
                 if problem.level == "error"]
     if build is None:
         blocking.append("Select a build")
@@ -328,12 +761,13 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec):
     return run_panel(supervisor), log_panel(supervisor, oob=True)
 
 
-def page(config: AppConfig, spec: RunSpec, supervisor: Supervisor):
+def page(config: AppConfig, spec: RunSpec, supervisor: Supervisor, scan: Scan, backend: str):
     return shell(
         "Server", "/server", config,
         Div(
-            form(config, spec),
-            Div(preview(config, spec), run_panel(supervisor), log_panel(supervisor), cls="stack"),
+            form(config, spec, scan, backend),
+            Div(preview(config, spec, scan), run_panel(supervisor), log_panel(supervisor),
+                cls="stack"),
             cls="split",
         ),
     )

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from gui2.core.params import aliases_of
-from gui2.core.runspec import RunSpec, to_argv
+from gui2.core.runspec import ALL_LAYERS, RunSpec, to_argv
 
 TASK_SETS = ("quick", "full", "v2", "v2-mini", "v2-review")
 REAL_CONTEXT_MODES = ("off", "repo-snapshot")
@@ -85,7 +85,7 @@ def to_bench_argv(
         "--ctx-size", str(spec.ctx_size),
         "--batch-size", str(spec.batch_size),
         "--ubatch-size", str(spec.ubatch_size),
-        "--gpu-layers", str(spec.gpu_layers),
+        "--gpu-layers", ALL_LAYERS if spec.gpu_layers_all else str(spec.gpu_layers),
         "--parallel", str(spec.parallel),
         "--cache-type-k", spec.cache_type_k,
         "--cache-type-v", spec.cache_type_v,

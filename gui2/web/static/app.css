@@ -150,6 +150,72 @@ pre {
 .problem { padding: 3px 0; font-size: 12px; }
 details > summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
 
+/* Sliders: drag for a feel of the range, type for an exact value */
+.paramform > details.panel > summary {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text);
+}
+.hint.block { display: block; margin: -2px 0 10px; max-width: 62ch; }
+
+.slider { display: flex; align-items: center; gap: 8px; }
+.slider .range { flex: 1; min-width: 90px; padding: 0; accent-color: var(--accent); }
+.slider .numberbox { width: 84px; min-width: 84px; flex: none; text-align: right; }
+.sliderbox .ceiling {
+    display: block;
+    margin-top: 2px;
+    padding-right: 92px;
+    text-align: right;
+    color: var(--muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+/* the price of the context reads as a sentence, not as a right-hand figure */
+.sliderbox #kvline { text-align: left; padding-right: 0; margin-top: 3px; }
+.sliderbox #kvline:empty { display: none; }
+
+/* Memory estimate: the numbers that decide whether the model loads at all */
+.memory .memrow {
+    display: grid;
+    grid-template-columns: 130px 84px 1fr;
+    align-items: baseline;
+    gap: 10px;
+    padding: 2px 0;
+    font-size: 12px;
+}
+.memory .memlabel { color: var(--muted); }
+.memory .memnum { text-align: right; font-variant-numeric: tabular-nums; }
+.memory .memdetail { color: var(--muted); font-size: 11px; }
+.memory .memrow.total { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 5px; }
+.memory .memrow.total .memlabel, .memory .memrow.total .memnum { color: var(--text); }
+.memory .hint.block { margin: 8px 0 0; }
+.problem.ok { color: var(--good); }
+
+/* Device picker */
+.field.wide { grid-column: 1 / -1; }
+.fieldhead { display: flex; align-items: center; gap: 10px; }
+.fieldhead > span:first-child { color: var(--text); font-size: 12px; }
+button.small { padding: 2px 8px; font-size: 11px; }
+
+.devlist { display: flex; flex-direction: column; gap: 2px; margin: 4px 0; }
+.devrow {
+    display: grid;
+    grid-template-columns: 18px 84px 1fr auto;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 6px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.devrow:hover { background: var(--panel-2); border-color: var(--line); }
+.devrow input[type="checkbox"] { width: auto; min-width: 0; }
+.devrow .devname { color: var(--text); font-size: 12px; }
+.devrow .devdesc { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.devrow .devmem { color: var(--muted); font-variant-numeric: tabular-nums; }
+.devrow.unconfirmed .devname { color: var(--muted); font-style: italic; }
+
 /* Process control and log */
 button, a.button {
     background: var(--panel-2);

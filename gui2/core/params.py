@@ -12,10 +12,18 @@ import shlex
 from dataclasses import dataclass
 from typing import Literal
 
-Kind = Literal["int", "float", "text", "bool", "choice"]
+Kind = Literal["int", "float", "text", "bool", "choice", "slider", "devices"]
 Emit = Literal["value", "presence", "absence", "composite"]
 
-KV_TYPES = ("f16", "bf16", "f32", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl", "f8_e4m3")
+#: the four that are actually worth choosing between; the exotic types llama.cpp
+#: also accepts can still be typed into the extra arguments
+KV_TYPES = ("f16", "q8_0", "f8_e4m3", "q4_0")
+KV_HELP = {
+    "f16": "full quality, largest KV cache",
+    "q8_0": "half the KV memory, quality loss rarely noticeable",
+    "f8_e4m3": "like q8_0 but needs flash attention on",
+    "q4_0": "smallest KV cache, only for very long contexts",
+}
 SPEC_TYPES = ("none", "mtp", "ngram-mod")
 SPLIT_MODES = ("", "auto", "layer", "none", "row")
 
@@ -70,15 +78,24 @@ G_ADVANCED = "Advanced"
 
 SCHEMA: tuple[Param, ...] = (
     Param("model", "Model", "text", G_MODEL, "-m", help="path to the GGUF file"),
-    Param("host", "Host", "text", G_SERVER, "--host"),
+    Param("host", "Host", "text", G_SERVER, "--host",
+          help="127.0.0.1 keeps the server private to this machine"),
     Param("port", "Port", "int", G_SERVER, "--port", minimum=1, maximum=65535),
-    Param("ctx_size", "Context", "int", G_CONTEXT, "-c", minimum=512, step=1024),
-    Param("threads", "CPU threads", "int", G_CONTEXT, "-t", minimum=1, maximum=128),
+    # maximum applies only until a model is chosen; then the GGUF sets the ceiling
+    Param("ctx_size", "Context", "slider", G_CONTEXT, "-c", minimum=4096, maximum=262144, step=4096,
+          help="tokens the server keeps in memory; the KV cache grows with it"),
+    Param("threads", "CPU threads", "slider", G_CONTEXT, "-t", minimum=1, maximum=64, step=1),
     Param("threads_http", "HTTP threads", "int", G_SERVER, "--threads-http", minimum=1, maximum=64),
-    Param("batch_size", "Batch", "int", G_CONTEXT, "--batch-size", minimum=1),
-    Param("ubatch_size", "Ubatch", "int", G_CONTEXT, "--ubatch-size", minimum=1),
+    Param("batch_size", "Batch", "slider", G_CONTEXT, "--batch-size",
+          minimum=64, maximum=8192, step=64, help="tokens submitted per prompt pass"),
+    Param("ubatch_size", "Ubatch", "slider", G_CONTEXT, "--ubatch-size",
+          minimum=32, maximum=2048, step=32, help="never larger than the batch"),
     Param("parallel", "Parallel sequences", "int", G_CONTEXT, "--parallel", minimum=1, maximum=64),
-    Param("gpu_layers", "GPU layers", "int", G_DEVICE, "-ngl", minimum=-1),
+    Param("gpu_layers_all", "Offload every layer", "bool", G_DEVICE, emit="composite",
+          help="emits -ngl 999; turn off to keep part of the model on the CPU"),
+    Param("gpu_layers", "GPU layers", "slider", G_DEVICE, "-ngl",
+          minimum=0, maximum=128, step=1, emit="composite",
+          help="used only when 'offload every layer' is off"),
     Param("cache_type_k", "KV cache K", "choice", G_CACHE, "--cache-type-k",
           choices=KV_TYPES, skip_default=True),
     Param("cache_type_v", "KV cache V", "choice", G_CACHE, "--cache-type-v",
@@ -110,16 +127,49 @@ SCHEMA: tuple[Param, ...] = (
           emit="composite"),
     Param("fit", "Auto fit", "choice", G_ADVANCED, "-fit", choices=("on", "off"), skip_default=True),
     Param("rpc_endpoints", "RPC workers", "text", G_DEVICE, "--rpc", emit="composite",
-          help="host:port list; must precede -dev so RPC0..RPCn resolve"),
-    Param("devices", "Devices (-dev)", "text", G_DEVICE, "-dev"),
-    Param("split_mode", "Split mode (-sm)", "choice", G_DEVICE, "-sm", choices=SPLIT_MODES),
-    Param("tensor_split", "Tensor split (-ts)", "text", G_DEVICE, "-ts"),
+          help="host:port of remote llama-rpc-server workers, comma separated"),
+    Param("devices", "Devices", "devices", G_DEVICE, "-dev",
+          help="nothing selected means every device the build finds"),
+    Param("split_mode", "Split mode", "choice", G_DEVICE, "-sm", choices=SPLIT_MODES,
+          help="layer without a tensor split fills each GPU by free VRAM"),
+    Param("tensor_split", "Tensor split", "text", G_DEVICE, "-ts",
+          help="manual ratio per device, e.g. 3,2 — leave empty unless you must"),
     Param("api_key", "API key", "text", G_SERVER, "--api-key", help="masked in previews"),
 )
 
 BY_NAME: dict[str, Param] = {param.name: param for param in SCHEMA}
 
 GROUPS: tuple[str, ...] = tuple(dict.fromkeys(param.group for param in SCHEMA))
+
+
+#: context slider steps, coarsest first. The model's own limit has to land on
+#: the ladder, otherwise the top of the slider is not the top of the model.
+CONTEXT_STEPS = (4096, 2048, 1024, 512, 256)
+
+
+def context_bounds(n_ctx_train: int | None) -> tuple[int, int, int]:
+    """Context slider range: the model's trained length is the ceiling."""
+    param = BY_NAME["ctx_size"]
+    ceiling = int(n_ctx_train or param.maximum or 262144)
+    step = next((size for size in CONTEXT_STEPS if ceiling % size == 0), CONTEXT_STEPS[-1])
+    low = max(step, int(param.minimum or step) // step * step)
+    low = min(low, ceiling // step * step)
+    return low, low + (ceiling - low) // step * step, step
+
+
+def bounds(param: Param, n_layers: int | None = None,
+           n_ctx_train: int | None = None) -> tuple[int | float, int | float, int | float]:
+    """Slider range, narrowed to what the selected model actually supports."""
+    if param.name == "ctx_size":
+        return context_bounds(n_ctx_train)
+
+    low = param.minimum if param.minimum is not None else 0
+    high = param.maximum if param.maximum is not None else 100
+    step = param.step or 1
+
+    if param.name == "gpu_layers" and n_layers:
+        high = min(high, max(n_layers + 1, low))
+    return low, high, step
 
 
 def aliases_of(flag: str) -> frozenset[str]:

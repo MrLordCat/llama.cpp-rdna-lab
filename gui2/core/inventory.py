@@ -43,7 +43,8 @@ class ModelFile:
 
     @property
     def is_mmproj(self) -> bool:
-        return self.name.lower().startswith("mmproj")
+        # both conventions in the wild: mmproj-model-f16.gguf and Model.mmproj-F16.gguf
+        return "mmproj" in self.name.lower()
 
     @property
     def size_text(self) -> str:
