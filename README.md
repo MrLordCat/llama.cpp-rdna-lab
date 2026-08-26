@@ -58,8 +58,8 @@ branches and are merged back selectively. Snapshot: 2026-08-26.
 
 | Branch | Status | Latest state |
 | --- | --- | --- |
-| `master` | Stable baseline | D131 R9 MTP window audit PASS, multi-stream scale-view fix (`276121b7e`). |
-| `rpc-vulkan` | **Active** (current work) | Recovers the RPC backend (removed upstream) for Vulkan offload, 11 commits ahead of `master`. `eb0d3c5ec` fixed the quantized `alloc_size` OOB crash (q3_K/q6_K). The 3-GPU 12K RPC lane reached **1314 ptps / 23.6 t/s** on 2026-08-23 (target ≥1277 ptps; PPL 4.0148 ≈ baseline), up from 839 ptps after alloc-size caching, a 16 MB send buffer, and `-ts 0.9,0.6,1.5`. Latest: async outbound queue plus split-timing diagnosis (94K lane 1067 t/s). See [RPC resume playbook](docs/research/rpc-vulkan/RPC_PREFILL_RESUME_PLAYBOOK.md). |
+| `master` | Stable baseline | D131 R9 MTP window audit PASS, multi-stream scale-view fix (`276121b7e`). 2026-08-26: merged RPC stack + qwen4exp port (`1d1aa5a6c`). |
+| `rpc-vulkan` | **Merged, kept for continuation** | RPC backend restored for Vulkan offload; merged into `master` 2026-08-26. Recovers the RPC backend (removed upstream), fixed quantized `alloc_size` OOB crash (q3_K/q6_K), split `ggml-rpc` into a layered file stack, and reached the 3-GPU 12K RPC lane target **1314 ptps / 23.6 t/s** (target ≥1277 ptps; PPL 4.0148 ≈ baseline), up from 839 ptps after alloc-size caching, a 16 MB send buffer, and `-ts 0.9,0.6,1.5`. See [RPC resume playbook](docs/research/rpc-vulkan/RPC_PREFILL_RESUME_PLAYBOOK.md). |
 | `dflash2` | Paused, to be resumed | DFlash2 block-diffusion drafter port for Qwen3.8-27B (local 2-tap depthwise conv + candidate selector, `Qwen3.8-27B-DFlash2-Q4_K_M.gguf` in `models/`), 5 commits ahead of `master`. Paused at a measured ROCm checkpoint (2026-08-21): opt-in multi-scheduler reuse gives 29.59 aggregate / 36.90 decode / 785.58 prompt tok/s on 498+128 vs 29.00/36.33/749.70 for the single-cache control, with the strict n=3 boundary/parity gate bit-exact. Open items include the upstream batched-greedy divergence and the Vulkan long-decode crash. Resume: [ROCm playbook](docs/research/dflash/ROCM_DFLASH2_RESUME_PLAYBOOK.md), [Vulkan playbook](docs/research/dflash/VULKAN_DFLASH2_RESUME_PLAYBOOK.md). |
 | `research/vulkan-decode` | Backlog, to be resumed | D104 (Q6_K prefill dispatch) and D105 (decode bandwidth) closed; Q4_K16 port log reached Vulkan PPL parity with bf16 (6.6124 vs 6.6202 on 256 chunks); MTP n=3 measured decode optimum 1.83x. 15 commits ahead, 10 behind `master` (rebase needed before continuation). |
 | `research/vulkan-fp8-kv` | Backlog, to be resumed | D131 R9: fp8 K per-block scale (`LLAMA_VK_F8_K_SCALE`), K-scale broadcast fix, MTP window audit PASS, multi-stream scale-view fix. C2 closed: f8_direct prefill lost 23.5% to preconvert. 20 commits ahead, 10 behind `master`. |
@@ -71,6 +71,7 @@ branches and are merged back selectively. Snapshot: 2026-08-26.
 - [Active Branches](#active-branches)
 - [Project Goals](#project-goals)
 - [Supported Backends and Models](#supported-backends-and-models)
+- [Remote GPU (RPC) Backend](#remote-gpu-rpc-backend)
 - [Reference System](#reference-system)
 - [Performance Summary](#performance-summary)
 - [Fork Highlights](#fork-highlights)
@@ -136,6 +137,40 @@ Q3_K_S (Qwen3.6) remains the secondary choice for maximum
 context/VRAM headroom, vision, and Q3-specific kernel research. `PQ2_0` is an
 experimental Prism format and should not be confused with conventional `Q2_0`
 quantization.
+
+## Remote GPU (RPC) Backend
+
+The fork restores the upstream-removed RPC backend to offload a slice of the
+model to a remote Vulkan GPU over TCP. The lab setup uses a local RTX 3080
+(10 GB) as the third device alongside the two RX 9070 XT cards.
+
+- **Code layout** — the RPC stack lives in `ggml/src/ggml-rpc/`
+  (`rpc_types.h` protocol, `rpc_common.cpp` transport/queue/hash,
+  `rpc_client.cpp`, `rpc_server.cpp`, `transport.*`); the standalone server
+  binary is `tools/rpc/rpc-server`.
+- **Protocol** — version `5.0.1` with a fail-closed check against old servers.
+  The client and server must be built from the same tree.
+- **Key optimizations** — alloc-size caching (removes hundreds of round-trips
+  per ubatch), F16 activation staging at the boundary (+20% prefill on 9B),
+  async outbound queue and run-ahead, opt-in block-Q8_0 activation wire
+  (`GGML_RPC_ACT_Q8_0`), and the MTP `graph_recompute` hash fix (acceptance
+  1.4% → 59.7%).
+- **Run** — `llama-server --rpc <host>:<port> -dev Vulkan1,Vulkan0,RPC0
+  -sm layer -ts <f1>,<f2>,<f3>` with `RPC0` naming the remote device.
+- **Status (2026-08-23)** — the 27B 12K lane target was reached:
+  **1314 ptps / 23.6 t/s**, PPL 4.0148 ≈ baseline. 94K RPC parity is
+  `1328.65/25.12` vs local `1351.18/25.05`. RPC overhead on 9B is about
+  −10% prompt / −12% decode over loopback; over 1 GbE LAN the 3080 loses
+  −38% / −61% — the network is the bottleneck, not the GPU.
+- **Practice** — run the server from SYSTEM (`schtasks`) so it survives
+  WinRM sessions, keep the NV shader cache warm, stop gracefully (`/exit`,
+  never hard-kill a server with a loaded model), and use live logs (`tee`).
+
+Detailed design and iteration notes:
+[docs/research/rpc-vulkan/RPC_ARCHITECTURE.md](docs/research/rpc-vulkan/RPC_ARCHITECTURE.md),
+[RPC_CHANGES.md](docs/research/rpc-vulkan/RPC_CHANGES.md),
+[RPC_BASELINE_TABLE.md](docs/research/rpc-vulkan/RPC_BASELINE_TABLE.md), and
+[RPC_PREFILL_RESUME_PLAYBOOK.md](docs/research/rpc-vulkan/RPC_PREFILL_RESUME_PLAYBOOK.md).
 
 ## Reference System
 
