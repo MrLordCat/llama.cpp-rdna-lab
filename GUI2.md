@@ -114,8 +114,7 @@ directories are gitignored and exist only in `D:\GitHub\llama.cpp-with-GUI`.
 
 ## Scope
 
-In scope: Server launch, Bench / Autotune, History & Analytics, Models
-(read-only list).
+In scope: Server launch, Bench / Autotune, History & Analytics, Models.
 
 Out of scope, moved to CLI and VS Code tasks: building, build info, model
 download, dependency install. That is ~3 300 lines of the old GUI
@@ -158,8 +157,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 5 815 lines of Python plus 1 570 of tests, against the old GUI's
-15 458 with none. The suite is 113 tests and runs in about 13 seconds without
+`gui2/` is 6 177 lines of Python plus 1 838 of tests, against the old GUI's
+15 458 with none. The suite is 134 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -167,7 +166,7 @@ touching a GPU.
 | `core/gguf.py` | what a model file says about itself — layers, context, head counts, SSM shape. Header only, a few KB, no binary |
 | `core/params.py` | one `Param` per flag; forms and argv both generated from it |
 | `core/runspec.py` | the single description of a run, `to_argv`, `validate`, and the slot arithmetic `slot_context` |
-| `core/memory.py` | what a run *will* cost: weights + KV + compute, from the header |
+| `core/memory.py` | what a run *will* cost: weights + KV + compute, from the header; and `capacity`, the context a model has room for on a given card |
 | `core/measured.py` | what a run *did* cost, read from its own log as it is written |
 | `core/memstore.py` | the same, kept between runs and rescaled across contexts |
 | `core/machine.py` | cores, free ports, this machine's LAN address |
@@ -180,6 +179,11 @@ The Server page is written for someone who has not read llama.cpp's help
 text. Every section says what it is for; every number that a person cannot be
 expected to know is either read from the machine or declared automatic with
 the automatic value spelled out.
+
+The Models page answers the question a directory listing cannot: not "is the
+file there" but "will it load here, and how much context is left once its
+weights are down". Both come from the header and the device list, so the page
+costs one stat and a few kilobytes per model and starts nothing.
 
 ## Facts about llama.cpp worth not rediscovering
 
@@ -201,6 +205,14 @@ the automatic value spelled out.
   `cmd(1) | size(8) | payload` out, `size(8) | payload` back.
 - `rpc-server` exposes **all** its accelerators unless `-d` says otherwise, so
   one address can occupy several `RPCn` names.
+- A split model is `<stem>-00001-of-00003.gguf`, must be loaded through its
+  *first* part, and llama.cpp finds the rest from that name itself
+  (`llama_get_list_splits`). The later parts carry no architecture at all, so
+  the name is the only way to recognise them; sizing a split model by the file
+  it was handed underestimates it by however many parts follow.
+- The GGUFs in this lab do not carry `nextn_predict_layers`, so an MTP
+  conversion is recognisable only by its name and its one extra layer. Same
+  rule as `agent_workload_bench.is_mtp_model_name`.
 
 ## Validation
 
