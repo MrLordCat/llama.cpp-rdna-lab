@@ -147,3 +147,63 @@ def test_status_and_log_partials_follow_a_job(client):
 
 def test_stop_on_an_idle_slot_is_harmless(client):
     assert "Nothing to stop" in client.post("/server/stop").text
+
+
+def announce(*lines: str) -> list[str]:
+    """A child that says what llama-server says as it allocates, then exits."""
+    return [sys.executable, "-c", "print(%r)" % "\n".join(lines)]
+
+
+def test_a_run_of_other_settings_is_reported_but_does_not_replace_the_estimate(client, models):
+    supervisor = client.app.state.supervisor
+    supervisor.start("test", "pretend-server", announce(
+        "load_tensors:      Vulkan0 model buffer size =  4615.84 MiB",
+        "llama_kv_cache:    Vulkan0 KV buffer size =  1380.00 MiB",
+    ))
+    assert supervisor.wait(timeout=30) == 0
+
+    html = client.post("/server/preview", data={
+        "model": models["long"], "ctx_size": "32768"}).text
+
+    # the numbers are real, but they belong to some other command line
+    assert "Estimated total" in html
+    assert "not these settings" in html
+    assert "Measured, not estimated" not in html
+
+
+def test_a_finished_run_reports_its_own_buffers_instead_of_the_estimate():
+    from fasthtml.common import to_xml
+
+    from gui2.core.devices import Scan
+    from gui2.core.gguf import read_facts
+    from gui2.core.measured import parse_text
+    from gui2.core.runspec import DEFAULTS
+    from gui2.web import server_page
+
+    measurement = parse_text(
+        "load_tensors:      Vulkan0 model buffer size =  4615.84 MiB\n"
+        "llama_kv_cache:    Vulkan0 KV buffer size =  1380.00 MiB\n"
+        "common_memory_breakdown_print: | memory breakdown [MiB]   | total   free    self"
+        "   model   context   compute    unaccounted |\n"
+        "common_memory_breakdown_print: |   - Vulkan0 (RX 9070 XT) | 16304 = 8817 +"
+        " (6264 =  4615 +    1629 +      19) +        1221 |\n"
+    )
+    html = to_xml(server_page.memory_panel(
+        DEFAULTS, read_facts("nothing.gguf"), Scan(), "vulkan", measurement, matches=True))
+
+    assert "Measured, not estimated" in html
+    assert "5.9 GiB" in html          # 4615.84 + 1380 + 19 of compute
+    # 6014.84 of buffers plus 1221 the driver kept, against a 16304 MiB card
+    assert "Card in use: Vulkan0 at 44%" in html
+
+
+def test_the_same_run_from_a_different_build_directory_still_counts():
+    from gui2.web.server_page import same_run
+
+    argv = ["D:/a/build-vulkan/bin/llama-server.exe", "-m", "m.gguf", "-c", "4096"]
+    moved = ["D:/b/build-vulkan/bin/llama-server.exe", "-m", "m.gguf", "-c", "4096"]
+    other = ["D:/a/build-vulkan/bin/llama-server.exe", "-m", "m.gguf", "-c", "8192"]
+
+    assert same_run(argv, moved), "rebuilding elsewhere does not change what a run costs"
+    assert not same_run(argv, other)
+    assert not same_run(argv, [])

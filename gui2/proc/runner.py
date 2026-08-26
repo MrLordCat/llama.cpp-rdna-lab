@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Sequence
 
+from gui2.core.measured import Measurement, Reader
 from gui2.proc import hidden
 
 Status = Literal["starting", "running", "stopping", "exited", "failed"]
@@ -129,6 +130,8 @@ class Job:
     def __init__(self, spec: JobSpec, capacity: int = 4000) -> None:
         self.spec = spec
         self.log = LogBuffer(capacity)
+        #: the buffer above forgets; this remembers what the run said it took
+        self._memory = Reader()
         self._lock = threading.Lock()
         self._popen: subprocess.Popen[str] | None = None
         self._reader: threading.Thread | None = None
@@ -179,6 +182,7 @@ class Job:
         try:
             for line in popen.stdout:
                 self.log.append(line)
+                self._memory.feed(line)
         except Exception as exc:  # pragma: no cover - pipe teardown races
             self.log.append(f"[gui2] log stream ended: {exc}")
         finally:
@@ -254,6 +258,10 @@ class Job:
 
     def log_since(self, cursor: int) -> tuple[int, list[str]]:
         return self.log.since(cursor)
+
+    def measurement(self) -> Measurement:
+        """The memory this run reported, as far as it has got."""
+        return self._memory.result()
 
 
 def job_spec(kind: str, label: str, argv: Sequence[str], cwd: Path | None = None,

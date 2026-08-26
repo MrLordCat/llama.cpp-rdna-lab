@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 from urllib.parse import urlencode
 
 from fasthtml.common import (
@@ -44,6 +45,7 @@ from gui2.core.memory import (
     kv_bytes,
     MIB,
 )
+from gui2.core.measured import Measurement, notes as measured_notes
 from gui2.core.params import BY_NAME, KV_HELP, SCHEMA, Param, bounds
 from gui2.core.runspec import (
     DEFAULTS,
@@ -497,16 +499,70 @@ def _ways_out(spec: RunSpec, facts: ModelFacts, report: Estimate, budget: float)
     return tips[:2]
 
 
-def memory_panel(spec: RunSpec, facts: ModelFacts | None, scan: Scan, backend: str) -> Div:
-    """The VRAM bill, next to the command that will run up.
+def same_run(argv: Sequence[str], other: Sequence[str]) -> bool:
+    """Whether two commands would put the same buffers on the same cards.
 
-    Everything here is arithmetic on the model header: no process is started to
-    find out, so the answer is available before the first run rather than after
-    the first out-of-memory.
+    The binary's path is dropped: rebuilding into a different directory does
+    not change what a run costs. Everything else has to match, because every
+    other flag can.
+    """
+    return bool(other) and tuple(argv[1:]) == tuple(other[1:])
+
+
+def _measured_rows(measurement: Measurement) -> list:
+    """One row per card, showing what it actually held."""
+    rows = [
+        Div(Span(device.name, cls="memlabel"),
+            Span(gib(device.used_mib), cls="memnum"),
+            Span(" · ".join(f"{name} {gib(mib)}" for name, mib in device.parts),
+                 cls="memdetail"),
+            cls="memrow")
+        for device in measurement.vram
+    ]
+    if len(rows) > 1:
+        rows.append(Div(Span("Measured total", cls="memlabel"),
+                        Span(gib(measurement.vram_mib), cls="memnum"),
+                        Span("", cls="memdetail"),
+                        cls="memrow total"))
+    return rows
+
+
+def _measured_verdict(measurement: Measurement) -> list:
+    """How close each card came to being full, when the card said how big it is."""
+    tight = [
+        f"{device.name} at {(device.used_mib + (device.overhead_mib or 0)) / device.total_mib:.0%}"
+        for device in measurement.vram if device.total_mib
+    ]
+    if not tight:
+        return []
+    return [Div("Card in use: " + ", ".join(tight), cls="problem muted")]
+
+
+def memory_panel(spec: RunSpec, facts: ModelFacts | None, scan: Scan, backend: str,
+                 measurement: Measurement = Measurement(), matches: bool = False) -> Div:
+    """The VRAM bill, next to the command that will run it up.
+
+    Before the first run this is arithmetic on the model header: no process is
+    started to find out, so the answer arrives before the out-of-memory rather
+    than after it. Once a run of these exact settings has reported its own
+    buffers, the arithmetic steps aside and the measurement is shown instead.
     """
     devices = run_devices(scan, spec, backend)
     report = estimate(spec, facts, devices=max(1, len(devices)),
                       mmproj_bytes=_file_size(spec.mmproj))
+
+    if matches and measurement.vram:
+        return Div(
+            H3("Memory"),
+            Div("Measured, not estimated — these are the buffers the run reported.",
+                cls="problem ok"),
+            *_measured_rows(measurement),
+            *_measured_verdict(measurement),
+            *[Span(note, cls="hint block") for note in measured_notes(measurement)],
+            Span(f"the estimate for these settings was {gib(report.total_mib)}"
+                 if report.terms else "", cls="hint block"),
+            cls="panel memory",
+        )
 
     rows = [
         Div(Span(term.label, cls="memlabel"),
@@ -550,6 +606,11 @@ def memory_panel(spec: RunSpec, facts: ModelFacts | None, scan: Scan, backend: s
         if len(parts) > 1:
             notes.append("this is the total across the devices; how much lands on each is "
                          "the split mode's decision, and llama.cpp fills by free memory")
+    if measurement.vram and not matches:
+        # a measurement of some other settings is still worth more than nothing:
+        # it says how far this estimate has been off on this machine before
+        notes.append(f"the last run took {gib(measurement.vram_mib)} across "
+                     f"{len(measurement.vram)} device(s), but it was not these settings")
 
     # the scan runs off the request thread, so the first render can be too early
     # to compare against anything; ask the form for one more once it has landed
@@ -586,7 +647,8 @@ def _command_lines(argv: list[str]) -> str:
     return "\n".join(lines)
 
 
-def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False) -> Div:
+def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
+            supervisor: Supervisor | None = None) -> Div:
     build = build_of(config, spec)
     backend = build.backend if build else ""
     binary = build.server_bin if build and build.server_bin else Path("llama-server")
@@ -604,6 +666,10 @@ def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False) -> 
     argv = to_argv(spec, binary)
     bench_argv = to_bench_argv(spec, BenchSpec(), config.bench_script, binary)
 
+    snapshot = supervisor.snapshot() if supervisor else None
+    measurement = supervisor.measurement() if supervisor else Measurement()
+    matches = snapshot is not None and same_run(argv, snapshot.argv)
+
     messages = [
         Div(("⚠ " if problem.level == "error" else "note: ") + problem.message,
             cls="problem err" if problem.level == "error" else "problem muted")
@@ -619,7 +685,7 @@ def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False) -> 
             Pre(_command_lines(mask_api_key(argv))),
             cls="panel",
         ),
-        memory_panel(spec, facts, scan, backend),
+        memory_panel(spec, facts, scan, backend, measurement, matches),
         Details(
             Summary("Benchmark command from the same spec"),
             Pre(_command_lines(mask_api_key(bench_argv))),
@@ -766,8 +832,8 @@ def page(config: AppConfig, spec: RunSpec, supervisor: Supervisor, scan: Scan, b
         "Server", "/server", config,
         Div(
             form(config, spec, scan, backend),
-            Div(preview(config, spec, scan), run_panel(supervisor), log_panel(supervisor),
-                cls="stack"),
+            Div(preview(config, spec, scan, supervisor=supervisor),
+                run_panel(supervisor), log_panel(supervisor), cls="stack"),
             cls="split",
         ),
     )

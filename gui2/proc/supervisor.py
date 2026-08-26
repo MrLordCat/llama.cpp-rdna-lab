@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 from typing import Sequence
 
+from gui2.core.measured import Measurement
 from gui2.proc.runner import Job, Snapshot, job_spec
 
 
@@ -50,6 +51,16 @@ class Supervisor:
     def log_since(self, cursor: int) -> tuple[int, list[str]]:
         job = self.job
         return job.log_since(cursor) if job else (cursor, [])
+
+    def measurement(self) -> Measurement:
+        """What the job on the slot reported about its own memory.
+
+        Read off the output that is already being captured, so nothing is
+        started and nothing is asked of a driver. Meaningful from the moment
+        the model finishes loading, and complete once the process has exited.
+        """
+        job = self.job
+        return job.measurement() if job else Measurement()
 
     # -- control -----------------------------------------------------------
 

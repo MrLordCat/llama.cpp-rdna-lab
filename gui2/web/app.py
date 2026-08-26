@@ -82,7 +82,7 @@ def create_app(config: AppConfig | None = None):
         spec = server_page.spec_from_params(params)
         scan, backend = scanned(spec)
         return (
-            server_page.preview(config, spec, scan),
+            server_page.preview(config, spec, scan, supervisor=supervisor),
             server_page.devices_field(spec, scan, backend, oob=True),
             # the context slider carries the price of the context: it has to
             # follow the same change that moved it
@@ -99,7 +99,7 @@ def create_app(config: AppConfig | None = None):
         scan, _backend = scanned(spec)
         return (
             server_page.bounded_fields(spec, facts),
-            server_page.preview(config, spec, scan, oob=True),
+            server_page.preview(config, spec, scan, oob=True, supervisor=supervisor),
             HtmxResponseHeaders(push_url="/server?" + server_page.state_query(params, spec)),
         )
 
