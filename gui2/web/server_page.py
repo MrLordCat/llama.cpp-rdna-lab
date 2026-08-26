@@ -48,6 +48,7 @@ from gui2.core.memory import (
     MIB,
 )
 from gui2.core.measured import Measurement, notes as measured_notes
+from gui2.core.memstore import MemoryStore
 from gui2.core.rpc import (
     DEFAULT_PORT,
     Fleet,
@@ -94,7 +95,9 @@ class Section:
 
 
 LAYOUT: tuple[Section, ...] = (
-    Section("Model and build", ("model", "build_dir"), open=True),
+    Section("Model and build", ("model", "build_dir"), open=True,
+            hint="Which model file to serve, and which llama-server binary serves it. "
+                 "The build decides which GPUs are usable at all."),
     Section("Context and GPU", ("ctx_size", "gpu_layers_all", "gpu_layers", "devices",
                                 "parallel", "kv_unified"), open=True,
             hint="The two questions that decide whether a model loads at all: how much "
@@ -112,11 +115,20 @@ LAYOUT: tuple[Section, ...] = (
                  "program called rpc-server; this machine then treats its cards as "
                  "RPC0, RPC1 … in the order they are listed here."),
     Section("Speculative decoding", ("spec_type", "spec_draft_n_max",
-                                     "ngram_n_min", "ngram_n_match", "ngram_n_max")),
+                                     "ngram_n_min", "ngram_n_match", "ngram_n_max"),
+            hint="Something cheap guesses the next few tokens and the model checks them all "
+                 "at once. Faster when the guesses are right, slower when they are not, so "
+                 "it is worth measuring rather than assuming."),
     Section("Prompt cache", ("conversation_cache", "cache_ram",
-                             "ctx_checkpoints", "checkpoint_every_n_tokens")),
-    Section("Vision", ("mmproj", "mmproj_offload")),
-    Section("Advanced", ("no_warmup", "no_mmap", "disable_thinking", "fit")),
+                             "ctx_checkpoints", "checkpoint_every_n_tokens"),
+            hint="Keeps the work already done on a prompt, so the next message in a "
+                 "conversation does not re-read everything before it. Costs system RAM, "
+                 "not VRAM."),
+    Section("Vision", ("mmproj", "mmproj_offload"),
+            hint="Only for models that can look at images. The mmproj file is the part "
+                 "that turns a picture into something the model can read."),
+    Section("Advanced", ("no_warmup", "no_mmap", "disable_thinking", "fit"),
+            hint="Rarely needed. Each one is here because some particular machine needed it."),
 )
 
 
@@ -806,28 +818,80 @@ def _measured_verdict(measurement: Measurement) -> list:
     return [Div("Card in use: " + ", ".join(tight), cls="problem muted")]
 
 
+@dataclass(frozen=True, slots=True)
+class Reading:
+    """What is known about this exact command's memory, and how it is known."""
+
+    measurement: Measurement = Measurement()
+    #: said out loud in the panel: a figure nobody can trace is worth little
+    origin: str = ""
+    #: False when a measurement of another context was rescaled to reach this one
+    exact: bool = True
+    #: a real measurement of some *other* command. Not an answer, but evidence
+    #: that this machine has run something, and worth a footnote.
+    other: Measurement = Measurement()
+
+    def __bool__(self) -> bool:
+        return bool(self.measurement.vram and self.origin)
+
+
+def reading(argv: Sequence[str], supervisor: Supervisor | None,
+            store: MemoryStore | None) -> Reading:
+    """The best answer available for this command, newest evidence first.
+
+    The job on the slot wins, because it is this machine right now. Failing
+    that, a stored run of the same command. Failing that, the same command at
+    another context, with only its KV cache moved -- and said so.
+    """
+    live = supervisor.measurement() if supervisor else Measurement()
+    snapshot = supervisor.snapshot() if supervisor else None
+    if snapshot is not None and same_run(argv, snapshot.argv) and live.vram:
+        return Reading(live, "this run, as it reported its own buffers")
+    aside = live if live.vram else Measurement()
+
+    if store is None:
+        return Reading(other=aside)
+    measurement, record, exact = store.recall(argv)
+    if record is None or not measurement.vram:
+        return Reading(other=aside)
+    if exact:
+        return Reading(measurement, f"a run of these settings {record.age_text}", other=aside)
+    return Reading(
+        measurement,
+        f"a run of the same settings at {context_text(record.context)}, {record.age_text}",
+        exact=False,
+        other=aside,
+    )
+
+
 def memory_panel(spec: RunSpec, facts: ModelFacts | None, scan: Scan, backend: str,
-                 measurement: Measurement = Measurement(), matches: bool = False) -> Div:
+                 known: Reading = Reading()) -> Div:
     """The VRAM bill, next to the command that will run it up.
 
     Before the first run this is arithmetic on the model header: no process is
     started to find out, so the answer arrives before the out-of-memory rather
-    than after it. Once a run of these exact settings has reported its own
-    buffers, the arithmetic steps aside and the measurement is shown instead.
+    than after it. Once a run of these settings has reported its own buffers,
+    the arithmetic steps aside and the measurement is shown instead.
     """
     devices = run_devices(scan, spec, backend)
     report = estimate(spec, facts, devices=max(1, len(devices)),
                       mmproj_bytes=_file_size(spec.mmproj))
 
-    if matches and measurement.vram:
+    if known:
+        measurement = known.measurement
+        headline = ("Measured, not estimated" if known.exact
+                    else "Measured at another context and scaled")
         return Div(
             H3("Memory"),
-            Div("Measured, not estimated — these are the buffers the run reported.",
-                cls="problem ok"),
+            Div(f"{headline} — from {known.origin}.", cls="problem ok"),
             *_measured_rows(measurement),
             *_measured_verdict(measurement),
+            *([] if known.exact else [Span(
+                "Weights and compute buffers do not move with the context; the KV cache "
+                "is exactly proportional to it, so it is the only figure adjusted.",
+                cls="hint block")]),
             *[Span(note, cls="hint block") for note in measured_notes(measurement)],
-            Span(f"the estimate for these settings was {gib(report.total_mib)}"
+            Span(f"the arithmetic for these settings says {gib(report.total_mib)}"
                  if report.terms else "", cls="hint block"),
             cls="panel memory",
         )
@@ -874,11 +938,11 @@ def memory_panel(spec: RunSpec, facts: ModelFacts | None, scan: Scan, backend: s
         if len(parts) > 1:
             notes.append("this is the total across the devices; how much lands on each is "
                          "the split mode's decision, and llama.cpp fills by free memory")
-    if measurement.vram and not matches:
+    if known.other.vram:
         # a measurement of some other settings is still worth more than nothing:
         # it says how far this estimate has been off on this machine before
-        notes.append(f"the last run took {gib(measurement.vram_mib)} across "
-                     f"{len(measurement.vram)} device(s), but it was not these settings")
+        notes.append(f"the last run took {gib(known.other.vram_mib)} across "
+                     f"{len(known.other.vram)} device(s), but it was not these settings")
 
     # the scan runs off the request thread, so the first render can be too early
     # to compare against anything; ask the form for one more once it has landed
@@ -940,7 +1004,7 @@ def _port_problems(spec: RunSpec) -> list[Problem]:
 
 
 def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
-            supervisor: Supervisor | None = None) -> Div:
+            supervisor: Supervisor | None = None, store: MemoryStore | None = None) -> Div:
     build = build_of(config, spec)
     backend = build.backend if build else ""
     binary = build.server_bin if build and build.server_bin else Path("llama-server")
@@ -957,9 +1021,7 @@ def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
     argv = to_argv(spec, binary)
     bench_argv = to_bench_argv(spec, BenchSpec(), config.bench_script, binary)
 
-    snapshot = supervisor.snapshot() if supervisor else None
-    measurement = supervisor.measurement() if supervisor else Measurement()
-    matches = snapshot is not None and same_run(argv, snapshot.argv)
+    known = reading(argv, supervisor, store)
 
     messages = [
         Div(PROBLEM_STYLE[problem.level][0] + problem.message,
@@ -976,7 +1038,7 @@ def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
             Pre(_command_lines(mask_api_key(argv))),
             cls="panel",
         ),
-        memory_panel(spec, facts, scan, backend, measurement, matches),
+        memory_panel(spec, facts, scan, backend, known),
         Details(
             Summary("Benchmark command from the same spec"),
             Pre(_command_lines(mask_api_key(bench_argv))),
@@ -1119,12 +1181,12 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, scan: Scan):
 
 
 def page(config: AppConfig, spec: RunSpec, supervisor: Supervisor, scan: Scan, backend: str,
-         params=None):
+         params=None, store: MemoryStore | None = None):
     return shell(
         "Server", "/server", config,
         Div(
             form(config, spec, scan, backend, params),
-            Div(preview(config, spec, scan, supervisor=supervisor),
+            Div(preview(config, spec, scan, supervisor=supervisor, store=store),
                 run_panel(supervisor), log_panel(supervisor), cls="stack"),
             cls="split",
         ),

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from gui2.core.measured import Measurement
 from gui2.proc.runner import Job, Snapshot, job_spec
@@ -28,8 +28,10 @@ class Busy(RuntimeError):
 class Supervisor:
     """Serialises access to the GPU slot."""
 
-    def __init__(self, capacity: int = 4000) -> None:
+    def __init__(self, capacity: int = 4000,
+                 on_finish: "Callable[[Job], None] | None" = None) -> None:
         self._capacity = capacity
+        self._on_finish = on_finish
         self._lock = threading.RLock()
         self._job: Job | None = None
 
@@ -71,7 +73,8 @@ class Supervisor:
             current = self._job.snapshot() if self._job else None
             if current is not None and current.alive:
                 raise Busy(current)
-            job = Job(job_spec(kind, label, argv, cwd, env), capacity=self._capacity)
+            job = Job(job_spec(kind, label, argv, cwd, env), capacity=self._capacity,
+                      on_finish=self._on_finish)
             self._job = job
         job.start()
         return job

@@ -188,10 +188,12 @@ def test_a_finished_run_reports_its_own_buffers_instead_of_the_estimate():
         "common_memory_breakdown_print: |   - Vulkan0 (RX 9070 XT) | 16304 = 8817 +"
         " (6264 =  4615 +    1629 +      19) +        1221 |\n"
     )
+    known = server_page.Reading(measurement, "a run of these settings 3 minutes ago")
     html = to_xml(server_page.memory_panel(
-        DEFAULTS, read_facts("nothing.gguf"), Scan(), "vulkan", measurement, matches=True))
+        DEFAULTS, read_facts("nothing.gguf"), Scan(), "vulkan", known))
 
     assert "Measured, not estimated" in html
+    assert "3 minutes ago" in html, "a figure nobody can trace is worth little"
     assert "5.9 GiB" in html          # 4615.84 + 1380 + 19 of compute
     # 6014.84 of buffers plus 1221 the driver kept, against a 16304 MiB card
     assert "Card in use: Vulkan0 at 44%" in html
@@ -305,3 +307,38 @@ def test_checking_a_worker_renames_the_devices_it_actually_offers(client):
 
     assert re.findall(r'devname">(RPC\d)', field) == ["RPC0", "RPC1"]
     assert "15.0 GiB free" in field and "7.0 GiB free" in field
+
+
+def test_a_finished_server_run_is_written_down_for_the_next_one(client):
+    supervisor = client.app.state.supervisor
+    memory = client.app.state.memory
+    argv = announce(
+        "load_tensors:      Vulkan0 model buffer size =  4615.84 MiB",
+        "llama_kv_cache:    Vulkan0 KV buffer size =  1280.00 MiB",
+    )
+    # the command carries a context, which is what makes it rescalable later
+    argv += ["-c", "32768"]
+
+    supervisor.start("server", "pretend-server", argv)
+    assert supervisor.wait(timeout=30) == 0     # joins the drain thread, so the
+                                                # finish callback has already run
+    _measurement, record, exact = memory.recall(argv)
+    assert exact and record is not None and record.context == 32768
+
+    doubled = [*argv[:-1], "65536"]
+    scaled, from_record, exact = memory.recall(doubled)
+    assert not exact and from_record is record
+    assert scaled.vram[0].kv_mib == 2560.00
+
+
+def test_a_benchmark_is_not_filed_as_a_server_run(client):
+    supervisor = client.app.state.supervisor
+    memory = client.app.state.memory
+    argv = announce("load_tensors:      Vulkan0 model buffer size =  4615.84 MiB")
+
+    supervisor.start("bench", "pretend-bench", argv)
+    assert supervisor.wait(timeout=30) == 0
+
+    # the allocations belong to a llama-server this GUI did not compose
+    _measurement, record, _exact = memory.recall(argv)
+    assert record is None

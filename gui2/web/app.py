@@ -10,6 +10,7 @@ from fasthtml.common import Div, HtmxResponseHeaders, Link, RedirectResponse, Sc
 from gui2.config import AppConfig
 from gui2.core.devices import DeviceService
 from gui2.core.history import HistoryStore
+from gui2.core.memstore import MemoryStore
 from gui2.core.runspec import parse_rpc_endpoints
 from gui2.proc import Supervisor
 from gui2.proc.hidden import suppress_error_dialogs
@@ -21,8 +22,19 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 def create_app(config: AppConfig | None = None):
     config = config or AppConfig.load()
     store = HistoryStore(config.history_csv)
+    memory = MemoryStore(config.memory_json)
+
+    def learn(job) -> None:
+        """Keep what a finished server run said its memory was.
+
+        Only server runs: a benchmark's command line is the script's, and its
+        allocations belong to a llama-server this GUI did not compose.
+        """
+        if job.spec.kind == "server":
+            memory.remember(job.spec.argv, job.measurement())
+
     # One supervisor per app: the GPU slot is a process-wide resource.
-    supervisor = Supervisor()
+    supervisor = Supervisor(on_finish=learn)
     suppress_error_dialogs()
 
     # Device discovery reads logs and the registry only, so it is safe to run
@@ -76,7 +88,8 @@ def create_app(config: AppConfig | None = None):
         scan, backend = scanned(spec)
         # the query string also carries the worker-setup boxes, which are not
         # llama-server flags and so are not part of the spec
-        return server_page.page(config, spec, supervisor, scan, backend, req.query_params)
+        return server_page.page(config, spec, supervisor, scan, backend,
+                                req.query_params, memory)
 
     @rt("/server/preview", methods=["POST"])
     async def server_preview(req):
@@ -84,7 +97,7 @@ def create_app(config: AppConfig | None = None):
         spec = server_page.spec_from_params(params)
         scan, backend = scanned(spec)
         return (
-            server_page.preview(config, spec, scan, supervisor=supervisor),
+            server_page.preview(config, spec, scan, supervisor=supervisor, store=memory),
             server_page.devices_field(spec, scan, backend, oob=True),
             # the context slider carries the price of the context: it has to
             # follow the same change that moved it
@@ -101,7 +114,8 @@ def create_app(config: AppConfig | None = None):
         scan, _backend = scanned(spec)
         return (
             server_page.bounded_fields(spec, facts),
-            server_page.preview(config, spec, scan, oob=True, supervisor=supervisor),
+            server_page.preview(config, spec, scan, oob=True, supervisor=supervisor,
+                                store=memory),
             HtmxResponseHeaders(push_url="/server?" + server_page.state_query(params, spec)),
         )
 
@@ -171,4 +185,5 @@ def create_app(config: AppConfig | None = None):
     # future pages talk to the same GPU slot.
     app.state.supervisor = supervisor
     app.state.devices = devices
+    app.state.memory = memory
     return app

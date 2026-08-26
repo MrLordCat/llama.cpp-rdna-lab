@@ -56,6 +56,15 @@ class AppConfig:
     def bench_script(self) -> Path:
         return REPO_ROOT / "scripts" / "agent_workload_bench.py"
 
+    @property
+    def state_dir(self) -> Path:
+        """What the GUI itself learns, kept apart from what the lab produces."""
+        return self.data_root / "build_logs" / "gui2"
+
+    @property
+    def memory_json(self) -> Path:
+        return self.state_dir / "memory.json"
+
     @classmethod
     def load(cls, config_file: Path | None = None) -> "AppConfig":
         path = config_file or Path(os.environ.get(ENV_CONFIG, "") or DEFAULT_CONFIG_FILE)

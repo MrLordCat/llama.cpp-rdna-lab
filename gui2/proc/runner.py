@@ -14,7 +14,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Callable, Literal, Sequence
 
 from gui2.core.measured import Measurement, Reader
 from gui2.proc import hidden
@@ -127,11 +127,15 @@ class JobSpec:
 class Job:
     """A running (or finished) child process."""
 
-    def __init__(self, spec: JobSpec, capacity: int = 4000) -> None:
+    def __init__(self, spec: JobSpec, capacity: int = 4000,
+                 on_finish: "Callable[[Job], None] | None" = None) -> None:
         self.spec = spec
         self.log = LogBuffer(capacity)
         #: the buffer above forgets; this remembers what the run said it took
         self._memory = Reader()
+        #: called once, when the child is gone and its output is fully read.
+        #: The job stays ignorant of who is listening.
+        self._on_finish = on_finish
         self._lock = threading.Lock()
         self._popen: subprocess.Popen[str] | None = None
         self._reader: threading.Thread | None = None
@@ -190,6 +194,11 @@ class Job:
             with self._lock:
                 self._status = "exited"
                 self._ended_at = time.time()
+            if self._on_finish is not None:
+                try:
+                    self._on_finish(self)
+                except Exception as exc:  # noqa: BLE001 - a note is not worth a crash
+                    self.log.append(f"[gui2] could not record this run: {exc}")
 
     def request_stop(self) -> bool:
         """Ask for a graceful shutdown. Returns False if already finished."""
