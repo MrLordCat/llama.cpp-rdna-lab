@@ -25,7 +25,7 @@ decode gain does not impose an unacceptable prefill cost.
 - [README](README.md) — this file: overview, quick start, and build guide
 - [Contributing](CONTRIBUTING.md) — contribution rules and workflow
 - [License & Security](LICENSE) — MIT license, with private vulnerability
-  reporting and secure-use guidance in [SECURITY.md](SECURITY.md)
+  reporting and secure-use guidance in [SECURITY.md](docs/SECURITY.md)
 - [Fork Details](FORK_DETAILS.md) — fork-only features, backend fixes, and
   recommended runtime profiles
 - [Performance](PERFORMANCE.md) — current benchmark tables and matched lane
@@ -409,7 +409,7 @@ restore removed backends or invalidate AMD-specific behavior. This repository
 is distributed under the [MIT License](LICENSE); bundled third-party components
 retain their own notices and licenses.
 
-Security issues are handled privately. See [SECURITY.md](SECURITY.md) for the
+Security issues are handled privately. See [SECURITY.md](docs/SECURITY.md) for the
 reporting policy, covered topics (runtime, ggml, and GGUF tooling), and
 secure-use guidance for untrusted models, inputs, and networks. Do not report
 vulnerabilities as public issues before the disclosure window closes.
