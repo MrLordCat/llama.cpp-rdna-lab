@@ -15,7 +15,9 @@ from pathlib import Path
 
 from gui2.core.gguf import read_facts
 from gui2.core.memory import (
+    CONTEXT_PAD,
     MIB,
+    capacity,
     context_for_budget,
     estimate,
     kv_bytes,
@@ -119,3 +121,42 @@ def test_without_a_model_the_estimate_says_so_instead_of_guessing():
     assert not report.complete
     assert report.total_mib == 0
     assert report.notes
+
+
+def test_capacity_spends_what_the_weights_leave_and_no_more(tmp_path: Path):
+    facts = read_facts(qwen35(tmp_path, pad_to=4 * MIB))
+    room = 16304.0
+
+    cap = capacity(facts, room)
+
+    assert cap.known and cap.loads
+    assert cap.spare_mib == room - cap.weights_mib - cap.fixed_mib
+    # every token has a price, and the context is what the spare room buys
+    assert cap.context * cap.per_token_mib <= cap.spare_mib
+    assert (cap.context + CONTEXT_PAD) * cap.per_token_mib > cap.spare_mib
+    assert cap.context % CONTEXT_PAD == 0, "llama.cpp pads the context to 256 tokens"
+
+
+def test_capacity_never_promises_more_context_than_the_model_was_trained_for(tmp_path: Path):
+    facts = read_facts(qwen35(tmp_path, pad_to=4 * MIB))
+
+    cap = capacity(facts, 200_000.0)
+
+    assert cap.whole and cap.context == facts.n_ctx_train
+    # and the room the model cannot use is reported as still free
+    assert round(cap.leftover_mib) == round(cap.spare_mib - cap.context * cap.per_token_mib)
+
+
+def test_capacity_reports_a_model_that_cannot_load_rather_than_a_context_of_zero(tmp_path: Path):
+    facts = read_facts(qwen35(tmp_path, pad_to=64 * MIB))
+
+    cap = capacity(facts, 32.0)
+
+    assert cap.known and not cap.loads and not cap.fits
+    assert cap.spare_mib < 0
+
+
+def test_capacity_of_an_unreadable_header_claims_nothing():
+    cap = capacity(None, 16304.0)
+
+    assert not cap.known and not cap.loads and cap.context == 0

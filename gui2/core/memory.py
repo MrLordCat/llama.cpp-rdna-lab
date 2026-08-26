@@ -21,6 +21,10 @@ from gui2.core.gguf import ModelFacts
 MIB = 1024 * 1024
 GIB = 1024 * MIB
 
+#: llama_context rounds a context request up to this many tokens, so anything
+#: between two multiples is charged the higher one (llama-context.cpp).
+CONTEXT_PAD = 256
+
 #: Bytes per KV element. The quantized types carry a scale per 32-value block,
 #: which is why q8_0 is not exactly one byte per element.
 KV_ELEMENT_BYTES: dict[str, float] = {
@@ -191,3 +195,79 @@ def context_for_budget(facts: ModelFacts, room_mib: float,
     if per_token <= 0 or room_mib <= 0:
         return 0
     return int(room_mib * MIB // per_token)
+
+
+@dataclass(frozen=True, slots=True)
+class Capacity:
+    """What one model can be asked for on one pool of VRAM.
+
+    `context` is the useful number: not what the model was trained for, but
+    what is left to ask for once its weights are down. A model that loads and
+    then has room for 8k of context is a different proposition from the same
+    model on a bigger card, and the file size alone never says which you have.
+    """
+
+    room_mib: float = 0.0
+    weights_mib: float = 0.0
+    #: everything that does not grow with the context
+    fixed_mib: float = 0.0
+    per_token_mib: float = 0.0
+    context: int = 0
+    trained: int = 0
+    known: bool = False
+
+    @property
+    def spare_mib(self) -> float:
+        """VRAM left for context once the weights and fixed buffers are down."""
+        return self.room_mib - self.weights_mib - self.fixed_mib
+
+    @property
+    def loads(self) -> bool:
+        return self.known and self.spare_mib >= 0
+
+    @property
+    def fits(self) -> bool:
+        """True when there is room for a context worth having."""
+        return self.context >= CONTEXT_PAD
+
+    @property
+    def whole(self) -> bool:
+        """True when the model, not the card, is what limits the context."""
+        return self.trained > 0 and self.context >= self.trained
+
+    @property
+    def leftover_mib(self) -> float:
+        """VRAM still unspent with the context at `context`."""
+        return self.spare_mib - self.context * self.per_token_mib
+
+
+def capacity(facts: ModelFacts | None, room_mib: float,
+             type_k: str = "f16", type_v: str = "f16", ubatch: int = 512,
+             parallel: int = 1, devices: int = 1) -> Capacity:
+    """How much context `facts` can be given in `room_mib` of VRAM.
+
+    Assumes every layer is offloaded, which is the only assumption that makes
+    models comparable to each other: partial offload turns the question into
+    one about the CPU as well.
+    """
+    if facts is None or not facts.known:
+        return Capacity(room_mib=room_mib)
+
+    weights = weight_bytes(facts, True, 0) / MIB
+    fixed = (state_bytes(facts, parallel)
+             + compute_bytes(facts, ubatch, parallel, devices)) / MIB
+    per_token = kv_bytes(facts, 1, type_k, type_v) / MIB
+    spare = room_mib - weights - fixed
+    trained = facts.n_ctx_train or 0
+
+    if per_token > 0 and spare > 0:
+        affordable = int(spare / per_token) // CONTEXT_PAD * CONTEXT_PAD
+    else:
+        # no KV cache to price, so the context costs nothing we can see
+        affordable = trained if spare > 0 else 0
+    if trained:
+        affordable = min(affordable, trained)
+
+    return Capacity(room_mib=room_mib, weights_mib=weights, fixed_mib=fixed,
+                    per_token_mib=per_token, context=affordable,
+                    trained=trained, known=True)

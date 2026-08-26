@@ -13,6 +13,7 @@ from typing import Any, Iterable, Literal
 
 from gui2.core import params
 from gui2.core.gguf import context_text, read_facts
+from gui2.core.memory import CONTEXT_PAD
 from gui2.core.params import SCHEMA, Param, aliases_of, flags_in, parse_extra
 
 THINKING_OFF = '{"enable_thinking":false,"preserve_thinking":false}'
@@ -114,10 +115,6 @@ def parse_rpc_endpoints(text: str) -> list[str]:
         if chunk not in endpoints:
             endpoints.append(chunk)
     return endpoints
-
-
-#: llama_context pads both the total context and each slot's share to this
-CONTEXT_PAD = 256
 
 
 def _pad_up(value: int, multiple: int) -> int:

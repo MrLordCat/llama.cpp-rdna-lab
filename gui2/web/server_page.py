@@ -35,7 +35,7 @@ from fasthtml.common import (
 from gui2.config import AppConfig
 from gui2.core import machine
 from gui2.core.bench import BenchSpec, to_bench_argv
-from gui2.core.devices import Device, DeviceService, Scan
+from gui2.core.devices import Device, DeviceService, Scan, pool
 from gui2.core.gguf import ModelFacts, context_text, read_facts
 from gui2.core.inventory import Build, discover_builds, discover_models, find_build
 from gui2.core.memory import (
@@ -738,18 +738,7 @@ def run_devices(scan: Scan, spec: RunSpec, backend: str) -> tuple[Device, ...]:
 
 def _budget(devices: tuple[Device, ...]) -> tuple[float, list[str], bool]:
     """Device memory to spend, and whether a real run is what measured it."""
-    total = 0.0
-    parts: list[str] = []
-    measured = bool(devices)
-    for device in devices:
-        value = device.free_mib if device.free_mib is not None else device.total_mib
-        if value is None:
-            measured = False
-            continue
-        measured = measured and device.free_mib is not None
-        total += value
-        parts.append(f"{device.name} {gib(value)}")
-    return total, parts, measured
+    return pool(devices)
 
 
 def _file_size(path: str) -> int:

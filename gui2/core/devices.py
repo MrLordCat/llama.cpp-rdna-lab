@@ -24,6 +24,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Literal
 
+from gui2.core.memory import gib
+
 if TYPE_CHECKING:  # only for the annotation: this module must not need a probe
     from gui2.core.rpc import Fleet
 
@@ -90,6 +92,39 @@ class Scan:
             return tuple(device for device in self.devices if device.backend == "rpc")
         return tuple(device for device in self.devices
                      if device.backend in {backend, "rpc"})
+
+    @property
+    def local(self) -> tuple[Device, ...]:
+        """The accelerators in this machine.
+
+        No RPC: a worker on another machine is a choice made per run, and a
+        model's size is a fact about this one.
+        """
+        return tuple(device for device in self.devices
+                     if device.backend not in {"rpc", "cpu"})
+
+
+def pool(devices: Iterable[Device]) -> tuple[float, list[str], bool]:
+    """Memory these devices offer, per device and in total.
+
+    Free memory where a real run reported it, total capacity otherwise; the
+    flag says which, because "16 GiB installed" and "15.4 GiB free" answer
+    different questions and only one of them is about today.
+    """
+    total = 0.0
+    parts: list[str] = []
+    seen = False
+    measured = True
+    for device in devices:
+        seen = True
+        value = device.free_mib if device.free_mib is not None else device.total_mib
+        if value is None:
+            measured = False
+            continue
+        measured = measured and device.free_mib is not None
+        total += value
+        parts.append(f"{device.name} {gib(value)}")
+    return total, parts, seen and measured
 
 
 def _backend_of(name: str) -> str:

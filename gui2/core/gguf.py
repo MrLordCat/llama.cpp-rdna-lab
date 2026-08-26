@@ -9,12 +9,16 @@ estimate in `gui2.core.memory`.
 
 from __future__ import annotations
 
+import re
 import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
 MAGIC = b"GGUF"
+
+#: how llama.cpp names the parts of a split model (llama_split_path)
+SPLIT_RE = re.compile(r"^(?P<stem>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$", re.IGNORECASE)
 
 # GGUF value types
 _UINT8, _INT8, _UINT16, _INT16, _UINT32, _INT32 = 0, 1, 2, 3, 4, 5
@@ -55,7 +59,11 @@ class ModelFacts:
     n_layers: int | None = None
     n_ctx_train: int | None = None
     n_embd: int | None = None
+    #: bytes of the whole model, which for a split model is all of its parts
     file_bytes: int = 0
+    #: parts found on disk, and parts the name says there should be
+    parts: int = 1
+    declared_parts: int = 1
     n_vocab: int = 0
     n_head: int = 0
     n_head_kv: int = 0
@@ -75,6 +83,11 @@ class ModelFacts:
     @property
     def known(self) -> bool:
         return self.n_layers is not None or self.n_ctx_train is not None
+
+    @property
+    def missing_parts(self) -> int:
+        """Parts the name promises that are not next to this file."""
+        return max(0, self.declared_parts - self.parts)
 
     @property
     def head_dim_k(self) -> int:
@@ -106,6 +119,30 @@ class ModelFacts:
         if self.n_ctx_train is not None:
             parts.append(f"trained for {context_text(self.n_ctx_train)}")
         return " · ".join(parts)
+
+
+def split_group(path: Path) -> tuple[list[Path], int]:
+    """Every part of a split model that exists, and how many there should be.
+
+    llama.cpp writes the parts as `<stem>-00001-of-00003.gguf`, refuses to load
+    any but the first, and finds the rest from that name itself
+    (`llama_get_list_splits`). So the name is the whole of the convention --
+    just as well, because the parts past the first carry no architecture to
+    read and nothing else could identify them.
+    """
+    match = SPLIT_RE.match(path.name)
+    if not match:
+        return [path], 1
+    total = int(match["total"])
+    candidates = [path.parent / f"{match['stem']}-{index:05d}-of-{total:05d}.gguf"
+                  for index in range(1, total + 1)]
+    return [part for part in candidates if part.is_file()], total
+
+
+def is_first_part(path: Path) -> bool:
+    """False only for the parts of a split model that cannot be loaded alone."""
+    match = SPLIT_RE.match(path.name)
+    return match is None or int(match["index"]) <= 1
 
 
 def context_text(tokens: int) -> str:
@@ -199,7 +236,16 @@ def read_facts(path: Path | str) -> ModelFacts:
     except OSError as exc:
         return ModelFacts(path=path, error=str(exc))
 
-    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    parts, declared = split_group(path)
+    total_bytes = 0
+    for part in parts:
+        try:
+            total_bytes += part.stat().st_size
+        except OSError:
+            pass
+
+    # a part arriving later changes the size, and so must change the key
+    key = (str(path), stat.st_mtime_ns, total_bytes, len(parts))
     cached = _cache.get(key)
     if cached is not None:
         return cached
@@ -228,7 +274,9 @@ def read_facts(path: Path | str) -> ModelFacts:
             n_layers=by_suffix(".block_count"),
             n_ctx_train=by_suffix(".context_length"),
             n_embd=by_suffix(".embedding_length"),
-            file_bytes=stat.st_size,
+            file_bytes=total_bytes,
+            parts=len(parts),
+            declared_parts=declared,
             n_vocab=int(values.get(TOKENS_KEY, 0) or 0),
             n_head=count(".attention.head_count"),
             n_head_kv=count(".attention.head_count_kv"),

@@ -97,6 +97,15 @@ td.label { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
 .err { color: var(--warn); }
 .best { color: #f0d98a; }
 .muted { color: var(--muted); }
+.good { color: var(--good); }
+.warn { color: #d6b06a; }
+
+/* nothing in the models table is clickable except the link at its end */
+.models tbody tr { cursor: default; }
+.modelname { display: flex; align-items: center; gap: 6px; }
+.toolbar { margin-bottom: 8px; }
+.toolbar .field.inline { flex: none; }
+.toolbar .hint { max-width: 62ch; }
 
 .detail dl { display: grid; grid-template-columns: 190px 1fr; gap: 2px 12px; margin: 0; }
 .detail dt { color: var(--muted); }

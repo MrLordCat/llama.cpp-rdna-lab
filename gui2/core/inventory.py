@@ -11,6 +11,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from gui2.core.gguf import is_first_part, split_group
+
 BACKEND_FLAGS = (("GGML_HIP", "rocm"), ("GGML_VULKAN", "vulkan"))
 SERVER_NAMES = ("llama-server.exe", "llama-server")
 
@@ -35,11 +37,31 @@ class Build:
 class ModelFile:
     path: Path
     name: str
+    #: all the parts together, for a model that comes in parts
     size_bytes: int
+    parts: int = 1
+    declared_parts: int = 1
+
+    @property
+    def is_split(self) -> bool:
+        return self.declared_parts > 1
+
+    @property
+    def missing_parts(self) -> int:
+        return max(0, self.declared_parts - self.parts)
 
     @property
     def is_mtp(self) -> bool:
-        return "_mtp" in self.name.lower()
+        """Whether this conversion kept its NextN block.
+
+        The name is the only evidence: the GGUFs in this lab do not carry
+        `nextn_predict_layers`, and the layer count only says "one more than
+        the base" to someone who already knows the base. Same rule as
+        `agent_workload_bench.is_mtp_model_name`, so the two agree on what a
+        run gets filed as.
+        """
+        name = self.name.lower()
+        return "-mtp" in name or "_mtp" in name or name.endswith("mtp.gguf") or "nextn" in name
 
     @property
     def is_mmproj(self) -> bool:
@@ -121,17 +143,29 @@ def discover_builds(root: Path) -> list[Build]:
 
 
 def discover_models(models_dir: Path) -> list[ModelFile]:
+    """One entry per model, not per file.
+
+    A split model is listed once, under the part llama.cpp will actually
+    accept; its size is all of its parts together. Offering part two of three
+    as something to launch would only produce an error message.
+    """
     try:
         entries = sorted(models_dir.glob("*.gguf"), key=lambda path: path.name.lower())
     except OSError:
         return []
     models: list[ModelFile] = []
     for path in entries:
-        try:
-            size = path.stat().st_size
-        except OSError:
-            size = 0
-        models.append(ModelFile(path=path, name=path.name, size_bytes=size))
+        if not is_first_part(path):
+            continue
+        parts, declared = split_group(path)
+        size = 0
+        for part in parts:
+            try:
+                size += part.stat().st_size
+            except OSError:
+                pass
+        models.append(ModelFile(path=path, name=path.name, size_bytes=size,
+                                parts=len(parts), declared_parts=declared))
     return models
 
 

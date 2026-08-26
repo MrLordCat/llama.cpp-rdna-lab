@@ -177,8 +177,19 @@ def create_app(config: AppConfig | None = None):
         return server_page.log_since(supervisor, cursor)
 
     @rt("/models", methods=["GET"])
-    def models():
-        return models_page.page(config)
+    def models(req):
+        return models_page.page(config, devices.state(), req.query_params)
+
+    @rt("/models/rows", methods=["GET"])
+    def models_rows(req):
+        view = models_page.read_state(req.query_params)
+        return (
+            models_page.results(config, devices.state(), view),
+            # the sentence beside the picker describes the chosen type, so it
+            # has to travel with the table it explains
+            models_page.cache_hint(view, oob=True),
+            HtmxResponseHeaders(push_url=f"/models?{view.query()}"),
+        )
 
     # A child is deliberately *not* stopped when uvicorn exits: a restarted GUI
     # is no reason to interrupt GPU work. The supervisor is exposed so tests and

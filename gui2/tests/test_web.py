@@ -331,6 +331,26 @@ def test_a_finished_server_run_is_written_down_for_the_next_one(client):
     assert scaled.vram[0].kv_mib == 2560.00
 
 
+def test_the_models_page_lists_what_is_on_disk_and_links_it_to_the_server(client, models):
+    html = client.get("/models").text
+
+    assert "qwen35-27b.gguf" not in html     # the fixture names them plainly
+    assert "long.gguf" in html and "short.gguf" in html
+    assert 'href="/server?model=' in html
+    assert "per 1K" in html, "the price of context is the reason to open this page"
+
+
+def test_changing_the_cache_type_reprices_every_model_in_one_request(client, models):
+    response = client.get("/models/rows", params={"kv": "q4_0"})
+
+    assert 'id="modelrows"' in response.text
+    # the explanation beside the picker must not be left describing f16
+    assert 'id="kvhint"' in response.text and 'hx-swap-oob="true"' in response.text
+    assert "a quarter of the size" in response.text
+    # the address bar has to keep rendering the same page when reloaded
+    assert response.headers["hx-push-url"] == "/models?kv=q4_0"
+
+
 def test_a_benchmark_is_not_filed_as_a_server_run(client):
     supervisor = client.app.state.supervisor
     memory = client.app.state.memory
