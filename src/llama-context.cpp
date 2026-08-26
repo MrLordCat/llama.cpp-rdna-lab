@@ -1974,7 +1974,15 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
     const auto gparams = graph_params(res, ubatch, mctx, gtype);
 
-    const bool can_reuse_graph = !graph_reuse_disable && res->can_reuse(gparams);
+    // Prefill run-ahead (LLAMA_RPC_RUN_AHEAD=1): prefill ubatches only use
+    // non-overlapping KV regions, so graph N+1 is data-independent from N.
+    // Force a fresh alloc for each ubatch: ggml_backend_sched_alloc_graph
+    // then rotates the per-copy split buffers (cur_copy/next_copy) and the
+    // per-copy events keep the pipeline race-free, removing the global
+    // ggml_backend_sched_synchronize between ubatches (the serializing
+    // barrier that capped the RPC lane at local+server wall sum).
+    const bool run_ahead_prefill = getenv("LLAMA_RPC_RUN_AHEAD") != nullptr && ubatch.n_tokens > 1;
+    const bool can_reuse_graph = !run_ahead_prefill && !graph_reuse_disable && res->can_reuse(gparams);
     if (trace_dflash) {
         LLAMA_LOG_INFO("%s: DFlash graph reuse check: disable=%d can_reuse=%d gf=%p\n",
                 __func__, graph_reuse_disable ? 1 : 0, can_reuse_graph ? 1 : 0, (void *) gf);
