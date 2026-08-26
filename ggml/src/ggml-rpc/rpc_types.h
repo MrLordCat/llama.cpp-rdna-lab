@@ -91,6 +91,12 @@ enum rpc_cmd {
     // Wait until the server-side async graph worker and its device queue are
     // drained. Used by backend synchronize and coarse RPC scheduler events.
     RPC_CMD_GRAPH_WAIT,
+    // Set-tensor without draining the in-flight async graph. Only legal for
+    // KV-cache inputs (attn_inp_k_rot / attn_inp_v_rot): each ubatch writes to
+    // its own non-overlapping KV region, so the data can be consumed by the
+    // server immediately even while the previous graph is still computing.
+    // Kept as a separate command so mixed-version peers fail closed.
+    RPC_CMD_SET_TENSOR_NOFLUSH,
     RPC_CMD_COUNT,
 };
 
@@ -118,6 +124,7 @@ static const char * rpc_cmd_name(enum rpc_cmd cmd) {
         case RPC_CMD_GRAPH_COMPUTE_ASYNC: return "GRAPH_COMPUTE_ASYNC";
         case RPC_CMD_GRAPH_WAIT:          return "GRAPH_WAIT";
         case RPC_CMD_GRAPH_RECOMPUTE:     return "GRAPH_RECOMPUTE";
+        case RPC_CMD_SET_TENSOR_NOFLUSH:  return "SET_TENSOR_NOFLUSH";
         case RPC_CMD_GET_DEVICE_MEMORY:   return "GET_DEVICE_MEMORY";
         default:                          return "UNKNOWN";
     }

@@ -203,7 +203,7 @@ static bool pack_causal_mask(const void * data, size_t n_elems, ggml_type type, 
 
 // Unpack a 1-bit causal mask into 0.0 / -inf values of the tensor type.
 static bool rpc_send_tensor_data(const std::shared_ptr<socket_t> & sock,
-        const rpc_tensor & tmeta, const void * data, size_t offset, size_t size) {
+        const rpc_tensor & tmeta, const void * data, size_t offset, size_t size, bool no_flush = false) {
     auto t0 = std::chrono::steady_clock::now();
     const ggml_type type = (ggml_type) tmeta.type;
     const char * name = tmeta.name;
@@ -301,7 +301,12 @@ static bool rpc_send_tensor_data(const std::shared_ptr<socket_t> & sock,
     memcpy(input.data(), &tmeta, sizeof(rpc_tensor));
     memcpy(input.data() + sizeof(rpc_tensor), &offset, sizeof(offset));
     memcpy(input.data() + sizeof(rpc_tensor) + sizeof(offset), data_ptr, data_size);
-    bool status = send_rpc_cmd(sock, RPC_CMD_SET_TENSOR, input.data(), input.size());
+    // KV-cache inputs use the no-flush command: each ubatch writes to a
+    // non-overlapping KV region, so the server can accept them while its
+    // previous async graph is still computing (the serializing flush on
+    // SET_TENSOR is what makes the server lane the prefill bottleneck).
+    bool status = send_rpc_cmd(sock, no_flush ? RPC_CMD_SET_TENSOR_NOFLUSH : RPC_CMD_SET_TENSOR,
+                               input.data(), input.size());
     RPC_STATUS_ASSERT(status);
     if (RPC_TIMELINE) {
         fprintf(stderr, "RPC_TL|name|SET_TENSOR|%s|%zu|t=%.1f\n",
@@ -317,7 +322,11 @@ static bool rpc_send_tensor_data(const std::shared_ptr<socket_t> & sock,
 static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)buffer->context;
     rpc_tensor rpc_tensor = serialize_tensor(tensor);
-    if (!rpc_send_tensor_data(ctx->sock, rpc_tensor, data, offset, size)) {
+    // rotated KV inputs (attn_inp_k_rot / attn_inp_v_rot) are written to the
+    // current ubatch's KV region which the in-flight server graph never reads
+    const bool no_flush = strstr(rpc_tensor.name, "_k_rot") != nullptr ||
+                          strstr(rpc_tensor.name, "_v_rot") != nullptr;
+    if (!rpc_send_tensor_data(ctx->sock, rpc_tensor, data, offset, size, no_flush)) {
         RPC_STATUS_ASSERT(false);
     }
 }

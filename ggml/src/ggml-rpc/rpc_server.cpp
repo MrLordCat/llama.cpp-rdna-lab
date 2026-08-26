@@ -1005,6 +1005,10 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
         //   - GRAPH_COMPUTE/RECOMPUTE, COPY_TENSOR, GET_TENSOR: need the results
         //     of the previous graph (ordering / data ready);
         //   - BUFFER_CLEAR, FREE_BUFFER: may touch buffers the worker uses.
+        // SET_TENSOR_NOFLUSH is intentionally NOT in this list: KV-cache
+        // inputs (attn_inp_k_rot / attn_inp_v_rot) are written to the offset
+        // of the *current* ubatch, a region the in-flight graph never reads
+        // (causal attention only ever looks back).
         const bool needs_graph_drain =
             cmd == RPC_CMD_SET_TENSOR ||
             cmd == RPC_CMD_SET_TENSOR_MASK ||
@@ -1140,6 +1144,16 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
                 break;
             }
             case RPC_CMD_SET_TENSOR: {
+                std::vector<uint8_t> input;
+                if (!recv_msg(sock, input)) {
+                    return;
+                }
+                if (!server.set_tensor(input)) {
+                    return;
+                }
+                break;
+            }
+            case RPC_CMD_SET_TENSOR_NOFLUSH: {
                 std::vector<uint8_t> input;
                 if (!recv_msg(sock, input)) {
                     return;
