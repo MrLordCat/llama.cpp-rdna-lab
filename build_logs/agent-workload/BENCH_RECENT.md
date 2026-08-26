@@ -7,6 +7,8 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-08-26 10:54:27 | cold-first | vulkan | rf11-94k-copy-trace | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.1583 | 1110.8650 | 19.2400 | 0 |
+| 2026-08-26 10:48:33 | cold-first | vulkan | rf10-14k-copy-trace | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 11.9348 | 1273.7950 | 29.0100 | 0 |
 | 2026-08-26 10:29:13 | cold-first | vulkan | rf9-94k-raw | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.1714 | 1116.7750 | 19.5150 | 0 |
 | 2026-08-26 10:21:22 | cold-first | vulkan | rf7-14k-clean | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 12.1745 | 1363.0950 | 27.6750 | 0 |
 | 2026-08-26 10:18:02 | cold-first | vulkan | rf6-14k-raw | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 8.1227 | 1372.2950 | 12.9250 | 0 |
@@ -85,5 +87,3 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-08-25 17:42:01 | cold-first | vulkan | ctl-rpc-14k-async-drainfix | Qwen3.8-27B-Q4_K_M.gguf | 163840 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 0.4629 | 1183.4400 | 14.4700 | 0 |
 | 2026-08-25 17:40:15 | cold-first | vulkan | ctl-local-14k-ts100-072 | Qwen3.8-27B-Q4_K_M.gguf | 163840 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 0.5801 | 1490.6700 | 15.7000 | 0 |
 | 2026-08-25 17:39:15 | cold-first | vulkan | ab-local-4k-ts100-072 | Qwen3.8-27B-Q4_K_M.gguf | 163840 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 1.1403 | 1270.7600 | 12.3100 | 0 |
-| 2026-08-25 17:38:13 | cold-first | vulkan | ab-local-4k-ts100-065 | Qwen3.8-27B-Q4_K_M.gguf | 163840 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 1.1289 | 1257.9400 | 12.6900 | 0 |
-| 2026-08-25 17:36:57 | cold-first | vulkan | ab-current-rpc-4k | Qwen3.8-27B-Q4_K_M.gguf | 163840 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 0.9322 | 1027.3500 | 11.4400 | 0 |
