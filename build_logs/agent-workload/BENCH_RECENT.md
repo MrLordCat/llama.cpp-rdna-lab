@@ -7,6 +7,8 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-08-26 12:25:02 | cold-first | vulkan | rf25-local-94k-specnone | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | none | 2.6411 | 1351.1850 | 25.0550 | 0 |
+| 2026-08-26 12:22:33 | cold-first | vulkan | rf24-14k-rpc-split-verify | Qwen3.8-27B-Q4_K_M.gguf | 16384 | 8192/1024 | q8_0/q8_0 | mtp | 10.7281 | 1328.6550 | 25.1250 | 0 |
 | 2026-08-26 11:57:54 | cold-first | vulkan | rf23-local-94k-specnone | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | none | 2.6121 | 1335.2100 | 24.7000 | 0 |
 | 2026-08-26 11:55:28 | cold-first | vulkan | rf22-local-94k-control | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.7202 | 1441.9850 | 51.1900 | 0 |
 | 2026-08-26 11:45:50 | cold-first | vulkan | rf21-14k-ub2048b | Qwen3.8-27B-Q4_K_M.gguf | 16384 | 8192/2048 | q8_0/q8_0 | mtp | 10.2179 | 1205.8200 | 25.4600 | 0 |
@@ -85,5 +87,3 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-08-25 19:03:16 | cold-first | vulkan | cand-rpc-8k-debug-tl | Qwen3.8-27B-Q4_K_M.gguf | 163840 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 0.1939 | 979.1500 | 10.0000 | 0 |
 | 2026-08-25 18:58:35 | cold-first | vulkan | cand-rpc-14k-async-copy-b1 | Qwen3.8-27B-Q4_K_M.gguf | 163840 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 0.0000 | - | - | 1 |
 | 2026-08-25 18:32:06 | cold-first | vulkan | diag-rpc-14k-splitsum | Qwen3.8-27B-Q4_K_M.gguf | 163840 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 0.4501 | 1150.6800 | 14.4700 | 0 |
-| 2026-08-25 18:30:59 | cold-first | vulkan | diag-local-14k-ts072-splitsum | Qwen3.8-27B-Q4_K_M.gguf | 163840 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 0.5783 | 1485.7100 | 15.8200 | 0 |
-| 2026-08-25 18:26:37 | cold-first | vulkan | diag-rpc-14k-ub-current | Qwen3.8-27B-Q4_K_M.gguf | 163840 | 8192/1024 | f8_e4m3/f8_e4m3 | none | 0.4442 | 1136.2700 | 14.2000 | 0 |

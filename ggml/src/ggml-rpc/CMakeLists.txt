@@ -1,7 +1,9 @@
 message(STATUS "Using RPC backend")
 
 ggml_add_backend_library(ggml-rpc
-                         ggml-rpc.cpp
+                         rpc_common.cpp
+                         rpc_client.cpp
+                         rpc_server.cpp
                          transport.cpp
                         )
 
