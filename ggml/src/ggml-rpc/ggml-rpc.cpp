@@ -1480,11 +1480,68 @@ static bool ggml_backend_rpc_cpy_tensor_async(ggml_backend_t backend_src, ggml_b
     return rpc_async_copy_submit(rpc_ctx, backend_src, src, backend_dst, dst);
 }
 
+static void ggml_backend_rpc_get_async(ggml_backend_t backend, const ggml_tensor * tensor,
+        void * data, size_t offset, size_t size) {
+    // Non-blocking GET: the ordered per-socket worker streams the tensor into
+    // the caller's host buffer after the preceding graph command. The caller
+    // must not read `data` before ggml_backend_synchronize()/llama_synchronize()
+    // (the RPC synchronize queues a no-op behind this command, so a barrier
+    // also waits for any in-flight async get). This keeps the scheduler thread
+    // free to start the next ubatch local layers while logits/embeddings are
+    // still being received - previously get_tensor_async==NULL forced a full
+    // RPC barrier plus a synchronous GET block per ubatch.
+    ggml_backend_rpc_context * rpc_ctx = (ggml_backend_rpc_context *) backend->context;
+    auto sock = get_socket(rpc_ctx->endpoint);
+    if (sock == nullptr) {
+        GGML_ABORT("rpc: get_async: no socket for endpoint %s", rpc_ctx->endpoint);
+    }
+    // Prototype gate: only the final logits (result_output) are safe to defer
+    // - their host buffer is consumed only after llama_synchronize before
+    // sampling. Embeddings/NextN rows feed the next graph immediately in some
+    // paths, so those stay on the synchronous path until proven safe.
+    if (strstr(tensor->name, "result_output") == nullptr) {
+        ggml_backend_tensor_get(tensor, data, offset, size);
+        return;
+    }
+    rpc_msg_get_tensor_req request;
+    request.tensor = serialize_tensor(tensor);
+    request.offset = offset;
+    request.size = size;
+    const bool act_f16 = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
+    const bool act_f8  = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F8)  != 0;
+    rpc_send_submit(sock, [sock, request = std::move(request), data, offset, size, act_f16, act_f8]() {
+        std::vector<uint8_t> tmp;
+        void * rsp_ptr = data;
+        size_t rsp_size = size;
+        if (act_f8) {
+            rsp_size = size / 4;
+            tmp.resize(rsp_size);
+            rsp_ptr = tmp.data();
+        } else if (act_f16) {
+            // server sends F32 activations as F16; convert back after receive
+            rsp_size = size / 2;
+            tmp.resize(rsp_size);
+            rsp_ptr = tmp.data();
+        }
+        const bool status = send_rpc_cmd(sock, RPC_CMD_GET_TENSOR, &request, sizeof(request), rsp_ptr, rsp_size);
+        RPC_STATUS_ASSERT(status);
+        if (act_f8) {
+            ggml_fp8_e4m3_to_fp32_row((const uint8_t *) rsp_ptr, (float *) data, (int64_t) size / sizeof(float));
+        } else if (act_f16) {
+            ggml_fp16_to_fp32_row((const ggml_fp16_t *) rsp_ptr, (float *) data, (int64_t) size / sizeof(float));
+        }
+        if (RPC_DEBUG) {
+            fprintf(stderr, "[rpc-worker] get_async done '%s' bytes=%zu\n", request.tensor.name, size);
+        }
+        return true;
+    }, true);
+}
+
 static ggml_backend_i ggml_backend_rpc_interface = {
     /* .get_name                = */ ggml_backend_rpc_name,
     /* .free                    = */ ggml_backend_rpc_free,
     /* .set_tensor_async        = */ NULL,
-    /* .get_tensor_async        = */ NULL,
+    /* .get_tensor_async        = */ ggml_backend_rpc_get_async,
     /* .set_tensor_2d_async     = */ NULL,
     /* .get_tensor_2d_async     = */ NULL,
     // Async outbound copy of split inputs, routed through the ordered
