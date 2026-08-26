@@ -135,6 +135,11 @@ struct socket_t::impl {
 #endif // GGML_RPC_RDMA
     bool     use_rdma;
     sockfd_t fd;
+    std::recursive_mutex io_mutex;
+
+    std::unique_lock<std::recursive_mutex> lock() {
+        return std::unique_lock<std::recursive_mutex>(io_mutex);
+    }
 };
 
 socket_t::impl::~impl() {
@@ -549,11 +554,17 @@ socket_t::socket_t(std::unique_ptr<impl> p) : pimpl(std::move(p)) {}
 socket_t::~socket_t() = default;
 
 bool socket_t::send_data(const void * data, size_t size) {
+    auto lock = pimpl->lock();
     return pimpl->send_data(data, size);
 }
 
 bool socket_t::recv_data(void * data, size_t size) {
+    auto lock = pimpl->lock();
     return pimpl->recv_data(data, size);
+}
+
+std::unique_lock<std::recursive_mutex> socket_t::lock() {
+    return pimpl->lock();
 }
 
 void socket_t::get_caps(uint8_t * local_caps) {
