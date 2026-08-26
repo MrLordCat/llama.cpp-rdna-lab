@@ -1696,19 +1696,39 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, sched->cur_copy);
 
             if (input->flags & GGML_TENSOR_FLAG_INPUT) {
-                // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
-                if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
+                // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done.
+                // RPC destinations take the async path: the payload is
+                // snapshotted at submit and queued on the per-socket worker,
+                // so the user data can be overwritten immediately and the
+                // following graph command is queued after the copy
+                // (ordering preserved by the queue).
+                if (split_backend->iface.cpy_tensor_async != NULL &&
+                        split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
+                    // async copy queued - no barrier needed here
+                } else if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
                     ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
+                    ggml_backend_tensor_copy(input, input_cpy);
                 } else {
                     ggml_backend_synchronize(split_backend);
+                    ggml_backend_tensor_copy(input, input_cpy);
                 }
-                ggml_backend_tensor_copy(input, input_cpy);
             } else {
                 // wait for the split backend to finish using the input before overwriting it
-                if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
-                    ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
-                } else {
-                    ggml_backend_synchronize(split_backend);
+                // When the destination copy is routed through an async path
+                // with its own ordered queue (RPC), this wait is redundant:
+                // the copy is queued strictly after the previous graph on the
+                // same socket, and the producing GPU is synchronized by the
+                // scheduler thread inside the copy submit. Waiting here
+                // blocks the scheduler on the slowest queued transfer, which
+                // is the serializing barrier measured in the split-timing
+                // traces (259-288 ms on a 4-byte input).
+                const bool async_dst = split_backend->iface.cpy_tensor_async != NULL;
+                if (!async_dst) {
+                    if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
+                        ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
+                    } else {
+                        ggml_backend_synchronize(split_backend);
+                    }
                 }
 
                 // when offloading MoE weights, we can reduce the amount of data copied by copying only the experts that are used

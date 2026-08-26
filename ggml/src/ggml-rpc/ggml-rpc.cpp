@@ -887,84 +887,86 @@ static bool unpack_causal_mask(const std::vector<uint8_t> & bits, size_t n_elems
     return true;
 }
 
-static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
-    ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)buffer->context;
-    rpc_tensor rpc_tensor = serialize_tensor(tensor);
+// Send one tensor payload to the server using metadata captured at submit
+// time (serialized rpc_tensor: remote buffer id/offsets/shape/name/flags).
+// Used by both the synchronous buffer set path and the async outbound
+// worker, so the worker never dereferences live ggml tensors or buffers -
+// it only holds the captured identity and the data (host snapshot taken in
+// the scheduler thread).
+static bool rpc_send_tensor_data(const std::shared_ptr<socket_t> & sock,
+        const rpc_tensor & tmeta, const void * data, size_t offset, size_t size) {
     auto t0 = std::chrono::steady_clock::now();
-    if ((rpc_tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_CAUSAL_MASK) &&
+    const ggml_type type = (ggml_type) tmeta.type;
+    const char * name = tmeta.name;
+    if ((tmeta.rpc_flags & GGML_RPC_TENSOR_FLAG_CAUSAL_MASK) != 0 &&
         (getenv("GGML_RPC_ENABLE_MASK_NULL") != nullptr)) {
-        // causal mask is regenerated on the server; skip the transfer entirely
-        // NOTE: disabled by default - the local Vulkan FA kernel applies NO
-        // causal masking when the mask tensor is NULL (MASK_ENABLE=0 means
-        // full attention), so a NULL mask silently breaks prefill quality.
-        return;
+        // causal mask regenerated on the server; nothing to transmit
+        return true;
     }
-    const bool act_f16 = (rpc_tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
-    const bool act_f8  = (rpc_tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F8)  != 0;
-    if ((rpc_tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_CAUSAL_MASK) != 0) {
+    const bool act_f16 = (tmeta.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
+    const bool act_f8  = (tmeta.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F8)  != 0;
+    if ((tmeta.rpc_flags & GGML_RPC_TENSOR_FLAG_CAUSAL_MASK) != 0) {
         // Single-sequence causal masks are binary (0.0 / -inf): transmit as a
         // bitmask instead of raw F16. Fall back to the plain transfer when the
         // data is not binary (e.g. alibi masks).
-        const size_t elem_size = ggml_type_size(tensor->type);
+        const size_t elem_size = ggml_type_size(type);
         if (offset % elem_size == 0 && size % elem_size == 0) {
             std::vector<uint8_t> bits;
-            if (pack_causal_mask(data, size / elem_size, tensor->type, bits)) {
-                // Server-side mask generation: the binary mask is fully
-                // defined by n_past + shape (ne[0]=n_kv, ne[1]=n_tokens,
-                // 1 stream), so only the metadata is sent. Single-sequence
-                // causal prefill/decode have n_past = n_kv - n_tokens.
+            if (pack_causal_mask(data, size / elem_size, type, bits)) {
                 if (std::getenv("GGML_RPC_SERVER_MAKE_MASK") != nullptr &&
-                    tensor->ne[3] == 1 && tensor->ne[1] > 0 &&
-                    tensor->ne[0] >= tensor->ne[1]) {
-                    const int64_t n_past = (int64_t) tensor->ne[0] - (int64_t) tensor->ne[1];
+                    tmeta.ne[3] == 1 && tmeta.ne[1] > 0 &&
+                    tmeta.ne[0] >= tmeta.ne[1]) {
+                    // Server-side generation: the binary mask is fully defined
+                    // by n_past + shape, so only metadata is transmitted.
+                    const int64_t n_past = (int64_t) tmeta.ne[0] - (int64_t) tmeta.ne[1];
                     size_t input_size = sizeof(rpc_tensor) + sizeof(uint64_t) + sizeof(uint64_t);
                     std::vector<uint8_t> input(input_size, 0);
-                    memcpy(input.data(), &rpc_tensor, sizeof(rpc_tensor));
+                    memcpy(input.data(), &tmeta, sizeof(rpc_tensor));
                     memcpy(input.data() + sizeof(rpc_tensor), &offset, sizeof(offset));
                     memcpy(input.data() + sizeof(rpc_tensor) + sizeof(uint64_t), &n_past, sizeof(n_past));
-                    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_SET_TENSOR_MASK_NPAST, input.data(), input.size());
+                    bool status = send_rpc_cmd(sock, RPC_CMD_SET_TENSOR_MASK_NPAST, input.data(), input.size());
                     RPC_STATUS_ASSERT(status);
                     if (RPC_DEBUG) {
                         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
                         fprintf(stderr, "[rpc-client] mask_npast '%s' n_kv=%u n_tokens=%u n_past=%" PRId64 " time=%.2fms t+=%.1fms\n",
-                                tensor->name, tensor->ne[0], tensor->ne[1], n_past, ms, rpc_wall_ms());
+                                name, tmeta.ne[0], tmeta.ne[1], n_past, ms, rpc_wall_ms());
                     }
-                    return;
+                    return true;
                 }
                 size_t input_size = sizeof(rpc_tensor) + sizeof(uint64_t) + sizeof(uint64_t) + bits.size();
                 std::vector<uint8_t> input(input_size, 0);
-                memcpy(input.data(), &rpc_tensor, sizeof(rpc_tensor));
+                memcpy(input.data(), &tmeta, sizeof(rpc_tensor));
                 memcpy(input.data() + sizeof(rpc_tensor), &offset, sizeof(offset));
                 uint64_t n_elems = size / elem_size;
                 memcpy(input.data() + sizeof(rpc_tensor) + sizeof(uint64_t), &n_elems, sizeof(n_elems));
                 memcpy(input.data() + sizeof(rpc_tensor) + 2 * sizeof(uint64_t), bits.data(), bits.size());
-                bool status = send_rpc_cmd(ctx->sock, RPC_CMD_SET_TENSOR_MASK, input.data(), input.size());
+                bool status = send_rpc_cmd(sock, RPC_CMD_SET_TENSOR_MASK, input.data(), input.size());
                 RPC_STATUS_ASSERT(status);
                 if (RPC_DEBUG) {
                     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
                     fprintf(stderr, "[rpc-client] mask '%s' size=%zu -> packed %zu bytes time=%.2fms t+=%.1fms\n",
-                            tensor->name, size, bits.size(), ms, rpc_wall_ms());
+                            name, size, bits.size(), ms, rpc_wall_ms());
                 }
-                return;
+                return true;
             }
         }
         // fall through to the plain transfer below
     }
     if (size > HASH_THRESHOLD && !act_f16 && !act_f8) {
         rpc_msg_set_tensor_hash_req request;
-        request.tensor = rpc_tensor;
+        request.tensor = tmeta;
         request.offset = offset;
         request.hash = fnv_hash((const uint8_t*)data, size);
         rpc_msg_set_tensor_hash_rsp response;
         if (RPC_TIMELINE) {
             fprintf(stderr, "RPC_TL|name|SET_TENSOR_HASH|%s|%zu|t=%.1f\n",
-                    tensor->name, size, rpc_wall_ms());
+                    name, size, rpc_wall_ms());
         }
-        bool status = send_rpc_cmd(ctx->sock, RPC_CMD_SET_TENSOR_HASH, &request, sizeof(request), &response, sizeof(response));
+        bool status = send_rpc_cmd(sock, RPC_CMD_SET_TENSOR_HASH, &request, sizeof(request), &response, sizeof(response));
         RPC_STATUS_ASSERT(status);
         if (response.result) {
-            // the server has the same data, no need to send it
-            return;
+            // the server already has the data, nothing to send
+            return true;
         }
     }
     // input serialization format: | rpc_tensor | offset (8 bytes) | data (size bytes)
@@ -987,18 +989,27 @@ static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggm
     }
     size_t input_size = sizeof(rpc_tensor) + sizeof(uint64_t) + data_size;
     std::vector<uint8_t> input(input_size, 0);
-    memcpy(input.data(), &rpc_tensor, sizeof(rpc_tensor));
+    memcpy(input.data(), &tmeta, sizeof(rpc_tensor));
     memcpy(input.data() + sizeof(rpc_tensor), &offset, sizeof(offset));
     memcpy(input.data() + sizeof(rpc_tensor) + sizeof(offset), data_ptr, data_size);
-    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_SET_TENSOR, input.data(), input.size());
+    bool status = send_rpc_cmd(sock, RPC_CMD_SET_TENSOR, input.data(), input.size());
     RPC_STATUS_ASSERT(status);
     if (RPC_TIMELINE) {
         fprintf(stderr, "RPC_TL|name|SET_TENSOR|%s|%zu|t=%.1f\n",
-                tensor->name, size, rpc_wall_ms());
+                name, size, rpc_wall_ms());
     }
     if (RPC_DEBUG) {
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        fprintf(stderr, "[rpc-client] tensor '%s' size=%zu time=%.2fms t+=%.1fms\n", tensor->name, size, ms, rpc_wall_ms());
+        fprintf(stderr, "[rpc-client] tensor '%s' size=%zu time=%.2fms t+=%.1fms\n", name, size, ms, rpc_wall_ms());
+    }
+    return true;
+}
+
+static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)buffer->context;
+    rpc_tensor rpc_tensor = serialize_tensor(tensor);
+    if (!rpc_send_tensor_data(ctx->sock, rpc_tensor, data, offset, size)) {
+        RPC_STATUS_ASSERT(false);
     }
 }
 
@@ -1230,27 +1241,51 @@ static const char * ggml_backend_rpc_name(ggml_backend_t backend) {
     return rpc_ctx->name.c_str();
 }
 
-// Async outbound copy (l_out-* and other split inputs): queued on the
-// per-socket worker after all previous commands. The worker waits for the
-// producing GPU graph, reads the tensor into host memory and streams it to
-// the server. The scheduler thread only submits here, so it can immediately
-// start the next ubatch local layers instead of waiting for the source GPU.
+// Async outbound copy (l_out-* and other split inputs): the data is
+// snapshotted HERE, in the scheduler thread, before the job reaches the
+// per-socket worker. The worker no longer touches the producing GPU backend:
+// ggml_vk_synchronize is not thread-safe against a concurrent graph compute
+// on the same backend (it shares compute_ctx/fence/submit_pending), and the
+// previous design (worker synchronizing + reading the source) deadlocked
+// deterministically on the 3rd-4th decode ubatch. The scheduler owns the
+// backends, so synchronize/get here is safe; the queued task only streams
+// the captured payload to the server, letting the next ubatch local layers
+// start while the transfer runs.
 static bool rpc_async_copy_submit(ggml_backend_rpc_context * rpc_ctx,
         ggml_backend_t src_backend, const ggml_tensor * src,
         ggml_backend_t dst_backend, ggml_tensor * dst) {
+    (void) dst_backend;
     auto sock = get_socket(rpc_ctx->endpoint);
     if (sock == nullptr) {
         return false;
     }
-    return rpc_send_submit(sock, [src_backend, src, dst]() {
+    const size_t nbytes = ggml_nbytes(src);
+    rpc_tensor dst_meta = serialize_tensor(dst);
+    const bool src_host = src->buffer != nullptr && ggml_backend_buffer_is_host(src->buffer);
+    const auto t_snap0 = std::chrono::steady_clock::now();
+    if (!src_host) {
+        // wait for the producing GPU graph in the scheduler thread only
         ggml_backend_synchronize(src_backend);
-        std::vector<uint8_t> host(ggml_nbytes(src), 0);
-        ggml_backend_tensor_get(src, host.data(), 0, host.size());
-        // Re-enters this single queue worker via the thread-local guard, so
-        // the SET_TENSOR command stays strictly after all prior commands but
-        // before the graph command queued by the scheduler afterwards.
-        ggml_backend_tensor_set(dst, host.data(), 0, host.size());
-        return true;
+    }
+    const auto t_snap1 = std::chrono::steady_clock::now();
+    std::vector<uint8_t> host(nbytes, 0);
+    ggml_backend_tensor_get(src, host.data(), 0, host.size());
+    const auto t_snap2 = std::chrono::steady_clock::now();
+    if (RPC_DEBUG) {
+        const double ms0 = std::chrono::duration<double, std::milli>(t_snap1 - t_snap0).count();
+        const double ms1 = std::chrono::duration<double, std::milli>(t_snap2 - t_snap1).count();
+        fprintf(stderr, "[rpc-worker] snapshot src='%s' bytes=%zu host=%d sync=%.2fms get=%.2fms\n",
+                src->name, nbytes, (int) src_host, ms0, ms1);
+    }
+    return rpc_send_submit(sock, [sock, dst_meta = std::move(dst_meta), host = std::move(host)]() {
+        if (RPC_DEBUG) {
+            fprintf(stderr, "[rpc-worker] send '%s' bytes=%zu\n", dst_meta.name, host.size());
+        }
+        bool ok = rpc_send_tensor_data(sock, dst_meta, host.data(), 0, host.size());
+        if (RPC_DEBUG) {
+            fprintf(stderr, "[rpc-worker] sent '%s' ok=%d\n", dst_meta.name, (int) ok);
+        }
+        return ok;
     }, true);
 }
 
