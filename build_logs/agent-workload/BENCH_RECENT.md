@@ -7,6 +7,11 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-08-26 18:54:42 | cold-first | vulkan | mmapfix-27b-load-r2 | Qwen3.8-27B-Q4_K_M.gguf | 16384 | 8192/1024 | q8_0/q8_0 | none | 2.6571 | 1636.5050 | 26.8800 | 0 |
+| 2026-08-26 18:51:36 | cold-first | vulkan | mmapfix-27b-load-smoke | Qwen3.8-27B-Q4_K_M.gguf | 16384 | 8192/1024 | q8_0/q8_0 | none | 2.6444 | 1628.6550 | 26.7750 | 0 |
+| 2026-08-26 18:35:54 | cold-first | vulkan | mmapfix-smoke-9b-ngl10 | Qwen3.5-9B-Q5_K_M.gguf | 8192 | 2048/256 | q8_0/q8_0 | none | 2.9889 | 299.8650 | 6.1800 | 0 |
+| 2026-08-26 18:35:06 | cold-first | vulkan | mmapfix-smoke-9b-r2 | Qwen3.5-9B-Q5_K_M.gguf | 8192 | 2048/256 | q8_0/q8_0 | none | 18.6133 | 1661.2650 | 61.8050 | 0 |
+| 2026-08-26 18:30:18 | cold-first | vulkan | mmapfix-smoke-9b-ngl999 | Qwen3.5-9B-Q5_K_M.gguf | 8192 | 2048/256 | q8_0/q8_0 | none | 18.5917 | 1656.1850 | 61.6600 | 0 |
 | 2026-08-26 17:55:49 | cold-first | vulkan | rf64-local-94k-final-control | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.7216 | 1443.8450 | 50.6700 | 0 |
 | 2026-08-26 17:52:08 | cold-first | vulkan | rf63-94k-q8-t16-runahead-r2 | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 1.1292 | 1062.3450 | 38.4550 | 0 |
 | 2026-08-26 17:49:25 | cold-first | vulkan | rf62-94k-q8-t16-runahead | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 1.1334 | 1065.3900 | 40.4850 | 0 |
@@ -82,8 +87,3 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-08-25 22:18:37 | cold-first | vulkan | rpc3080-14k-async-tmr | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 12.3356 | 1372.5000 | 28.2300 | 0 |
 | 2026-08-25 22:16:25 | cold-first | vulkan | rpc3080-14k-async-cpy4 | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 12.1325 | 1338.8200 | 28.1250 | 0 |
 | 2026-08-25 22:14:43 | cold-first | vulkan | rpc3080-14k-async-cpy3 | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 12.2204 | 1357.9700 | 28.0850 | 0 |
-| 2026-08-25 22:11:13 | cold-first | vulkan | rpc3080-14k-async-cpy2 | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 0.0000 | - | - | 2 |
-| 2026-08-25 22:02:27 | cold-first | vulkan | rpc3080-94k-balance11 | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.0850 | 1066.8100 | 19.6100 | 0 |
-| 2026-08-25 21:58:42 | cold-first | vulkan | rpc3080-94k-balance | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.0901 | 1054.3100 | 23.1650 | 0 |
-| 2026-08-25 21:49:57 | cold-first | vulkan | rpc3090-tmr-14k | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 8.6344 | 1199.1350 | 15.8900 | 0 |
-| 2026-08-25 21:47:20 | cold-first | vulkan | rpc3080-94k-asyncgraph | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 1.9567 | 977.3150 | 24.1300 | 0 |

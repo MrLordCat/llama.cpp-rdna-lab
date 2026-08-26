@@ -1,5 +1,38 @@
 # Results Log
 
+## 2026-08-26 - model file mappings are released after device upload (RAM fix)
+
+- Problem: with mmap (default), an entire GGUF file stayed mapped for the
+  whole model lifetime, so even a fully VRAM-resident model pinned its file
+  in host memory - especially on Windows, where `llama_mmap::unmap_fragment`
+  is a no-op. A partial 30 GB VRAM / 50 GB RAM scenario would pin ~80 GB.
+- Fix (branch rpc-vulkan, default-on): after `load_tensors` copies weight
+  ranges into device buffers, compute the still-referenced mapping intervals
+  (tensor `data` pointers + `buffer_from_host_ptr` bases) and release
+  everything else, per file. New `llama_mmap::unmap_ranges()`: POSIX unmaps
+  the gaps inside the tracked fragments; Windows cannot partially unmap a
+  file view, so it remaps the kept ranges at their original addresses with
+  `MapViewOfFileEx` (allocation-granularity aligned, merged) and falls back
+  to the full view on any failure (correctness wins). Whole-unreferenced
+  mappings use `llama_mmap::unmap()`. A mapping that still hosts CPU-side
+  tensors is kept owned by the model (the remapped views belong to it until
+  teardown); Windows tracks every active view and releases them all in the
+  destructor.
+- Rollback env: `LLAMA_KEEP_MMAPPED_WEIGHTS=1` keeps the old behavior.
+- Validation (Vulkan):
+  * Qwen3.8-27B-Q4_K_M 16.34 GiB, `-ngl 999`: CPU_Mapped 682.03 MiB
+    (input embeddings) + Vulkan0/1 7455.29/8207.60 MiB; log
+    `released 1 model file mappings / 15632.3 MiB`; no warnings, clean
+    teardown, Host footprint after load 683 MiB (was ~16.3 GiB pre-fix).
+  * Qwen3.5-9B Q5_K_M 6.28 GiB, `-ngl 999`: CPU_Mapped 666.88 MiB +
+    Vulkan 2558.63/3059.89 MiB; released 5606.2 MiB; prompt 1661.27,
+    decode 61.80.
+  * Qwen3.5-9B, `-ngl 10`: CPU_Mapped 4116.77 MiB kept, released 2156.3 MiB
+    (only the device-copied ranges).
+- Impact: the 80 GB Qwen3.8 Flash Next target (30 GB VRAM + 50 GB RAM) is
+  now structurally possible - GPU-copied weight ranges leave RAM after load,
+  while the CPU-offloaded 50 GB stays zero-copy on the mmap.
+
 ## 2026-08-26 - D132 RPC Q8_0 boundary wire clears the 94K gate
 
 - The RPC-first split boundary is F32 `l_out-*`: 20,971,520 bytes per
