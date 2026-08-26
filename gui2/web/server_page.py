@@ -17,6 +17,7 @@ from urllib.parse import urlencode
 from fasthtml.common import (
     A,
     Button,
+    Datalist,
     Details,
     Div,
     Form,
@@ -32,8 +33,9 @@ from fasthtml.common import (
 )
 
 from gui2.config import AppConfig
+from gui2.core import machine
 from gui2.core.bench import BenchSpec, to_bench_argv
-from gui2.core.devices import Device, DeviceService, Scan, reachable
+from gui2.core.devices import Device, DeviceService, Scan
 from gui2.core.gguf import ModelFacts, context_text, read_facts
 from gui2.core.inventory import Build, discover_builds, discover_models, find_build
 from gui2.core.memory import (
@@ -46,13 +48,14 @@ from gui2.core.memory import (
     MIB,
 )
 from gui2.core.measured import Measurement, notes as measured_notes
-from gui2.core.params import BY_NAME, KV_HELP, SCHEMA, Param, bounds
+from gui2.core.params import BY_NAME, HOST_HELP, KV_HELP, SCHEMA, Param, bounds
 from gui2.core.runspec import (
     DEFAULTS,
     Problem,
     RunSpec,
     mask_api_key,
     parse_rpc_endpoints,
+    slot_context,
     to_argv,
     validate,
 )
@@ -83,14 +86,18 @@ class Section:
 
 LAYOUT: tuple[Section, ...] = (
     Section("Model and build", ("model", "build_dir"), open=True),
-    Section("Context and GPU", ("ctx_size", "gpu_layers_all", "gpu_layers", "devices"), open=True,
+    Section("Context and GPU", ("ctx_size", "gpu_layers_all", "gpu_layers", "devices",
+                                "parallel", "kv_unified"), open=True,
             hint="The two questions that decide whether a model loads at all: how much "
-                 "context to reserve, and which GPUs may hold it."),
+                 "context to reserve, and which GPUs may hold it. The slot count belongs "
+                 "here too, because it decides how that context is shared out."),
     Section("Speed and memory", ("batch_size", "ubatch_size", "threads",
                                  "cache_type_k", "cache_type_v", "flash_attn"), open=True,
             hint="A smaller KV cache type buys context at some quality; batch sizes trade "
                  "prompt speed for memory."),
-    Section("Server", ("host", "port", "threads_http", "metrics", "embeddings", "api_key")),
+    Section("Server", ("host", "port", "threads_http", "metrics", "embeddings", "api_key"),
+            hint="Who may talk to this server, and on which door. None of it changes what "
+                 "the model does or how much memory it takes."),
     Section("More than one GPU", ("rpc_endpoints", "split_mode", "tensor_split"),
             hint="RPC workers join as RPC0, RPC1 … in the order listed here."),
     Section("Speculative decoding", ("spec_type", "spec_draft_n_max",
@@ -98,7 +105,7 @@ LAYOUT: tuple[Section, ...] = (
     Section("Prompt cache", ("conversation_cache", "cache_ram",
                              "ctx_checkpoints", "checkpoint_every_n_tokens")),
     Section("Vision", ("mmproj", "mmproj_offload")),
-    Section("Advanced", ("parallel", "no_warmup", "no_mmap", "disable_thinking", "fit")),
+    Section("Advanced", ("no_warmup", "no_mmap", "disable_thinking", "fit")),
 )
 
 
@@ -159,16 +166,40 @@ def _options(config: AppConfig, spec: RunSpec) -> dict[str, list[tuple[str, str]
     }
 
 
-def _ceiling_text(param: Param, high: int, facts: ModelFacts | None) -> str:
-    """The right end of a model-bounded slider, said out loud."""
+def _slider_caption(param: Param, spec: RunSpec, high: int, facts: ModelFacts | None) -> str:
+    """What the ends of this slider mean, in words rather than in numbers.
+
+    Written so that it stays true wherever the handle is dragged: the page is
+    not re-rendered on a drag, so a caption that describes the current value
+    would start lying the moment it is used.
+    """
     if param.name == "ctx_size":
         if facts and facts.n_ctx_train:
             return f"max {context_text(high)} — what this model was trained for"
         return f"max {context_text(high)} — " + (
             "this file does not state a context length" if facts else "no model selected yet")
-    if param.name == "gpu_layers" and facts and facts.n_layers:
-        return f"max {high} — the model has {facts.n_layers} layers"
-    return f"max {high}"
+    if param.name == "gpu_layers":
+        if facts and facts.n_layers:
+            return f"max {high} — the model has {facts.n_layers} layers"
+        return f"max {high}"
+    if param.name == "threads":
+        chosen = machine.cores()
+        return (f"0 = automatic — llama-server counts the physical cores itself and will use "
+                f"{chosen.usable} of the {chosen.logical} hardware threads here.")
+    if param.name == "threads_http":
+        auto = machine.auto_threads_http(spec.parallel)
+        slots = "1 slot" if spec.parallel == 1 else f"{spec.parallel} slots"
+        return (f"0 = automatic, which here means {auto} — llama-server takes the larger of "
+                f"{slots} + 4 and one less than the {machine.cores().logical} hardware threads.")
+    if param.name == "parallel":
+        total, per_slot = slot_context(spec)
+        if per_slot >= total:
+            return (f"{spec.parallel} at once, sharing one {context_text(total)} pool."
+                    if spec.parallel > 1 else
+                    f"one at a time, with all {context_text(total)} to itself.")
+        return (f"each of the {spec.parallel} gets {context_text(per_slot)} of the "
+                f"{context_text(total)} — tick 'share one KV cache' to pool it instead.")
+    return ""
 
 
 def kv_line(spec: RunSpec, facts: ModelFacts | None, oob: bool = False) -> Span:
@@ -203,8 +234,10 @@ def _slider(param: Param, spec: RunSpec, facts: ModelFacts | None):
                   cls="numberbox", oninput="this.previousElementSibling.value=this.value"),
             cls="slider",
         ),
-        # only where the ceiling is the model's doing and therefore worth explaining
-        Span(_ceiling_text(param, int(high), facts), cls="ceiling") if param.name in SLIDERS else None,
+        Span(caption,
+             # "max 128K" belongs under the number box; a sentence does not
+             cls="ceiling" if param.name in SLIDERS else "ceiling wide")
+        if (caption := _slider_caption(param, spec, int(high), facts)) else None,
         kv_line(spec, facts) if param.name == "ctx_size" else None,
         cls="sliderbox",
     )
@@ -235,6 +268,17 @@ def _control(param: Param, spec: RunSpec, options: dict, facts: ModelFacts | Non
     if param.name in SECRET_PARAMS:
         return Input(type="password", name=param.name, value=str(value),
                      autocomplete="new-password")
+    if param.choices:
+        # a suggestion list rather than a dropdown: the two answers that fit
+        # almost everyone are one click away, and naming a single network card
+        # by its own address is still possible for the machine that needs it
+        listing = f"{param.name}_choices"
+        return Div(
+            Input(type="text", name=param.name, value=str(value), list=listing),
+            Datalist(*[Option(HOST_HELP.get(choice, ""), value=choice)
+                       for choice in param.choices], id=listing),
+            cls="suggested",
+        )
     return Input(type="text", name=param.name, value=str(value))
 
 
@@ -244,18 +288,30 @@ def _choice_label(param: Param, choice: str) -> str:
     return choice or "— default —"
 
 
-def _hint(param: Param, facts: ModelFacts | None) -> str:
+def _hint(param: Param, spec: RunSpec, facts: ModelFacts | None) -> str:
     # a slider's ceiling caption already names the model's limit; no need to repeat it
     if param.name == "ctx_size":
         if facts is None:
             return f"{param.help} · the range follows the model once one is selected"
         if facts.n_embd_k_gqa:
             return ""  # the ceiling and the KV line say the same thing in numbers
+    if param.name == "host":
+        return _host_hint(spec)
     return param.help or (f"emits {param.flag}" if param.flag else "")
 
 
+def _host_hint(spec: RunSpec) -> str:
+    """The host address explained by what it lets happen, not by what it is."""
+    private = HOST_HELP["127.0.0.1"]
+    if spec.host not in {"0.0.0.0", "::"}:
+        return f"{private}. Set 0.0.0.0 to let other machines in."
+    address = machine.lan_address()
+    where = f" — this machine is {address} on its network" if address else ""
+    return f"{HOST_HELP['0.0.0.0']}{where}. Anyone who can reach it can use the model."
+
+
 def _field(param: Param, spec: RunSpec, options: dict, facts: ModelFacts | None):
-    hint = _hint(param, facts)
+    hint = _hint(param, spec, facts)
     return Label(
         Span(param.label),
         _control(param, spec, options, facts),
@@ -647,6 +703,30 @@ def _command_lines(argv: list[str]) -> str:
     return "\n".join(lines)
 
 
+#: how a problem is shown: the prefix carries the weight, the class the colour
+PROBLEM_STYLE: dict[str, tuple[str, str]] = {
+    "error": ("⚠ ", "problem err"),
+    "warn": ("⚠ ", "problem warn"),
+    "note": ("note: ", "problem muted"),
+}
+
+
+def _port_problems(spec: RunSpec) -> list[Problem]:
+    """Whether this port is already spoken for, and which one is not.
+
+    The probe is a loopback connect that is closed at once. It runs on every
+    preview, which is why it has to stay this cheap; and it is the only way to
+    turn "Error: bind failed" three seconds after a launch into an answer
+    before it.
+    """
+    if not machine.port_taken(spec.port):
+        return []
+    free = machine.free_port(spec.port + 1)
+    advice = f" — port {free} is free" if free else ""
+    return [Problem("warn", f"Something is already listening on port {spec.port}"
+                            f"{advice}. Two servers cannot share one port.")]
+
+
 def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
             supervisor: Supervisor | None = None) -> Div:
     build = build_of(config, spec)
@@ -660,8 +740,7 @@ def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
                              available_devices=known))
     if build is not None and not build.usable:
         problems.insert(0, Problem("error", f"{build.name} has no llama-server binary"))
-    if spec.host in {"127.0.0.1", "0.0.0.0", "::"} and reachable(f"127.0.0.1:{spec.port}", 0.15):
-        problems.append(Problem("note", f"port {spec.port} already answers — something is listening"))
+    problems += _port_problems(spec)
 
     argv = to_argv(spec, binary)
     bench_argv = to_bench_argv(spec, BenchSpec(), config.bench_script, binary)
@@ -671,8 +750,8 @@ def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
     matches = snapshot is not None and same_run(argv, snapshot.argv)
 
     messages = [
-        Div(("⚠ " if problem.level == "error" else "note: ") + problem.message,
-            cls="problem err" if problem.level == "error" else "problem muted")
+        Div(PROBLEM_STYLE[problem.level][0] + problem.message,
+            cls=PROBLEM_STYLE[problem.level][1])
         for problem in problems
     ]
 

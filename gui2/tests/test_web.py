@@ -207,3 +207,28 @@ def test_the_same_run_from_a_different_build_directory_still_counts():
     assert same_run(argv, moved), "rebuilding elsewhere does not change what a run costs"
     assert not same_run(argv, other)
     assert not same_run(argv, [])
+
+
+def test_a_port_someone_else_holds_is_reported_with_a_free_one():
+    """A plain listening socket -- nothing is launched, nothing touches a GPU."""
+    import socket
+
+    from gui2.core.runspec import DEFAULTS
+    from gui2.web.server_page import _port_problems
+
+    listener = socket.socket()
+    try:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+
+        problems = _port_problems(DEFAULTS.with_values({"port": port}))
+        assert len(problems) == 1 and problems[0].level == "warn"
+        assert str(port) in problems[0].message
+        # the advice has to be actionable, not just a complaint
+        suggested = re.search(r"port (\d+) is free", problems[0].message)
+        assert suggested and int(suggested.group(1)) != port
+    finally:
+        listener.close()
+
+    assert _port_problems(DEFAULTS.with_values({"port": port})) == []

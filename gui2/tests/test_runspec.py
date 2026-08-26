@@ -175,3 +175,63 @@ def test_server_extra_drops_only_bench_owned_flags():
 def test_spec_type_emits_at_most_one_spec_flag(spec_type: str, expected: int):
     argv = to_argv(RunSpec(model="m.gguf", spec_type=spec_type))
     assert argv.count("--spec-type") == expected
+
+
+# -- the machine's own limits ----------------------------------------------
+
+
+def test_the_thread_knobs_stay_silent_when_left_automatic():
+    argv = to_argv(RunSpec(model="m.gguf"))
+    # llama-server counts the physical cores and sizes its HTTP pool better
+    # than a number typed into a box; saying nothing is how it is allowed to
+    assert "-t" not in argv and "--threads-http" not in argv
+    assert "-t" in to_argv(RunSpec(model="m.gguf", threads=6))
+
+
+def test_thread_sliders_stop_at_this_machines_core_count():
+    from gui2.core.machine import cores
+    from gui2.core.params import BY_NAME, bounds
+
+    for name in ("threads", "threads_http"):
+        low, high, step = bounds(BY_NAME[name])
+        assert (low, step) == (0, 1)
+        assert high == cores().logical, "a slider must not offer threads that do not exist"
+
+
+def test_the_http_thread_default_matches_what_llama_server_would_pick():
+    import os
+
+    from gui2.core.machine import auto_threads_http
+
+    # server-http.cpp: max(n_parallel + 4, hardware_concurrency() - 1)
+    assert auto_threads_http(1) == max(5, (os.cpu_count() or 1) - 1)
+    assert auto_threads_http(64) == 68
+
+
+@pytest.mark.parametrize("parallel,unified,ctx,expected", [
+    (1, False, 131072, (131072, 131072)),
+    (4, False, 131072, (131072, 32768)),
+    (4, True, 131072, (131072, 131072)),   # one pool, whoever needs it uses it
+    (3, False, 100000, (100608, 33536)),   # padded twice, so it no longer divides evenly
+])
+def test_parallel_slots_divide_the_context(parallel, unified, ctx, expected):
+    from gui2.core.runspec import slot_context
+
+    spec = RunSpec(model="m.gguf", parallel=parallel, kv_unified=unified, ctx_size=ctx)
+    assert slot_context(spec) == expected
+
+
+def test_a_context_split_between_slots_is_said_out_loud():
+    notes = " ".join(problem.message for problem
+                     in validate(RunSpec(model="m.gguf", parallel=4, ctx_size=131072)))
+    assert "32K" in notes and "--kv-unified" in notes
+
+
+def test_an_open_host_without_a_key_warns_but_still_starts():
+    problems = validate(RunSpec(model="m.gguf", host="0.0.0.0"))
+    warning = next(problem for problem in problems if problem.level == "warn")
+    assert "API key" in warning.message
+    # a server on the LAN is a decision, not a mistake: it must not be blocked
+    assert warning not in errors(problems)
+    assert not [problem for problem in validate(
+        RunSpec(model="m.gguf", host="0.0.0.0", api_key="k")) if problem.level == "warn"]

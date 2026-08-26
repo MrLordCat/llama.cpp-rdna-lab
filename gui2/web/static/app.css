@@ -148,6 +148,8 @@ pre {
 }
 
 .problem { padding: 3px 0; font-size: 12px; }
+/* a warning starts anyway, so it is dimmer than an error but not a footnote */
+.problem.warn { color: #d6b06a; max-width: 72ch; }
 details > summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
 
 /* Sliders: drag for a feel of the range, type for an exact value */
@@ -174,6 +176,11 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; margi
 /* the price of the context reads as a sentence, not as a right-hand figure */
 .sliderbox #kvline { text-align: left; padding-right: 0; margin-top: 3px; }
 .sliderbox #kvline:empty { display: none; }
+/* captions that are sentences wrap on the left like sentences do */
+.sliderbox .ceiling.wide { text-align: left; padding-right: 0; max-width: 62ch; }
+
+/* a text box with suggestions behaves like a text box; the list is the browser's */
+.suggested > input { width: 100%; }
 
 /* Memory estimate: the numbers that decide whether the model loads at all */
 .memory .memrow {

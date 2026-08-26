@@ -18,6 +18,9 @@ from gui2.core.params import SCHEMA, Param, aliases_of, flags_in, parse_extra
 THINKING_OFF = '{"enable_thinking":false,"preserve_thinking":false}'
 RPC_ENDPOINT_RE = re.compile(r"^[A-Za-z0-9_.\-]+:\d{1,5}$")
 
+#: addresses that mean "every network card", and therefore "the whole network"
+OPEN_HOSTS = frozenset({"0.0.0.0", "::", "*"})
+
 
 @dataclass(frozen=True, slots=True)
 class RunSpec:
@@ -27,11 +30,15 @@ class RunSpec:
     host: str = "127.0.0.1"
     port: int = 8080
     ctx_size: int = 131072
-    threads: int = 8
-    threads_http: int = 4
+    # 0 means "say nothing and let llama-server decide": it already picks the
+    # physical core count for -t and sizes --threads-http from the slots, and
+    # both answers beat a number a person would guess
+    threads: int = 0
+    threads_http: int = 0
     batch_size: int = 512
     ubatch_size: int = 128
     parallel: int = 1
+    kv_unified: bool = False
     gpu_layers_all: bool = True
     gpu_layers: int = 64
     cache_type_k: str = "f16"
@@ -107,6 +114,32 @@ def parse_rpc_endpoints(text: str) -> list[str]:
         if chunk not in endpoints:
             endpoints.append(chunk)
     return endpoints
+
+
+#: llama_context pads both the total context and each slot's share to this
+CONTEXT_PAD = 256
+
+
+def _pad_up(value: int, multiple: int) -> int:
+    return ((value + multiple - 1) // multiple) * multiple
+
+
+def slot_context(spec: RunSpec) -> tuple[int, int]:
+    """The total context, and how much of it one conversation may use.
+
+    Mirrors llama_context: unless a single cache is shared, the context is
+    divided between the parallel slots and each share padded separately -- so
+    asking for 128K with four slots gives four conversations of 32K, not one
+    of 128K. The memory is the same either way; what changes is how long a
+    single conversation may get before it is cut short, which is the part
+    nobody discovers until it happens.
+    """
+    total = _pad_up(max(1, int(spec.ctx_size)), CONTEXT_PAD)
+    slots = max(1, int(spec.parallel))
+    if spec.kv_unified:
+        return total, total
+    per_slot = _pad_up(max(1, total // slots), CONTEXT_PAD)
+    return per_slot * slots, per_slot
 
 
 def rpc_device_names(count: int) -> list[str]:
@@ -214,7 +247,10 @@ def mask_api_key(argv: list[str]) -> list[str]:
     return masked
 
 
-Level = Literal["error", "note"]
+#: "error" refuses to start; "warn" starts anyway. The difference matters: a
+#: server open to the network is a decision, not a mistake, and a GUI that
+#: refuses to make it has taken the choice away from the person who owns it.
+Level = Literal["error", "warn", "note"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +285,14 @@ def validate(spec: RunSpec, backend: str = "", supports_rpc: bool | None = None,
     if spec.ubatch_size > spec.batch_size:
         problems.append(Problem("error", "Ubatch size must not exceed batch size"))
 
+    if spec.host in OPEN_HOSTS and not spec.api_key:
+        problems.append(Problem(
+            "warn",
+            f"--host {spec.host} accepts connections from the whole network and no API key "
+            "is set: anyone who can reach this machine can use the model and read the "
+            "conversations. Set an API key, or use 127.0.0.1.",
+        ))
+
     if facts is not None and facts.n_ctx_train and spec.ctx_size > facts.n_ctx_train:
         problems.append(Problem(
             "note",
@@ -258,6 +302,20 @@ def validate(spec: RunSpec, backend: str = "", supports_rpc: bool | None = None,
 
     if not spec.gpu_layers_all and spec.gpu_layers == 0:
         problems.append(Problem("note", "No layer is offloaded: the model will run on the CPU"))
+
+    total_ctx, per_slot = slot_context(spec)
+    if total_ctx != spec.ctx_size:
+        problems.append(Problem(
+            "note",
+            f"llama.cpp will use {context_text(total_ctx)} of context: the request has to "
+            f"divide into {spec.parallel} slot(s) of a multiple of {CONTEXT_PAD}",
+        ))
+    if per_slot < total_ctx:
+        problems.append(Problem(
+            "note",
+            f"one conversation may use {context_text(per_slot)} of it — the rest belongs to "
+            f"the other {spec.parallel - 1} slot(s); --kv-unified pools them instead",
+        ))
 
     kv_types = {spec.cache_type_k, spec.cache_type_v}
     flash_on = spec.flash_attn == "on" or "-fa" in extra_flags or "--flash-attn" in extra_flags

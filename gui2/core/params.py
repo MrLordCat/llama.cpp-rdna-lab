@@ -12,6 +12,8 @@ import shlex
 from dataclasses import dataclass
 from typing import Literal
 
+from gui2.core import machine
+
 Kind = Literal["int", "float", "text", "bool", "choice", "slider", "devices"]
 Emit = Literal["value", "presence", "absence", "composite"]
 
@@ -27,6 +29,18 @@ KV_HELP = {
 SPEC_TYPES = ("none", "mtp", "ngram-mod")
 SPLIT_MODES = ("", "auto", "layer", "none", "row")
 
+#: offered as suggestions, not as the only answers: a machine with two network
+#: cards may have to name one of them, and that is still a legitimate --host
+HOSTS = ("127.0.0.1", "0.0.0.0")
+HOST_HELP = {
+    "127.0.0.1": "this machine only — nothing on the network can connect",
+    "0.0.0.0": "every network this machine is on — other machines can connect",
+}
+
+#: --threads-http is the one number better left to llama-server, which sizes it
+#: from the parallel slots and the core count; 0 is how that is said in argv
+THREADS_HTTP_AUTO = 0
+
 # flags llama-server accepts under more than one name; extra arguments must
 # suppress a generated flag no matter which spelling the user typed
 ALIASES: tuple[frozenset[str], ...] = (
@@ -36,6 +50,7 @@ ALIASES: tuple[frozenset[str], ...] = (
     frozenset({"-b", "--batch-size"}),
     frozenset({"-ub", "--ubatch-size"}),
     frozenset({"-np", "--parallel"}),
+    frozenset({"-kvu", "--kv-unified"}),
     frozenset({"-ngl", "--gpu-layers", "--n-gpu-layers"}),
     frozenset({"-ctk", "--cache-type-k"}),
     frozenset({"-ctv", "--cache-type-v"}),
@@ -79,18 +94,30 @@ G_ADVANCED = "Advanced"
 SCHEMA: tuple[Param, ...] = (
     Param("model", "Model", "text", G_MODEL, "-m", help="path to the GGUF file"),
     Param("host", "Host", "text", G_SERVER, "--host",
-          help="127.0.0.1 keeps the server private to this machine"),
-    Param("port", "Port", "int", G_SERVER, "--port", minimum=1, maximum=65535),
+          choices=HOSTS,
+          help="which network cards may reach this server"),
+    Param("port", "Port", "int", G_SERVER, "--port", minimum=1, maximum=65535,
+          help="any number nothing else is using; 8080 is only a habit"),
     # maximum applies only until a model is chosen; then the GGUF sets the ceiling
     Param("ctx_size", "Context", "slider", G_CONTEXT, "-c", minimum=4096, maximum=262144, step=4096,
           help="tokens the server keeps in memory; the KV cache grows with it"),
-    Param("threads", "CPU threads", "slider", G_CONTEXT, "-t", minimum=1, maximum=64, step=1),
-    Param("threads_http", "HTTP threads", "int", G_SERVER, "--threads-http", minimum=1, maximum=64),
+    # both maxima are this machine's core count; bounds() fills them in
+    Param("threads", "CPU threads", "slider", G_CONTEXT, "-t", minimum=0, step=1,
+          skip_default=True,
+          help="for the work the CPU still does; irrelevant once every layer is on a GPU"),
+    Param("threads_http", "HTTP threads", "slider", G_SERVER, "--threads-http",
+          minimum=0, step=1, skip_default=True,
+          help="threads that accept connections and move bytes — none of them do inference"),
     Param("batch_size", "Batch", "slider", G_CONTEXT, "--batch-size",
           minimum=64, maximum=8192, step=64, help="tokens submitted per prompt pass"),
     Param("ubatch_size", "Ubatch", "slider", G_CONTEXT, "--ubatch-size",
           minimum=32, maximum=2048, step=32, help="never larger than the batch"),
-    Param("parallel", "Parallel sequences", "int", G_CONTEXT, "--parallel", minimum=1, maximum=64),
+    Param("parallel", "Conversations at once", "slider", G_CONTEXT, "--parallel",
+          minimum=1, maximum=16, step=1,
+          help="llama.cpp calls these slots; each one holds one conversation"),
+    Param("kv_unified", "Share one KV cache", "bool", G_CONTEXT, "--kv-unified",
+          emit="presence",
+          help="one pool all conversations draw from, instead of an equal share each"),
     Param("gpu_layers_all", "Offload every layer", "bool", G_DEVICE, emit="composite",
           help="emits -ngl 999; turn off to keep part of the model on the CPU"),
     Param("gpu_layers", "GPU layers", "slider", G_DEVICE, "-ngl",
@@ -146,6 +173,9 @@ GROUPS: tuple[str, ...] = tuple(dict.fromkeys(param.group for param in SCHEMA))
 #: the ladder, otherwise the top of the slider is not the top of the model.
 CONTEXT_STEPS = (4096, 2048, 1024, 512, 256)
 
+#: sliders whose ceiling is the CPU, not the model
+THREAD_PARAMS = frozenset({"threads", "threads_http"})
+
 
 def context_bounds(n_ctx_train: int | None) -> tuple[int, int, int]:
     """Context slider range: the model's trained length is the ceiling."""
@@ -167,6 +197,10 @@ def bounds(param: Param, n_layers: int | None = None,
     high = param.maximum if param.maximum is not None else 100
     step = param.step or 1
 
+    if param.name in THREAD_PARAMS:
+        # a slider that stops at this machine's core count cannot be set to a
+        # number that would only make the CPU fight itself
+        high = max(machine.cores().logical, int(low))
     if param.name == "gpu_layers" and n_layers:
         high = min(high, max(n_layers + 1, low))
     return low, high, step
