@@ -1,5 +1,21 @@
 # Results Log
 
+## 2026-08-26 - D132 RPC Q8_0 boundary wire clears the 94K gate
+
+- The RPC-first split boundary is F32 `l_out-*`: 20,971,520 bytes per
+  1024-token ubatch. Existing F16 wire is 10,485,760 bytes; opt-in block
+  Q8_0 is 5,570,560 bytes (`-46.875%` versus F16).
+- Protocol `5.0.1` adds fail-closed Q8_0 negotiation. Parallel conversion
+  used 16 client threads and the remote server default of 8; final logits
+  remain F16.
+- Locked 94K lane: adjacent F16 rf59 `1016.82/37.59`; Q8_0 plus run-ahead
+  rf62 `1065.39/40.48`, exact repeat rf63 `1062.35/38.45`. Center is
+  **1063.87/39.47**, `+4.63%` prompt, with `0.29%` repeat spread.
+- Local dual-Vulkan rf64 `1443.85/50.67` matches rf22
+  `1441.99/51.19`; no common-path regression was detected.
+- Retain as opt-in pending a separate PPL/quality gate. Full H81/P2
+  inter-ubatch overlap remains open. Design and negatives: D132.
+
 ## 2026-08-14 - W12 decode-token census: MUL_MAT dominates, track paused
 
 - Whole-lane node-timing census (GGML_TRACE_CUDA_NODE_TIMING + SYNC, 49K

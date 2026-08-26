@@ -135,10 +135,12 @@ static rpc_tensor serialize_tensor(const ggml_tensor * tensor) {
         result.rpc_flags |= GGML_RPC_TENSOR_FLAG_CAUSAL_MASK;
     }
     if (result.type == GGML_TYPE_F32 && is_rpc_activation_name(result.name)) {
-        // F8 is deliberately opt-in and limited to intermediate layer
-        // outputs. Keep result_output/logits at F16 to avoid amplifying
-        // sampling sensitivity at the final boundary.
-        if (std::getenv("GGML_RPC_ACT_F8") != nullptr && is_rpc_layer_output_name(result.name)) {
+        // Lossy compact formats are deliberately opt-in and limited to
+        // intermediate layer outputs. Keep result_output/logits at F16 to
+        // avoid amplifying sampling sensitivity at the final boundary.
+        if (std::getenv("GGML_RPC_ACT_Q8_0") != nullptr && is_rpc_layer_output_name(result.name)) {
+            result.rpc_flags |= GGML_RPC_TENSOR_FLAG_ACT_Q8_0;
+        } else if (std::getenv("GGML_RPC_ACT_F8") != nullptr && is_rpc_layer_output_name(result.name)) {
             result.rpc_flags |= GGML_RPC_TENSOR_FLAG_ACT_F8;
         } else {
             result.rpc_flags |= GGML_RPC_TENSOR_FLAG_ACT_F16;
@@ -214,6 +216,7 @@ static bool rpc_send_tensor_data(const std::shared_ptr<socket_t> & sock,
     }
     const bool act_f16 = (tmeta.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
     const bool act_f8  = (tmeta.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F8)  != 0;
+    const bool act_q8  = (tmeta.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_Q8_0) != 0;
     if ((tmeta.rpc_flags & GGML_RPC_TENSOR_FLAG_CAUSAL_MASK) != 0) {
         // Single-sequence causal masks are binary (0.0 / -inf): transmit as a
         // bitmask instead of raw F16. Fall back to the plain transfer when the
@@ -261,7 +264,7 @@ static bool rpc_send_tensor_data(const std::shared_ptr<socket_t> & sock,
         }
         // fall through to the plain transfer below
     }
-    if (size > HASH_THRESHOLD && !act_f16 && !act_f8) {
+    if (size > HASH_THRESHOLD && !act_f16 && !act_f8 && !act_q8) {
         rpc_msg_set_tensor_hash_req request;
         request.tensor = tmeta;
         request.offset = offset;
@@ -282,7 +285,11 @@ static bool rpc_send_tensor_data(const std::shared_ptr<socket_t> & sock,
     size_t data_size = size;
     std::vector<uint8_t> tmp;
     const void * data_ptr = data;
-    if (act_f8) {
+    if (act_q8) {
+        rpc_f32_to_q8_0(data, size, tmp);
+        data_size = tmp.size();
+        data_ptr = tmp.data();
+    } else if (act_f8) {
         // F8 E4M3 is one byte per F32 element, reducing layer-boundary
         // traffic by 4x versus raw F32 and 2x versus the default F16 path.
         data_size = size / 4;
@@ -340,10 +347,15 @@ static void ggml_backend_rpc_buffer_get_tensor(ggml_backend_buffer_t buffer, con
     auto t0 = std::chrono::steady_clock::now();
     const bool act_f16 = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
     const bool act_f8  = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F8)  != 0;
+    const bool act_q8  = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_Q8_0) != 0;
     std::vector<uint8_t> tmp;
     void * rsp_ptr = data;
     size_t rsp_size = size;
-    if (act_f8) {
+    if (act_q8) {
+        rsp_size = rpc_q8_0_wire_size(size);
+        tmp.resize(rsp_size);
+        rsp_ptr = tmp.data();
+    } else if (act_f8) {
         rsp_size = size / 4;
         tmp.resize(rsp_size);
         rsp_ptr = tmp.data();
@@ -355,7 +367,9 @@ static void ggml_backend_rpc_buffer_get_tensor(ggml_backend_buffer_t buffer, con
     }
     bool status = send_rpc_cmd(ctx->sock, RPC_CMD_GET_TENSOR, &request, sizeof(request), rsp_ptr, rsp_size);
     RPC_STATUS_ASSERT(status);
-    if (act_f8) {
+    if (act_q8) {
+        rpc_q8_0_to_f32(rsp_ptr, rsp_size, data);
+    } else if (act_f8) {
         ggml_fp8_e4m3_to_fp32_row((const uint8_t *) rsp_ptr, (float *) data, (int64_t) size / sizeof(float));
     } else if (act_f16) {
         ggml_fp16_to_fp32_row((const ggml_fp16_t *) rsp_ptr, (float *) data, (int64_t) size / sizeof(float));
@@ -754,12 +768,12 @@ static enum ggml_status ggml_backend_rpc_graph_compute(ggml_backend_t backend, g
         RPC_STATUS_ASSERT(status);
         if (RPC_DEBUG) {
             double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-            fprintf(stderr, "[rpc-client] graph_compute%s nodes=%zu ser=%zu time=%.1fms t+=%.1fms\n",
+            fprintf(stderr, "[rpc-client] graph_compute%s nodes=%d ser=%zu time=%.1fms t+=%.1fms\n",
                     async_pipeline ? " async" : "", cgraph->n_nodes, input.size(), ms, rpc_wall_ms());
             if (cgraph->n_nodes <= 48) {
-                for (uint32_t i = 0; i < cgraph->n_nodes; i++) {
+                for (int i = 0; i < cgraph->n_nodes; i++) {
                     const ggml_tensor * n = cgraph->nodes[i];
-                    fprintf(stderr, "[rpc-client]   node[%u] name='%s' op=%d src0='%s' src1='%s' src2='%s'\n", i, n->name, (int) n->op,
+                    fprintf(stderr, "[rpc-client]   node[%d] name='%s' op=%d src0='%s' src1='%s' src2='%s'\n", i, n->name, (int) n->op,
                             n->src[0] ? n->src[0]->name : "-", n->src[1] ? n->src[1]->name : "-", n->src[2] ? n->src[2]->name : "-");
                 }
             }
@@ -797,7 +811,7 @@ static void ggml_backend_rpc_get_async(ggml_backend_t backend, const ggml_tensor
     ggml_backend_rpc_context * rpc_ctx = (ggml_backend_rpc_context *) backend->context;
     auto sock = get_socket(rpc_ctx->endpoint);
     if (sock == nullptr) {
-        GGML_ABORT("rpc: get_async: no socket for endpoint %s", rpc_ctx->endpoint);
+        GGML_ABORT("rpc: get_async: no socket for endpoint %s", rpc_ctx->endpoint.c_str());
     }
     // Prototype gate: only the final logits (result_output) are safe to defer
     // - their host buffer is consumed only after llama_synchronize before
@@ -813,11 +827,16 @@ static void ggml_backend_rpc_get_async(ggml_backend_t backend, const ggml_tensor
     request.size = size;
     const bool act_f16 = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
     const bool act_f8  = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F8)  != 0;
-    rpc_send_submit(sock, [sock, request = std::move(request), data, offset, size, act_f16, act_f8]() {
+    const bool act_q8  = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_Q8_0) != 0;
+    rpc_send_submit(sock, [sock, request = std::move(request), data, offset, size, act_f16, act_f8, act_q8]() {
         std::vector<uint8_t> tmp;
         void * rsp_ptr = data;
         size_t rsp_size = size;
-        if (act_f8) {
+        if (act_q8) {
+            rsp_size = rpc_q8_0_wire_size(size);
+            tmp.resize(rsp_size);
+            rsp_ptr = tmp.data();
+        } else if (act_f8) {
             rsp_size = size / 4;
             tmp.resize(rsp_size);
             rsp_ptr = tmp.data();
@@ -829,7 +848,9 @@ static void ggml_backend_rpc_get_async(ggml_backend_t backend, const ggml_tensor
         }
         const bool status = send_rpc_cmd(sock, RPC_CMD_GET_TENSOR, &request, sizeof(request), rsp_ptr, rsp_size);
         RPC_STATUS_ASSERT(status);
-        if (act_f8) {
+        if (act_q8) {
+            rpc_q8_0_to_f32(rsp_ptr, rsp_size, data);
+        } else if (act_f8) {
             ggml_fp8_e4m3_to_fp32_row((const uint8_t *) rsp_ptr, (float *) data, (int64_t) size / sizeof(float));
         } else if (act_f16) {
             ggml_fp16_to_fp32_row((const ggml_fp16_t *) rsp_ptr, (float *) data, (int64_t) size / sizeof(float));
@@ -868,6 +889,7 @@ static ggml_backend_i ggml_backend_rpc_interface = {
     /* .event_record            = */ ggml_backend_rpc_event_record,
     /* .event_wait              = */ ggml_backend_rpc_event_wait,
     /* .graph_optimize          = */ NULL,
+    /* .tensor_get_batch        = */ NULL,
 };
 
 ggml_backend_buffer_type_t ggml_backend_rpc_buffer_type(const char * endpoint, uint32_t device) {

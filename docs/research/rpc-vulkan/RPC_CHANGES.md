@@ -307,3 +307,31 @@
   decode +103%).
 - Цель (prefill == local) остаётся открытой: нужен двухэтапный async
   pull копии l_out-18 RPC0→VK0 (~221 мс/уб) в ggml-backend или 10GbE.
+
+### 2026-08-26 — Q8_0 wire + run-ahead: значимый 94K prefill результат
+
+- P0 уточнил границу: `l_out-16` — F32, 20,971,520 байт; существующий
+  F16 wire — 10,485,760 байт. Новый block-Q8_0 wire — 5,570,560 байт
+  (−46.875% к F16), final logits по-прежнему F16.
+- Протокол поднят до `5.0.1`; старый сервер fail-closed при включённом
+  `GGML_RPC_ACT_Q8_0=1`. Конверсия распараллеливается через
+  `GGML_RPC_ACT_THREADS`: в rf62/rf63 клиент = 16, scheduled remote server =
+  штатный default 8 (его launch env не менялся). Default wire остаётся F16.
+- 94K, одинаковые новые client/server binaries, `-ts 0.8,1,1.4`:
+  * rf59 adjacent F16: 1016.82/37.59;
+  * rf62 Q8_0+client/server t16/t8+run-ahead: 1065.39/40.48;
+  * rf63 exact repeat: 1062.35/38.45;
+  * центр rf62/rf63: **1063.87/39.47**, prompt **+4.63%** к rf59,
+    повторный spread 0.29%; против исторического rf47 +3.32% prompt,
+    decode сохраняется (39.47 против 39.36).
+- 14K: rf61 1239.90/42.54 против rf50 F16 1197.54/44.13 (+3.54% prompt).
+- Локальный контроль rf64: 1443.85/50.67 против rf22 1441.99/51.19 —
+  общей Vulkan-регрессии нет.
+- Отрицательные/нейтральные P0: ubatch 2048 −15.2% (rf51), снятие
+  coarse source-sync +0.8% в шуме (rf52), direct response copy нейтральна
+  (rf55); прототипы удалены.
+- Рабочий opt-in стек:
+  `GGML_RPC_ASYNC_GRAPH=1 GGML_RPC_ACT_Q8_0=1
+   GGML_RPC_ACT_THREADS=16 LLAMA_RPC_RUN_AHEAD=1`.
+  Q8_0 lossy, поэтому default-on закрыт до отдельного PPL/quality-гейта.
+  Полный H81/P2 inter-ubatch pipeline остаётся открытым следующим рычагом.

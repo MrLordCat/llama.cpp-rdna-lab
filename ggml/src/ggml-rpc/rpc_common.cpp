@@ -339,6 +339,11 @@ bool negotiate_hello(const std::shared_ptr<socket_t> & sock) {
                        response.major, response.minor, response.patch);
         return false;
     }
+    if (std::getenv("GGML_RPC_ACT_Q8_0") != nullptr && response.patch < 1) {
+        GGML_LOG_ERROR("RPC server v%d.%d.%d does not support Q8_0 activation transport\n",
+                       response.major, response.minor, response.patch);
+        return false;
+    }
 
     sock->update_caps(response.conn_caps);
     return true;

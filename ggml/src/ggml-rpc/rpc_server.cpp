@@ -295,15 +295,17 @@ bool rpc_server::set_tensor(const std::vector<uint8_t> & input) {
 
     const bool act_f16 = (in_tensor->rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
     const bool act_f8  = (in_tensor->rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F8)  != 0;
-    if (act_f16 && act_f8) {
-        GGML_LOG_ERROR("[%s] activation payload has conflicting F16/F8 flags\n", __func__);
+    const bool act_q8  = (in_tensor->rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_Q8_0) != 0;
+    if ((int) act_f16 + (int) act_f8 + (int) act_q8 > 1) {
+        GGML_LOG_ERROR("[%s] activation payload has conflicting transport flags\n", __func__);
         return false;
     }
     if ((act_f16 && size > SIZE_MAX / 2) || (act_f8 && size > SIZE_MAX / 4)) {
         GGML_LOG_ERROR("[%s] activation payload size overflows destination size\n", __func__);
         return false;
     }
-    const size_t f32_size = act_f8 ? size * 4 : (act_f16 ? size * 2 : size);
+    const size_t f32_size = act_q8 ? rpc_q8_0_f32_size(size) :
+                            (act_f8 ? size * 4 : (act_f16 ? size * 2 : size));
 
     // sanitize tensor->data against the expanded destination size, not the
     // compressed wire payload size.
@@ -319,7 +321,11 @@ bool rpc_server::set_tensor(const std::vector<uint8_t> & input) {
 
     const void * data = input.data() + sizeof(rpc_tensor) + sizeof(offset);
     std::vector<uint8_t> f32_data;
-    if (act_f8) {
+    if (act_q8) {
+        f32_data.resize(f32_size);
+        rpc_q8_0_to_f32(data, size, f32_data.data());
+        data = f32_data.data();
+    } else if (act_f8) {
         f32_data.resize(f32_size);
         ggml_fp8_e4m3_to_fp32_row((const uint8_t *) data, (float *) f32_data.data(), (int64_t) size);
         data = f32_data.data();
@@ -329,7 +335,7 @@ bool rpc_server::set_tensor(const std::vector<uint8_t> & input) {
         ggml_fp16_to_fp32_row((const ggml_fp16_t *) data, (float *) f32_data.data(), (int64_t) size / sizeof(ggml_fp16_t));
         data = f32_data.data();
     }
-    if (cache_dir && size > HASH_THRESHOLD && !act_f16 && !act_f8) {
+    if (cache_dir && size > HASH_THRESHOLD && !act_f16 && !act_f8 && !act_q8) {
         uint64_t hash = fnv_hash((const uint8_t*)data, size);
         char hash_str[17];
         snprintf(hash_str, sizeof(hash_str), "%016" PRIx64, hash);
@@ -605,11 +611,16 @@ bool rpc_server::get_tensor(const rpc_msg_get_tensor_req & request, std::vector<
 
     const bool act_f16 = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
     const bool act_f8  = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F8)  != 0;
-    if (act_f16 && act_f8) {
-        GGML_LOG_ERROR("[%s] activation request has conflicting F16/F8 flags\n", __func__);
+    const bool act_q8  = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_Q8_0) != 0;
+    if ((int) act_f16 + (int) act_f8 + (int) act_q8 > 1) {
+        GGML_LOG_ERROR("[%s] activation request has conflicting transport flags\n", __func__);
         return false;
     }
-    if (act_f8) {
+    if (act_q8) {
+        std::vector<uint8_t> f32_buf(request.size, 0);
+        ggml_backend_tensor_get(tensor, f32_buf.data(), request.offset, request.size);
+        rpc_f32_to_q8_0(f32_buf.data(), request.size, response);
+    } else if (act_f8) {
         std::vector<uint8_t> f32_buf(request.size, 0);
         ggml_backend_tensor_get(tensor, f32_buf.data(), request.offset, request.size);
         response.resize(request.size / 4, 0);

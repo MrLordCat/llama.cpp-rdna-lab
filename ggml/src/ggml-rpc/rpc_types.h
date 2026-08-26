@@ -52,6 +52,11 @@ enum {
     // separate from ACT_F16 so mixed-version peers fail closed instead of
     // silently interpreting one-byte payloads as half precision.
     GGML_RPC_TENSOR_FLAG_ACT_F8 = 1 << 2,
+    // Optional block-Q8_0 transport for layer-split F32 activations. It uses
+    // one fp16 scale plus 32 signed bytes per block (1.0625 B/value): nearly
+    // the F8 wire size, but with a per-block scale and materially more
+    // mantissa precision for MTP-sensitive boundaries.
+    GGML_RPC_TENSOR_FLAG_ACT_Q8_0 = 1 << 3,
 };
 
 static_assert(sizeof(rpc_tensor) % 8 == 0, "rpc_tensor size must be multiple of 8");

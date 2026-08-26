@@ -18,7 +18,8 @@ ggml/src/ggml-rpc/
                                 флаги TENSOR_FLAG_*, HASH_THRESHOLD, rpc_cmd_name.
   rpc_internal.h              — общие включает, env-гейты (RPC_DEBUG/RPC_TIMELINE),
                                 LOG_DBG/RPC_STATUS_ASSERT, декларации common-слоя,
-                                события/буферные контексты, буфер-тип контекст.
+                                события/буферные контексты, буфер-тип контекст,
+                                параллельная Q8_0 wire-конверсия.
   rpc_common.cpp              — НЕ-static общие функции: rpc_wall_ms, fnv_hash,
                                 graph_structure_hash, send/recv_msg,
                                 parse_endpoint, get_socket, negotiate_hello,
@@ -117,6 +118,10 @@ scripts/research/rpc_split.py, rpc_split_post.py — генераторы раз
 - `GGML_RPC_TENSOR_FLAG_ACT_F16` — F32 активации через RPC идут как F16
   (hash-кэш активаций скипается). Опционально `GGML_RPC_ACT_F8=1` для
   промежуточных `l_out-*` (измерено хуже: −2%/−16% decode).
+- `GGML_RPC_TENSOR_FLAG_ACT_Q8_0` — opt-in block-Q8_0 wire для
+  промежуточных `l_out-*`: 34 байта на 32 F32 значения (fp16 scale + int8),
+  final logits остаются F16. `GGML_RPC_ACT_THREADS` параллелит независимые
+  блоки на обоих peers. Протокол `5.0.1` fail-closed со старым сервером.
 - `GGML_RPC_TENSOR_FLAG_CAUSAL_MASK` + `SET_TENSOR_MASK_NPAST` — маска
   генерируется на сервере (экономия n_kv×n_tokens×2 байт на убатч).
 - `SET_TENSOR_HASH` — веса передаются один раз, дальше серверный disk-кэш.
@@ -141,8 +146,10 @@ scripts/research/rpc_split.py, rpc_split_post.py — генераторы раз
 2. **Последовательные GPU-графы клиента**: VK1 (256 мс) → VK0 (276 мс) на
    94K. Cross-device копия `cpy_tensor_async` откатывается на sync.
    Рычаг: run-ahead VK1(N+1)∥VK0(N), требует cross-device event-конвейер.
-3. **Сеть 1GbE**: 20 МБ l_out ≈ 160–175 мс на убатч; пиковый wire ~403 МБ
-   на 94K (14K-лейн ~86 МБ) — с учётом async-копий частично скрыт.
+3. **Сеть 1GbE**: F32 `l_out` = 20.97 МБ, F16 wire = 10.49 МБ на убатч;
+  opt-in Q8_0 wire = 5.57 МБ (−46.875% к F16). Q8_0+run-ahead поднял
+  94K prefill на 4.63% к соседнему F16-контролю, но сеть и серверный wait
+  всё ещё оставляют значительный разрыв до local.
 4. **Граф-сериализация** (клиент `serialize_graph`, сервер `create_node`):
    ~1–3 мс/убатч, незначительно, но в 94K в сумме 100–200 мс.
 
@@ -156,6 +163,9 @@ scripts/research/rpc_split.py, rpc_split_post.py — генераторы раз
 | `LLAMA_UBATCH_TIMING=1` | build/alloc/inputs/compute_call по убатчу | — |
 | `GGML_RPC_ASYNC_GRAPH=1` | async путь на сервере | работает с snapshot-копиями; без него — последовательный |
 | `GGML_RPC_ACT_F8=1` | F8 активации | **не** использовать качество-критично (измерено хуже) |
+| `GGML_RPC_ACT_Q8_0=1` | block-Q8_0 для промежуточных `l_out-*` | opt-in; требует protocol 5.0.1 и quality/PPL-гейт до default-on |
+| `GGML_RPC_ACT_THREADS=N` | параллельная Q8_0 конверсия текущего процесса | задаётся независимо client/server; default 8, rf62/rf63 = 16/8 |
+| `LLAMA_RPC_RUN_AHEAD=1` | ротация copy slots на prefill | в одиночку +0.4%; с Q8_0 входит в принятый стек |
 | `GGML_RPC_BARRIER_DISABLE=1` | снять SYNС-барьер | **опасно**: падение «tensor buffer not set» |
 
 Анализатор таймлайны: `scripts/research/rpc_timeline_analyze.py`.
@@ -176,7 +186,8 @@ scripts/research/rpc_split.py, rpc_split_post.py — генераторы раз
 
 | Лейн | Конфиг | prompt t/s | decode t/s | Примечание |
 |---|---|---|---|---|
-| 94K local | spec=none | 1355.34, r25 1351.18 | 24.55/25.05 | канон README.md:162; rf25 — после рефакторинга |
-| 94K RPC | MTP n4, ts 1,1,1.1 | 1104–1117 | 19.5 | rf9/rf16; стена: серверная очередь |
+| 94K local | MTP n4 | 1443.85 | 50.67 | rf64; общий scheduler без регрессии против rf22 1441.99/51.19 |
+| 94K RPC | MTP n4, ts 0.8,1,1.4, F16 | 1016.82 | 37.59 | rf59, соседний same-binary контроль |
+| 94K RPC | MTP n4, Q8_0 client/server t16/t8 + run-ahead | **1063.87** | **39.47** | центр rf62/rf63; +4.63% prompt, spread 0.29% |
 | 49K RPC | MTP n4 | 1201–1265 | 23–25 | rf12/rf19 |
-| 14K RPC | MTP n4 | 1387.77 (рекорд) | 28.03 | rf15 (async-get) |
+| 14K RPC | MTP n4, Q8_0 client/server t16/t8 + run-ahead | 1239.90 | 42.54 | rf61; +3.54% prompt к rf50 F16 |
