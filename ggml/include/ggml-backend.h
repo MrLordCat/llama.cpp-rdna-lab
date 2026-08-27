@@ -355,17 +355,6 @@ extern "C" {
     GGML_API bool                 ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph); // returns success
     GGML_API enum ggml_status     ggml_backend_sched_graph_compute(ggml_backend_sched_t sched, struct ggml_cgraph * graph);
     GGML_API enum ggml_status     ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sched, struct ggml_cgraph * graph);
-    // Local fork: execute only splits [split_from, split_to) of the already
-    // allocated graph; remaining splits stay pending for a complementary call.
-    GGML_API enum ggml_status     ggml_backend_sched_graph_compute_range(ggml_backend_sched_t sched, struct ggml_cgraph * graph, int split_from, int split_to);
-    // Local fork (P2): exclusive end index of the RPC head part of the graph.
-    GGML_API int                  ggml_backend_sched_p2_head_end(ggml_backend_sched_t sched);
-    // Local fork (P2/D132): two-slot split snapshots so graph N+1 can be
-    // allocated while the tail splits of graph N are still pending.
-    GGML_API bool                 ggml_backend_sched_p2_save_splits(ggml_backend_sched_t sched, int slot);
-    GGML_API int                  ggml_backend_sched_p2_saved_n_splits(ggml_backend_sched_t sched, int slot);
-    GGML_API int                  ggml_backend_sched_p2_saved_head_end(ggml_backend_sched_t sched, int slot);
-    GGML_API enum ggml_status     ggml_backend_sched_p2_compute_saved(ggml_backend_sched_t sched, int slot, int split_from, int split_to);
     GGML_API void                 ggml_backend_sched_synchronize(ggml_backend_sched_t sched);
 
     // Reset all assignments and allocators - must be called before changing the node backends or allocating a new graph.

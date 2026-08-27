@@ -57,10 +57,6 @@ struct llama_memory_context_i {
     // get the current ubatch
     virtual const llama_ubatch & get_ubatch() const = 0;
 
-    // P2 prefill pipeline: return the next ubatch without consuming it.
-    // Default: not supported (nullptr).
-    virtual const llama_ubatch * peek_next_ubatch() const { return nullptr; }
-
     // get the status of the memory context - used for error handling and checking if any updates would be applied
     virtual llama_memory_status get_status() const = 0;
 };

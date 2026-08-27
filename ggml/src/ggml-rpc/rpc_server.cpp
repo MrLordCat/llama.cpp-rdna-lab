@@ -59,12 +59,6 @@ public:
     bool init_tensor(const rpc_msg_init_tensor_req & request);
     bool get_alloc_size(const rpc_msg_get_alloc_size_req & request, rpc_msg_get_alloc_size_rsp & response);
     bool get_device_memory(const rpc_msg_get_device_memory_req & request, rpc_msg_get_device_memory_rsp & response);
-    // P2 pipeline: used by the connection handler to wait only for the
-    // requested graph and to release the next one after the GET is served.
-    bool p2_pipeline() const { return worker_pipeline; }
-    bool wait_graph_seq(uint64_t seq);
-    void wait_enqueued_graphs();
-    void release_graph_seq(uint64_t seq);
 
     struct stored_graph {
         std::vector<uint8_t>   buffer;
@@ -95,18 +89,6 @@ private:
     bool                    worker_shutdown = false;
     std::vector<uint8_t>    worker_input;
     std::thread             worker;
-    // P2 pipeline (GGML_RPC_PREFILL_PIPELINE=1): a small queue allows the
-    // client to enqueue graph N+1 right after graph N. The worker runs each
-    // graph in turn, but a later graph is not allowed to start before the
-    // connection thread has served the GET for the previous graph
-    // (worker_release gate) - the server result buffers are shared between
-    // consecutive graphs, so this keeps GET reads race-free without
-    // double-buffering the outputs.
-    bool                    worker_pipeline = std::getenv("GGML_RPC_PREFILL_PIPELINE") != nullptr;
-    std::deque<std::pair<uint64_t, std::vector<uint8_t>>> worker_pending;
-    uint64_t worker_seq      = 0; // last enqueued graph sequence (1-based)
-    uint64_t worker_done     = 0; // last completed graph sequence
-    uint64_t worker_release  = 0; // graphs whose GET has been served; worker may start seq <= release+1
 };
 
 void rpc_server::hello(rpc_msg_hello_rsp & response) {
@@ -917,17 +899,6 @@ rpc_server::~rpc_server() {
 }
 
 bool rpc_server::graph_compute_async(const std::vector<uint8_t> & input) {
-    if (worker_pipeline) {
-        {
-            std::unique_lock<std::mutex> lock(worker_mutex);
-            if (worker_shutdown) {
-                return false;
-            }
-            worker_pending.emplace_back(++worker_seq, input);
-        }
-        worker_cv.notify_one();
-        return true;
-    }
     {
         std::unique_lock<std::mutex> lock(worker_mutex);
         // The client sends at most one in-flight async graph followed by a
@@ -947,74 +918,20 @@ bool rpc_server::graph_compute_async(const std::vector<uint8_t> & input) {
 
 void rpc_server::graph_compute_wait() {
     std::unique_lock<std::mutex> lock(worker_mutex);
-    if (worker_pipeline) {
-        worker_cv.wait(lock, [this] { return (worker_pending.empty() && !worker_busy) || worker_shutdown; });
-    } else {
-        worker_cv.wait(lock, [this] { return !worker_busy || worker_shutdown; });
-    }
-}
-
-void rpc_server::wait_enqueued_graphs() {
-    if (!worker_pipeline) {
-        graph_compute_wait();
-        return;
-    }
-    std::unique_lock<std::mutex> lock(worker_mutex);
-    const uint64_t seq = worker_seq;
-    if (seq == 0) {
-        return;
-    }
-    worker_cv.wait(lock, [this, seq] { return worker_done >= seq || worker_shutdown; });
-}
-
-// P2 pipeline: wait until graph number seq has completed; after the GET
-// payload is served, release the next queued graph (its buffers are shared).
-bool rpc_server::wait_graph_seq(uint64_t seq) {
-    if (!worker_pipeline || seq == 0) {
-        return false;
-    }
-    std::unique_lock<std::mutex> lock(worker_mutex);
-    worker_cv.wait(lock, [this, seq] { return worker_done >= seq || worker_shutdown; });
-    return !worker_shutdown;
-}
-
-void rpc_server::release_graph_seq(uint64_t seq) {
-    if (!worker_pipeline || seq == 0) {
-        return;
-    }
-    {
-        std::lock_guard<std::mutex> lock(worker_mutex);
-        if (seq > worker_release) {
-            worker_release = seq;
-        }
-    }
-    worker_cv.notify_all();
+    worker_cv.wait(lock, [this] { return !worker_busy || worker_shutdown; });
 }
 
 void rpc_server::worker_loop() {
     for (;;) {
         std::vector<uint8_t> input;
-        uint64_t seq = 0;
         {
             std::unique_lock<std::mutex> lock(worker_mutex);
-            worker_cv.wait(lock, [this] { return !worker_pending.empty() || worker_shutdown; });
+            worker_cv.wait(lock, [this] { return worker_busy || worker_shutdown; });
             if (worker_shutdown) {
                 return;
             }
-            const auto & front = worker_pending.front();
-            seq = front.first;
-            input = front.second;
-            worker_pending.pop_front();
-            worker_busy = true;
-        }
-        if (worker_pipeline && seq > 1) {
-            // do not overwrite the result buffers of the previous graph until
-            // its GET has been served by the connection thread
-            std::unique_lock<std::mutex> lock(worker_mutex);
-            worker_cv.wait(lock, [this, seq] { return worker_release >= seq - 1 || worker_shutdown; });
-            if (worker_shutdown) {
-                return;
-            }
+            input = std::move(worker_input);
+            worker_input.clear();
         }
         const bool ok = graph_compute(input);
         if (!ok) {
@@ -1030,9 +947,6 @@ void rpc_server::worker_loop() {
         {
             std::lock_guard<std::mutex> lock(worker_mutex);
             worker_busy = false;
-            if (worker_pipeline && seq > worker_done) {
-                worker_done = seq;
-            }
         }
         worker_cv.notify_all();
     }
@@ -1113,6 +1027,7 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
             cmd == RPC_CMD_GRAPH_COMPUTE ||
             cmd == RPC_CMD_GRAPH_RECOMPUTE ||
             cmd == RPC_CMD_GRAPH_WAIT ||
+            cmd == RPC_CMD_GET_TENSOR ||
             cmd == RPC_CMD_COPY_TENSOR ||
             cmd == RPC_CMD_BUFFER_CLEAR ||
             cmd == RPC_CMD_FREE_BUFFER;
@@ -1122,15 +1037,7 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
             // they could race with the worker on the device buffers.
             // Timeline: tl_flush_ms shows how long this wait really blocks.
             const double t_flush = RPC_TIMELINE ? rpc_wall_ms() : 0.0;
-            if (server.p2_pipeline()) {
-                // P2: only the graphs enqueued before this command matter; the
-                // next queued graph (e.g. N+1, already pending) may still be
-                // using the input buffer, so its inputs reach the server BEFORE
-                // the graph is released and must not wait for it.
-                server.wait_enqueued_graphs();
-            } else {
-                server.graph_compute_wait();
-            }
+            server.graph_compute_wait();
             if (RPC_TIMELINE) {
                 tl_flush_ms = rpc_wall_ms() - t_flush;
             }
@@ -1319,13 +1226,6 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
                 if (!recv_msg(sock, &request, sizeof(request))) {
                     return;
                 }
-                if (server.p2_pipeline() && request.wait_seq > 0) {
-                    // P2: wait only for the requested graph, not the whole
-                    // queue - the next queued graph may already be pending.
-                    server.wait_graph_seq(request.wait_seq);
-                } else {
-                    server.graph_compute_wait();
-                }
                 std::vector<uint8_t> response;
                 if (!server.get_tensor(request, response)) {
                     return;
@@ -1333,9 +1233,6 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
                 if (!send_msg(sock, response.data(), response.size())) {
                     return;
                 }
-                // the result buffers of graph wait_seq are no longer needed;
-                // allow the next queued graph to start
-                server.release_graph_seq(request.wait_seq);
                 break;
             }
             case RPC_CMD_COPY_TENSOR: {

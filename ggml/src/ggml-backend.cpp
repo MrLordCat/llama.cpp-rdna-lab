@@ -873,32 +873,6 @@ struct ggml_backend_sched {
     std::atomic<bool> async_busy;
     std::atomic<int> async_src_id; // source backend of the running worker, -1 if idle
     bool async_shutdown;
-    // P1 staged pull (GGML_RPC_PREFILL_PIPELINE=1): the async copy worker only
-    // reads the source tensor into host staging; the Vulkan set is performed by
-    // the scheduler thread after the idle barrier. This keeps detached workers
-    // away from Vulkan compute state (D132 safety gate).
-    bool async_staged;
-    std::vector<std::vector<uint8_t>> async_staging;
-    std::vector<ggml_backend_sched_async_copy> async_waiting_set; // ops with staged data, drained by scheduler
-
-    // P2 (D132): two-slot split snapshots. Graph N+1 must be built+allocated
-    // before the tail splits of graph N are computed; alloc_graph re-splits
-    // sched->splits and rewrites hv_tensor_copies, so a snapshot keeps the
-    // split structure, copy mapping and cur_copy of the pending graph.
-    // NOTE: ggml_backend_sched is calloc-allocated, so only POD storage is
-    // allowed here (no std::vector members).
-    struct ggml_backend_sched_p2_slot {
-        struct ggml_backend_sched_split * splits = nullptr;
-        int    n_splits       = 0;
-        struct ggml_tensor ** tensor_copies = nullptr;
-        size_t n_copies       = 0;
-        struct ggml_tensor * graph_inputs[GGML_SCHED_MAX_SPLIT_INPUTS] = {};
-        int    n_graph_inputs = 0;
-        int    cur_copy       = 0;
-        int    head_end       = 0;
-        bool   used           = false;
-    };
-    ggml_backend_sched_p2_slot p2_slots[2];
 };
 
 #define hash_id(tensor) ggml_hash_find_or_insert(&sched->hash_set, tensor)
@@ -1630,8 +1604,6 @@ static void ggml_backend_sched_async_copy_worker(ggml_backend_sched_t sched) {
         ops.swap(sched->async_pending);
     }
     std::vector<uint8_t> host;
-    std::vector<std::vector<uint8_t>> results;
-    results.reserve(ops.size());
     for (const auto & op : ops) {
         if (dbg) fprintf(stderr, "ASYNC_COPY_DEBUG: worker start src_id=%d src=%s\n", op.src_id, op.src->name);
         ggml_backend_event_t ev = sched->split_events[op.src_id];
@@ -1645,19 +1617,8 @@ static void ggml_backend_sched_async_copy_worker(ggml_backend_sched_t sched) {
         host.resize(nbytes);
         ggml_backend_tensor_get(op.src, host.data(), 0, nbytes);
         if (dbg) fprintf(stderr, "ASYNC_COPY_DEBUG: get done src=%s\n", op.src->name);
-        if (sched->async_staged) {
-            // staged mode: keep the payload for the scheduler thread to set;
-            // the worker never touches the destination backend (D132).
-            results.emplace_back(host.begin(), host.end());
-        } else {
-            ggml_backend_tensor_set(op.dst, host.data(), 0, nbytes);
-            if (dbg) fprintf(stderr, "ASYNC_COPY_DEBUG: set done src=%s\n", op.src->name);
-        }
-    }
-    if (sched->async_staged) {
-        std::unique_lock<std::mutex> lock(sched->async_mutex);
-        sched->async_staging.swap(results);
-        sched->async_waiting_set.swap(ops);
+        ggml_backend_tensor_set(op.dst, host.data(), 0, nbytes);
+        if (dbg) fprintf(stderr, "ASYNC_COPY_DEBUG: set done src=%s\n", op.src->name);
     }
     // atomics: no lock needed here, avoids any lock-ordering with the
     // scheduler thread waiting in the guard
@@ -1684,11 +1645,11 @@ static void ggml_backend_sched_async_copy_start(ggml_backend_sched_t sched) {
     std::thread(ggml_backend_sched_async_copy_worker, sched).detach();
 }
 
-static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched, int split_from, int split_to) {
+static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
     struct ggml_backend_sched_split * splits = sched->splits;
 
-    if (sched->async_split_copy || sched->async_staged) {
+    if (sched->async_split_copy) {
         memset(sched->split_recorded, 0, sizeof(sched->split_recorded));
     }
 
@@ -1701,7 +1662,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     std::vector<int32_t> ids;
     std::vector<ggml_bitset_t> used_ids;
 
-    for (int split_id = split_from; split_id < split_to; split_id++) {
+    for (int split_id = 0; split_id < sched->n_splits; split_id++) {
         struct ggml_backend_sched_split * split = &splits[split_id];
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
@@ -1716,7 +1677,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         // tensor. Before a split on the same source backend runs (which would
         // overwrite the tensor in the next ubatch graph), wait for the copy to
         // finish reading it.
-        if ((sched->async_busy && sched->async_src_id == split_backend_id) || sched->async_staged) {
+        if (sched->async_busy && sched->async_src_id == split_backend_id) {
             if (getenv("GGML_SCHED_ASYNC_DEBUG") != nullptr) {
                 fprintf(stderr, "ASYNC_COPY_DEBUG: guard wait split=%d backend_id=%d src_id=%d\n",
                         split_id, split_backend_id, sched->async_src_id.load());
@@ -1725,13 +1686,6 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             if (getenv("GGML_SCHED_ASYNC_DEBUG") != nullptr) {
                 fprintf(stderr, "ASYNC_COPY_DEBUG: guard done split=%d\n", split_id);
             }
-        }
-
-        // staged mode: the worker only pulled the boundaries into host memory;
-        // the application happens right after the worker is idle, before the
-        // consuming split's graph compute (below), never at an earlier split.
-        if (sched->async_staged && !sched->async_waiting_set.empty()) {
-            // no-op placeholder moved below; see staged apply after copy start
         }
 
         // copy the input tensors to the split backend
@@ -1780,7 +1734,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 // when offloading MoE weights, we can reduce the amount of data copied by copying only the experts that are used
                 ggml_tensor * node = split->graph.nodes[0];
                 const int input_backend_id = ggml_backend_sched_backend_id(sched, input_backend);
-                if ((sched->async_staged || sched->async_split_copy) &&
+                if (sched->async_split_copy &&
                     !sched->async_busy &&
                     input_backend_id >= 0 &&
                     sched->split_events[input_backend_id] != nullptr &&
@@ -1910,30 +1864,6 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         // (queued first) and then the graph in submission order
         ggml_backend_sched_async_copy_start(sched);
 
-        // staged mode: the detached worker only pulled into host staging; the
-        // destructive Vulkan set must stay on the scheduler thread (D132).
-        // Wait for the worker here (data dependency) and apply the staged
-        // payloads BEFORE the consuming graph is submitted.
-        if (sched->async_staged) {
-            ggml_backend_sched_async_copy_idle(sched);
-            if (!sched->async_waiting_set.empty()) {
-                if (getenv("GGML_SCHED_ASYNC_DEBUG") != nullptr) {
-                    fprintf(stderr, "ASYNC_COPY_DEBUG: staged set split=%d n=%zu\n",
-                            split_id, sched->async_waiting_set.size());
-                }
-                for (size_t k = 0; k < sched->async_waiting_set.size() && k < sched->async_staging.size(); ++k) {
-                    const auto & op  = sched->async_waiting_set[k];
-                    const auto & buf = sched->async_staging[k];
-                    ggml_backend_tensor_set(op.dst, buf.data(), 0, ggml_nbytes(op.dst));
-                    if (getenv("GGML_SCHED_ASYNC_DEBUG") != nullptr) {
-                        fprintf(stderr, "ASYNC_COPY_DEBUG: staged set done src=%s\n", op.src->name);
-                    }
-                }
-                sched->async_waiting_set.clear();
-                sched->async_staging.clear();
-            }
-        }
-
         const int64_t t_compute_start_us = measure_split_timing ? ggml_time_us() : 0;
         if (!sched->callback_eval) {
             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
@@ -2051,15 +1981,11 @@ ggml_backend_sched_t ggml_backend_sched_new(
     // experimental async outbound split-input copies; creates one event per
     // backend so the copy worker can wait for the producing graph without
     // blocking the scheduler thread on the source backend.
-    // GGML_RPC_PREFILL_PIPELINE=1 additionally keeps the worker read-only:
-    // it pulls into host staging and the scheduler thread performs the
-    // Vulkan set after the idle barrier (P1, D132).
     sched->async_split_copy = getenv("GGML_SCHED_ASYNC_SPLIT_COPY") != nullptr;
-    sched->async_staged     = getenv("GGML_RPC_PREFILL_PIPELINE") != nullptr;
     sched->async_busy = false;
     sched->async_src_id = -1;
     sched->async_shutdown = false;
-    if (sched->async_split_copy || sched->async_staged) {
+    if (sched->async_split_copy) {
         for (int b = 0; b < n_backends; ++b) {
             if (ggml_backend_dev_type(backends[b]->device) == GGML_BACKEND_DEVICE_TYPE_CPU) {
                 continue;
@@ -2067,16 +1993,13 @@ ggml_backend_sched_t ggml_backend_sched_new(
             sched->split_events[b] = ggml_backend_event_new(backends[b]->device);
             if (sched->split_events[b] == nullptr) {
                 sched->async_split_copy = false;
-                sched->async_staged = false;
                 GGML_LOG_INFO("%s: async split copy disabled, backend %s has no events\n",
                         __func__, ggml_backend_name(backends[b]));
                 break;
             }
         }
-        if (sched->async_split_copy || sched->async_staged) {
-            GGML_LOG_INFO("%s: %s outbound split copies enabled (%s)\n", __func__,
-                    sched->async_staged ? "staged" : "async",
-                    sched->async_staged ? "GGML_RPC_PREFILL_PIPELINE" : "GGML_SCHED_ASYNC_SPLIT_COPY");
+        if (sched->async_split_copy) {
+            GGML_LOG_INFO("%s: async outbound split copies enabled (GGML_SCHED_ASYNC_SPLIT_COPY)\n", __func__);
         }
     }
     sched->n_copies = parallel ? GGML_SCHED_MAX_COPIES : 1;
@@ -2172,11 +2095,6 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
     free(sched->leaf_backend_ids);
     free(sched->prev_node_backend_ids);
     free(sched->prev_leaf_backend_ids);
-    // P2 (D132): snapshots are malloc'd
-    for (int i = 0; i < 2; ++i) {
-        free(sched->p2_slots[i].splits);
-        free(sched->p2_slots[i].tensor_copies);
-    }
     free(sched->context_buffer);
     free(sched->graph.nodes);
     free(sched->graph.leafs);
@@ -2266,143 +2184,7 @@ enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sch
         }
     }
 
-    return ggml_backend_sched_compute_splits(sched, 0, sched->n_splits);
-}
-
-// Local fork (P2/D132): compute only the splits in [split_from, split_to)
-// of the currently allocated graph. The graph must already have been
-// allocated with ggml_backend_sched_alloc_graph; splits left outside the
-// range stay pending for a later call with the complementary range. Only
-// the same graph instance may be resumed; the caller owns correctness of
-// split order and data dependencies.
-enum ggml_status ggml_backend_sched_graph_compute_range(ggml_backend_sched_t sched, struct ggml_cgraph * graph, int split_from, int split_to) {
-    GGML_ASSERT(sched);
-    GGML_ASSERT(split_from >= 0 && split_to <= sched->n_splits && split_from <= split_to);
-    if (!sched->is_alloc) {
-        if (!ggml_backend_sched_alloc_graph(sched, graph)) {
-            return GGML_STATUS_ALLOC_FAILED;
-        }
-    }
-    return ggml_backend_sched_compute_splits(sched, split_from, split_to);
-}
-
-// Local fork (P2/D132): exclusive end index of the RPC head part of the
-// currently allocated graph. The head ends at the first split that consumes
-// an RPC-produced tensor (the GET l_out-*/copy splits are the tail); all
-// RPC graph splits and any local mask splits before that are head. Without
-// an RPC backend, n_splits (everything is "head").
-int ggml_backend_sched_p2_head_end(ggml_backend_sched_t sched) {
-    GGML_ASSERT(sched);
-    int rpc_backend_id = -1;
-    for (int i = 0; i < sched->n_backends; ++i) {
-        const char * name = ggml_backend_name(sched->backends[i]);
-        if (name != nullptr && strstr(name, "RPC") != nullptr) {
-            rpc_backend_id = i;
-            break;
-        }
-    }
-    if (rpc_backend_id < 0) {
-        return sched->n_splits;
-    }
-    for (int s = 0; s < sched->n_splits; ++s) {
-        struct ggml_backend_sched_split * split = &sched->splits[s];
-        if (split->backend_id == rpc_backend_id) {
-            continue; // RPC graph splits are head
-        }
-        for (int j = 0; j < split->n_inputs; ++j) {
-            ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, split->inputs[j]);
-            if (input_backend != nullptr && ggml_backend_sched_backend_id(sched, input_backend) == rpc_backend_id) {
-                return s;
-            }
-        }
-    }
-    return sched->n_splits;
-}
-
-// Local fork (P2/D132): snapshot the current split layout into one of two
-// alternating slots; the other slot may still hold the pending tail of the
-// previous graph. Call this right after the head phase of a graph.
-bool ggml_backend_sched_p2_save_splits(ggml_backend_sched_t sched, int slot) {
-    GGML_ASSERT(sched);
-    GGML_ASSERT(slot >= 0 && slot < 2);
-    auto & s = sched->p2_slots[slot];
-    const size_t n_copies = (size_t) sched->hash_set.size * sched->n_backends * sched->n_copies;
-
-    // free any previous snapshot in this slot
-    free(s.splits);
-    free(s.tensor_copies);
-    s.splits         = (struct ggml_backend_sched_split *) malloc((size_t) sched->n_splits * sizeof(struct ggml_backend_sched_split));
-    s.tensor_copies  = (struct ggml_tensor **) malloc(n_copies * sizeof(struct ggml_tensor *));
-    if (s.splits == nullptr || s.tensor_copies == nullptr) {
-        free(s.splits);
-        free(s.tensor_copies);
-        s.splits = nullptr;
-        s.tensor_copies = nullptr;
-        s.used = false;
-        return false;
-    }
-    memcpy(s.splits, sched->splits, (size_t) sched->n_splits * sizeof(struct ggml_backend_sched_split));
-    memcpy(s.tensor_copies, sched->hv_tensor_copies, n_copies * sizeof(struct ggml_tensor *));
-    memcpy(s.graph_inputs, sched->graph_inputs, sizeof(sched->graph_inputs));
-    s.n_splits       = sched->n_splits;
-    s.n_copies       = n_copies;
-    s.n_graph_inputs = sched->n_graph_inputs;
-    s.cur_copy       = sched->cur_copy;
-    s.head_end       = ggml_backend_sched_p2_head_end(sched);
-    s.used           = true;
-    return true;
-}
-
-int ggml_backend_sched_p2_saved_n_splits(ggml_backend_sched_t sched, int slot) {
-    GGML_ASSERT(sched && slot >= 0 && slot < 2);
-    return sched->p2_slots[slot].used ? sched->p2_slots[slot].n_splits : 0;
-}
-
-int ggml_backend_sched_p2_saved_head_end(ggml_backend_sched_t sched, int slot) {
-    GGML_ASSERT(sched && slot >= 0 && slot < 2);
-    return sched->p2_slots[slot].used ? sched->p2_slots[slot].head_end : 0;
-}
-
-// Local fork (P2/D132): compute splits [split_from, split_to) of a saved
-// snapshot (the split structure, tensor-copy mapping and cur_copy are
-// temporarily swapped in; everything is restored afterwards).
-enum ggml_status ggml_backend_sched_p2_compute_saved(ggml_backend_sched_t sched, int slot, int split_from, int split_to) {
-    GGML_ASSERT(sched && slot >= 0 && slot < 2);
-    auto & s = sched->p2_slots[slot];
-    if (!s.used || s.splits == nullptr || s.tensor_copies == nullptr || s.n_splits <= 0) {
-        GGML_LOG_ERROR("%s: slot %d not used\n", __func__, slot);
-        return GGML_STATUS_FAILED;
-    }
-    GGML_ASSERT(split_from >= 0 && split_to <= s.n_splits && split_from <= split_to);
-    if (split_from >= split_to) {
-        return GGML_STATUS_SUCCESS;
-    }
-
-    struct ggml_backend_sched_split * old_splits = sched->splits;
-    const int old_n_splits  = sched->n_splits;
-    const int old_cur_copy  = sched->cur_copy;
-    struct ggml_tensor ** old_copies = sched->hv_tensor_copies;
-    struct ggml_tensor * old_graph_inputs[GGML_SCHED_MAX_SPLIT_INPUTS];
-    memcpy(old_graph_inputs, sched->graph_inputs, sizeof(old_graph_inputs));
-    const int old_n_graph_inputs = sched->n_graph_inputs;
-
-    sched->splits           = s.splits;
-    sched->n_splits         = s.n_splits;
-    sched->cur_copy         = s.cur_copy;
-    sched->hv_tensor_copies = s.tensor_copies;
-    memcpy(sched->graph_inputs, s.graph_inputs, sizeof(sched->graph_inputs));
-    sched->n_graph_inputs   = s.n_graph_inputs;
-
-    const enum ggml_status status = ggml_backend_sched_compute_splits(sched, split_from, split_to);
-
-    sched->splits           = old_splits;
-    sched->n_splits         = old_n_splits;
-    sched->cur_copy         = old_cur_copy;
-    sched->hv_tensor_copies = old_copies;
-    memcpy(sched->graph_inputs, old_graph_inputs, sizeof(old_graph_inputs));
-    sched->n_graph_inputs   = old_n_graph_inputs;
-
-    return status;
+    return ggml_backend_sched_compute_splits(sched);
 }
 
 void ggml_backend_sched_synchronize(ggml_backend_sched_t sched) {

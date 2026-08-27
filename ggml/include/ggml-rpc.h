@@ -6,28 +6,9 @@
 extern "C" {
 #endif
 
-#ifdef GGML_RPC_SHARED
-#ifdef _WIN32
-#ifdef GGML_RPC_BUILD
-#define GGML_RPC_API __declspec(dllexport)
-#else
-#define GGML_RPC_API __declspec(dllimport)
-#endif
-#else
-#define GGML_RPC_API __attribute__((visibility("default")))
-#endif
-#else
-#define GGML_RPC_API
-#endif
-
-// P2 prefill pipeline (GGML_RPC_PREFILL_PIPELINE=1): tell the RPC client
-// which queued graph (1-based sequence) the next GET_TENSOR should wait for
-// and read. 0 restores legacy behavior (wait for the whole worker queue).
-GGML_RPC_API void ggml_backend_rpc_set_p2_get_seq(ggml_backend_t backend, uint64_t seq);
-
 #define RPC_PROTO_MAJOR_VERSION    5
 #define RPC_PROTO_MINOR_VERSION    0
-#define RPC_PROTO_PATCH_VERSION    2
+#define RPC_PROTO_PATCH_VERSION    1
 
 #ifdef  __cplusplus
 static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");

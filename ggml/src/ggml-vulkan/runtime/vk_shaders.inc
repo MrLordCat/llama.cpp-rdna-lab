@@ -110,12 +110,6 @@ static void ggml_vk_load_shaders(vk_device& device) {
                 l_warptile_mmq_k = m_warptile_mmq_k = s_warptile_mmq_k = tile;
                 GGML_LOG_INFO("ggml_vulkan: NV coopmat2 MMQ tile override: BLOCK=%u BM=%u BN=%u BK=%u enable_smaller=%u\n",
                                t[0], t[1], t[2], t[3], t[4]);
-                // Local fork: log the per-shape tiles (large/medium/small) so sweep
-                // runs are verifiable from the server log (rf68-rf80 sweep).
-                GGML_LOG_INFO("ggml_vulkan: NV coopmat2 MMQ tile l=%u,%u,%u,%u,%u m=%u,%u,%u,%u,%u s=%u,%u,%u,%u,%u\n",
-                               l_warptile_mmq[0], l_warptile_mmq[1], l_warptile_mmq[2], l_warptile_mmq[3], l_warptile_mmq[4],
-                               m_warptile_mmq[0], m_warptile_mmq[1], m_warptile_mmq[2], m_warptile_mmq[3], m_warptile_mmq[4],
-                               s_warptile_mmq[0], s_warptile_mmq[1], s_warptile_mmq[2], s_warptile_mmq[3], s_warptile_mmq[4]);
             } else {
                 GGML_LOG_WARN("ggml_vulkan: invalid GGML_VK_NV_MMQ_TILE='%s', ignoring\n", nv_mmq_tile);
             }

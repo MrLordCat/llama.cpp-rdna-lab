@@ -1902,8 +1902,7 @@ bool llama_context::set_adapter_cvec(
     return res;
 }
 
-llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret, int p2_phase, const llama_ubatch * p2_override, bool p2_skip_apply) {
-    const llama_ubatch & ub = p2_override ? *p2_override : ubatch;
+llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     const bool trace_timing = getenv("LLAMA_UBATCH_TIMING") != nullptr;
     const bool trace_timing_sync = trace_timing && getenv("LLAMA_UBATCH_TIMING_SYNC") != nullptr;
     const bool trace_dflash = getenv("LLAMA_DFLASH_TRACE") != nullptr &&
@@ -1923,37 +1922,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                 __func__, (int) gtype, ubatch.n_tokens, ubatch.n_seq_tokens, ubatch.n_seqs, n_outputs, (void *) mctx);
     }
 
-    if (mctx && !p2_skip_apply && !mctx->apply()) {
+    if (mctx && !mctx->apply()) {
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
         ret = GGML_STATUS_FAILED;
         return nullptr;
-    }
-
-    // P2 (D132): tail phase. The graph was already built+allocated by the
-    // phase-1 call and its full split layout was snapshotted
-    // (ggml_backend_sched_p2_save_splits). Do NOT rebuild or re-split here:
-    // just run the tail range of the saved snapshot. The caller keeps the
-    // head graph result for extraction (gf_res_prev may already point at the
-    // NEXT head graph, so it is not trustworthy for this ubatch).
-    if (p2_phase == 2) {
-        const int saved_n = ggml_backend_sched_p2_saved_n_splits(sched.get(), p2_tail_slot);
-        if (saved_n <= 0) {
-            LLAMA_LOG_ERROR("%s: P2 tail phase without saved splits (slot=%d)\n", __func__, p2_tail_slot);
-            ret = GGML_STATUS_FAILED;
-            return nullptr;
-        }
-        const int head_end = ggml_backend_sched_p2_saved_head_end(sched.get(), p2_tail_slot);
-        if (head_end >= saved_n) {
-            // empty tail (all splits were head) - nothing to compute
-            ret = GGML_STATUS_SUCCESS;
-            return gf_res_prev.get();
-        }
-        ret = ggml_backend_sched_p2_compute_saved(sched.get(), p2_tail_slot, head_end, saved_n);
-        if (ret != GGML_STATUS_SUCCESS) {
-            LLAMA_LOG_ERROR("%s: P2 tail compute failed status=%d\n", __func__, (int) ret);
-            return nullptr;
-        }
-        return gf_res_prev.get();
     }
     if (trace_timing) {
         t_apply_us = ggml_time_us() - t_total_start_us;
@@ -2000,7 +1972,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
     // the new graph parameters
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
-    const auto gparams = graph_params(res, ub, mctx, gtype);
+    const auto gparams = graph_params(res, ubatch, mctx, gtype);
 
     // Prefill run-ahead (LLAMA_RPC_RUN_AHEAD=1): prefill ubatches only use
     // non-overlapping KV regions, so graph N+1 is data-independent from N.
@@ -2009,9 +1981,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // per-copy events keep the pipeline race-free, removing the global
     // ggml_backend_sched_synchronize between ubatches (the serializing
     // barrier that capped the RPC lane at local+server wall sum).
-    // P2 pipeline replaces run-ahead (it needs graph reuse across phases).
-    const bool p2_prefill = p2_phase != 0;
-    const bool run_ahead_prefill = !p2_prefill && getenv("LLAMA_RPC_RUN_AHEAD") != nullptr && ubatch.n_tokens > 1;
+    const bool run_ahead_prefill = getenv("LLAMA_RPC_RUN_AHEAD") != nullptr && ubatch.n_tokens > 1;
     const bool can_reuse_graph = !run_ahead_prefill && !graph_reuse_disable && res->can_reuse(gparams);
     if (trace_dflash) {
         LLAMA_LOG_INFO("%s: DFlash graph reuse check: disable=%d can_reuse=%d gf=%p\n",
@@ -2080,14 +2050,14 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
 
     // set the input data for the input tensors
-    if (p2_phase != 2) {
+    {
         const int64_t t_inputs_start_us = trace_timing ? ggml_time_us() : 0;
 
         // FIXME this call causes a crash if any model inputs were not used in the graph and were therefore not allocated
         if (trace_dflash) {
             LLAMA_LOG_INFO("%s: DFlash before set_inputs\n", __func__);
         }
-        res->set_inputs(&ub);
+        res->set_inputs(&ubatch);
         if (trace_dflash) {
             LLAMA_LOG_INFO("%s: DFlash after set_inputs\n", __func__);
         }
@@ -2101,13 +2071,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     if (trace_dflash) {
         LLAMA_LOG_INFO("%s: DFlash before graph_compute\n", __func__);
     }
-    ggml_status status = GGML_STATUS_SUCCESS;
-    if (p2_phase == 1) {
-        const int head_end = ggml_backend_sched_p2_head_end(sched.get());
-        status = graph_compute_range(res->get_gf(), ub.n_tokens > 1, 0, head_end);
-    } else {
-        status = graph_compute(res->get_gf(), ub.n_tokens > 1);
-    }
+    const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
     if (trace_dflash) {
         LLAMA_LOG_INFO("%s: DFlash after graph_compute status=%d\n", __func__, (int) status);
     }
@@ -2655,220 +2619,6 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
     int64_t n_outputs_prev = 0;
     int64_t n_tokens_prev  = 0; // upstream-port: dense row offset for unmasked nextn extraction
-    // P2 (D132): extraction can happen after the tail phase of an ubatch,
-    // which may run one loop iteration later (pipelined head/tail order).
-    auto extract_ubatch_results = [&](const llama_ubatch & ubatch, uint32_t n_outputs,
-            int64_t n_outputs_prev, int64_t n_tokens_prev, const llm_graph_result * res,
-            ggml_tensor * t_logits, ggml_tensor * t_embd, ggml_tensor * t_h_nextn) {
-    // Upstream-port: extract NextN embeddings (rides the same async stream as
-        // the logits copy — no extra sync; the getter synchronizes lazily).
-        {
-            const bool    masked = cparams.embeddings_nextn_masked;
-            const int64_t n_rows = masked ? n_outputs      : (int64_t) ubatch.n_tokens;
-            const int64_t offset = masked ? n_outputs_prev : n_tokens_prev;
-
-            if (nextn_device_output.enabled && nextn_device_output.capture_enabled &&
-                    t_h_nextn && n_rows > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
-                ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
-                GGML_ASSERT(backend_h != nullptr);
-
-                uint32_t run_begin = 0;
-                while (run_begin < (uint32_t) n_rows) {
-                    while (run_begin < (uint32_t) n_rows &&
-                            !llama_mtp_sparse_capture_pos(ubatch.pos[run_begin], n_tokens_all)) {
-                        ++run_begin;
-                    }
-                    if (run_begin == (uint32_t) n_rows) {
-                        break;
-                    }
-
-                    uint32_t run_end = run_begin + 1;
-                    while (run_end < (uint32_t) n_rows &&
-                            llama_mtp_sparse_capture_pos(ubatch.pos[run_end], n_tokens_all)) {
-                        ++run_end;
-                    }
-
-                    auto src_rows = nextn_tensor_row_view(t_h_nextn, run_begin, run_end - run_begin);
-                    uint32_t capacity = nextn_device_capacity;
-                    if (llama_mtp_sparse_capture_active(n_tokens_all)) {
-                        // Reserve the complete packed range on the first microbatch.
-                        // Growing it later would replace the staging buffer and discard
-                        // rows captured by earlier microbatches of this logical batch.
-                        const llama_pos logical_pos0 = ubatch.pos[0] - (llama_pos) offset;
-                        capacity = 1;
-                        for (uint32_t i = 0; i < n_tokens_all; ++i) {
-                            if (llama_mtp_sparse_capture_pos(logical_pos0 + (llama_pos) i, n_tokens_all)) {
-                                capacity = 2 + i;
-                            }
-                        }
-                    }
-                    if (!store_nextn_device_output(backend_h, &src_rows,
-                                1 + (uint32_t) offset + run_begin, run_end - run_begin, capacity)) {
-                        LLAMA_LOG_ERROR("%s: failed to stage NextN output on the backend\n", __func__);
-                        return -3;
-                    }
-                    run_begin = run_end;
-                }
-            } else if (embd_nextn.data && t_h_nextn && n_rows > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
-                ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
-                GGML_ASSERT(backend_h != nullptr);
-
-                const uint32_t n_embd_out = hparams.n_embd_out();
-                float * embd_nextn_out = embd_nextn.data + offset*n_embd_out;
-
-                GGML_ASSERT((offset + n_rows)*n_embd_out <= (int64_t) embd_nextn.size);
-                ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn_out, 0, n_rows*n_embd_out*sizeof(float));
-            }
-        }
-
-        extract_layer_inputs(res, (size_t) n_tokens_prev, ubatch.n_tokens);
-
-        // extract logits
-        if (logits.data && t_logits && n_outputs > 0 && needs_raw_logits(ubatch, sampling.samplers)) {
-            ggml_backend_t backend_res = ggml_backend_sched_get_tensor_backend(sched.get(), t_logits);
-            GGML_ASSERT(backend_res != nullptr);
-            GGML_ASSERT(logits.data != nullptr);
-
-            float * logits_out = logits.data + n_outputs_prev*n_vocab;
-
-            if (n_outputs) {
-                GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
-                GGML_ASSERT((n_outputs_prev + n_outputs)*n_vocab <= (int64_t) logits.size);
-                ggml_backend_tensor_get_async(backend_res, t_logits, logits_out, 0, n_outputs*n_vocab*sizeof(float));
-            }
-        }
-
-        // extract embeddings
-        if (embd.data && t_embd && n_outputs > 0) {
-            ggml_backend_t backend_embd = ggml_backend_sched_get_tensor_backend(sched.get(), t_embd);
-            GGML_ASSERT(backend_embd != nullptr);
-
-            switch (cparams.pooling_type) {
-                case LLAMA_POOLING_TYPE_NONE:
-                    {
-                        // extract token embeddings
-                        GGML_ASSERT(embd.data != nullptr);
-                        const uint32_t n_embd_out = hparams.n_embd_out();
-                        float * embd_out = embd.data + n_outputs_prev*n_embd_out;
-
-                        if (n_outputs) {
-                            GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
-                            GGML_ASSERT((n_outputs_prev + n_outputs)*n_embd_out <= (int64_t) embd.size);
-                            ggml_backend_tensor_get_async(backend_embd, t_embd, embd_out, 0, n_outputs*n_embd_out*sizeof(float));
-                        }
-                    } break;
-                case LLAMA_POOLING_TYPE_MEAN:
-                case LLAMA_POOLING_TYPE_CLS:
-                case LLAMA_POOLING_TYPE_LAST:
-                    {
-                        // extract sequence embeddings (cleared before processing each batch)
-                        auto & embd_seq_out = embd_seq;
-
-                        // use n_embd_out (not n_embd_inp) - the pooled embedding has the model's
-                        // output dimension, which differs from input dimension for deepstack models (e.g. qwen3vl)
-                        const uint32_t n_embd_out = hparams.n_embd_out();
-
-                        for (uint32_t s = 0; s < ubatch.n_seqs_unq; ++s) {
-                            const llama_seq_id seq_id  = ubatch.seq_id_unq[s];
-                            const int32_t      seq_idx = ubatch.seq_idx[seq_id];
-
-                            embd_seq_out[seq_id].resize(n_embd_out);
-                            ggml_backend_tensor_get_async(backend_embd, t_embd, embd_seq_out[seq_id].data(), (n_embd_out*seq_idx)*sizeof(float), n_embd_out*sizeof(float));
-                        }
-                    } break;
-                case LLAMA_POOLING_TYPE_RANK:
-                    {
-                        // extract the rerank score - n_cls_out floats per sequence
-                        auto & embd_seq_out = embd_seq;
-
-                        const uint32_t n_cls_out = hparams.n_cls_out;
-
-                        for (uint32_t s = 0; s < ubatch.n_seqs_unq; ++s) {
-                            const llama_seq_id seq_id  = ubatch.seq_id_unq[s];
-                            const int32_t      seq_idx = ubatch.seq_idx[seq_id];
-
-                            embd_seq_out[seq_id].resize(n_cls_out);
-                            ggml_backend_tensor_get_async(backend_embd, t_embd, embd_seq_out[seq_id].data(), (n_cls_out*seq_idx)*sizeof(float), n_cls_out*sizeof(float));
-                        }
-                    } break;
-                case LLAMA_POOLING_TYPE_UNSPECIFIED:
-                    {
-                        GGML_ABORT("unknown pooling type");
-                    }
-            }
-        }
-
-        // Copy backend sampling output if this ubatch produced any sampling tensors.
-        if (has_samplers && (!res->t_sampled.empty() || !res->t_sampled_probs.empty() || !res->t_sampled_logits.empty())) {
-            const auto seq_to_output_row = build_seq_to_output_row(ubatch, n_outputs_prev);
-            const auto stride = n_vocab;
-
-            // async copy the sampling data from the backend to the host
-            copy_tensor_async_ints(res->t_sampled, sampling.sampled, seq_to_output_row, sched.get());
-
-            copy_tensor_async_floats    (res->t_sampled_logits, sampling.logits,     stride, sampling.logits_count,     seq_to_output_row, sched.get());
-            copy_tensor_async_floats    (res->t_sampled_probs,  sampling.probs,      stride, sampling.probs_count,      seq_to_output_row, sched.get());
-            copy_tensor_async_candidates(res->t_candidates,     sampling.candidates, stride, sampling.candidates_count, seq_to_output_row, sched.get());
-        }
-
-    };
-
-    // P2 (D132): early-submit prefill pipeline. Head N+1 (RPC graph splits)
-    // is submitted before the tail GET/copy splits of ubatch N run; the
-    // two-slot split snapshots in the scheduler keep tail N computable after
-    // alloc N+1. Inert unless GGML_RPC_PREFILL_PIPELINE is set.
-    const bool p2_prefill =
-        getenv("GGML_RPC_PREFILL_PIPELINE") != nullptr &&
-        cparams.ctx_type == LLAMA_CONTEXT_TYPE_DEFAULT &&
-        n_tokens_all > cparams.n_ubatch;
-    ggml_backend_t p2_rpc_backend = nullptr;
-    if (p2_prefill) {
-        for (int i = 0; i < ggml_backend_sched_get_n_backends(sched.get()); ++i) {
-            ggml_backend_t b = ggml_backend_sched_get_backend(sched.get(), i);
-            if (ggml_backend_is_rpc(b)) {
-                p2_rpc_backend = b;
-                break;
-            }
-        }
-    }
-    // P2 (D132): current-stage pipeline state. Graph N is processed as
-    // head (submit) then tail (GET/extract) immediately after each other in
-    // the current staging; the two-slot split snapshot API is retained for
-    // the next stage (deferred tail of N-1 past head N+1).
-    uint64_t     p2_graph_seq = 0;
-    int          p2_save_slot = 0;
-    int          p2_slot_prev = -1;
-
-    auto fail_ubatch = [&](const llama_ubatch & ubatch, ggml_status status) -> int {
-        // the last ubatch failed or was aborted -> remove all positions of that ubatch from the memory module
-        llama_pos pos_min[LLAMA_MAX_SEQ];
-        for (int s = 0; s < LLAMA_MAX_SEQ; ++s) {
-            pos_min[s] = std::numeric_limits<llama_pos>::max();
-        }
-
-        for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
-            const auto & seq_id = ubatch.seq_id[i][0];
-
-            pos_min[seq_id] = std::min(pos_min[seq_id], ubatch.pos[i]);
-        }
-
-        for (int s = 0; s < LLAMA_MAX_SEQ; ++s) {
-            if (pos_min[s] == std::numeric_limits<llama_pos>::max()) {
-                continue;
-            }
-
-            LLAMA_LOG_WARN("%s: removing memory module entries for seq_id = %d, pos = [%d, +inf)\n", __func__, s, pos_min[s]);
-
-            memory->seq_rm(s, pos_min[s], -1);
-        }
-
-        switch (status) {
-            case GGML_STATUS_ABORTED:      return  2;
-            case GGML_STATUS_ALLOC_FAILED: return -2;
-            case GGML_STATUS_FAILED:       return -3;
-            case GGML_STATUS_SUCCESS:      GGML_ABORT("should not happen");
-        }
-    };
 
     do {
         auto ubatch = mctx->get_ubatch();
@@ -2901,45 +2651,37 @@ int llama_context::decode(const llama_batch & batch_inp) {
             n_outputs = n_outputs_new;
         }
 
-        ggml_status status = GGML_STATUS_SUCCESS;
-        const llm_graph_result * res = nullptr;
+        ggml_status status;
+        const auto * res = process_ubatch(ubatch, llama_ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
 
-        if (p2_prefill) {
-            // head of the current ubatch FIRST: build/alloc + RPC graph
-            // submit (async). The tail (local splits + GET) runs immediately
-            // after on the same graph/sched, so graph N is never re-spilt
-            // while its buffers are still needed and all result tensors of
-            // `res` stay valid for extraction.
-            res = process_ubatch(ubatch, llama_ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status,
-                    /*p2_phase*/ 1, nullptr, false);
-            if (!res) {
-                return fail_ubatch(ubatch, status);
+        if (!res) {
+            // the last ubatch failed or was aborted -> remove all positions of that ubatch from the memory module
+            llama_pos pos_min[LLAMA_MAX_SEQ];
+            for (int s = 0; s < LLAMA_MAX_SEQ; ++s) {
+                pos_min[s] = std::numeric_limits<llama_pos>::max();
             }
-            // snapshot the splits of this graph (two slots rotate); the next
-            // stage resumes the deferred tail from this snapshot after the
-            // following alloc.
-            p2_slot_prev = p2_save_slot;
-            ggml_backend_sched_p2_save_splits(sched.get(), p2_save_slot);
-            p2_save_slot ^= 1;
 
-            // tail of THIS graph: runs the remaining split range (GET and
-            // local copies) that the head phase deferred to after RPC.
-            p2_tail_slot = p2_slot_prev;
-            p2_wait_seq  = p2_graph_seq;
-            if (p2_rpc_backend) {
-                ggml_backend_rpc_set_p2_get_seq(p2_rpc_backend, p2_wait_seq);
+            for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
+                const auto & seq_id = ubatch.seq_id[i][0];
+
+                pos_min[seq_id] = std::min(pos_min[seq_id], ubatch.pos[i]);
             }
-            ++p2_graph_seq;
-            status = GGML_STATUS_SUCCESS;
-            const auto * res_tail = process_ubatch(ubatch, llama_ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status,
-                    /*p2_phase*/ 2, &ubatch, /*p2_skip_apply*/ true);
-            if (status != GGML_STATUS_SUCCESS || !res_tail) {
-                return fail_ubatch(ubatch, status);
+
+            for (int s = 0; s < LLAMA_MAX_SEQ; ++s) {
+                if (pos_min[s] == std::numeric_limits<llama_pos>::max()) {
+                    continue;
+                }
+
+                LLAMA_LOG_WARN("%s: removing memory module entries for seq_id = %d, pos = [%d, +inf)\n", __func__, s, pos_min[s]);
+
+                memory->seq_rm(s, pos_min[s], -1);
             }
-        } else {
-            res = process_ubatch(ubatch, llama_ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
-            if (!res) {
-                return fail_ubatch(ubatch, status);
+
+            switch (status) {
+                case GGML_STATUS_ABORTED:      return  2;
+                case GGML_STATUS_ALLOC_FAILED: return -2;
+                case GGML_STATUS_FAILED:       return -3;
+                case GGML_STATUS_SUCCESS:      GGML_ABORT("should not happen");
             }
         }
 
@@ -2948,11 +2690,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
         //    ggml_graph_dump_dot(gf, NULL, "llama.dot");
         //}
 
-        // extract the outputs of this ubatch. In P2 mode the graph of this
-        // ubatch was fully computed above (head + tail), so `res` is still
-        // the current graph and its result tensors are valid.
-        {
-auto * t_logits  = res->get_logits();
+        auto * t_logits  = res->get_logits();
         auto * t_embd    = cparams.embeddings       ? res->get_embd()    : nullptr;
         auto * t_h_nextn = cparams.embeddings_nextn ? res->get_h_nextn() : nullptr;
 
@@ -3113,7 +2851,6 @@ auto * t_logits  = res->get_logits();
 
         n_outputs_prev += n_outputs;
         n_tokens_prev  += ubatch.n_tokens;
-        }
     } while (mctx->next());
 
     // set to total number of outputs in the batch, for use in llama_get_logits_ith
@@ -3531,30 +3268,6 @@ ggml_status llama_context::graph_compute(
 
     // fprintf(stderr, "splits: %d\n", ggml_backend_sched_get_n_splits(sched));
 
-    return status;
-}
-
-ggml_status llama_context::graph_compute_range(ggml_cgraph * gf, bool batched, int split_from, int split_to) {
-    int n_threads        = batched ? cparams.n_threads_batch : cparams.n_threads;
-    ggml_threadpool_t tp = batched ? threadpool_batch        : threadpool;
-
-    if (backend_cpu != nullptr) {
-        auto * reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(backend_cpu));
-        auto * set_threadpool_fn = (decltype(ggml_backend_cpu_set_threadpool) *) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cpu_set_threadpool");
-        if (set_threadpool_fn) {
-            set_threadpool_fn(backend_cpu, tp);
-        }
-    }
-
-    // set the number of threads for all the backends
-    for (const auto & set_n_threads_fn : set_n_threads_fns) {
-        set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
-    }
-
-    auto status = ggml_backend_sched_graph_compute_range(sched.get(), gf, split_from, split_to);
-    if (status != GGML_STATUS_SUCCESS) {
-        LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_range failed with error %d\n", __func__, status);
-    }
     return status;
 }
 
