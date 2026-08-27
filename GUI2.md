@@ -114,7 +114,8 @@ directories are gitignored and exist only in `D:\GitHub\llama.cpp-with-GUI`.
 
 ## Scope
 
-In scope: Server launch, Bench / Autotune, History & Analytics, Models.
+In scope: Server launch, Bench / Autotune, History & Analytics, Models. All
+four now exist.
 
 Out of scope, moved to CLI and VS Code tasks: building, build info, model
 download, dependency install. That is ~3 300 lines of the old GUI
@@ -157,8 +158,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 6 177 lines of Python plus 1 838 of tests, against the old GUI's
-15 458 with none. The suite is 134 tests and runs in about 20 seconds without
+`gui2/` is 7 066 lines of Python plus 2 134 of tests, against the old GUI's
+15 458 with none. The suite is 159 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -166,6 +167,7 @@ touching a GPU.
 | `core/gguf.py` | what a model file says about itself — layers, context, head counts, SSM shape. Header only, a few KB, no binary |
 | `core/params.py` | one `Param` per flag; forms and argv both generated from it |
 | `core/runspec.py` | the single description of a run, `to_argv`, `validate`, and the slot arithmetic `slot_context` |
+| `core/bench.py` | the same run handed to `agent_workload_bench.py`, plus `plan` — how many requests a choice of prompts, repeats and sweep axes comes to |
 | `core/memory.py` | what a run *will* cost: weights + KV + compute, from the header; and `capacity`, the context a model has room for on a given card |
 | `core/measured.py` | what a run *did* cost, read from its own log as it is written |
 | `core/memstore.py` | the same, kept between runs and rescaled across contexts |
@@ -184,6 +186,15 @@ The Models page answers the question a directory listing cannot: not "is the
 file there" but "will it load here, and how much context is left once its
 weights are down". Both come from the header and the device list, so the page
 costs one stat and a few kilobytes per model and starts nothing.
+
+The Bench page does not describe a run twice. The model, build, context and
+devices arrive from the Server page in the query string and are shown but not
+edited; this page chooses only what is asked of that server. What it adds is
+the arithmetic: how many requests a prompt set, a repeat count and five sweep
+axes multiply out to, and the longest the run's own timeouts would let that
+take. Every error it reports is one the script would otherwise announce by
+exiting — after it had been launched, and for a sweep after it had already
+worked through part of one.
 
 ## Facts about llama.cpp worth not rediscovering
 
@@ -213,6 +224,27 @@ costs one stat and a few kilobytes per model and starts nothing.
 - The GGUFs in this lab do not carry `nextn_predict_layers`, so an MTP
   conversion is recognisable only by its name and its one extra layer. Same
   rule as `agent_workload_bench.is_mtp_model_name`.
+
+## Facts about the bench script worth not rediscovering
+
+- `--tasks v2-mini` is **one** prompt (`v2_write_function`). Its own `--tasks`
+  help text claims two; the code that filters `TASKS_V2` is what runs.
+- `--ctx-size` above 131072 exits 4 before anything starts unless
+  `--allow-ctx-above-16k` is given. The flag's name predates the limit.
+- `--autotune-min-ctx` defaults to 131072 and **discards** every swept context
+  below itself, so a sweep of smaller ones ends as "empty autotune config
+  list" unless the minimum is lowered with it.
+- The sweep is an `itertools.product`, checked against `--autotune-max-configs`
+  before the first server starts: one more value on any axis multiplies the
+  whole run.
+- `--task-ids` is split on commas only, and an id that is not in the selected
+  set exits 5.
+- The script sends no `Authorization` header, so forwarding `--api-key` gives
+  it a server that answers 401 to everything. It owns `--host` too, so the
+  server it starts is loopback-only and the key would guard nothing.
+- `--autotune-resume` and `--write-diagnostics` are `BooleanOptionalAction`
+  with default `True`: leaving the flag out does not turn them off, only
+  `--no-...` does.
 
 ## Validation
 

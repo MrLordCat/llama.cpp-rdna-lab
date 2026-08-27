@@ -14,7 +14,7 @@ from gui2.core.memstore import MemoryStore
 from gui2.core.runspec import parse_rpc_endpoints
 from gui2.proc import Supervisor
 from gui2.proc.hidden import suppress_error_dialogs
-from gui2.web import history_page, models_page, server_page
+from gui2.web import bench_page, history_page, models_page, server_page
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -175,6 +175,31 @@ def create_app(config: AppConfig | None = None):
     @rt("/server/log", methods=["GET"])
     def server_log(cursor: int = 0):
         return server_page.log_since(supervisor, cursor)
+
+    @rt("/bench", methods=["GET"])
+    def bench(req):
+        # the run under test arrives in the query string from the Server page;
+        # this page adds only what is asked of it
+        return bench_page.page(config,
+                               server_page.spec_from_params(req.query_params),
+                               bench_page.bench_from_params(req.query_params),
+                               supervisor)
+
+    @rt("/bench/preview", methods=["POST"])
+    async def bench_preview(req):
+        params = await req.form()
+        return (
+            bench_page.preview(config, server_page.spec_from_params(params),
+                               bench_page.bench_from_params(params)),
+            HtmxResponseHeaders(push_url="/bench?" + bench_page.state_query(params)),
+        )
+
+    @rt("/bench/start", methods=["POST"])
+    async def bench_start(req):
+        params = await req.form()
+        return bench_page.start(config, supervisor,
+                                server_page.spec_from_params(params),
+                                bench_page.bench_from_params(params))
 
     @rt("/models", methods=["GET"])
     def models(req):

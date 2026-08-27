@@ -9,7 +9,7 @@ which limits the chosen model and the discovered devices impose on them.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Sequence
 from urllib.parse import urlencode
@@ -70,7 +70,7 @@ from gui2.core.runspec import (
     validate,
 )
 from gui2.proc import Busy, Supervisor
-from gui2.web.layout import shell
+from gui2.web.layout import PROBLEM_STYLE, command_lines, problem_lines, shell
 
 #: Never echoed into the address bar, browser history or the access log.
 SECRET_PARAMS = frozenset({"api_key"})
@@ -159,6 +159,27 @@ def state_query(params, refit: RunSpec | None = None) -> str:
         else:
             ordered[at[key]] = pair
     return urlencode(ordered)
+
+
+def spec_link(spec: RunSpec) -> str:
+    """A whole spec as a query string, for a link between pages.
+
+    Written the way a submitted form writes it -- a false checkbox left out,
+    `_form` present to say the omission was meant -- so that reading it back
+    with `spec_from_params` gives the same spec.
+    """
+    pairs: list[tuple[str, str]] = []
+    for field in fields(RunSpec):
+        if field.name in SECRET_PARAMS:
+            continue
+        value = getattr(spec, field.name)
+        if isinstance(value, bool):
+            if value:
+                pairs.append((field.name, "1"))
+        elif str(value) != "":
+            pairs.append((field.name, str(value)))
+    pairs.append((FORM_MARKER, "1"))
+    return urlencode(pairs)
 
 
 def spec_from_params(params) -> RunSpec:
@@ -982,29 +1003,6 @@ def memory_panel(spec: RunSpec, facts: ModelFacts | None, scan: Scan, backend: s
 # -- preview ---------------------------------------------------------------
 
 
-def _command_lines(argv: list[str]) -> str:
-    lines = [Path(argv[0]).name]
-    current = ""
-    for token in argv[1:]:
-        if token.startswith("-"):
-            if current:
-                lines.append(current)
-            current = "  " + token
-        else:
-            current += f" {token}"
-    if current:
-        lines.append(current)
-    return "\n".join(lines)
-
-
-#: how a problem is shown: the prefix carries the weight, the class the colour
-PROBLEM_STYLE: dict[str, tuple[str, str]] = {
-    "error": ("⚠ ", "problem err"),
-    "warn": ("⚠ ", "problem warn"),
-    "note": ("note: ", "problem muted"),
-}
-
-
 def _port_problems(spec: RunSpec) -> list[Problem]:
     """Whether this port is already spoken for, and which one is not.
 
@@ -1038,28 +1036,24 @@ def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
 
     argv = to_argv(spec, binary)
     bench_argv = to_bench_argv(spec, BenchSpec(), config.bench_script, binary)
+    bench_query = spec_link(spec)
 
     known = reading(argv, supervisor, store)
-
-    messages = [
-        Div(PROBLEM_STYLE[problem.level][0] + problem.message,
-            cls=PROBLEM_STYLE[problem.level][1])
-        for problem in problems
-    ]
 
     return Div(
         Div(
             H3("Command"),
-            *messages,
+            *problem_lines(problems),
             Pre(f"# build: {build.name} ({build.backend})" if build else "# build: not selected"),
             Pre(f"# model: {facts.summary}") if facts and facts.summary else None,
-            Pre(_command_lines(mask_api_key(argv))),
+            Pre(command_lines(mask_api_key(argv))),
             cls="panel",
         ),
         memory_panel(spec, facts, scan, backend, known),
         Details(
             Summary("Benchmark command from the same spec"),
-            Pre(_command_lines(mask_api_key(bench_argv))),
+            Pre(command_lines(mask_api_key(bench_argv))),
+            A("Set up a benchmark run →", href=f"/bench?{bench_query}", cls="button"),
             cls="panel",
         ),
         id="preview",

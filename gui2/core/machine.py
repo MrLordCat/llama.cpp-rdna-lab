@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -181,6 +182,57 @@ def hostname() -> str:
         return ""
 
 
+#: A process list is cheap but not free, and a preview redraws on every
+#: keystroke. Two seconds is far shorter than anyone can start a server in.
+SERVERS_TTL = 2.0
+_servers_cache: tuple[float, tuple[str, ...]] = (0.0, ())
+
+
+def _server_pids() -> tuple[str, ...]:
+    """PIDs of every llama-server on this machine, from the process list.
+
+    The same question `agent_workload_bench.find_background_llama_servers`
+    asks, and for the same reason: a benchmark shares its GPUs with anything
+    already loaded, so a second server means the numbers are not measuring
+    what they claim to. Reading the process table starts no GPU work and
+    touches no driver.
+    """
+    import subprocess
+
+    if os.name == "nt":
+        command = ["tasklist", "/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"]
+        # a console window would flash in the user's face on every preview
+        options = {"creationflags": 0x08000000}  # CREATE_NO_WINDOW
+    else:
+        command, options = ["pgrep", "-x", "llama-server"], {}
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=5, **options)
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    if os.name != "nt":
+        return tuple(line.strip() for line in done.stdout.splitlines() if line.strip().isdigit())
+    if done.returncode != 0:
+        return ()
+    pids = []
+    for raw in done.stdout.splitlines():
+        # CSV without a header: "llama-server.exe","1234","Console","1","900 K"
+        columns = [cell.strip().strip('"') for cell in raw.strip().split('","')]
+        if len(columns) >= 2 and columns[0].lower() == "llama-server.exe":
+            pids.append(columns[1])
+    return tuple(pids)
+
+
+def running_servers(ttl: float = SERVERS_TTL) -> tuple[str, ...]:
+    """`_server_pids`, at most once every `ttl` seconds."""
+    global _servers_cache
+    now = time.monotonic()
+    when, pids = _servers_cache
+    if now - when > ttl:
+        pids = _server_pids()
+        _servers_cache = (now, pids)
+    return pids
+
+
 __all__ = [
     "Cores",
     "auto_threads_http",
@@ -189,4 +241,5 @@ __all__ = [
     "hostname",
     "lan_address",
     "port_taken",
+    "running_servers",
 ]

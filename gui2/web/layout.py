@@ -2,19 +2,53 @@
 
 from __future__ import annotations
 
-from fasthtml.common import H1, A, Header, Main, Nav, Span, Title
+from pathlib import Path
+
+from fasthtml.common import H1, A, Div, Header, Main, Nav, Span, Title
 
 from gui2.config import AppConfig
+from gui2.core.runspec import Problem
 
 NAV: tuple[tuple[str, str], ...] = (
     ("/history", "History & Analytics"),
     ("/server", "Server"),
+    ("/bench", "Bench"),
     ("/models", "Models"),
 )
+
+#: how a problem is shown: the prefix carries the weight, the class the colour
+PROBLEM_STYLE: dict[str, tuple[str, str]] = {
+    "error": ("⚠ ", "problem err"),
+    "warn": ("⚠ ", "problem warn"),
+    "note": ("note: ", "problem muted"),
+}
 
 
 def number(value: float | None, digits: int = 2) -> str:
     return "-" if value is None else f"{value:.{digits}f}"
+
+
+def problem_lines(problems: list[Problem]) -> list:
+    return [Div(PROBLEM_STYLE[problem.level][0] + problem.message,
+                cls=PROBLEM_STYLE[problem.level][1]) for problem in problems]
+
+
+def command_lines(argv: list[str]) -> str:
+    """A command line broken so each flag and its value sit on one line.
+
+    Anything before the first flag stays on the first line with the program:
+    an interpreter and the script it is given are one thought, not two.
+    """
+    lines: list[str] = []
+    current = Path(argv[0]).name
+    for token in argv[1:]:
+        if token.startswith("-"):
+            lines.append(current)
+            current = "  " + token
+        else:
+            current += f" {token}"
+    lines.append(current)
+    return "\n".join(lines)
 
 
 def shell(title: str, active: str, config: AppConfig, *content):
