@@ -53,14 +53,19 @@ from gui2.core.bench import (
     B_SWEEP,
     B_WHAT,
     BenchSpec,
+    Fit,
     Plan,
     TASK_IDS,
+    Weighed,
+    fit,
     plan,
     sweep_values,
     to_bench_argv,
     validate_bench,
 )
+from gui2.core.devices import Scan, pool
 from gui2.core.gguf import context_text
+from gui2.core.memory import gib
 from gui2.core.params import Param
 from gui2.core.runspec import Problem, RunSpec, mask_api_key
 from gui2.proc import Busy, Supervisor
@@ -266,6 +271,58 @@ def _under_test(bench: BenchSpec) -> str:
             f"is replaced by the lines above.")
 
 
+def _weighed_label(item: Weighed, kinds: int, ubatches: int) -> str:
+    """Name a configuration by whatever tells it apart from the others."""
+    parts = [context_text(item.ctx)]
+    if kinds > 1:
+        parts.append(f"with {item.kv}")
+    if ubatches > 1:
+        parts.append(f"at ubatch {item.ubatch}")
+    return " ".join(parts)
+
+
+def memory_panel(spec: RunSpec, bench: BenchSpec, scan: Scan, backend: str) -> Div | None:
+    """Which of the swept configurations the cards have room for.
+
+    Arithmetic on the model header, so it arrives before the sweep rather than
+    after a quarter of an hour of the server failing to load.
+    """
+    facts = server_page.model_facts(spec)
+    devices = server_page.run_devices(scan, spec, backend)
+    budget, parts, measured = pool(devices)
+    report = fit(spec, facts, bench, budget, devices=max(1, len(devices)))
+    if report is None or not report.weighed:
+        return None
+
+    swept = sweep_values(bench)
+    kinds, ubatches = len(set(swept["sweep_kv"])), len(set(swept["sweep_ubatch"]))
+    where = f"{gib(budget)} {'free' if measured else 'installed'} ({' + '.join(parts)})"
+    heaviest, over = report.heaviest, report.over
+    assert heaviest is not None
+
+    if not over:
+        verdict = Div(f"All {report.total} fit: the heaviest, "
+                      f"{_weighed_label(heaviest, kinds, ubatches)}, wants "
+                      f"{gib(heaviest.mib)} of {where}", cls="problem ok")
+        rest: list = []
+    else:
+        largest = report.largest_fitting
+        lost = duration(report.over_count * max(0.0, bench.startup_timeout))
+        verdict = Div(f"⚠ {report.over_count} of {report.total} will not fit in {where}. "
+                      f"The heaviest, {_weighed_label(heaviest, kinds, ubatches)}, wants "
+                      f"{gib(heaviest.mib)}.", cls="problem err")
+        rest = [Div(f"A configuration too big to load is not skipped: the server fails, "
+                    f"the script writes CONFIG FAILED and moves to the next one. At the "
+                    f"startup timeout set here that is up to {lost} spent measuring nothing.",
+                    cls="problem muted")]
+        if largest is not None:
+            rest.append(Div(f"The most it has room for is "
+                            f"{_weighed_label(largest, kinds, ubatches)}, at "
+                            f"{gib(largest.mib)}.", cls="problem muted"))
+
+    return Div(H3("Room for it"), verdict, *rest, cls="panel memory")
+
+
 def _busy_problems(bench: BenchSpec) -> list[Problem]:
     """A llama-server already up, found the way the script will find it."""
     pids = machine.running_servers()
@@ -336,7 +393,8 @@ def spec_inputs(spec: RunSpec):
 # -- panels ----------------------------------------------------------------
 
 
-def preview(config: AppConfig, spec: RunSpec, bench: BenchSpec, oob: bool = False) -> Div:
+def preview(config: AppConfig, spec: RunSpec, bench: BenchSpec, scan: Scan, backend: str,
+            oob: bool = False) -> Div:
     build = server_page.build_of(config, spec)
     binary = build.server_bin if build and build.server_bin else Path("llama-server")
     argv = to_bench_argv(spec, bench, config.bench_script, binary)
@@ -361,6 +419,7 @@ def preview(config: AppConfig, spec: RunSpec, bench: BenchSpec, oob: bool = Fals
             cls="panel",
         ),
         plan_panel(spec, bench),
+        memory_panel(spec, bench, scan, backend),
         id="autotunepreview",
         hx_swap_oob="true" if oob else None,
     )
@@ -427,12 +486,13 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, bench: Bench
     return server_page.run_panel(supervisor), server_page.log_panel(supervisor, oob=True)
 
 
-def page(config: AppConfig, spec: RunSpec, bench: BenchSpec, supervisor: Supervisor):
+def page(config: AppConfig, spec: RunSpec, bench: BenchSpec, supervisor: Supervisor,
+         scan: Scan, backend: str):
     return shell(
         "Autotune", "/autotune", config,
         Div(
             form(config, spec, bench),
-            Div(preview(config, spec, bench),
+            Div(preview(config, spec, bench, scan, backend),
                 server_page.run_panel(supervisor),
                 server_page.log_panel(supervisor), cls="stack"),
             cls="split",

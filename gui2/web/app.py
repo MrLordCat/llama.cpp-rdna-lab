@@ -181,17 +181,20 @@ def create_app(config: AppConfig | None = None):
         # the run under test arrives in the query string from the Server page;
         # a link without sweep values is read as a sweep of that one run
         spec = server_page.spec_from_params(req.query_params)
+        scan, backend = scanned(spec)
         return autotune_page.page(config, spec,
                                   autotune_page.autotune_from_params(req.query_params, spec),
-                                  supervisor)
+                                  supervisor, scan, backend)
 
     @rt("/autotune/preview", methods=["POST"])
     async def autotune_preview(req):
         params = await req.form()
         spec = server_page.spec_from_params(params)
+        scan, backend = scanned(spec)
         return (
             autotune_page.preview(config, spec,
-                                  autotune_page.autotune_from_params(params, spec)),
+                                  autotune_page.autotune_from_params(params, spec),
+                                  scan, backend),
             HtmxResponseHeaders(push_url="/autotune?" + autotune_page.state_query(params)),
         )
 

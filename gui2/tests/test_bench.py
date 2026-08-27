@@ -15,13 +15,16 @@ from gui2.core.bench import (
     TASK_IDS,
     BenchSpec,
     config_count,
+    fit,
     plan,
     selected_tasks,
     server_extra_tokens,
     to_bench_argv,
     validate_bench,
 )
+from gui2.core.gguf import read_facts
 from gui2.core.runspec import DEFAULTS, RunSpec
+from gui2.tests.fixtures import QWEN35_27B, write_gguf
 
 
 def command(spec: RunSpec = DEFAULTS, bench: BenchSpec = BENCH_DEFAULTS) -> list[str]:
@@ -150,6 +153,22 @@ def test_an_empty_sweep_axis_is_an_error_not_a_missing_dimension():
                for problem in validate_bench(DEFAULTS, bench))
 
 
+def test_a_word_no_axis_accepts_is_caught_here_rather_than_by_a_server_that_wont_start():
+    bench = BENCH_DEFAULTS.with_values({"sweep_kv": "f16, q4_K", "sweep_spec": "ngram"})
+    messages = [problem.message for problem in validate_bench(DEFAULTS, bench)
+                if problem.level == "error"]
+    assert any("q4_K" in message and "q8_0" in message for message in messages)
+    # the sweep knows one mode the Server page does not, and it is offered here
+    assert any("ngram" in message and "ngram-mtp" in message for message in messages)
+
+
+def test_a_context_that_is_not_a_number_would_be_dropped_without_a_word():
+    """parse_int_csv keeps what it can read, so a typo shrinks the sweep in silence."""
+    bench = BENCH_DEFAULTS.with_values({"sweep_ctx": "32768, 128k"})
+    assert any(problem.level == "error" and "128k" in problem.message
+               for problem in validate_bench(DEFAULTS, bench))
+
+
 def test_a_prompt_name_that_is_not_in_the_set_is_caught_before_the_run():
     bench = BENCH_DEFAULTS.with_values({"tasks": "quick", "task_ids": "review_bug, made_up"})
     chosen, unknown = selected_tasks(bench)
@@ -196,6 +215,37 @@ def test_only_the_ngram_part_of_a_mixed_sweep_is_primed():
     assert counted.requests == 4 + 2
     assert any("Only the 2 ngram-mod configurations" in problem.message
                for problem in validate_bench(DEFAULTS, bench))
+
+
+def test_the_configurations_too_big_for_the_cards_are_counted_before_the_sweep(tmp_path):
+    """Each one costs a whole startup timeout and produces nothing."""
+    facts = read_facts(write_gguf(tmp_path / "qwen35.gguf", architecture="qwen35", layers=65,
+                                  context=262144, embedding=5120, hparams=QWEN35_27B))
+    spec = replace(DEFAULTS, model=str(tmp_path / "qwen35.gguf"), gpu_layers_all=True)
+    bench = BENCH_DEFAULTS.with_values({"sweep_ctx": "32768,131072,262144",
+                                        "sweep_kv": "f16", "sweep_batch": "256,512"})
+
+    report = fit(spec, facts, bench, budget_mib=16384)
+    assert report is not None
+    # batch does not move the bill, so three bills stand for six configurations
+    assert len(report.weighed) == 3 and report.total == 6
+    assert report.over_count == len(report.over) * 2
+    assert report.largest_fitting is not None
+    assert report.largest_fitting.mib <= 16384 < report.heaviest.mib
+
+    # and a budget nothing fits in says so rather than naming a winner
+    assert fit(spec, facts, bench, budget_mib=1.0).largest_fitting is None
+
+
+def test_pricing_a_sweep_needs_a_model_and_a_budget_and_says_so_by_declining(tmp_path):
+    bench = BENCH_DEFAULTS
+    assert fit(DEFAULTS, None, bench, budget_mib=16384) is None
+
+    facts = read_facts(write_gguf(tmp_path / "qwen35.gguf", architecture="qwen35", layers=65,
+                                  context=262144, embedding=5120, hparams=QWEN35_27B))
+    assert fit(DEFAULTS, facts, bench, budget_mib=0) is None
+    # a typo on an axis leaves nothing to weigh; the message for it is elsewhere
+    assert fit(DEFAULTS, facts, replace(bench, sweep_ctx="128k"), budget_mib=16384) is None
 
 
 def test_the_worst_case_is_bounded_by_the_run_s_own_timeouts():

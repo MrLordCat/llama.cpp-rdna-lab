@@ -17,7 +17,9 @@ import shlex
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
-from gui2.core.params import Param, aliases_of
+from gui2.core.gguf import ModelFacts
+from gui2.core.memory import estimate
+from gui2.core.params import KV_TYPES, SPEC_TYPES, Param, aliases_of
 from gui2.core.runspec import ALL_LAYERS, Problem, RunSpec, to_argv
 
 TASK_SETS = ("quick", "full", "v2", "v2-mini", "v2-review")
@@ -57,6 +59,12 @@ SWEEP_AXES: tuple[tuple[str, str, str], ...] = (
 #: sweep modes that need the n-gram window, and the ones that need a draft budget
 NGRAM_MODES = frozenset({"ngram-mod", "ngram-mtp"})
 DRAFT_MODES = frozenset({"mtp", "ngram-mtp"})
+
+#: What may be written on the two word-shaped axes. The sweep knows one mode
+#: the Server page does not -- `ngram-mtp` is assembled by the autotune loop
+#: out of two flags and has no single setting behind it.
+SWEEP_KV_TYPES = KV_TYPES
+SWEEP_SPEC_MODES = SPEC_TYPES + ("ngram-mtp",)
 
 # flags the bench script passes to llama-server itself
 BENCH_OWNED: frozenset[str] = frozenset().union(*(
@@ -256,6 +264,90 @@ def _sweep_contexts(bench: BenchSpec) -> list[int]:
     return contexts
 
 
+# -- what the sweep will ask of the cards ----------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Weighed:
+    """One configuration's VRAM bill, and what distinguishes it from the rest."""
+
+    ctx: int
+    kv: str
+    ubatch: int
+    mib: float
+
+
+@dataclass(frozen=True, slots=True)
+class Fit:
+    """How much of a sweep the devices have room for.
+
+    A configuration too big for the cards is not skipped: the server fails to
+    load, the script prints CONFIG FAILED and moves on. So each one costs the
+    whole startup timeout and produces no measurement, which is worth knowing
+    before the sweep is started rather than after.
+    """
+
+    budget_mib: float = 0.0
+    #: distinct bills, lightest first
+    weighed: tuple[Weighed, ...] = ()
+    #: configurations each of those stands for -- the axes that cost nothing
+    each: int = 1
+
+    @property
+    def total(self) -> int:
+        return len(self.weighed) * self.each
+
+    @property
+    def over(self) -> tuple[Weighed, ...]:
+        return tuple(item for item in self.weighed if item.mib > self.budget_mib)
+
+    @property
+    def over_count(self) -> int:
+        return len(self.over) * self.each
+
+    @property
+    def heaviest(self) -> Weighed | None:
+        return self.weighed[-1] if self.weighed else None
+
+    @property
+    def largest_fitting(self) -> Weighed | None:
+        """The most demanding configuration that still loads."""
+        within = [item for item in self.weighed if item.mib <= self.budget_mib]
+        return within[-1] if within else None
+
+
+def fit(spec: RunSpec, facts: ModelFacts | None, bench: BenchSpec, budget_mib: float,
+        devices: int = 1, mmproj_bytes: int = 0) -> Fit | None:
+    """The sweep priced against the memory there is, or None if it cannot be.
+
+    Only three axes move the bill: the context and the KV type set the cache,
+    the ubatch sets the compute buffers. Batch size and speculative mode do
+    not, so each distinct bill is computed once and counted for all of them.
+    """
+    if facts is None or not facts.known or budget_mib <= 0:
+        return None
+    values = sweep_values(bench)
+    contexts = sorted({int(value) for value in values["sweep_ctx"] if value.isdigit()})
+    ubatches = sorted({int(value) for value in values["sweep_ubatch"] if value.isdigit()})
+    kv_types = [value for value in values["sweep_kv"] if value in SWEEP_KV_TYPES]
+    if not (contexts and ubatches and kv_types):
+        return None
+
+    weighed: list[Weighed] = []
+    for ctx in contexts:
+        for kv in kv_types:
+            for ubatch in ubatches:
+                probe = replace(spec, ctx_size=ctx, ubatch_size=ubatch,
+                                cache_type_k=kv, cache_type_v=kv)
+                report = estimate(probe, facts, devices=devices, mmproj_bytes=mmproj_bytes)
+                if not report.complete:
+                    return None
+                weighed.append(Weighed(ctx, kv, ubatch, report.total_mib))
+    weighed.sort(key=lambda item: item.mib)
+    each = max(1, len(values["sweep_batch"])) * max(1, len(values["sweep_spec"]))
+    return Fit(budget_mib=budget_mib, weighed=tuple(weighed), each=each)
+
+
 def server_extra_tokens(spec: RunSpec) -> list[str]:
     """Generated server flags minus the ones the bench script sets or refuses."""
     tokens = to_argv(spec)[1:]
@@ -445,6 +537,33 @@ def plan(spec: RunSpec, bench: BenchSpec) -> Plan:
     )
 
 
+def _vocabulary_problems(bench: BenchSpec) -> list[Problem]:
+    """Values on a sweep line that nothing downstream would accept.
+
+    The numeric axes reach `parse_int_csv`, which drops what it cannot read --
+    so a typo shrinks the sweep silently. The word axes reach llama-server,
+    which refuses to start, once per configuration, for the whole timeout.
+    """
+    problems: list[Problem] = []
+    for axis, label in (("sweep_ctx", "Contexts"), ("sweep_batch", "Batch sizes"),
+                        ("sweep_ubatch", "Ubatch sizes")):
+        bad = [value for value in items(getattr(bench, axis)) if not value.isdigit()]
+        if bad:
+            problems.append(Problem(
+                "error",
+                f"{label} to try: {', '.join(bad)} — every value on that line has to be a "
+                f"plain number of tokens, and one that is not is quietly dropped"))
+    for axis, label, allowed in (("sweep_kv", "KV cache types", SWEEP_KV_TYPES),
+                                 ("sweep_spec", "Speculation modes", SWEEP_SPEC_MODES)):
+        bad = [value for value in items(getattr(bench, axis)) if value not in allowed]
+        if bad:
+            problems.append(Problem(
+                "error",
+                f"{label} to try: {', '.join(bad)} — the ones that work here are "
+                f"{', '.join(allowed)}"))
+    return problems
+
+
 def validate_bench(spec: RunSpec, bench: BenchSpec) -> list[Problem]:
     """Everything that would stop this run, said before it is started.
 
@@ -506,6 +625,8 @@ def validate_bench(spec: RunSpec, bench: BenchSpec) -> list[Problem]:
             "Authorization header, and the server it starts only listens on this "
             "machine, so a key would lock it out of its own server."))
 
+
+    problems += _vocabulary_problems(bench)
 
     empty = [name for name, values in sweep_values(bench).items() if not values]
     if empty:

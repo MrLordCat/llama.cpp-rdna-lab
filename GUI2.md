@@ -162,8 +162,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 7 167 lines of Python plus 2 189 of tests, against the old GUI's
-15 458 with none. The suite is 162 tests and runs in about 20 seconds without
+`gui2/` is 7 351 lines of Python plus 2 239 of tests, against the old GUI's
+15 458 with none. The suite is 166 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -171,7 +171,7 @@ touching a GPU.
 | `core/gguf.py` | what a model file says about itself — layers, context, head counts, SSM shape. Header only, a few KB, no binary |
 | `core/params.py` | one `Param` per flag; forms and argv both generated from it |
 | `core/runspec.py` | the single description of a run, `to_argv`, `validate`, and the slot arithmetic `slot_context` |
-| `core/bench.py` | the same run handed to `agent_workload_bench.py` as a sweep, plus `plan` — how many requests a choice of prompts, repeats and sweep axes comes to |
+| `core/bench.py` | the same run handed to `agent_workload_bench.py` as a sweep, plus `plan` — how many requests a choice of prompts, repeats and sweep axes comes to — and `fit`, which of those configurations the cards have room for |
 | `core/memory.py` | what a run *will* cost: weights + KV + compute, from the header; and `capacity`, the context a model has room for on a given card |
 | `core/measured.py` | what a run *did* cost, read from its own log as it is written |
 | `core/memstore.py` | the same, kept between runs and rescaled across contexts |
@@ -204,6 +204,13 @@ and five sweep axes multiply out to, and the longest the run's own timeouts
 would let that take. Every error it reports is one the script would otherwise
 announce by exiting — after it had been launched, and often after it had
 already worked through part of the sweep.
+
+It also prices the sweep against the cards before it starts. A configuration
+too big to load is not skipped: the server fails, the script writes
+`CONFIG FAILED` and moves on, so each one costs a whole startup timeout and
+returns nothing. The page says how many of them there are, what the heaviest
+wants, what the largest one that does fit is, and how much time the failures
+would take — from the model header, so no process is started to find out.
 
 ## Facts about llama.cpp worth not rediscovering
 
@@ -257,6 +264,14 @@ already worked through part of the sweep.
   *last* `--spec-type` while `infer_spec_mode` reads the *first*.
 - The priming pass is decided per configuration, from that configuration's
   speculative mode: a sweep of `none,ngram-mod` primes half of itself.
+- A configuration whose server fails to start does **not** stop the sweep: the
+  `TimeoutError` / "server exited before becoming ready" cases print
+  `CONFIG FAILED` and continue to the next one. So an out-of-memory
+  configuration costs a full `--startup-timeout` (900 s by default) and yields
+  nothing — which is why the page weighs every configuration against the cards
+  first.
+- `parse_int_csv` keeps the values it can read and drops the rest, so `128k` on
+  a numeric sweep axis shrinks the sweep without a word.
 - The script has no `auto` for flash attention. `--flash-attn` is a
   `BooleanOptionalAction` defaulting to on, and it passes `--flash-attn on|off`
   to llama-server, so the Server page's `auto` is sent as `on`.
