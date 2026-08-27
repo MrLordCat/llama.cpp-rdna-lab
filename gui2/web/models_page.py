@@ -147,7 +147,7 @@ def _room_line(scan: Scan, view: View) -> Div:
     return Div(
         f"Sized against {' + '.join(parts)} — {gib(total)} {basis}, with every layer "
         f"offloaded, one conversation at a time and a KV cache in {view.kv}.",
-        cls="hint block",
+        cls="hint block wide",
     )
 
 
@@ -188,7 +188,7 @@ def picker(view: View) -> Form:
                   for name in CACHE_TYPES],
                 name="kv",
             ),
-            cls="field inline",
+            cls="field picker",
         ),
         cache_hint(view),
         hx_get="/models/rows", hx_target="#modelrows", hx_swap="outerHTML",

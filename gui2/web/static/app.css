@@ -103,9 +103,12 @@ td.label { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
 /* nothing in the models table is clickable except the link at its end */
 .models tbody tr { cursor: default; }
 .modelname { display: flex; align-items: center; gap: 6px; }
-.toolbar { margin-bottom: 8px; }
-.toolbar .field.inline { flex: none; }
-.toolbar .hint { max-width: 62ch; }
+.toolbar { margin-bottom: 10px; }
+.toolbar .picker { flex-direction: row; align-items: center; gap: 8px; flex: none; }
+.toolbar .picker > span:first-child { white-space: nowrap; }
+.toolbar .picker select { width: auto; }
+.toolbar .hint { max-width: 70ch; }
+.hint.block.wide { max-width: 108ch; }
 
 .detail dl { display: grid; grid-template-columns: 190px 1fr; gap: 2px 12px; margin: 0; }
 .detail dt { color: var(--muted); }
@@ -169,6 +172,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; margi
     color: var(--text);
 }
 .hint.block { display: block; margin: -2px 0 10px; max-width: 62ch; }
+/* a note under a row of fields, rather than an introduction above one */
+.grid + .hint.block { margin-top: 10px; }
 
 .slider { display: flex; align-items: center; gap: 8px; }
 .slider .range { flex: 1; min-width: 90px; padding: 0; accent-color: var(--accent); }
@@ -219,6 +224,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; margi
 .copyrow { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 10px; }
 .copyrow .copytext { flex: 1; margin: 0; user-select: all; }
 .rpcworker { margin-bottom: 6px; }
+.rpcworker > .hint.block { margin: 12px 0 6px; }
 .devrow.bad .devmem { color: var(--warn); }
 
 /* Device picker */

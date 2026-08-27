@@ -77,6 +77,11 @@ SECRET_PARAMS = frozenset({"api_key"})
 
 #: Form plumbing rather than run settings; not part of the shareable URL.
 INTERNAL_PARAMS = frozenset({"_ceiling"})
+#: fields that legitimately appear more than once in one submission
+MULTI_PARAMS = frozenset({param.name for param in SCHEMA if param.kind == "devices"})
+#: present only when the whole form was submitted, and so the only evidence
+#: that an absent checkbox was cleared rather than never mentioned
+FORM_MARKER = "_form"
 
 #: Re-rendered when the model changes, because the model sets their limits.
 BOUNDED = ("ctx_size", "gpu_layers_all", "gpu_layers")
@@ -138,17 +143,40 @@ def state_query(params, refit: RunSpec | None = None) -> str:
     skip = SECRET_PARAMS | INTERNAL_PARAMS
     # a slider the new model just moved has to reach the address bar as it now reads
     moved = {name: str(getattr(refit, name)) for name in SLIDERS} if refit else {}
-    return urlencode([(key, moved.get(key, value)) for key, value in items if key not in skip])
+
+    ordered: list[tuple[str, str]] = []
+    at: dict[str, int] = {}
+    for key, value in items:
+        if key in skip:
+            continue
+        pair = (key, moved.get(key, value))
+        # a device list is many checkboxes under one name; anything else that
+        # arrives twice is a panel that was submitted along with the form, and
+        # the later value is the current one
+        if key in MULTI_PARAMS or key not in at:
+            at[key] = len(ordered)
+            ordered.append(pair)
+        else:
+            ordered[at[key]] = pair
+    return urlencode(ordered)
 
 
 def spec_from_params(params) -> RunSpec:
-    """A spec from form/query values; absent checkboxes mean off."""
+    """A spec from the form, or from a link that names a few settings.
+
+    An unchecked box submits nothing, so "absent means off" is only true of a
+    form submission. In a link -- `/server?model=...` from the Models page --
+    absent means unmentioned, and switching every default off because of it
+    would hand the user a command they did not ask for.
+    """
     if not params:
         return DEFAULTS
     values = {key: params[key] for key in params.keys()}
+    submitted = FORM_MARKER in params
     for param in SCHEMA:
         if param.kind == "bool":
-            values[param.name] = param.name in params
+            if submitted:
+                values[param.name] = param.name in params
         elif param.kind == "devices" and hasattr(params, "getlist"):
             values[param.name] = ",".join(params.getlist(param.name))
     return DEFAULTS.with_values(values)
@@ -709,6 +737,7 @@ def form(config: AppConfig, spec: RunSpec, scan: Scan, backend: str, params=None
 
     return Form(
         *panels,
+        Input(type="hidden", name=FORM_MARKER, value="1"),
         cls="paramform",
         # Validation lives in core.runspec.validate(), which reports problems in the
         # preview panel.  Browser validation would instead abort the htmx request

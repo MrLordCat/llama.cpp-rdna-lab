@@ -331,6 +331,49 @@ def test_a_finished_server_run_is_written_down_for_the_next_one(client):
     assert scaled.vram[0].kv_mib == 2560.00
 
 
+def generated_command(html: str) -> str:
+    """The llama-server line as the page shows it, not the help text around it."""
+    block = re.search(r"<pre>llama-server(.*?)</pre>", html, re.S)
+    assert block, "the command is missing from the response"
+    return block.group(1)
+
+
+def test_the_address_bar_keeps_one_value_per_field_and_every_chosen_device():
+    from gui2.web.server_page import state_query
+
+    class Submitted:
+        """A form where the worker panel was serialised twice."""
+
+        def multi_items(self):
+            return [("port", "8080"), ("devices", "Vulkan0"), ("rpc_port", "50052"),
+                    ("devices", "Vulkan1"), ("rpc_port", "50200"), ("api_key", "secret")]
+
+    query = state_query(Submitted())
+
+    assert query.count("rpc_port=") == 1 and "rpc_port=50200" in query
+    assert query.count("devices=") == 2, "each ticked device is a value of its own"
+    assert "secret" not in query
+
+
+def test_a_link_that_names_one_setting_leaves_every_other_default_alone(client, models):
+    """The Models page links here with nothing but a path."""
+    command = generated_command(client.get("/server", params={"model": models["long"]}).text)
+
+    # an unchecked box submits nothing, but a link is not a submission: reading
+    # it as one turns every default on the page off
+    assert "-ngl 999" in command, "'offload every layer' is on by default"
+    assert "--no-mmproj-offload" not in command
+    assert "--metrics" in command
+
+
+def test_clearing_a_checkbox_in_the_form_still_clears_it(client, models):
+    command = generated_command(client.post("/server/preview", data={
+        "_form": "1", "model": models["long"], "ctx_size": "32768"}).text)
+
+    assert "--no-mmproj-offload" in command
+    assert "--metrics" not in command
+
+
 def test_the_models_page_lists_what_is_on_disk_and_links_it_to_the_server(client, models):
     html = client.get("/models").text
 
