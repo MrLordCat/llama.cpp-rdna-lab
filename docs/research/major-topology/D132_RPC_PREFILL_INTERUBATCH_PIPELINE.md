@@ -195,29 +195,29 @@ Decision: implement (1) as D132 next block; (2) is a numeric/performance
 shortcut that changes the mask shapes and needs a PPL gate; (3) alone does
 not remove the client-side alloc barrier.
 
-## P2 status 2026-08-27 (late): decode restored, serial head/tail/extract
+## P2 status 2026-08-27 (final): correct device order + A/B + network ceiling
 
-- **0xC0000005 root cause (found & fixed)**: `ggml_backend_sched` is
-  calloc-allocated, so `std::vector` members in `p2_slots` were never
-  constructed -> UB in `p2_saved_n_splits`. Fixed by POD slots (commit
-  `ce57418f7`).
-- **Decode restored** (commit `05ff474fa`): the deferred tail of N-1 after
-  head N+1 was unsafe with a single `llm_graph_result` per context
-  (`gf_res_prev`), because head N+1 rebuilt the result and overwrote the
-  tensor pointers of graph N-1 before extraction. P2 pipeline now runs, for
-  each ubatch: phase1 head (build/alloc + async RPC submit + snapshot) ->
-  phase2 tail (remaining split range on the SAME graph, GET included) ->
-  extract immediately. All result tensors of the current graph stay valid.
-- **Verified** with `GGML_RPC_PREFILL_PIPELINE=1` (server 5.0.2,
-  ts 0.8,1,1.4, MTP n=4, 14K): `p2p2t-serial` 1298.9 ptps / decode 26.7,
-  2/2 tasks, no crash (parity with stable 1303.4; the leftover of the
-  previous regression is gone).
-- Next stage (2-buffer deferred tail): head N+1 build/alloc overlapping
-  the tail N GET; requires saving the head-N result tensors separately
-  (second `llm_graph_result` or snapshot of output tensors) plus the
-  two-slot split snapshots already in place.
-- Commits: fd32dad79 (server+phases), 08694cdf5 (two-slot API),
-  ce57418f7 (POD slots), 05ff474fa (restore decode). Branch ahead 7.
+- **Device order matters**: the working order is `-dev RPC0,Vulkan0,Vulkan1`
+  (NOT Vulkan1,Vulkan0,RPC0): with RPC0 last the split layout puts the RPC
+  split at the END (head_end == n_splits, empty tail), so P2 head/tail never
+  engaged. With RPC0 first the RPC split is #4 of 6 - head (RPC) runs first,
+  tail = local VK splits (verified via GGML_SCHED_SPLIT_TIMING: split=4/6
+  backend=RPC0, nodes=801, first=FLASH_ATTN_EXT).
+- **A/B (correct order, server 5.0.2, MTP n=4)**:
+  - 14K (ts 0.8,1,1.4): base 1218.9/38.7 vs P2 1177.9-1220.3/39.3 (parity).
+  - 94K (ts 1,1,1.1, 58K tok, --task-hard-timeout 180): base 925.0/36.5 vs
+    P2 942.4/34.7 (+1.9% ptps, within noise); acceptance identical in run 2.
+- **Network ceiling investigated (user observation)**: both ends report
+  1 Gbps; Task Manager shows only ~15% link utilization (~148 Mbps).
+  `SO_RCVBUF=16MB` added on server accept + client connect (commit
+  c6807eb23): no regression, no gain - the RPC ceiling is protocol
+  serialization (single socket, round-trip waits), not socket buffers or
+  the physical link.
+- Conclusion: serial P2 (head/tail/extract) is correctness-parity; the
+  remaining headroom is NOT the 2-buffer split pipeline alone (old profile
+  estimated <=6%) but protocol parallelism/compression (F8 l_out) plus
+  server-side NV FATTN/MM compute. Next stage must be measured before
+  implementation (F8 l_out or pipelined GET/SET first).
 
 ## Staged plan
 
