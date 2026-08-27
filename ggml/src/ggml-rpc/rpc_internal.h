@@ -91,6 +91,62 @@ static inline void rpc_f32_to_q8_0(const void * src, size_t f32_size, std::vecto
     }
 }
 
+// Multi-threaded F32 <-> F16 conversion for activation transfers. The stock
+// ggml_fp32_to_fp16_row/fp16_to_fp32_row helpers are single-threaded; on the
+// serial RPC server side a 20 MB layer output costs tens of milliseconds,
+// which is the dominant part of the per-ubatch GET_TENSOR/ SET_TENSOR round
+// trip on the local loopback lane.
+static inline void rpc_f32_to_f16(const void * src, size_t f32_size, std::vector<uint8_t> & dst) {
+    const int64_t n = (int64_t) f32_size / sizeof(float);
+    GGML_ASSERT(n > 0 && f32_size % sizeof(float) == 0);
+    dst.resize(size_t(n) * sizeof(ggml_fp16_t));
+    const size_t n_threads = rpc_activation_threads((size_t) n);
+    std::vector<std::thread> workers;
+    workers.reserve(n_threads > 0 ? n_threads - 1 : 0);
+
+    auto convert = [src, n, n_threads](std::vector<uint8_t> & dst, size_t tid) {
+        const int64_t c0 = n * (int64_t) tid / (int64_t) n_threads;
+        const int64_t c1 = n * (int64_t) (tid + 1) / (int64_t) n_threads;
+        if (c1 == c0) {
+            return;
+        }
+        ggml_fp32_to_fp16_row((const float *) src + c0, (ggml_fp16_t *) dst.data() + c0, c1 - c0);
+    };
+
+    for (size_t t = 1; t < n_threads; ++t) {
+        workers.emplace_back(convert, std::ref(dst), t);
+    }
+    convert(dst, 0);
+    for (auto & worker : workers) {
+        worker.join();
+    }
+}
+
+static inline void rpc_f16_to_f32(const void * src, size_t f16_size, void * dst) {
+    const int64_t n = (int64_t) f16_size / sizeof(ggml_fp16_t);
+    GGML_ASSERT(n > 0 && f16_size % sizeof(ggml_fp16_t) == 0);
+    const size_t n_threads = rpc_activation_threads((size_t) n);
+    std::vector<std::thread> workers;
+    workers.reserve(n_threads > 0 ? n_threads - 1 : 0);
+
+    auto convert = [src, dst, n, n_threads](size_t tid) {
+        const int64_t c0 = n * (int64_t) tid / (int64_t) n_threads;
+        const int64_t c1 = n * (int64_t) (tid + 1) / (int64_t) n_threads;
+        if (c1 == c0) {
+            return;
+        }
+        ggml_fp16_to_fp32_row((const ggml_fp16_t *) src + c0, (float *) dst + c0, c1 - c0);
+    };
+
+    for (size_t t = 1; t < n_threads; ++t) {
+        workers.emplace_back(convert, t);
+    }
+    convert(0);
+    for (auto & worker : workers) {
+        worker.join();
+    }
+}
+
 static inline void rpc_q8_0_to_f32(const void * src, size_t wire_size, void * dst) {
     const size_t n_blocks = wire_size / sizeof(block_q8_0);
     const size_t n_threads = rpc_activation_threads(n_blocks);
