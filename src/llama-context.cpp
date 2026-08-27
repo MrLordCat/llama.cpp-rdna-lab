@@ -54,12 +54,24 @@ static void pin_causal_mask_to_local_backend(ggml_backend_sched_t sched, ggml_cg
         }
     }
 
+    // GGML_RPC_MASK_PIN_HOST: pin the F16 mask cast to the host backend
+    // instead of the local GPU. The local-GPU pin forces the mask copy to the
+    // GPU as its own scheduler split, and that copy waits on the previous
+    // local GPU graph event (measured ~423 ms per 1024-token ubatch on the
+    // 12K local-RPC lane). Because the server-side FA split reads the mask
+    // from the GPU buffer, the server GRAPH_COMPUTE cannot start until that
+    // wait finishes: server and local GPU serialize instead of overlapping.
+    // With the mask on host, the RPC-side copy sources CPU directly (no GPU
+    // event), the server graph starts right after its inputs, and the local
+    // mask copy overlaps the server pass.
+    ggml_backend_t mask_backend = std::getenv("GGML_RPC_MASK_PIN_HOST") != nullptr ? host : local;
+
     for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
         ggml_tensor * t = ggml_graph_node(gf, i);
         const char * name = ggml_get_name(t);
         if (strcmp(name, "attn_inp_kq_mask (copy)") == 0) {
-            if (local != nullptr) {
-                ggml_backend_sched_set_tensor_backend(sched, t, local);
+            if (mask_backend != nullptr) {
+                ggml_backend_sched_set_tensor_backend(sched, t, mask_backend);
             }
         } else if (strncmp(name, "rs_s_copy", strlen("rs_s_copy")) == 0) {
             // recurrent state-copy indices (s_copy and its " (view)" slices):

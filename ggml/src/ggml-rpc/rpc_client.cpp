@@ -138,6 +138,10 @@ static rpc_tensor serialize_tensor(const ggml_tensor * tensor) {
         // Lossy compact formats are deliberately opt-in and limited to
         // intermediate layer outputs. Keep result_output/logits at F16 to
         // avoid amplifying sampling sensitivity at the final boundary.
+        // Note: input_embed deliberately stays raw F32 here - the F16 path
+        // regressed the remote 3080 lane (server-side single-threaded
+        // f16->f32 conversion cost more than the saved wire bytes), and the
+        // Q8 path produced no measurable gain on 14K.
         if (std::getenv("GGML_RPC_ACT_Q8_0") != nullptr && is_rpc_layer_output_name(result.name)) {
             result.rpc_flags |= GGML_RPC_TENSOR_FLAG_ACT_Q8_0;
         } else if (std::getenv("GGML_RPC_ACT_F8") != nullptr && is_rpc_layer_output_name(result.name)) {

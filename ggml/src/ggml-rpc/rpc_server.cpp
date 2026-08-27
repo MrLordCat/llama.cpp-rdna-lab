@@ -332,7 +332,7 @@ bool rpc_server::set_tensor(const std::vector<uint8_t> & input) {
     } else if (act_f16) {
         // client sent the F32 activation as F16; convert back before storing
         f32_data.resize(f32_size);
-        ggml_fp16_to_fp32_row((const ggml_fp16_t *) data, (float *) f32_data.data(), (int64_t) size / sizeof(ggml_fp16_t));
+        rpc_f16_to_f32(data, size, f32_data.data());
         data = f32_data.data();
     }
     if (cache_dir && size > HASH_THRESHOLD && !act_f16 && !act_f8 && !act_q8) {
@@ -629,8 +629,7 @@ bool rpc_server::get_tensor(const rpc_msg_get_tensor_req & request, std::vector<
         // send F32 activations as F16 (halves the LAN traffic)
         std::vector<uint8_t> f32_buf(request.size, 0);
         ggml_backend_tensor_get(tensor, f32_buf.data(), request.offset, request.size);
-        response.resize(request.size / 2, 0);
-        ggml_fp32_to_fp16_row((const float *) f32_buf.data(), (ggml_fp16_t *) response.data(), (int64_t) request.size / sizeof(float));
+        rpc_f32_to_f16(f32_buf.data(), request.size, response);
     } else {
         response.resize(request.size, 0);
         ggml_backend_tensor_get(tensor, response.data(), request.offset, request.size);
