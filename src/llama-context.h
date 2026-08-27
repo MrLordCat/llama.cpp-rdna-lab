@@ -129,11 +129,22 @@ struct llama_context {
     // if memory_context is provided, it will be applied first to the context's memory
     // ret contains the status of the graph computation
     // returns nullptr only if ret != GGML_STATUS_SUCCESS
+    // P2 prefill pipeline (p2_phase): 1 = submit RPC head splits only,
+    // 2 = run the local Vulkan tail splits only (pass p2_override with the
+    // replayed ubatch and p2_skip_apply=true; the graph must have been built
+    // by the phase-1 call and stays reusable).
     llm_graph_result * process_ubatch(
                 const llama_ubatch & ubatch,
                     llm_graph_type   gtype,
             llama_memory_context_i * mctx,
-                       ggml_status & ret);
+                       ggml_status & ret,
+                          int      p2_phase = 0,
+              const llama_ubatch * p2_override = nullptr,
+                          bool     p2_skip_apply = false);
+
+    // P2 decode pipeline state (D132)
+    int      p2_tail_slot = -1;
+    uint64_t p2_wait_seq  = 0;
 
     int encode(const llama_batch & batch_inp);
     int decode(const llama_batch & batch_inp);
@@ -239,6 +250,8 @@ public:
 
     // returns the result of ggml_backend_sched_graph_compute_async execution
     ggml_status graph_compute(ggml_cgraph * gf, bool batched);
+    // P2: compute only the splits in [split_from, split_to) of the graph
+    ggml_status graph_compute_range(ggml_cgraph * gf, bool batched, int split_from, int split_to);
 
     // reserve a graph with a dummy ubatch of the specified size
     ggml_cgraph * graph_reserve(
