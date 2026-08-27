@@ -1,5 +1,41 @@
 # Results Log
 
+## 2026-08-27 - D134 R2 Q8 activation wire is a reproducible, PPL-neutral short-lane win
+
+- Priority lane: RPC RTX3080 plus both local Vulkan GPUs,
+  `-dev RPC0,Vulkan0,Vulkan1 -ts 0.8,1,1.4`, Qwen3.8-27B-Q4_K_M,
+  `ctx=12288`, `b8192/ub1024`, q8/q8 KV, MTP n4, 128 output tokens.
+- Clean F16 control `d134-r2-f16-control-r1`: `12.9731` aggregate,
+  `1219.395` prompt, `39.185` decode TPS. Existing adjacent R2 control
+  `d133-r2-rpc3080-dualvulkan-14k` was `13.0091/1217.015/39.875`.
+- Existing opt-in `GGML_RPC_ACT_Q8_0=1`: `d134-r2-q8-wire-r1/r2`
+  `14.4432/1296.105/48.175` and `14.3348/1278.785/48.185` aggregate/prompt/decode.
+  The two-run center is `+5.68%` prompt and `+10.76%` aggregate versus the
+  new F16 control. Acceptance was stable per task at `96/121` and `94/128`
+  in both Q8 runs; this is a smoke result, not a PPL/quality clearance.
+- Existing opt-in `GGML_RPC_ACT_F8=1` was prompt-negative:
+  `13.0656/1167.950/44.160`, `-4.12%` prompt and only `+0.57%` aggregate
+  versus F16. Reject for the current prompt-focused R2 lane.
+- Quality gate on the same RPC R2 topology, WikiText-2, two chunks,
+  `n_ctx=8192`, `b1024/ub1024`: F16 `PPL=4.9183 +/- 0.12282` versus Q8
+  `PPL=4.9194 +/- 0.12287` (`+0.0011`, about `+0.02%`). The initial
+  `b8192` attempt hit the Vulkan pinned-memory buffer limit and was discarded;
+  the final control and candidate used identical safe settings.
+- Existing scheduling opt-ins were negative on this short Q8 R2 lane:
+  Q8+run-ahead `13.84/1238.59/46.37`, Q8+async `14.03/1229.90/49.28`,
+  and Q8+both `13.71/1223.71/45.98` aggregate/prompt/decode TPS. Keep them
+  default-off; they do not improve the RPC wire route here.
+- Q8 diagnostic reduced observed `GET_TENSOR` calls from `103` to `88`; the
+  14 full `l_out-16` reads changed from 10,485,760 F16 wire bytes to
+  5,570,560 block-Q8 bytes. Large-read client wait moved `5393.4 -> 5248.2`
+  ms total (`385.2 -> 374.9` ms/read). Keep protocol/receive effects and
+  remote graph timing separate from this speed claim.
+- Verdict: retain Q8 as an RPC-only opt-in candidate; the short PPL gate is
+  neutral and the repeated R2 speed signal is positive, but do not enable it
+  by default yet. Next measure the receive/protocol path around the smaller
+  payload and keep longer quality evidence separate.
+- Owning note: `docs/research/major-topology/D134_RPC_BOUNDARY_WIRE_GATES.md`.
+
 ## 2026-08-27 - D133 RPC topology controls identify the boundary candidate
 
 - Locked 14K smoke controls on Qwen3.8-27B-Q4_K_M, context `12288`,
