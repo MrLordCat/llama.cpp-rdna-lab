@@ -335,3 +335,111 @@
    GGML_RPC_ACT_THREADS=16 LLAMA_RPC_RUN_AHEAD=1`.
   Q8_0 lossy, поэтому default-on закрыт до отдельного PPL/quality-гейта.
   Полный H81/P2 inter-ubatch pipeline остаётся открытым следующим рычагом.
+
+### 2026-08-26 — NV MMQ tile свип (GGML_VK_NV_MMQ_TILE) на 3080-сервере
+
+- Добавлен env `GGML_VK_NV_MMQ_TILE=BLOCK,BM,BN,BK,enable_smaller`
+  (`vk_shaders.inc`, только coopmat2/NV): переопределяет large/medium/small
+  MMQ tile; серверный лог печатает итоговый l/m/s-набор.
+- 94K (Qwen3.8-27B, q8_0 KV, MTP n=4, `-ts 0.8,1,1.4`, тёплая задача):
+  * база (BM128/BN256/BK64, rf66): 1124 ptps / 43.1 t/s / acc 98/109, wall 54.9 с;
+  * T5 BM128/BN128/BK64 (rf70/71): 1251-1258 ptps / 22.9 t/s / acc 73/212,
+    wall 52.1-52.4 с — лучший wall, но decode/acc регресс;
+  * T1 BM64/BN128/BK32 (rf68): 1358-1379 ptps / 9.3 t/s / acc 0/498 — prefill
+    выше local 1355, но MTP полностью ломается (rejected);
+  * T8 BM128/BN64/BK64 (rf75): 1312 ptps / 9.4 t/s / acc 0/498 — rejected;
+  * T10 BM128/BN256/BK32 (rf72): 1106 ptps / 44.1 t/s / acc 98/109 —
+    BK32 не ускоряет (rejected);
+  * rf76 (T5 + small=base): 1258 ptps / 22.2 t/s / acc 73/212 — small-tile
+    НЕ при чём: acc не вернулся, источник — large/medium tile;
+  * rf77 (T5 + `GGML_VK_MMQ_F32ACC=1`, новый probe в `vk_transfer.inc`):
+    1166 ptps / 27.0 t/s / acc 81/179 — f32-аккум улучшает acc 34→45% и
+    decode 22→27 t/s, но не до 90%; prefill −7% (rejected для продакшена);
+  * rf78 (база, контроль после всех правок): 1102 ptps / 43.4 t/s /
+    acc 98/109 (90%), wall 55.9 с — base подтверждён.
+- Вывод (свип закрыт): ускорение prefill сменой MMQ tile (BN/BM) численно
+  меняет prefill-логиты (порядок/точность кооп-аккума) и через
+  q8_0-KV/скрытые состояния рушит MTP-acc (90%→34→45→0%). Декод-графы
+  МТП идут через batched MMVQ, а не MMQ, поэтому tile их не касается;
+  регресс — косвенный, через численность prefill. Единственный способ
+  сохранить acc 90% — оставить дефолтный MMQ tile (BM256/BN256/BK64);
+  T5 пригоден только как «ускоренный prefill» при отказе от качества
+  МТП. Код: probe-инструмент и лог l/m/s остаются (env-opt-in),
+  поведение по умолчанию = база.
+- Дополнение (rf80/rf81, изоляция «BM или BN»): rf81 = large
+  BM=128/BN=256: **acc 96/122 (79%) и 98/109 (90%)**, prompt
+  1036.9/1101.8, decode 38.5/41.5 — идентично базе; rf79 (BM=128/BN=128,
+  enable_smaller=1) всё ещё 73/212 → **виновник именно BN=128**
+  (ширина кооп-мульта по N), BM на численность не влияет; rf80
+  (ts 1.1,1,1.4): 962.8/1058.5, acc 53%/51% — баланс слоёв в этом
+  контексте только вредит (больше cross-device l_out-копий), отклонён.
+  Итог: BN=128 даёт скорость (1258 vs 1102), BN=256 даёт правильную
+  численность; f32-аккум не спасает (rf77: 45%) — расхождение не
+  сводится к точности аккума. Следующий путь — не tile/распределение,
+  а снижение задержек между картами кодом (inter-ubatch pipeline H81/P2).
+- Артефакты: rf68-81-94k-*.jsonl в `build_logs/agent-workload/`.
+
+### 2026-08-27 — P2-профиль (trace94k-p2a): блок = блокирующий GET границы
+
+- Диагностический прогон (base tile, `GGML_SCHED_SPLIT_TIMING=1
+  GGML_RPC_TIMELINE=1 LLAMA_UBATCH_TIMING=1`, 94K, ts 0.8,1,1.4):
+  * клиентский RPC-TIMELINE: `GET_TENSOR-rsp` n=182, суммарно
+    **46.64 с = ~40% wall** (mean 256 мс, поздние убатчи 420-509 мс);
+    `GRAPH_COMPUTE_ASYNC` уходит без ожидания (b=0) — сервер в фоне;
+  * split-timing: копия границы `l_out-16 RPC0→Vulkan0 = 237.8 мс/уб`
+    (остальные сплиты 0.5-7 мс; локальный VK1-хвост 7.1 мс);
+  * серверная часть внутри GET = ожидание завершения GRAPH (auto-flush
+    перед не-асинк командой), сеть/декомпрессия — малая доля.
+- Вывод: серверный compute НЕ перекрыт полезной работой клиента: клиент
+  простаивает в блокирующем GET, а график N+1 на RPC0 подаётся только
+  после полного прохода VK0/VK1-хвоста N (порядок split-ов
+  RPC0_N → VK0_N → VK1_N → RPC0_N+1). Для полного конвейера нужен
+  **inter-ubatch handoff на уровне llama-context** (запускать RPC0-head
+  N+1 параллельно с локальным tail N; RPC0-головы убатчей независимы:
+  KV-регионы disjoint, входы — embeddings), т.е. P2 из D132, а не
+  локальный трюк в rpc-клиенте (два сокета/события не решают — порядок
+  команд на сервере и буферы результатов у границ общие).
+- Уточнённая стена (per-ubatch, late KV, split-timing): split1 CPU 1.4,
+  split2 RPC0 3.7 (submit), split3 VK0-mask 21, split4 RPC0-mask 27,
+  **split5 VK0 copy=466.3 (ожидание серверного графа слоёв 0-16 через
+  slow-copy GET l_out-16; на первом убатче get=232.95 мс), compute=37**,
+  **split6 VK1 copy=470.6 (CPU-блок ggml_backend_synchronize(VK0) перед
+  host-копией l_out-37), compute=5** → сумма ≈ compute_call 1039.8.
+  CPU-блокировки в copy-фазах и есть настоящая сериализация; GPU-время
+  сервера ≈466 мс/уб и VK0 ≈470 мс/уб — оба на критическом пути.
+- МГНОВЕННОЕ СЛЕДСТВИЕ для P2: чтобы сервер N+1 считался во время
+  VK0/VK1 N, нужно ПОДАТЬ head N+1 ДО блокирующего wait split6 N
+  (early submit). Второй PP-scheduler НЕ подходит (дублирует compute
+  buffers; модель 15.9 ГБ + KV почти заполнили 2×16 ГБ). Рабочая
+  архитектура: dedicated submit/builder path (построить+alloc graph N+1
+  до ожидания tail-данных N, либо ранний submit только RPC0-части
+  графа N+1 на уже построенном шаблоне). Ожидаемый выигрыш ≈466 мс/уб
+  → ~+40-45% на 94K prefill (внутри D132 acceptance-гейта 3%+).
+- P1 staged (GGML_RPC_PREFILL_PIPELINE=1) после фикса корректности:
+  worker тянет только в host staging; применение к Vulkan выполняется
+  на потока планировщика сразу после idle и ДО submit потребляющего
+  графа (split5 RPC0→VK0). 14K smoke p2p1b: активация 16×, prompt
+  1181-1220 ptps, acc 41/87 и 47/60 — стабильно; `git diff --check`
+  чистый. Скорости не даёт (правильно), но устраняет гонку и даёт
+  безопасный staging-примитив под P2.
+- Оценка выигрыша: ~200-300 мс/уб на поздних убатчах → ориентировочно
+  +10-15% к 94K prefill (внутри D132 acceptance-гейта «≥3%»).
+- Отклонено ранее (повтор): `ts`-баланс (rf80), MMQ-tile (rf68-rf81);
+  подождать P2-реализацию с 14K smoke и локальным 94K-контролем.
+
+### 2026-08-27 — P1 (D132): staged pull-примитив в scheduler
+
+- В `ggml-backend.cpp` добавлен env `GGML_RPC_PREFILL_PIPELINE=1`:
+  копия split-входов из бэкенда с async-хуком (RPC0) в бэкенд без
+  async-хука (Vulkan) больше не делается worker-потоком напрямую на
+  GPU: worker только ждёт событие производящего сплита и тянет тензор
+  в host staging; `ggml_backend_tensor_set` на Vulkan выполняет поток
+  планировщика после idle-барьера (D132: «no detached worker may touch
+  Vulkan compute state»). Это не даёт скорости само по себе (по D132),
+  это фундамент для P2 (двухслотовый handoff), устраняющий гонку
+  старого `GGML_SCHED_ASYNC_SPLIT_COPY` (2/2 зависания).
+- Валидация (14K smoke, p2p1-14k-smoke): staged-путь активировался
+  (`staged outbound split copies enabled`), без зависаний, prompt
+  1181.8-1223.1 ptps, decode 31.4/43.5, acc 41/87 / 47/60 — норма.
+  `git diff --check` чистый; поведение по умолчанию не меняется
+  (env-opt-in).

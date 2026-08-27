@@ -265,6 +265,13 @@ const llama_ubatch & llama_memory_hybrid_context::get_ubatch() const {
     return ubatches[i_next];
 }
 
+const llama_ubatch * llama_memory_hybrid_context::peek_next_ubatch() const {
+    if (status != LLAMA_MEMORY_STATUS_SUCCESS || i_next + 1 >= ubatches.size()) {
+        return nullptr;
+    }
+    return &ubatches[i_next + 1];
+}
+
 const llama_kv_cache_context * llama_memory_hybrid_context::get_attn() const {
     return static_cast<const llama_kv_cache_context *>(ctx_attn.get());
 }

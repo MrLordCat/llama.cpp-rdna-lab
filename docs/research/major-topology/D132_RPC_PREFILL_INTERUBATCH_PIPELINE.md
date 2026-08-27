@@ -87,6 +87,114 @@ multiple boundary-copy slots. If RPC head graph N+1 can be submitted while
 the local Vulkan tail of N consumes a different slot, the steady-state wall
 can approach `max(RPC head + pull, local tail)` instead of their sum.
 
+## P2 feasibility update (2026-08-27, trace94k-p2a + P1 staged pull)
+
+Profile on the accepted lane (base MMQ tile, `ts 0.8,1,1.4`,
+`GGML_RPC_ASYNC_GRAPH=1 GGML_RPC_ACT_Q8_0=1 LLAMA_RPC_RUN_AHEAD=1`):
+
+- client RPC timeline: `GET_TENSOR` totals `46.64 s` per 94K run, 40% of
+  wall; mean `256 ms`, late ubatches `420-509 ms`;
+- split timing: the boundary copy `l_out-16 RPC0->Vulkan0` is `237.8 ms`
+  per ubatch; every other split is <= 7 ms;
+- `GRAPH_COMPUTE_ASYNC` is already fire-and-forget (b=0), so the GET wait is
+  the server graph finishing before the non-async GET (auto-flush), not the
+  transfer.
+
+P1 landed (env `GGML_RPC_PREFILL_PIPELINE=1`, ggml-backend.cpp): the split
+worker only pulls into host staging; the Vulkan set stays on the scheduler
+thread (no detached GPU access, D132 safety gate). Correctness primitive
+only, 14K smoke passed (`p2p1-14k-smoke`).
+
+P2 design conclusion: a single `ggml_backend_sched` cannot hold two ubatch
+graphs (`sched->graph` is per-graph; `alloc_graph` overwrites splits), and
+two PP schedulers would duplicate the PP compute buffers (multi-GiB VRAM
+budget on 2x 16 GiB with 15.9 GiB model). Required P2 path (next block):
+
+1. `ggml_backend_sched_graph_compute_range(sched, split_from, split_to)` —
+   execute a subset of the built splits, leaving the rest pending
+   (implemented 2026-08-27);
+2. llama-context prefill driver: phase A submits the RPC0 head (splits:
+   CPU inputs, RPC0 graph, KQ-mask round trip) for ubatch N and N+1;
+   phase B (per staged-pull availability) runs the Vulkan tails;
+3. `GGML_RPC_PREFILL_PIPELINE=1` gates everything; run-ahead
+   (`LLAMA_RPC_RUN_AHEAD=1`) stays required; decode/MTP paths unchanged;
+4. validation: 14K smoke, local 94K control (no common-path regression),
+   adjacent 94K A/B vs trace94k-p2a (same binary), expect >= 3% (D132 gate).
+
+## P2 validated design (2026-08-27, after RPC command census)
+
+Stream per prefill ubatch (client timeline): `SET_TENSOR*` (graph inputs)
+→ `GRAPH_COMPUTE_ASYNC` (layers 0-3) → `SET_TENSOR_MASK_NPAST` →
+`GRAPH_COMPUTE_ASYNC` (layers 4-16) → `GET_TENSOR-rsp l_out-16` (rsp =
+231-509 ms = server GPU finishing; grows with KV) → local
+`VK0 -> VK1 l_out-37` slow copy (470 ms = `ggml_backend_synchronize(VK0)`
+CPU block) → next ubatch. Commands for server N+1 can be sent right after
+server N (all RPC0 inputs are host CPU data; server buffers are allocated
+once per run - `ALLOC_BUFFER` n=19/max-tokens).
+
+Blocking constraint: server output buffers are single-set per ubatch, so a
+`GET l_out-16(N)` after `GRAPH N+1` would read overwritten data. Therefore
+the inter-ubatch handoff requires:
+
+1. **Server-side double-buffered graph outputs** (alternating copy sets on
+   each GRAPH_COMPUTE_ASYNC; GET carries a copy index; protocol 5.0.1 patch)
+   - keeps `GET l_out-16(N)` valid after `GRAPH N+1` is queued;
+2. **Early head submit in llama-context**: keep one reusable `llm_graph
+   result` graph (`can_reuse` kept ON in P2 mode), `mctx->peek_next_ubatch()`
+   to prepare ubatch N+1 inputs, then `compute_range(rpc_head)` for N+1
+   before the tail of N (`compute_range(tail)`); range API already exists;
+3. `GGML_RPC_PREFILL_PIPELINE=1` gates all of it; decode, MTP and non-RPC
+   topologies unchanged; `LLAMA_RPC_RUN_AHEAD=1` may be superseded in P2
+   mode (graph reuse instead of fresh alloc per ubatch);
+4. Acceptance per this doc; expected win ~466 ms/ub (server work hidden
+   behind VK0/VK1 tails) -> ~+40-45% on the 94K lane.
+
+## P2 status 2026-08-27 (protocol + scheduler infra in, decode driver NOT yet)
+
+Implemented, builds clean (llama-server + rpc-server, build-vulkan):
+
+- **Part A (server pipeline, `GGML_RPC_PREFILL_PIPELINE=1`)**:
+  - `rpc_msg_get_tensor_req.wait_seq` (protocol 5.0.2) - GET can wait for a
+    specific queued graph instead of the whole worker queue;
+  - server worker queue (`worker_pending`/`worker_seq`/`worker_done`) with a
+    release gate: graph N+1 never starts before the GET of graph N is served
+    (result buffers are shared between consecutive graphs - this keeps GET
+    reads race-free without double-buffering the outputs);
+  - data commands (SET/MASK/copy) in P2 mode wait only for the graphs
+    enqueued before them (`wait_enqueued_graphs`);
+  - client: `rpc_p2_get_seq` global (set via
+    `ggml_backend_rpc_set_p2_get_seq`) is read by both sync and async GET;
+    `input_embed`/`inp_embd` writes also use the no-flush path in P2 mode.
+- **Part B (phase APIs)**:
+  - `ggml_backend_sched_p2_head_end()`: exclusive end of the RPC head part
+    of the current splits (all splits up to the last RPC split; the
+    `GET l_out-*`/`VK0->VK1` copies are the tail part);
+  - `graph_compute_range` (llama-context) + `process_ubatch` phase
+    parameters (`p2_phase` 1=head, 2=tail, `p2_override`, `p2_skip_apply`);
+  - `llama_memory_context_i::peek_next_ubatch()` (kv-cache, iswa, both
+    hybrid implementations) - next ubatch without consuming it;
+  - extract block moved into `extract_ubatch_results` lambda (parameters
+    named like the variables, body unchanged).
+
+**Blocking barrier found while wiring the decode driver**: the P2 order
+(head N+1 submitted before the GET/tail of N) requires graph N+1 to be
+BUILT+ALLOCATED before tail N runs, but `ggml_backend_sched_alloc_graph`
+re-splits the scheduler (`sched->splits`) and overwrites the split copies -
+tail N would be lost. Graph reuse cannot be used either: `can_reuse_kq_mask`
+requires `kq_mask->ne[0] == n_kv`, which grows every prefill ubatch.
+Options for the next block:
+  1. two-slot split lists (`ggml_backend_sched_split` copies + compute from
+     a saved split set) - the full D132 two-graph scheduler;
+  2. fixed-size prefill mask (round n_kv up to the next ubatch boundary)
+     plus forced graph reuse, so no alloc happens between head N+1 and
+     tail N;
+  3. server-side double-buffered result + input copies (VRAM cost
+     ~2x l_out-16 16MB + mask on the RTX 3080).
+
+Decision: implement (1) as D132 next block; (2) is a numeric/performance
+shortcut that changes the mask shapes and needs a PPL gate; (3) alone does
+not remove the client-side alloc barrier.
+
 ## Staged plan
 
 ### P0 - protocol/copy census

@@ -225,6 +225,10 @@ struct rpc_msg_get_tensor_req {
     rpc_tensor tensor;
     uint64_t offset;
     uint64_t size;
+    // P2 pipeline (GGML_RPC_PREFILL_PIPELINE=1): the client may have queued
+    // several async graphs; this GET must wait only for graph number
+    // wait_seq (1-based) to finish, not for the whole worker queue.
+    uint64_t wait_seq;
 };
 
 struct rpc_msg_copy_tensor_req {

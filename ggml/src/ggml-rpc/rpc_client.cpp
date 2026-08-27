@@ -43,6 +43,17 @@ struct ggml_backend_rpc_context {
     graph_cache gc;
 };
 
+// P2 pipeline (GGML_RPC_PREFILL_PIPELINE=1): sequence number of the graph
+// whose result the next GET_TENSOR must wait for and read. Set by the
+// forward planning code (llama-context) before the tail phase of each
+// ubatch. Zero keeps legacy behavior (wait for the whole worker queue).
+static std::atomic<uint64_t> rpc_p2_get_seq { 0 };
+
+void ggml_backend_rpc_set_p2_get_seq(ggml_backend_t backend, uint64_t seq) {
+    GGML_UNUSED(backend);
+    rpc_p2_get_seq.store(seq);
+}
+
 struct ggml_backend_rpc_buffer_context {
     std::shared_ptr<socket_t> sock;
     void * base_ptr;
@@ -331,8 +342,18 @@ static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggm
     rpc_tensor rpc_tensor = serialize_tensor(tensor);
     // rotated KV inputs (attn_inp_k_rot / attn_inp_v_rot) are written to the
     // current ubatch's KV region which the in-flight server graph never reads
-    const bool no_flush = strstr(rpc_tensor.name, "_k_rot") != nullptr ||
-                          strstr(rpc_tensor.name, "_v_rot") != nullptr;
+    bool no_flush = strstr(rpc_tensor.name, "_k_rot") != nullptr ||
+                    strstr(rpc_tensor.name, "_v_rot") != nullptr;
+    // P2 prefill pipeline: all graph inputs of ubatch N+1 are written before
+    // the server reaches the SET for N+1 (server waits for the previous graph
+    // to finish first), so sending them without flush keeps the client from
+    // blocking on a fully-drained queue. input_embed/inp_embd are included:
+    // the server pair (SET before GRAPH) guarantees the buffer is not read
+    // by the previous graph after the write happened.
+    if (!no_flush && std::getenv("GGML_RPC_PREFILL_PIPELINE") != nullptr) {
+        no_flush = strstr(rpc_tensor.name, "input_embed") != nullptr ||
+                   strstr(rpc_tensor.name, "inp_embd") != nullptr;
+    }
     if (!rpc_send_tensor_data(ctx->sock, rpc_tensor, data, offset, size, no_flush)) {
         RPC_STATUS_ASSERT(false);
     }
@@ -344,6 +365,7 @@ static void ggml_backend_rpc_buffer_get_tensor(ggml_backend_buffer_t buffer, con
     request.tensor = serialize_tensor(tensor);
     request.offset = offset;
     request.size = size;
+    request.wait_seq = rpc_p2_get_seq.load();
     auto t0 = std::chrono::steady_clock::now();
     const bool act_f16 = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
     const bool act_f8  = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F8)  != 0;
@@ -825,6 +847,7 @@ static void ggml_backend_rpc_get_async(ggml_backend_t backend, const ggml_tensor
     request.tensor = serialize_tensor(tensor);
     request.offset = offset;
     request.size = size;
+    request.wait_seq = rpc_p2_get_seq.load();
     const bool act_f16 = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F16) != 0;
     const bool act_f8  = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_F8)  != 0;
     const bool act_q8  = (request.tensor.rpc_flags & GGML_RPC_TENSOR_FLAG_ACT_Q8_0) != 0;
