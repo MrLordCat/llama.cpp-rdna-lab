@@ -14,7 +14,7 @@ from gui2.core.memstore import MemoryStore
 from gui2.core.runspec import parse_rpc_endpoints
 from gui2.proc import Supervisor
 from gui2.proc.hidden import suppress_error_dialogs
-from gui2.web import bench_page, history_page, models_page, server_page
+from gui2.web import autotune_page, history_page, models_page, server_page
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -176,30 +176,31 @@ def create_app(config: AppConfig | None = None):
     def server_log(cursor: int = 0):
         return server_page.log_since(supervisor, cursor)
 
-    @rt("/bench", methods=["GET"])
-    def bench(req):
+    @rt("/autotune", methods=["GET"])
+    def autotune(req):
         # the run under test arrives in the query string from the Server page;
-        # this page adds only what is asked of it
-        return bench_page.page(config,
-                               server_page.spec_from_params(req.query_params),
-                               bench_page.bench_from_params(req.query_params),
-                               supervisor)
+        # a link without sweep values is read as a sweep of that one run
+        spec = server_page.spec_from_params(req.query_params)
+        return autotune_page.page(config, spec,
+                                  autotune_page.autotune_from_params(req.query_params, spec),
+                                  supervisor)
 
-    @rt("/bench/preview", methods=["POST"])
-    async def bench_preview(req):
+    @rt("/autotune/preview", methods=["POST"])
+    async def autotune_preview(req):
         params = await req.form()
+        spec = server_page.spec_from_params(params)
         return (
-            bench_page.preview(config, server_page.spec_from_params(params),
-                               bench_page.bench_from_params(params)),
-            HtmxResponseHeaders(push_url="/bench?" + bench_page.state_query(params)),
+            autotune_page.preview(config, spec,
+                                  autotune_page.autotune_from_params(params, spec)),
+            HtmxResponseHeaders(push_url="/autotune?" + autotune_page.state_query(params)),
         )
 
-    @rt("/bench/start", methods=["POST"])
-    async def bench_start(req):
+    @rt("/autotune/start", methods=["POST"])
+    async def autotune_start(req):
         params = await req.form()
-        return bench_page.start(config, supervisor,
-                                server_page.spec_from_params(params),
-                                bench_page.bench_from_params(params))
+        spec = server_page.spec_from_params(params)
+        return autotune_page.start(config, supervisor, spec,
+                                   autotune_page.autotune_from_params(params, spec))
 
     @rt("/models", methods=["GET"])
     def models(req):

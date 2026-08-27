@@ -12,7 +12,7 @@ from gui2.core.runspec import Problem
 NAV: tuple[tuple[str, str], ...] = (
     ("/history", "History & Analytics"),
     ("/server", "Server"),
-    ("/bench", "Bench"),
+    ("/autotune", "Autotune"),
     ("/models", "Models"),
 )
 

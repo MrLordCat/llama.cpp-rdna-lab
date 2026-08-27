@@ -1,10 +1,16 @@
-"""Bench and autotune: measuring the run the Server page describes.
+"""Autotune: trying server configurations and finding out which is fastest.
 
-The run itself is not described twice. Everything about the model, the build,
-the context and the devices comes from the Server page and travels here in the
-query string; this page only decides what is asked of that server and how many
-times. The command is built by `gui2.core.bench.to_bench_argv`, the same
-function the Server page previews.
+There is no separate "just measure it" mode, because a sweep with one value on
+every line is exactly that. Arriving from the Server page fills all five lines
+with what that page chose, so the first thing this page offers is a measurement
+of the run being described; it becomes a search the moment a second value is
+typed anywhere.
+
+The run itself is not described twice. The model, the build, the devices and
+the layer split come from the Server page and travel here in the query string;
+this page decides what is asked of the server, how many times, and which
+configurations to try. The command is built by `gui2.core.bench.to_bench_argv`,
+the same function the Server page previews.
 
 What the page adds is arithmetic nobody does by hand: how many requests a
 choice of prompt set, repeats and sweep axes works out to, and how long the
@@ -62,49 +68,56 @@ from gui2.proc.hidden import console_python
 from gui2.web import server_page
 from gui2.web.layout import command_lines, problem_lines, shell
 
-#: The bench fields need a submission marker of their own. The Server page's
-#: link carries `_form` so that the *run* reads back exactly as it was sent,
-#: and reusing it here would let that link switch off every bench default the
-#: link never mentioned.
-BENCH_MARKER = "_bench"
+#: These fields need a submission marker of their own. The Server page's link
+#: carries `_form` so that the *run* reads back exactly as it was sent, and
+#: reusing it here would let that link switch off every default the link never
+#: mentioned.
+AUTOTUNE_MARKER = "_autotune"
 
 SECTIONS: tuple[tuple[str, str], ...] = (
-    (B_WHAT, "A benchmark is a fixed set of prompts asked a fixed number of times. "
-             "These four decide how much work that is, and everything else on the page "
-             "is about keeping the answer honest."),
+    (B_SWEEP, "One value on a line measures that setting; two or more search it. Every "
+              "extra value multiplies the run rather than adding to it — three contexts "
+              "and two batch sizes are six server loads, not five — which is why there "
+              "is a cap."),
+    (B_WHAT, "Each configuration is judged by asking it the same prompts the same number "
+             "of times. These decide how much work that is, and everything below is "
+             "about keeping the comparison honest."),
     (B_PROMPT, "A short question measures almost nothing: real work arrives with a file, "
                "a diff or a stack trace in front of it. This is what puts one there."),
     (B_FAIR, "The ways a number can flatter itself — a warm cache, a second server "
              "sharing the GPUs, reasoning counted as output."),
-    (B_LIMITS, "A benchmark left alone must end by itself. These are the seconds after "
+    (B_LIMITS, "A sweep left alone must end by itself. These are the seconds after "
                "which it stops waiting."),
     (B_OUTPUT, "Where the result lands and how much of the server's own account of "
                "itself is kept with it."),
-    (B_SWEEP, "Instead of measuring one configuration, work through a list of them and "
-              "report which was fastest. Every value added multiplies the run rather "
-              "than adding to it, which is why there is a cap."),
 )
 
 
 # -- reading the form ------------------------------------------------------
 
 
-def bench_from_params(params) -> BenchSpec:
-    """The bench settings from the form, or the defaults from a bare link."""
-    if not params:
-        return BENCH_DEFAULTS
+def autotune_from_params(params, spec: RunSpec) -> BenchSpec:
+    """The autotune settings from the form, or a sweep seeded from the run.
+
+    Without the marker this is a link rather than a submission — from the
+    Server page, or the address bar — so the sweep starts as one configuration:
+    the one that link describes.
+    """
+    if not params or AUTOTUNE_MARKER not in params:
+        seeded = BENCH_DEFAULTS.seeded_from(spec)
+        return seeded.with_values({key: params[key] for key in params.keys()}) \
+            if params else seeded
     values = {key: params[key] for key in params.keys()}
-    if BENCH_MARKER in params:
-        # an unchecked box submits nothing; only a real submission may read
-        # that silence as "off" (the same rule the Server page follows)
-        for param in BENCH_BY_NAME.values():
-            if param.kind == "bool":
-                values[param.name] = param.name in params
+    # an unchecked box submits nothing; only a real submission may read that
+    # silence as "off" (the same rule the Server page follows)
+    for param in BENCH_BY_NAME.values():
+        if param.kind == "bool":
+            values[param.name] = param.name in params
     return BENCH_DEFAULTS.with_values(values)
 
 
 def state_query(params) -> str:
-    """The whole page as a link: the run, the bench settings, no secrets."""
+    """The whole page as a link: the run, the sweep, no secrets."""
     return server_page.state_query(params)
 
 
@@ -112,8 +125,8 @@ def state_query(params) -> str:
 
 
 def _control(param: Param, bench: BenchSpec):
-    """The bench flags are plainer than llama-server's: no sliders, no devices,
-    no value whose limits another file decides. A separate small renderer costs
+    """These flags are plainer than llama-server's: no sliders, no devices, no
+    value whose limits another file decides. A separate small renderer costs
     less than teaching the Server page's one about a second dataclass."""
     value = getattr(bench, param.name)
     if param.kind == "bool":
@@ -170,7 +183,8 @@ def _hint(param: Param, bench: BenchSpec) -> str:
 
 #: choices whose options carry their own explanation, and text whose hint
 #: lists what may go in it: a column of a grid is not wide enough for either
-WIDE = frozenset({"tasks", "task_ids", "real_context_mode", "background_server_policy"})
+WIDE = frozenset({"tasks", "task_ids", "real_context_mode", "background_server_policy",
+                  "sweep_spec", "sweep_kv"})
 
 
 def _field(param: Param, bench: BenchSpec):
@@ -203,14 +217,19 @@ def duration(seconds: float) -> str:
 
 def _plan_lines(bench: BenchSpec, run: Plan) -> list[str]:
     lines: list[str] = []
+    axes = " × ".join(str(len(values)) for values in sweep_values(bench).values())
     if run.configs > 1:
-        axes = " × ".join(str(len(values)) for values in sweep_values(bench).values())
         lines.append(f"{run.configs} server configurations ({axes}), each loaded from scratch")
+    else:
+        lines.append("One configuration — a measurement rather than a search, until a "
+                     "second value is added to one of the lines above")
     prompts = f"{run.tasks} prompt{'s' if run.tasks != 1 else ''}"
     each = " against each of them" if run.configs > 1 else ""
     repeats = f" × {run.runs} repeats" if run.runs > 1 else ""
-    priming = " plus one unmeasured priming pass" if run.prime else ""
-    lines.append(f"{prompts}{each}{repeats}{priming} — {run.requests} requests in all")
+    lines.append(f"{prompts}{each}{repeats} — {run.requests} requests in all")
+    if run.primed:
+        lines.append(f"{run.primed} of them first get an unmeasured pass to fill the "
+                     f"n-gram cache, counted above")
     if run.per_request_s:
         lines.append(f"each answer is abandoned after {duration(run.per_request_s)}, "
                      f"and the server is given {duration(run.startup_s)} to load")
@@ -228,25 +247,23 @@ def plan_panel(spec: RunSpec, bench: BenchSpec) -> Div:
     return Div(
         H3("What this comes to"),
         *[Div(line, cls="hint block") for line in _plan_lines(bench, run)],
-        Div(_under_test(spec, bench), cls="hint block muted"),
+        Div(_under_test(bench), cls="hint block muted"),
         cls="panel",
     )
 
 
-def _under_test(spec: RunSpec, bench: BenchSpec) -> str:
+def _under_test(bench: BenchSpec) -> str:
     """The settings the numbers will belong to.
 
-    A sweep overrides the ones the Server page set, so naming those would
-    describe a run that is not the one about to happen.
+    The sweep sets these itself for every configuration it runs, so whatever
+    the Server page chose for them is not what will be measured.
     """
-    if not bench.autotune:
-        return (f"Context under test: {context_text(spec.ctx_size)}, "
-                f"batch {spec.batch_size}/{spec.ubatch_size}")
     swept = sweep_values(bench)
     contexts = ", ".join(context_text(int(value)) if value.isdigit() else value
                          for value in swept["sweep_ctx"]) or "none"
-    return (f"Contexts under test: {contexts} — the sweep replaces the context and "
-            f"batch sizes chosen on the Server page")
+    return (f"Contexts under test: {contexts}. The sweep sets the context, batch, ubatch, "
+            f"KV type and speculation itself, so the Server page's choice of those five "
+            f"is replaced by the lines above.")
 
 
 def _busy_problems(bench: BenchSpec) -> list[Problem]:
@@ -262,26 +279,33 @@ def _busy_problems(bench: BenchSpec) -> list[Problem]:
                             f"measured here includes its load.")]
 
 
-# -- the run the bench measures --------------------------------------------
+# -- the run being swept ---------------------------------------------------
 
 
 def inherited(config: AppConfig, spec: RunSpec) -> Details:
-    """The server settings this page did not choose, and where to change them."""
+    """The server settings this page does not choose, and where to change them.
+
+    Context, batch, ubatch, KV type and speculation are deliberately absent:
+    the sweep replaces all five per configuration, so showing the Server page's
+    values here would name settings no measurement uses.
+    """
     build = server_page.build_of(config, spec)
     facts = server_page.model_facts(spec)
     rows = [
         ("Model", Path(spec.model).name if spec.model else "— none selected —"),
         ("Build", f"{build.name} ({build.backend})" if build else "— none selected —"),
-        ("Context", context_text(spec.ctx_size)),
-        ("Batch / ubatch", f"{spec.batch_size} / {spec.ubatch_size}"),
-        ("KV cache", f"{spec.cache_type_k} / {spec.cache_type_v}"),
         ("Devices", spec.devices or "all of them"),
-        ("Speculation", spec.spec_type),
+        ("GPU layers", "all of them" if spec.gpu_layers_all else str(spec.gpu_layers)),
+        ("Parallel slots", str(spec.parallel)),
+        # the script has no 'auto': it passes on or off, and its own default is on
+        ("Flash attention", "auto — sent as on" if spec.flash_attn == "auto"
+         else spec.flash_attn),
     ]
     return Details(
-        Summary("The run being measured"),
-        Span("Everything here belongs to the server, not to the benchmark, so it is "
-             "changed in one place and read in both.", cls="hint block"),
+        Summary("The server being tuned"),
+        Span("Everything here belongs to the server, not to the sweep, so it is changed "
+             "in one place and read in both. What the sweep varies is below.",
+             cls="hint block"),
         Div(Dl(*[item for name, value in rows for item in (Dt(name), Dd(str(value)))]),
             cls="detail"),
         Div(facts.summary, cls="hint block muted") if facts and facts.summary else None,
@@ -332,12 +356,12 @@ def preview(config: AppConfig, spec: RunSpec, bench: BenchSpec, oob: bool = Fals
             H3("Command"),
             *problem_lines(problems),
             Pre(command_lines(mask_api_key(argv))),
-            Span("The benchmark script starts and stops llama-server itself; nothing here "
-                 "needs a server running first.", cls="hint block"),
+            Span("The script starts and stops llama-server itself, once per configuration; "
+                 "nothing here needs a server running first.", cls="hint block"),
             cls="panel",
         ),
         plan_panel(spec, bench),
-        id="benchpreview",
+        id="autotunepreview",
         hx_swap_oob="true" if oob else None,
     )
 
@@ -349,7 +373,7 @@ def _section(title: str, hint: str, bench: BenchSpec) -> Details:
         Span(hint, cls="hint block"),
         Div(*[_field(param, bench) for param in names], cls="grid"),
         cls="panel",
-        open=True if title in {B_WHAT, B_PROMPT} else None,
+        open=True if title in {B_SWEEP, B_WHAT} else None,
     )
 
 
@@ -357,28 +381,28 @@ def form(config: AppConfig, spec: RunSpec, bench: BenchSpec) -> Form:
     panels = [inherited(config, spec)]
     panels += [_section(title, hint, bench) for title, hint in SECTIONS]
     panels.append(Div(
-        Button("Start benchmark", type="button", cls="primary",
-               hx_post="/bench/start", hx_target="#runstate", hx_swap="outerHTML"),
-        Span("Runs exactly the command shown on the right. It loads the model, so it "
-             "takes the GPUs for as long as it lasts.", cls="hint"),
+        Button("Start autotune", type="button", cls="primary",
+               hx_post="/autotune/start", hx_target="#runstate", hx_swap="outerHTML"),
+        Span("Runs exactly the command shown on the right. It loads the model once per "
+             "configuration, so it takes the GPUs for as long as it lasts.", cls="hint"),
         cls="panel runbar",
     ))
     return Form(
         *panels,
         *spec_inputs(spec),
         Input(type="hidden", name=server_page.FORM_MARKER, value="1"),
-        Input(type="hidden", name=BENCH_MARKER, value="1"),
+        Input(type="hidden", name=AUTOTUNE_MARKER, value="1"),
         cls="paramform",
         novalidate=True,
-        hx_post="/bench/preview",
-        hx_target="#benchpreview",
+        hx_post="/autotune/preview",
+        hx_target="#autotunepreview",
         hx_swap="outerHTML",
         hx_trigger="change, keyup changed delay:400ms",
     )
 
 
 def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, bench: BenchSpec):
-    """Validate, then hand the benchmark to the same GPU slot the server uses."""
+    """Validate, then hand the sweep to the same GPU slot the server uses."""
     build = server_page.build_of(config, spec)
     blocking = [problem.message for problem
                 in validate_bench(spec, bench) + _busy_problems(bench)
@@ -391,13 +415,13 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, bench: Bench
         return server_page.run_panel(supervisor, "; ".join(dict.fromkeys(blocking)), "error")
 
     assert build is not None and build.server_bin is not None
-    label = f"benchmark · {bench.tasks} · {Path(spec.model).name}"
+    label = f"autotune · {bench.tasks} · {Path(spec.model).name}"
     # console_python(): the GUI may itself be running under pythonw.exe, which
-    # would hand the benchmark a child that cannot be signalled
+    # would hand the sweep a child that cannot be signalled
     argv = to_bench_argv(spec, bench, config.bench_script, build.server_bin,
                          python=console_python())
     try:
-        supervisor.start("bench", label, argv, cwd=config.data_root)
+        supervisor.start("autotune", label, argv, cwd=config.data_root)
     except Busy as busy:
         return server_page.run_panel(supervisor, f"{busy.current.label} is still running", "error")
     return server_page.run_panel(supervisor), server_page.log_panel(supervisor, oob=True)
@@ -405,7 +429,7 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, bench: Bench
 
 def page(config: AppConfig, spec: RunSpec, bench: BenchSpec, supervisor: Supervisor):
     return shell(
-        "Bench", "/bench", config,
+        "Autotune", "/autotune", config,
         Div(
             form(config, spec, bench),
             Div(preview(config, spec, bench),

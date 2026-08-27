@@ -1,8 +1,13 @@
-"""Benchmark / autotune invocation, derived from the same RunSpec.
+"""Autotune invocation, derived from the same RunSpec.
 
-`scripts/agent_workload_bench.py` owns a few llama-server knobs natively; the
-rest of the generated server command is forwarded verbatim via --server-extra,
-so server launches and benchmark runs cannot drift apart.
+`scripts/agent_workload_bench.py` is only ever run as a sweep. A sweep of one
+value per axis is a plain measurement of one configuration, so the second mode
+would buy nothing but a second command to keep in step with this one.
+
+The script owns a few llama-server knobs natively and the sweep overwrites
+five more per configuration; the rest of the generated server command is
+forwarded verbatim via --server-extra, so server launches and measured runs
+cannot drift apart.
 """
 
 from __future__ import annotations
@@ -39,16 +44,19 @@ TASK_IDS: dict[str, tuple[str, ...]] = {
 #: --allow-ctx-above-16k, a name left over from when the limit was 16384.
 POLICY_MAX_CTX = 131072
 
-#: The sweep axes GUI 2.0 offers. The script has more (n-gram tuning, extra
-#: presets, prune thresholds); these are the five that change what is measured
-#: rather than how the search is steered.
-SWEEP_AXES: tuple[tuple[str, str], ...] = (
-    ("sweep_ctx", "--autotune-ctx-values"),
-    ("sweep_batch", "--autotune-batch-values"),
-    ("sweep_ubatch", "--autotune-ubatch-values"),
-    ("sweep_kv", "--autotune-kv-values"),
-    ("sweep_spec", "--autotune-spec-values"),
+#: The sweep axes, and the RunSpec field each one replaces. Every axis is a
+#: setting the Server page also has; a sweep of one value is that setting.
+SWEEP_AXES: tuple[tuple[str, str, str], ...] = (
+    ("sweep_ctx", "--autotune-ctx-values", "ctx_size"),
+    ("sweep_batch", "--autotune-batch-values", "batch_size"),
+    ("sweep_ubatch", "--autotune-ubatch-values", "ubatch_size"),
+    ("sweep_kv", "--autotune-kv-values", "cache_type_k"),
+    ("sweep_spec", "--autotune-spec-values", "spec_type"),
 )
+
+#: sweep modes that need the n-gram window, and the ones that need a draft budget
+NGRAM_MODES = frozenset({"ngram-mod", "ngram-mtp"})
+DRAFT_MODES = frozenset({"mtp", "ngram-mtp"})
 
 # flags the bench script passes to llama-server itself
 BENCH_OWNED: frozenset[str] = frozenset().union(*(
@@ -58,11 +66,22 @@ BENCH_OWNED: frozenset[str] = frozenset().union(*(
     )
 )) | {"--no-warmup"}
 
-#: Flags dropped rather than forwarded. The bench script sends no Authorization
-#: header, so a server started with --api-key answers 401 to every request it
-#: makes; and the server it starts is loopback-only anyway (--host is one of
-#: the flags it owns), so the key would be guarding nothing.
-BENCH_DROPPED: frozenset[str] = aliases_of("--api-key")
+#: Flags dropped rather than forwarded.
+#:
+#: --api-key: the script sends no Authorization header, so a server started
+#: with one answers 401 to every request it makes; and the server it starts is
+#: loopback-only anyway (--host is one of the flags it owns).
+#:
+#: --spec-type and its companions: the sweep appends its own per configuration.
+#: Two would not break llama-server -- the last wins -- but the history row
+#: takes its spec_mode from `infer_spec_mode`, which reads the *first*, so
+#: every measurement would be filed under the mode it did not run.
+BENCH_DROPPED: frozenset[str] = frozenset().union(*(
+    aliases_of(flag) for flag in (
+        "--api-key", "--spec-type", "--spec-draft-n-max",
+        "--spec-ngram-mod-n-min", "--spec-ngram-mod-n-match", "--spec-ngram-mod-n-max",
+    )
+))
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,14 +102,16 @@ class BenchSpec:
     background_server_policy: str = "fail"
     write_diagnostics: bool = True
     trace_preset: str = "none"
-    autotune: bool = False
-    #: sweep axes, as the script wants them: comma-separated lists
+    #: sweep axes, as the script wants them: comma-separated lists. The
+    #: defaults are replaced by the run's own settings on arrival, so a page
+    #: opened from the Server page measures exactly what it describes.
     sweep_ctx: str = "131072"
-    sweep_batch: str = "256,512,768,1024"
-    sweep_ubatch: str = "64,128,256"
-    sweep_kv: str = "q4_0"
+    sweep_batch: str = "512"
+    sweep_ubatch: str = "128"
+    sweep_kv: str = "f16"
     sweep_spec: str = "none"
     sweep_max: int = 48
+    smart_prune: bool = True
     resume: bool = True
 
     def with_values(self, values: dict) -> "BenchSpec":
@@ -99,6 +120,16 @@ class BenchSpec:
         updates = {key: _coerce(value, getattr(self, key))
                    for key, value in values.items() if key in known}
         return replace(self, **updates)
+
+    def seeded_from(self, spec: RunSpec) -> "BenchSpec":
+        """The sweep set to the one configuration the run already describes.
+
+        Arriving from the Server page, every axis holds the value that page
+        chose: the sweep is then a measurement of it, and becomes a search
+        only when a second value is typed anywhere.
+        """
+        return replace(self, **{axis: str(getattr(spec, field))
+                                for axis, _flag, field in SWEEP_AXES})
 
 
 BENCH_DEFAULTS = BenchSpec()
@@ -117,18 +148,37 @@ def _coerce(value, current):
     return str(value).strip()
 
 
-B_WHAT = "What is measured"
+B_SWEEP = "What to try"
+B_WHAT = "What each one is measured with"
 B_PROMPT = "How big the prompts are"
 B_FAIR = "What the numbers are allowed to include"
 B_LIMITS = "When to give up"
 B_OUTPUT = "What is written down"
-B_SWEEP = "Autotune"
 
 #: Presentation for the bench script's flags, in the same shape as the
 #: llama-server schema. Unlike that one it does not generate the command:
 #: `to_bench_argv` spells it out, because several of these flags are pairs
 #: (--reuse/--no-reuse) and one of them rewrites another (--autotune-min-ctx).
 BENCH_SCHEMA: tuple[Param, ...] = (
+    Param("sweep_ctx", "Contexts to try", "text", B_SWEEP,
+          help="one value measures it; several search it"),
+    Param("sweep_batch", "Batch sizes to try", "text", B_SWEEP,
+          help="how many tokens the server reads at once"),
+    Param("sweep_ubatch", "Ubatch sizes to try", "text", B_SWEEP,
+          help="how much of a batch reaches the GPU in one go"),
+    Param("sweep_kv", "KV cache types to try", "text", B_SWEEP,
+          help="f16, q8_0, q4_0 — smaller buys context and may cost quality"),
+    Param("sweep_spec", "Speculation modes to try", "text", B_SWEEP,
+          help="none, ngram-mod, mtp, ngram-mtp — the sweep sets this itself, so the "
+               "Server page's choice is replaced by whatever is listed here"),
+    Param("sweep_max", "Refuse to start above", "int", B_SWEEP, minimum=1, maximum=512,
+          help="configurations; every extra value multiplies the run rather than adding "
+               "to it"),
+    Param("smart_prune", "Abandon a direction that keeps getting slower", "bool", B_SWEEP,
+          help="stops walking up batch and ubatch once the speed has dropped twice "
+               "running; also what lets a sweep exceed the cap above"),
+    Param("resume", "Continue an interrupted sweep", "bool", B_SWEEP,
+          help="picks up from the checkpoint file if the same sweep was started before"),
     Param("tasks", "Prompt set", "choice", B_WHAT, choices=TASK_SETS,
           help="which prompts the model is asked to answer"),
     Param("task_ids", "Only these prompts", "text", B_WHAT,
@@ -168,18 +218,6 @@ BENCH_SCHEMA: tuple[Param, ...] = (
           help="parses the server log into a json/markdown summary next to the results"),
     Param("trace_preset", "Backend tracing", "choice", B_OUTPUT, choices=TRACE_PRESETS,
           help="records what the backend did, at the cost of doing it slower"),
-    Param("autotune", "Search for the best settings", "bool", B_SWEEP,
-          help="runs the prompts once for every combination below and reports the winner"),
-    Param("sweep_ctx", "Contexts to try", "text", B_SWEEP, help="comma-separated"),
-    Param("sweep_batch", "Batch sizes to try", "text", B_SWEEP, help="comma-separated"),
-    Param("sweep_ubatch", "Ubatch sizes to try", "text", B_SWEEP, help="comma-separated"),
-    Param("sweep_kv", "KV cache types to try", "text", B_SWEEP, help="comma-separated"),
-    Param("sweep_spec", "Speculation modes to try", "text", B_SWEEP,
-          help="none, ngram-mod, mtp — comma-separated"),
-    Param("sweep_max", "Refuse to start above", "int", B_SWEEP, minimum=1, maximum=512,
-          help="configurations; a safety cap, because every extra value multiplies the run"),
-    Param("resume", "Continue an interrupted sweep", "bool", B_SWEEP,
-          help="picks up from the checkpoint file if the same sweep was started before"),
 )
 
 BENCH_BY_NAME: dict[str, Param] = {param.name: param for param in BENCH_SCHEMA}
@@ -192,7 +230,7 @@ def items(text: str) -> list[str]:
 
 def sweep_values(bench: BenchSpec) -> dict[str, list[str]]:
     """Each axis of the sweep, in the order the script multiplies them out."""
-    return {name: items(getattr(bench, name)) for name, _flag in SWEEP_AXES}
+    return {name: items(getattr(bench, name)) for name, _flag, _field in SWEEP_AXES}
 
 
 def config_count(bench: BenchSpec) -> int:
@@ -246,18 +284,18 @@ def to_bench_argv(
     server_bin: str | Path,
     python: str = "python",
 ) -> list[str]:
-    """Full `python scripts/agent_workload_bench.py ...` command line."""
+    """Full `python scripts/agent_workload_bench.py ...` command line.
+
+    The context, batch, ubatch, KV type and speculative mode are absent on
+    purpose: the sweep overwrites all five for every configuration it runs, so
+    naming them here would describe a run that does not happen.
+    """
     argv = [
         python, str(script),
         "--server-bin", str(server_bin),
         "--model", spec.model,
-        "--ctx-size", str(spec.ctx_size),
-        "--batch-size", str(spec.batch_size),
-        "--ubatch-size", str(spec.ubatch_size),
         "--gpu-layers", ALL_LAYERS if spec.gpu_layers_all else str(spec.gpu_layers),
         "--parallel", str(spec.parallel),
-        "--cache-type-k", spec.cache_type_k,
-        "--cache-type-v", spec.cache_type_v,
     ]
     argv += _flag(spec.flash_attn != "off", "--flash-attn", "--no-flash-attn")
 
@@ -287,24 +325,35 @@ def to_bench_argv(
     if bench.trace_preset != "none":
         argv += ["--trace-preset", bench.trace_preset]
 
-    contexts = _sweep_contexts(bench) if bench.autotune else []
-    if bench.autotune:
-        argv.append("--autotune")
-        for name, flag in SWEEP_AXES:
-            argv += [flag, ",".join(items(getattr(bench, name)))]
-        if contexts:
-            # --autotune-min-ctx discards every swept context below itself and
-            # defaults to 131072, so a sweep of smaller ones silently empties
-            # out. Pinning it to the smallest value asked for is the only way
-            # to sweep what was typed.
-            argv += ["--autotune-min-ctx", str(min(contexts))]
-        argv += ["--autotune-max-configs", str(bench.sweep_max)]
-        # the script resumes unless told not to, so an unticked box has to say so
-        argv += _flag(bench.resume, "--autotune-resume", "--no-autotune-resume")
+    argv.append("--autotune")
+    for name, flag, _field in SWEEP_AXES:
+        argv += [flag, ",".join(items(getattr(bench, name)))]
+
+    contexts = _sweep_contexts(bench)
+    if contexts:
+        # --autotune-min-ctx discards every swept context below itself and
+        # defaults to 131072, so a sweep of smaller ones silently empties out.
+        # Pinning it to the smallest value asked for is the only way to sweep
+        # what was typed.
+        argv += ["--autotune-min-ctx", str(min(contexts))]
+    argv += ["--autotune-max-configs", str(bench.sweep_max)]
+    # both default to on in the script, so an unticked box has to say so
+    argv += _flag(bench.smart_prune, "--autotune-smart-prune", "--no-autotune-smart-prune")
+    argv += _flag(bench.resume, "--autotune-resume", "--no-autotune-resume")
+
+    # the sweep names a speculative mode but not its numbers, and takes those
+    # from flags of its own; the Server page is where they were chosen
+    modes = set(items(bench.sweep_spec))
+    if modes & NGRAM_MODES:
+        argv += ["--autotune-ngram-min", str(spec.ngram_n_min),
+                 "--autotune-ngram-match", str(spec.ngram_n_match),
+                 "--autotune-ngram-max", str(spec.ngram_n_max)]
+    if modes & DRAFT_MODES:
+        argv += ["--autotune-mtp-draft-n-max", str(spec.spec_draft_n_max)]
 
     # The policy gate is an exit code, not a warning: without this the script
     # refuses every context above 130 000 before it starts anything.
-    if max([spec.ctx_size, *contexts]) > POLICY_MAX_CTX:
+    if contexts and max(contexts) > POLICY_MAX_CTX:
         argv.append("--allow-ctx-above-16k")
 
     extra = server_extra_tokens(spec)
@@ -342,20 +391,19 @@ def selected_tasks(bench: BenchSpec) -> tuple[list[str], list[str]]:
 
 @dataclass(frozen=True, slots=True)
 class Plan:
-    """The size of a benchmark run, in the units that decide how long it takes."""
+    """The size of a run, in the units that decide how long it takes."""
 
     tasks: int = 0
     runs: int = 1
     configs: int = 1
-    #: one unmeasured pass over every prompt, to fill speculative state first
-    prime: bool = False
+    #: configurations that also get one unmeasured pass to fill n-gram state
+    primed: int = 0
     per_request_s: float = 0.0
     startup_s: float = 0.0
 
     @property
     def requests(self) -> int:
-        per_config = self.tasks * (self.runs + (1 if self.prime else 0))
-        return per_config * self.configs
+        return self.tasks * (self.runs * self.configs + self.primed)
 
     @property
     def worst_case_s(self) -> float:
@@ -368,6 +416,21 @@ class Plan:
         return self.requests * self.per_request_s + self.configs * self.startup_s
 
 
+def _primed_configs(bench: BenchSpec) -> int:
+    """Configurations that get a priming pass, which is not all of them.
+
+    `run_suite` decides per configuration, from the speculative mode the sweep
+    gave that one -- so a sweep that tries n-gram alongside anything else
+    primes only the n-gram half of it.
+    """
+    if not bench.v2_prime_pass or bench.tasks not in V2_SETS or bench.runs != 1:
+        return 0
+    modes = sweep_values(bench)["sweep_spec"]
+    if not modes:
+        return 0
+    return config_count(bench) // len(modes) * modes.count("ngram-mod")
+
+
 def plan(spec: RunSpec, bench: BenchSpec) -> Plan:
     """How many requests this configuration works out to, and at what ceiling."""
     chosen, _unknown = selected_tasks(bench)
@@ -375,11 +438,8 @@ def plan(spec: RunSpec, bench: BenchSpec) -> Plan:
     return Plan(
         tasks=len(chosen),
         runs=max(1, bench.runs),
-        configs=config_count(bench) if bench.autotune else 1,
-        # mirrors run_suite: the priming pass is skipped unless every one of
-        # these holds, so promising it on a quick set would overcount the run
-        prime=(bench.v2_prime_pass and bench.tasks in V2_SETS
-               and spec.spec_type == "ngram-mod" and bench.runs == 1),
+        configs=config_count(bench),
+        primed=_primed_configs(bench),
         per_request_s=min(limits) if limits else 0.0,
         startup_s=max(0.0, bench.startup_timeout),
     )
@@ -389,7 +449,7 @@ def validate_bench(spec: RunSpec, bench: BenchSpec) -> list[Problem]:
     """Everything that would stop this run, said before it is started.
 
     Each of these is an exit code in the script -- after it has been launched,
-    and in the autotune cases after it has worked through part of a sweep.
+    and in some cases after it has worked through part of the sweep.
     """
     problems: list[Problem] = []
     chosen, unknown = selected_tasks(bench)
@@ -415,11 +475,22 @@ def validate_bench(spec: RunSpec, bench: BenchSpec) -> list[Problem]:
             f"stops the answer almost immediately. The script raises this by itself only "
             f"when it is left at exactly {V2_MAX_TOKENS_TRIGGER}."))
 
-    if bench.v2_prime_pass and bench.tasks in V2_SETS and spec.spec_type != "ngram-mod":
-        problems.append(Problem(
-            "note",
-            "The priming pass only happens with n-gram speculation and a single run; "
-            "as set it will be skipped."))
+    if bench.v2_prime_pass:
+        blocked = []
+        if bench.tasks not in V2_SETS:
+            blocked.append(f"the {bench.tasks} prompts are not one of the v2 sets")
+        if bench.runs != 1:
+            blocked.append(f"each prompt is measured {bench.runs} times, not once")
+        if "ngram-mod" not in items(bench.sweep_spec):
+            blocked.append("no configuration tries ngram-mod")
+        if blocked:
+            problems.append(Problem(
+                "note", "No priming pass will happen: " + ", and ".join(blocked) + "."))
+        elif (primed := _primed_configs(bench)) < config_count(bench):
+            problems.append(Problem(
+                "note",
+                f"Only the {primed} ngram-mod configurations are primed. The others measure "
+                "a cold start, which is what they are for."))
 
     if bench.trace_preset != "none":
         problems.append(Problem(
@@ -435,25 +506,29 @@ def validate_bench(spec: RunSpec, bench: BenchSpec) -> list[Problem]:
             "Authorization header, and the server it starts only listens on this "
             "machine, so a key would lock it out of its own server."))
 
-    if bench.autotune:
-        empty = [name for name, values in sweep_values(bench).items() if not values]
-        if empty:
-            problems.append(Problem(
-                "error",
-                f"{', '.join(name.removeprefix('sweep_') for name in empty)}: an empty sweep "
-                "axis multiplies out to no configurations at all"))
-        else:
-            count = config_count(bench)
-            if count > bench.sweep_max:
-                problems.append(Problem(
-                    "error",
-                    f"{count} configurations against a cap of {bench.sweep_max}. Raise the cap "
-                    "or drop a value; the script checks this before it starts."))
-        if _sweep_contexts(bench) and max(_sweep_contexts(bench)) > POLICY_MAX_CTX:
-            problems.append(Problem("note", "Contexts above 130 000 are outside the lab's "
-                                            "standard lane; the command says so explicitly."))
-    elif spec.ctx_size > POLICY_MAX_CTX:
-        problems.append(Problem("note", f"A context of {spec.ctx_size} is above the lab's "
-                                        "standard 130k lane; the command says so explicitly."))
+
+    empty = [name for name, values in sweep_values(bench).items() if not values]
+    if empty:
+        problems.append(Problem(
+            "error",
+            f"{', '.join(name.removeprefix('sweep_') for name in empty)}: an empty line means "
+            "nothing to try, and one empty axis leaves the whole sweep with no configurations"))
+    elif (count := config_count(bench)) > bench.sweep_max:
+        # the script's own check: an error, unless smart pruning is on, in which
+        # case it prints a warning and works through the list anyway
+        problems.append(Problem("warn", f"{count} configurations against a cap of "
+                                        f"{bench.sweep_max}. It will start anyway, because "
+                                        "abandoning a losing direction may bring it under the "
+                                        "cap — but nothing promises it will.")
+                        if bench.smart_prune else
+                        Problem("error", f"{count} configurations against a cap of "
+                                         f"{bench.sweep_max}. Raise the cap, drop a value, or "
+                                         "let it abandon directions that keep getting slower; "
+                                         "as set it refuses to start."))
+
+    contexts = _sweep_contexts(bench)
+    if contexts and max(contexts) > POLICY_MAX_CTX:
+        problems.append(Problem("note", "Contexts above 130 000 are outside the lab's standard "
+                                        "lane; the command says so explicitly."))
 
     return problems

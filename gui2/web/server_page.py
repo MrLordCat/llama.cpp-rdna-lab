@@ -1035,7 +1035,9 @@ def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
     problems += _port_problems(spec)
 
     argv = to_argv(spec, binary)
-    bench_argv = to_bench_argv(spec, BenchSpec(), config.bench_script, binary)
+    # seeded_from: a sweep of one value per axis, which is a measurement of
+    # this configuration -- the same command the Autotune page opens with
+    bench_argv = to_bench_argv(spec, BenchSpec().seeded_from(spec), config.bench_script, binary)
     bench_query = spec_link(spec)
 
     known = reading(argv, supervisor, store)
@@ -1051,9 +1053,12 @@ def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
         ),
         memory_panel(spec, facts, scan, backend, known),
         Details(
-            Summary("Benchmark command from the same spec"),
+            Summary("Measure this configuration"),
+            Span("The same settings, asked a fixed set of prompts and timed. Add a second "
+                 "context or batch size on the Autotune page and it searches instead.",
+                 cls="hint block"),
             Pre(command_lines(mask_api_key(bench_argv))),
-            A("Set up a benchmark run →", href=f"/bench?{bench_query}", cls="button"),
+            A("Open in Autotune →", href=f"/autotune?{bench_query}", cls="button"),
             cls="panel",
         ),
         id="preview",

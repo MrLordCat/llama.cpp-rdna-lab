@@ -408,91 +408,92 @@ def test_a_benchmark_is_not_filed_as_a_server_run(client):
 
 
 def bench_command(html: str) -> str:
-    """The benchmark line as the Bench page shows it."""
+    """The autotune line as the page shows it."""
     block = re.search(r"<pre>[^<]*agent_workload_bench\.py(.*?)</pre>", html, re.S)
-    assert block, "the benchmark command is missing from the response"
+    assert block, "the autotune command is missing from the response"
     return block.group(1)
 
 
-def test_the_bench_page_measures_the_run_the_server_page_describes(client, models):
-    html = client.get("/bench", params={"model": models["long"], "ctx_size": "32768",
-                                        "_form": "1"}).text
+def test_arriving_from_the_server_page_sweeps_that_one_configuration(client, models):
+    html = client.get("/autotune", params={"model": models["long"], "ctx_size": "32768",
+                                           "_form": "1"}).text
 
     assert "long.gguf" in html
-    # the run under test is shown but not editable here: one page owns it
+    # the run under test travels with the page but is edited in one place only
     assert 'name="ctx_size" value="32768"' in html.replace("'", '"')
     assert 'href="/server?model=' in html
-    assert "--ctx-size 32768" in bench_command(html)
+    assert "--autotune-ctx-values 32768" in bench_command(html)
+    assert "One configuration" in html, "a sweep of one value is a measurement"
 
 
-def test_the_bench_page_counts_the_run_before_anything_is_started(client, models):
-    html = client.post("/bench/preview", data={
-        "_form": "1", "_bench": "1", "model": models["long"], "tasks": "quick", "runs": "3",
+def test_the_autotune_page_counts_the_run_before_anything_is_started(client, models):
+    html = client.post("/autotune/preview", data={
+        "_form": "1", "_autotune": "1", "model": models["long"], "tasks": "quick", "runs": "3",
         "task_hard_timeout": "30", "startup_timeout": "120"}).text
 
     assert "2 prompts × 3 repeats — 6 requests in all" in html
     assert "cannot outlast" in html
 
 
-def test_the_server_pages_link_does_not_clear_the_bench_defaults(client, models):
-    """It carries `_form` for the run, which is not a bench submission."""
-    html = client.get("/bench", params={"model": models["long"], "_form": "1"}).text
+def test_the_server_pages_link_does_not_clear_the_autotune_defaults(client, models):
+    """It carries `_form` for the run, which is not an autotune submission."""
+    html = client.get("/autotune", params={"model": models["long"], "_form": "1"}).text
     command = bench_command(html)
 
     assert "--no-reuse" in command, "'start every prompt cold' is on by default"
     assert "--write-diagnostics" in command and "--no-write-diagnostics" not in command
 
 
-def test_clearing_a_bench_checkbox_in_the_form_still_clears_it(client, models):
-    command = bench_command(client.post("/bench/preview", data={
-        "_form": "1", "_bench": "1", "model": models["long"]}).text)
+def test_clearing_an_autotune_checkbox_in_the_form_still_clears_it(client, models):
+    command = bench_command(client.post("/autotune/preview", data={
+        "_form": "1", "_autotune": "1", "model": models["long"]}).text)
 
     assert "--reuse" in command and "--no-reuse" not in command
     assert "--no-write-diagnostics" in command
 
 
 def test_a_sweep_says_how_many_configurations_it_multiplies_out_to(client, models):
-    html = client.post("/bench/preview", data={
-        "_form": "1", "_bench": "1", "model": models["long"], "autotune": "on",
+    html = client.post("/autotune/preview", data={
+        "_form": "1", "_autotune": "1", "model": models["long"],
         "sweep_batch": "256,512", "sweep_ubatch": "64,128"}).text
 
     assert "4 server configurations (1 × 2 × 2 × 1 × 1)" in html
     assert "2 prompts against each of them — 8 requests in all" in html
-    # the context the Server page set is not what a sweep measures
-    assert "the sweep replaces the context" in html
+    # the settings the Server page chose for these are not what is measured
+    assert "is replaced by the lines above" in html
     assert "--autotune" in bench_command(html)
 
 
-def test_a_server_already_on_the_gpus_stops_the_benchmark_before_it_starts(
+def test_a_server_already_on_the_gpus_stops_the_run_before_it_starts(
         client, models, monkeypatch):
     """The script's own --background-server-policy fail, said in advance."""
     monkeypatch.setattr("gui2.core.machine.running_servers", lambda *a, **k: ("26924",))
 
-    html = client.post("/bench/preview", data={
-        "_form": "1", "_bench": "1", "model": models["long"]}).text
+    html = client.post("/autotune/preview", data={
+        "_form": "1", "_autotune": "1", "model": models["long"]}).text
     assert "already running (pid 26924)" in html
     assert "will not start" in html
 
     # and pressing start anyway is refused rather than queued behind it
-    started = client.post("/bench/start", data={
-        "_form": "1", "_bench": "1", "model": models["long"]}).text
+    started = client.post("/autotune/start", data={
+        "_form": "1", "_autotune": "1", "model": models["long"]}).text
     assert "already running" in started
     assert client.app.state.supervisor.snapshot() is None
 
     # told to share, it measures anyway and says the numbers include the other run
-    shared = client.post("/bench/preview", data={
-        "_form": "1", "_bench": "1", "model": models["long"],
+    shared = client.post("/autotune/preview", data={
+        "_form": "1", "_autotune": "1", "model": models["long"],
         "background_server_policy": "warn"}).text
     assert "includes its load" in shared
 
 
-def test_the_bench_page_keeps_the_whole_run_in_the_address_bar(client, models):
-    response = client.post("/bench/preview", data={
-        "_form": "1", "_bench": "1", "model": models["long"],
+def test_the_autotune_page_keeps_the_whole_run_in_the_address_bar(client, models):
+    response = client.post("/autotune/preview", data={
+        "_form": "1", "_autotune": "1", "model": models["long"],
         "api_key": "secret", "tasks": "v2-review"})
 
     pushed = response.headers["hx-push-url"]
-    assert pushed.startswith("/bench?")
+    assert pushed.startswith("/autotune?")
     assert "tasks=v2-review" in pushed
     assert "secret" not in pushed, "the key must not reach the address bar"
     # and reloading that URL renders the same page rather than the defaults

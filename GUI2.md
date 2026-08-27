@@ -106,7 +106,7 @@ proc/     single supervisor owning llama-server / benchmark subprocesses.
 web/      FastHTML routes + Jinja partials, HTMX swaps, SSE for logs/metrics
 ```
 
-One `RunSpec` serves Server launch, Bench and Autotune. There must be no second
+One `RunSpec` serves both Server launch and Autotune. There must be no second
 place that builds a command line.
 
 Paths to models and builds are **configuration**, not constants: build
@@ -114,8 +114,12 @@ directories are gitignored and exist only in `D:\GitHub\llama.cpp-with-GUI`.
 
 ## Scope
 
-In scope: Server launch, Bench / Autotune, History & Analytics, Models. All
-four now exist.
+In scope: Server launch, Autotune, History & Analytics, Models. All four now
+exist.
+
+There is no separate "just benchmark it" page. Autotune with one value on every
+axis *is* that benchmark, and the first GUI proved the two are one job; a second
+mode would only be a second command line to keep in step with this one.
 
 Out of scope, moved to CLI and VS Code tasks: building, build info, model
 download, dependency install. That is ~3 300 lines of the old GUI
@@ -158,8 +162,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 7 066 lines of Python plus 2 134 of tests, against the old GUI's
-15 458 with none. The suite is 159 tests and runs in about 20 seconds without
+`gui2/` is 7 167 lines of Python plus 2 189 of tests, against the old GUI's
+15 458 with none. The suite is 162 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -167,7 +171,7 @@ touching a GPU.
 | `core/gguf.py` | what a model file says about itself — layers, context, head counts, SSM shape. Header only, a few KB, no binary |
 | `core/params.py` | one `Param` per flag; forms and argv both generated from it |
 | `core/runspec.py` | the single description of a run, `to_argv`, `validate`, and the slot arithmetic `slot_context` |
-| `core/bench.py` | the same run handed to `agent_workload_bench.py`, plus `plan` — how many requests a choice of prompts, repeats and sweep axes comes to |
+| `core/bench.py` | the same run handed to `agent_workload_bench.py` as a sweep, plus `plan` — how many requests a choice of prompts, repeats and sweep axes comes to |
 | `core/memory.py` | what a run *will* cost: weights + KV + compute, from the header; and `capacity`, the context a model has room for on a given card |
 | `core/measured.py` | what a run *did* cost, read from its own log as it is written |
 | `core/memstore.py` | the same, kept between runs and rescaled across contexts |
@@ -187,14 +191,19 @@ file there" but "will it load here, and how much context is left once its
 weights are down". Both come from the header and the device list, so the page
 costs one stat and a few kilobytes per model and starts nothing.
 
-The Bench page does not describe a run twice. The model, build, context and
-devices arrive from the Server page in the query string and are shown but not
-edited; this page chooses only what is asked of that server. What it adds is
-the arithmetic: how many requests a prompt set, a repeat count and five sweep
-axes multiply out to, and the longest the run's own timeouts would let that
-take. Every error it reports is one the script would otherwise announce by
-exiting — after it had been launched, and for a sweep after it had already
-worked through part of one.
+The Autotune page does not describe a run twice. The model, build, devices and
+layer split arrive from the Server page in the query string and are shown but
+not edited; this page chooses what is asked of that server and which
+configurations to try. Arriving from the Server page fills all five sweep axes
+with what that page chose, so the page opens as a measurement of the run being
+described and becomes a search the moment a second value is typed anywhere —
+which is why there is no second mode.
+
+What it adds is the arithmetic: how many requests a prompt set, a repeat count
+and five sweep axes multiply out to, and the longest the run's own timeouts
+would let that take. Every error it reports is one the script would otherwise
+announce by exiting — after it had been launched, and often after it had
+already worked through part of the sweep.
 
 ## Facts about llama.cpp worth not rediscovering
 
@@ -236,15 +245,29 @@ worked through part of one.
   list" unless the minimum is lowered with it.
 - The sweep is an `itertools.product`, checked against `--autotune-max-configs`
   before the first server starts: one more value on any axis multiplies the
-  whole run.
+  whole run. Exceeding the cap is only fatal with `--no-autotune-smart-prune`;
+  with pruning on — the default — it prints a warning and works through the
+  list anyway, so the GUI reports the same excess as a warning or an error
+  depending on that one box.
+- The autotune loop overwrites `ctx_size`, `batch_size`, `ubatch_size`,
+  `cache_type_k` and `cache_type_v` on a copy of its own arguments for every
+  configuration, and appends its own `--spec-type` to `--server-extra`. Naming
+  any of the six alongside the sweep describes a run that does not happen — and
+  in the speculative case actively misfiles it, because llama-server obeys the
+  *last* `--spec-type` while `infer_spec_mode` reads the *first*.
+- The priming pass is decided per configuration, from that configuration's
+  speculative mode: a sweep of `none,ngram-mod` primes half of itself.
+- The script has no `auto` for flash attention. `--flash-attn` is a
+  `BooleanOptionalAction` defaulting to on, and it passes `--flash-attn on|off`
+  to llama-server, so the Server page's `auto` is sent as `on`.
 - `--task-ids` is split on commas only, and an id that is not in the selected
   set exits 5.
 - The script sends no `Authorization` header, so forwarding `--api-key` gives
   it a server that answers 401 to everything. It owns `--host` too, so the
   server it starts is loopback-only and the key would guard nothing.
-- `--autotune-resume` and `--write-diagnostics` are `BooleanOptionalAction`
-  with default `True`: leaving the flag out does not turn them off, only
-  `--no-...` does.
+- `--autotune-resume`, `--autotune-smart-prune` and `--write-diagnostics` are
+  `BooleanOptionalAction` with default `True`: leaving the flag out does not
+  turn them off, only `--no-...` does.
 
 ## Validation
 

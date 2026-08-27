@@ -148,19 +148,21 @@ def test_bench_argv_reuses_the_server_command():
     spec = RunSpec(model="models/Q4.gguf", ctx_size=49152, batch_size=8192, ubatch_size=1024,
                    cache_type_k="q4_0", cache_type_v="q4_0", flash_attn="on", spec_type="mtp",
                    devices="Vulkan1,Vulkan0", split_mode="layer", tensor_split="1,1", no_mmap=True)
-    argv = to_bench_argv(spec, BenchSpec(label="d131-r1", task_ids="triage_diff"),
-                         script="scripts/agent_workload_bench.py",
+    bench = BenchSpec(label="d131-r1", task_ids="triage_diff").seeded_from(spec)
+    argv = to_bench_argv(spec, bench, script="scripts/agent_workload_bench.py",
                          server_bin="build-vulkan/bin/llama-server.exe")
 
-    assert flag_value(argv, "--ctx-size") == "49152"
-    assert flag_value(argv, "--cache-type-k") == "q4_0"
+    # the five settings the sweep owns arrive as its axes, not as server flags
+    assert flag_value(argv, "--autotune-ctx-values") == "49152"
+    assert flag_value(argv, "--autotune-kv-values") == "q4_0"
+    assert flag_value(argv, "--autotune-spec-values") == "mtp"
     assert "--flash-attn" in argv
     assert flag_value(argv, "--label") == "d131-r1"
 
     extra = next(item for item in argv if item.startswith("--server-extra="))
     # bench owns these; forwarding them again would duplicate the flag
     assert "--ctx-size" not in extra and "-ngl" not in extra and "-m " not in extra
-    assert "--spec-type draft-mtp" in extra
+    assert "--spec-type" not in extra, "the sweep appends its own, and the first one wins"
     assert "-dev Vulkan1,Vulkan0" in extra
     assert "--no-mmap" in extra
 
