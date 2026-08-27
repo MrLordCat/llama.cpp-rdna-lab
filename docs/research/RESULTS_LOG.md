@@ -1,5 +1,25 @@
 # Results Log
 
+## 2026-08-27 - D133 RPC topology controls identify the boundary candidate
+
+- Locked 14K smoke controls on Qwen3.8-27B-Q4_K_M, context `12288`,
+  batch/ubatch `8192/1024`, q8/q8 KV, MTP n=4, 128 output tokens:
+  local dual Vulkan `1636.54/48.67` prompt/decode TPS; remote RTX3080 plus
+  Vulkan1 `933.05/41.165`; remote RTX3080 plus both local GPUs
+  `1217.015/39.875`. All runs completed 2/2 tasks with comparable MTP
+  acceptance (`54.57%`, `57.89%`, `55.73%`).
+- RPC-first placement is required: `RPC0,Vulkan1` for the two-device lane and
+  `RPC0,Vulkan0,Vulkan1` for the production three-device lane.
+- Diagnostic timeline: 206 synchronous `GRAPH_COMPUTE` commands took
+  `7277.0 ms` on the remote server; 103 client-side `GET_TENSOR` waits took
+  `8484.7 ms`, including 14 `l_out-16` transfers of 20 MiB logical size at
+  `385.2 ms` average. The remote GET handlers themselves took only
+  `328.4 ms` total (`19.0 ms` average for the 14 large handlers).
+- Verdict: the next RPC experiment should target serialized command/receive
+  behavior or activation wire volume, with diagnostic and clean speed runs
+  kept separate. D133 adds no runtime change; D132 remains closed.
+- Owning note: `docs/research/major-topology/D133_RPC_TOPOLOGY_CONTROL_MATRIX.md`.
+
 ## 2026-08-26 - model file mappings are released after device upload (RAM fix)
 
 - Problem: with mmap (default), an entire GGUF file stayed mapped for the
