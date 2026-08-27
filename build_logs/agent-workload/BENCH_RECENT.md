@@ -7,6 +7,15 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-08-27 12:05:21 | cold-first | vulkan | p2p2s-final | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 11.5565 | 1303.3750 | 26.1200 | 0 |
+| 2026-08-27 11:59:52 | cold-first | vulkan | p2p2r-p2x | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 0.0000 | - | - | 2 |
+| 2026-08-27 11:57:31 | cold-first | vulkan | p2p2q-phase2 | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 0.0000 | - | - | 2 |
+| 2026-08-27 11:51:13 | cold-first | vulkan | p2p2p-dbg4 | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 0.0000 | - | - | 2 |
+| 2026-08-27 11:49:09 | cold-first | vulkan | p2p2o-dbg3 | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 0.0000 | - | - | 2 |
+| 2026-08-27 11:43:40 | cold-first | vulkan | p2p2n-pod | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 0.0000 | - | - | 2 |
+| 2026-08-27 11:40:18 | cold-first | vulkan | p2p2m-trace | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 0.0000 | - | - | 2 |
+| 2026-08-27 11:36:59 | cold-first | vulkan | p2p2l-p2smoke | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 0.0000 | - | - | 2 |
+| 2026-08-27 11:35:49 | cold-first | vulkan | p2p2k-inline | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 11.6515 | 1304.3600 | 26.5300 | 0 |
 | 2026-08-27 11:28:08 | cold-first | vulkan | p2p2j-stable | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 11.7166 | 1301.2400 | 26.9650 | 0 |
 | 2026-08-27 11:13:57 | cold-first | vulkan | p2p2f-pre | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 11.7809 | 1299.7000 | 27.4000 | 0 |
 | 2026-08-27 09:29:35 | cold-first | vulkan | p2p1b-14k-smoke | Qwen3.8-27B-Q4_K_M.gguf | 16384 | 8192/1024 | q8_0/q8_0 | mtp | 5.5982 | 1200.7450 | 37.4650 | 0 |
@@ -78,12 +87,3 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-08-26 11:57:54 | cold-first | vulkan | rf23-local-94k-specnone | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | none | 2.6121 | 1335.2100 | 24.7000 | 0 |
 | 2026-08-26 11:55:28 | cold-first | vulkan | rf22-local-94k-control | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.7202 | 1441.9850 | 51.1900 | 0 |
 | 2026-08-26 11:45:50 | cold-first | vulkan | rf21-14k-ub2048b | Qwen3.8-27B-Q4_K_M.gguf | 16384 | 8192/2048 | q8_0/q8_0 | mtp | 10.2179 | 1205.8200 | 25.4600 | 0 |
-| 2026-08-26 11:44:21 | cold-first | vulkan | rf20-14k-ub2048 | Qwen3.8-27B-Q4_K_M.gguf | 16384 | 8192/2048 | q8_0/q8_0 | mtp | 9.2317 | 1261.1350 | 27.0950 | 0 |
-| 2026-08-26 11:42:42 | cold-first | vulkan | rf19-49k-async-get | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 4.2859 | 1251.3950 | 25.2400 | 0 |
-| 2026-08-26 11:39:54 | cold-first | vulkan | rf18-94k-act-f8 | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.0851 | 1093.4150 | 16.3600 | 0 |
-| 2026-08-26 11:32:59 | cold-first | vulkan | rf17-94k-ts-1.1-0.9 | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.0526 | 1023.9950 | 24.8500 | 0 |
-| 2026-08-26 11:23:37 | cold-first | vulkan | rf16-94k-async-get | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.1440 | 1104.2250 | 19.2000 | 0 |
-| 2026-08-26 11:20:32 | cold-first | vulkan | rf15-14k-async-get | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 12.3587 | 1387.7700 | 28.0300 | 0 |
-| 2026-08-26 11:11:31 | cold-first | vulkan | rf14-94k-split-timing | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.1236 | 1091.8950 | 19.1250 | 0 |
-| 2026-08-26 11:04:17 | cold-first | vulkan | rf13-49k-stable | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 4.2010 | 1230.4750 | 24.3050 | 0 |
-| 2026-08-26 11:01:30 | cold-first | vulkan | rf12-49k-async | Qwen3.8-27B-Q4_K_M.gguf | 49152 | 8192/1024 | q8_0/q8_0 | mtp | 4.2826 | 1264.8100 | 23.9600 | 0 |

@@ -195,25 +195,29 @@ Decision: implement (1) as D132 next block; (2) is a numeric/performance
 shortcut that changes the mask shapes and needs a PPL gate; (3) alone does
 not remove the client-side alloc barrier.
 
-## P2 status 2026-08-27 (two-slot splits API in, decode driver back to pre-P2)
+## P2 status 2026-08-27 (evening): two-slot API safe + POD fix; decode driver needs two graph results
 
-- Two-slot split snapshots implemented in ggml-backend
-  (`ggml_backend_sched_p2_save_splits` / `p2_compute_saved` / `p2_saved_*` +
-  p2_head_end): graph N+1 can be allocated while tail N is still pending;
-  the snapshot swaps in the split layout, tensor-copy mapping, cur_copy and
-  graph inputs for the duration of the tail compute only.
-- **Verified safe**: p2p2j-stable run (pre-P2 llama-context decode driver +
-  two-slot API + server 5.0.2, ts 0.8,1,1.4, MTP n=4): 1301.2 ptps,
-  decode 27.0 t/s, 2/2 tasks, teardown clean. The API is inert without
-  GGML_RPC_PREFILL_PIPELINE=1.
-- **Regression found and isolated**: the P2 decode driver (lambda
-  extract_ubatch_results + phase-2 tail compute in llama-context) crashes
-  the server with 0xC0000005 right after "initializing slots" with MTP,
-  even with the env unset. The pre-P2 decode path (same ggml-backend +
-  server) passes. Cause: P2 integration in llama-context.cpp/h; saved as
-  stash "p2-decode-driver-wip" (not committed).
-- Next block: bisect the llama-context P2 delta (phase params, peek,
-  lambda) - smallest failing change first; keep the driver P2-only.
+- **0xC0000005 root cause found (first tail phase)**: `ggml_backend_sched` is
+  calloc-allocated, so `std::vector` members in `p2_slots` were never
+  constructed -> UB in `p2_saved_n_splits`. Fixed by POD slots
+  (malloc/memcpy C-arrays + free in `ggml_backend_sched_free`, commit
+  `ce57418f7`). After the fix the snapshot works end-to-end
+  (saved_n=4, head_end=4, empty-tail guard returns SUCCESS).
+- **Next blocker (design, not crash)**: tail extraction of graph N-1 after
+  head N+1 is unsafe because `llm_graph_result` is a single instance per
+  context (`gf_res_prev`); head N+1 rebuilds it and overwrites the tensor
+  pointers of graph N-1 before the tail extract runs. The two-slot split
+  snapshot alone cannot fix this: a second `llm_graph_result` (or a
+  snapshot of the output tensors/logit pointers of the last head graph) is
+  required. This is the next work item.
+- **Verified safe states** (all with server 5.0.2, ts 0.8,1,1.4, MTP n=4):
+  - `p2p2j-stable` (pre-P2 llama-context + two-slot API + POD fix): 1301.2 ptps, decode 27.0, clean teardown.
+  - `p2p2k-inline`: same with inline default extract block + P2 branches compiled in (env unset): 1304.4 ptps, decode 26.5.
+  - `p2p2s-final`: final stable commit build: 1303.4 ptps, decode 26.1, 2/2 tasks, EXIT=0.
+- P2 decode-driver WIP lives in stashes `p2-decode-driver-wip` and
+  `p2-decode-driver-wip-2` (phase-2 early-return + p2_res_saved attempt).
+- Commits on top of fd32dad79: 08694cdf5 (POD slots first attempt as
+  two-slot API), ce57418f7 (POD storage fix). Branch rpc-vulkan ahead 5.
 
 ## Staged plan
 
