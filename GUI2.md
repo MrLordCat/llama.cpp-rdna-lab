@@ -162,8 +162,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 7 351 lines of Python plus 2 239 of tests, against the old GUI's
-15 458 with none. The suite is 166 tests and runs in about 20 seconds without
+`gui2/` is 7 483 lines of Python plus 2 291 of tests, against the old GUI's
+15 458 with none. The suite is 169 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -211,6 +211,12 @@ too big to load is not skipped: the server fails, the script writes
 returns nothing. The page says how many of them there are, what the heaviest
 wants, what the largest one that does fit is, and how much time the failures
 would take — from the model header, so no process is started to find out.
+
+And it closes the loop with the history. Every earlier sweep of the same model
+is shown with the configuration it chose and the speed that won it, each with a
+link that puts those five values back on the axes — carrying the rest of the
+page with it, so following one changes only the five. A second sweep is then a
+check of the first, or a search around it once a second value is added.
 
 ## Facts about llama.cpp worth not rediscovering
 
@@ -272,6 +278,11 @@ would take — from the model header, so no process is started to find out.
   first.
 - `parse_int_csv` keeps the values it can read and drops the rest, so `128k` on
   a numeric sweep axis shrinks the sweep without a word.
+- A sweep writes **one** row to `BENCH_RUNS.csv` for the whole run: `batch`,
+  `ubatch`, `kv_k` and `kv_v` hold the literal string `sweep`, the speed columns
+  hold the winner's, and what it actually chose survives only in `best_config`
+  (`ctx=12288 b=8192 ub=1024 kv=f8_e4m3 spec=none extra=base extra_args=<none>`).
+  Per-configuration numbers live in the summary CSV beside it, not here.
 - The script has no `auto` for flash attention. `--flash-attn` is a
   `BooleanOptionalAction` defaulting to on, and it passes `--flash-attn on|off`
   to llama-server, so the Server page's `auto` is sent as `on`.

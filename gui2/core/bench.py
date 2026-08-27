@@ -174,11 +174,13 @@ BENCH_SCHEMA: tuple[Param, ...] = (
           help="how many tokens the server reads at once"),
     Param("sweep_ubatch", "Ubatch sizes to try", "text", B_SWEEP,
           help="how much of a batch reaches the GPU in one go"),
+    # the vocabularies are spelled out from the constants: a hint that lists
+    # fewer types than the validator accepts is how f8_e4m3 goes unnoticed
     Param("sweep_kv", "KV cache types to try", "text", B_SWEEP,
-          help="f16, q8_0, q4_0 — smaller buys context and may cost quality"),
+          help=f"{', '.join(SWEEP_KV_TYPES)} — smaller buys context and may cost quality"),
     Param("sweep_spec", "Speculation modes to try", "text", B_SWEEP,
-          help="none, ngram-mod, mtp, ngram-mtp — the sweep sets this itself, so the "
-               "Server page's choice is replaced by whatever is listed here"),
+          help=f"{', '.join(SWEEP_SPEC_MODES)} — the sweep sets this itself, so the "
+               f"Server page's choice is replaced by whatever is listed here"),
     Param("sweep_max", "Refuse to start above", "int", B_SWEEP, minimum=1, maximum=512,
           help="configurations; every extra value multiplies the run rather than adding "
                "to it"),

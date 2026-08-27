@@ -487,6 +487,36 @@ def test_a_server_already_on_the_gpus_stops_the_run_before_it_starts(
     assert "includes its load" in shared
 
 
+def _write_sweep_history(tmp_path, model: str, best: str) -> None:
+    """One finished autotune run of `model`, as the script records it."""
+    from gui2.tests.test_history import HEADER
+
+    folder = tmp_path / "build_logs" / "agent-workload"
+    folder.mkdir(parents=True, exist_ok=True)
+    row = ("2026-08-19 18:26:10,run-x,bld-1,build-vulkan,vulkan,autotune,earlier,"
+           f"{model},0,quick,,1,12288,sweep,sweep,sweep,sweep,none,base,,1,-1,1,on,16,"
+           "repo-snapshot,24576,0.88,1,0.2,0.9,13.3,13.3,1600.0,28.4,,,0,autotune,vulkan|lane,"
+           f"{best},,,x.csv,x.log,0")
+    (folder / "BENCH_RUNS.csv").write_text(f"{HEADER}\n{row}\n", encoding="utf-8")
+
+
+def test_an_earlier_sweep_of_the_same_model_is_offered_back(client, models, tmp_path):
+    """A sweep records only its winner; that is what makes the next one narrower."""
+    _write_sweep_history(tmp_path, models["long"],
+                         "ctx=12288 b=8192 ub=1024 kv=q4_0 spec=none")
+
+    html = client.get("/autotune", params={"model": models["long"], "runs": "3",
+                                           "_form": "1", "_autotune": "1"}).text
+    assert "What 1 earlier sweep of this model chose" in html
+    assert "12K context, batch 8192/1024, KV q4_0" in html
+    assert "13.3 t/s overall" in html
+
+    link = re.search(r'href="/autotune\?([^"]*)"', html)
+    assert link and "sweep_ubatch=1024" in link.group(1)
+    # and it carries the rest of the page, so following it changes only the five
+    assert "runs=3" in link.group(1)
+
+
 def test_the_autotune_page_keeps_the_whole_run_in_the_address_bar(client, models):
     response = client.post("/autotune/preview", data={
         "_form": "1", "_autotune": "1", "model": models["long"],

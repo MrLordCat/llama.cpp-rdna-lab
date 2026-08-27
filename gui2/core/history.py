@@ -349,6 +349,49 @@ class GroupStat:
     last_time: str
 
 
+#: how a sweep records what it chose, e.g.
+#: `ctx=12288 b=8192 ub=1024 kv=f8_e4m3 spec=none extra=base extra_args=<none>`
+_BEST_CONFIG = re.compile(r"(\w+)=(\S+)")
+
+#: the abbreviations that row uses, against the sweep axis each one names
+BEST_CONFIG_AXES: tuple[tuple[str, str], ...] = (
+    ("ctx", "sweep_ctx"), ("b", "sweep_batch"), ("ub", "sweep_ubatch"),
+    ("kv", "sweep_kv"), ("spec", "sweep_spec"),
+)
+
+
+def winning_config(run: Run) -> dict[str, str]:
+    """The configuration a sweep settled on, keyed by sweep axis.
+
+    An autotune run writes one row for the whole sweep: batch, ubatch and the
+    KV types are the literal word "sweep", and what it actually chose survives
+    only in `best_config`. Reading it back is the only way to answer "what did
+    the last sweep of this decide" without opening the summary CSV.
+    """
+    found = dict(_BEST_CONFIG.findall(run.best_config or ""))
+    chosen = {axis: found[key] for key, axis in BEST_CONFIG_AXES
+              if found.get(key, "<none>") != "<none>"}
+    return chosen if len(chosen) == len(BEST_CONFIG_AXES) else {}
+
+
+def past_sweeps(runs: list[Run], model_path: str, limit: int = 4) -> list[Run]:
+    """Finished sweeps of the same model, newest first, that chose something.
+
+    Matched on the file name rather than the path: the same model moved to
+    another directory is still the same model, and the answer it gave still
+    applies.
+    """
+    wanted = Path(model_path).name.lower()
+    if not wanted:
+        return []
+    found = [run for run in runs
+             if run.mode == "autotune" and not run.errors
+             and Path(run.model_path).name.lower() == wanted
+             and winning_config(run)]
+    found.sort(key=lambda run: run.timestamp or datetime.min, reverse=True)
+    return found[:limit]
+
+
 def _bucket(runs: list[Run], attribute: str) -> dict[str, list[Run]]:
     buckets: dict[str, list[Run]] = {}
     for run in runs:

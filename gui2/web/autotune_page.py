@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import fields
 from pathlib import Path
+from urllib.parse import quote_plus, urlencode
 
 from fasthtml.common import (
     A,
@@ -65,6 +66,7 @@ from gui2.core.bench import (
 )
 from gui2.core.devices import Scan, pool
 from gui2.core.gguf import context_text
+from gui2.core.history import Run, past_sweeps, winning_config
 from gui2.core.memory import gib
 from gui2.core.params import Param
 from gui2.core.runspec import Problem, RunSpec, mask_api_key
@@ -124,6 +126,25 @@ def autotune_from_params(params, spec: RunSpec) -> BenchSpec:
 def state_query(params) -> str:
     """The whole page as a link: the run, the sweep, no secrets."""
     return server_page.state_query(params)
+
+
+def page_link(spec: RunSpec, bench: BenchSpec, **overrides: str) -> str:
+    """This page as a link, with a few sweep lines rewritten.
+
+    The mirror of `server_page.spec_link`: written the way the form writes it,
+    marker and all, so reading it back gives what it says.
+    """
+    pairs: list[tuple[str, str]] = []
+    for field in fields(bench):
+        value = overrides.get(field.name, getattr(bench, field.name))
+        if isinstance(value, bool):
+            # an unticked box sends nothing, and the marker says the silence was meant
+            if value:
+                pairs.append((field.name, "on"))
+        else:
+            pairs.append((field.name, str(value)))
+    pairs.append((AUTOTUNE_MARKER, "1"))
+    return server_page.spec_link(spec) + "&" + urlencode(pairs)
 
 
 # -- fields ----------------------------------------------------------------
@@ -300,20 +321,26 @@ def memory_panel(spec: RunSpec, bench: BenchSpec, scan: Scan, backend: str) -> D
     heaviest, over = report.heaviest, report.over
     assert heaviest is not None
 
+    name = _weighed_label(heaviest, kinds, ubatches)
     if not over:
-        verdict = Div(f"All {report.total} fit: the heaviest, "
-                      f"{_weighed_label(heaviest, kinds, ubatches)}, wants "
-                      f"{gib(heaviest.mib)} of {where}", cls="problem ok")
+        verdict = Div(
+            f"It fits: {name} wants {gib(heaviest.mib)} of {where}" if report.total == 1
+            else f"All {report.total} fit: the heaviest, {name}, wants "
+                 f"{gib(heaviest.mib)} of {where}",
+            cls="problem ok")
         rest: list = []
     else:
         largest = report.largest_fitting
         lost = duration(report.over_count * max(0.0, bench.startup_timeout))
-        verdict = Div(f"⚠ {report.over_count} of {report.total} will not fit in {where}. "
-                      f"The heaviest, {_weighed_label(heaviest, kinds, ubatches)}, wants "
-                      f"{gib(heaviest.mib)}.", cls="problem err")
-        rest = [Div(f"A configuration too big to load is not skipped: the server fails, "
-                    f"the script writes CONFIG FAILED and moves to the next one. At the "
-                    f"startup timeout set here that is up to {lost} spent measuring nothing.",
+        verdict = Div(
+            f"⚠ It will not fit in {where}: {name} wants {gib(heaviest.mib)}."
+            if report.total == 1 else
+            f"⚠ {report.over_count} of {report.total} will not fit in {where}. The heaviest, "
+            f"{name}, wants {gib(heaviest.mib)}.",
+            cls="problem err")
+        rest = [Div(f"A configuration too big to load is not skipped: the server fails to "
+                    f"start, the script writes CONFIG FAILED and carries on. At the startup "
+                    f"timeout set here that is up to {lost} spent measuring nothing.",
                     cls="problem muted")]
         if largest is not None:
             rest.append(Div(f"The most it has room for is "
@@ -321,6 +348,66 @@ def memory_panel(spec: RunSpec, bench: BenchSpec, scan: Scan, backend: str) -> D
                             f"{gib(largest.mib)}.", cls="problem muted"))
 
     return Div(H3("Room for it"), verdict, *rest, cls="panel memory")
+
+
+def _winner_text(chosen: dict[str, str]) -> str:
+    return (f"{context_text(int(chosen['sweep_ctx']))} context, batch "
+            f"{chosen['sweep_batch']}/{chosen['sweep_ubatch']}, KV {chosen['sweep_kv']}, "
+            f"speculation {chosen['sweep_spec']}")
+
+
+def _speed_text(run: Run) -> str:
+    figures = [f"{run.aggregate_tps:.1f} t/s overall" if run.aggregate_tps else "",
+               f"{run.decode_eval_tps:.1f} t/s decoding" if run.decode_eval_tps else ""]
+    return ", ".join(part for part in figures if part) or "no speed recorded"
+
+
+def earlier_panel(spec: RunSpec, bench: BenchSpec, runs: list[Run], oob: bool = False) -> Div:
+    """What earlier sweeps of this model settled on, and a way to reuse it.
+
+    A sweep writes one row for itself: batch, ubatch and KV type in it are the
+    literal word "sweep", and the configuration it chose survives only in
+    `best_config`. Reading that back is what turns a second sweep into a
+    narrower one instead of the same three hours again.
+
+    Redrawn with every edit, because each "try these again" link carries the
+    rest of the page with it: a stale one would quietly undo whatever was
+    changed since the page was opened.
+    """
+    earlier = past_sweeps(runs, spec.model)
+    if not earlier:
+        return Div(id="earlier", hx_swap_oob="true" if oob else None)
+    rows = []
+    for run in earlier:
+        chosen = winning_config(run)
+        same_build = run.build_name == Path(spec.build_dir).name if spec.build_dir else False
+        rows.append(Div(
+            Div(f"{run.time_text} · {run.build_name} ({run.backend})"
+                + (" · this build" if same_build else ""), cls="hint"),
+            Div(_winner_text(chosen), cls="detail"),
+            Div(f"{_speed_text(run)} — over {run.tasks}"
+                + (f", context from {run.real_context_mode}" if run.real_context_mode else ""),
+                cls="hint"),
+            A("Try these five again →", href=f"/autotune?{page_link(spec, bench, **chosen)}",
+              cls="button small"),
+            cls="earlier",
+        ))
+    return Div(
+        Details(
+            Summary(f"What {len(earlier)} earlier sweep{'s' if len(earlier) != 1 else ''} of "
+                    f"this model chose"),
+            Span("A sweep records only its winner, so this is what each one decided rather "
+                 "than everything it tried. Reusing one turns the next sweep into a check of "
+                 "it, or a search around it once a second value is added.", cls="hint block"),
+            *rows,
+            A("All of them in History →",
+              href=f"/history?q={quote_plus(Path(spec.model).name)}&mode=autotune",
+              cls="button"),
+            cls="panel",
+        ),
+        id="earlier",
+        hx_swap_oob="true" if oob else None,
+    )
 
 
 def _busy_problems(bench: BenchSpec) -> list[Problem]:
@@ -436,8 +523,8 @@ def _section(title: str, hint: str, bench: BenchSpec) -> Details:
     )
 
 
-def form(config: AppConfig, spec: RunSpec, bench: BenchSpec) -> Form:
-    panels = [inherited(config, spec)]
+def form(config: AppConfig, spec: RunSpec, bench: BenchSpec, runs: list[Run]) -> Form:
+    panels = [inherited(config, spec), earlier_panel(spec, bench, runs)]
     panels += [_section(title, hint, bench) for title, hint in SECTIONS]
     panels.append(Div(
         Button("Start autotune", type="button", cls="primary",
@@ -487,11 +574,11 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, bench: Bench
 
 
 def page(config: AppConfig, spec: RunSpec, bench: BenchSpec, supervisor: Supervisor,
-         scan: Scan, backend: str):
+         scan: Scan, backend: str, runs: list[Run]):
     return shell(
         "Autotune", "/autotune", config,
         Div(
-            form(config, spec, bench),
+            form(config, spec, bench, runs),
             Div(preview(config, spec, bench, scan, backend),
                 server_page.run_panel(supervisor),
                 server_page.log_panel(supervisor), cls="stack"),

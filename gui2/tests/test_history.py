@@ -9,8 +9,10 @@ from gui2.core.history import (
     apply_filter,
     facets,
     load_runs,
+    past_sweeps,
     sort_runs,
     summarize,
+    winning_config,
 )
 
 HEADER = (
@@ -63,6 +65,26 @@ def test_sweep_and_empty_metrics_do_not_break_parsing(history_csv: Path):
     assert autotune.prompt_eval_tps is None
     assert autotune.gpu_layers == -1
     assert autotune.aggregate_tps == pytest.approx(12.0)
+
+
+def test_what_a_sweep_chose_survives_only_in_best_config(history_csv: Path):
+    """batch, ubatch and both KV columns of an autotune row say "sweep"."""
+    autotune = next(run for run in load_runs(history_csv) if run.mode == "autotune")
+    assert winning_config(autotune) == {
+        "sweep_ctx": "131072", "sweep_batch": "512", "sweep_ubatch": "192",
+        "sweep_kv": "q4_0", "sweep_spec": "none",
+    }
+    # a run that chose nothing cannot be reused, and says so by parsing to nothing
+    assert winning_config(next(run for run in load_runs(history_csv)
+                               if run.mode == "single-run")) == {}
+
+
+def test_earlier_sweeps_are_found_by_model_name_not_by_path(history_csv: Path):
+    runs = load_runs(history_csv)
+    assert [run.run_id for run in past_sweeps(runs, "D:/elsewhere/Qwen-Q4.gguf")] == ["run-c"]
+    # a single run of the same model is not a sweep and has no winner to offer
+    assert past_sweeps(runs, "Qwen-Q3.gguf") == []
+    assert past_sweeps(runs, "") == []
 
 
 def test_filters_combine(history_csv: Path):

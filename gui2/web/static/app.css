@@ -251,6 +251,21 @@ button.small { padding: 2px 8px; font-size: 11px; }
 .devrow .devmem { color: var(--muted); font-variant-numeric: tabular-nums; }
 .devrow.unconfirmed .devname { color: var(--muted); font-style: italic; }
 
+/* One earlier sweep and what it chose */
+.earlier {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    padding: 6px 8px;
+    margin: 6px 0;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--panel-2);
+}
+.earlier .detail { color: var(--text); font-size: 12px; }
+.earlier > a { margin-top: 3px; }
+
 /* Process control and log */
 button, a.button {
     background: var(--panel-2);
@@ -264,6 +279,7 @@ button, a.button {
     display: inline-block;
 }
 button:hover, a.button:hover { border-color: var(--accent); }
+button.small, a.button.small { padding: 2px 8px; font-size: 11px; }
 button.primary { border-color: var(--accent); color: var(--accent); }
 button.danger { border-color: var(--warn); color: var(--warn); }
 

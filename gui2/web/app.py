@@ -184,17 +184,19 @@ def create_app(config: AppConfig | None = None):
         scan, backend = scanned(spec)
         return autotune_page.page(config, spec,
                                   autotune_page.autotune_from_params(req.query_params, spec),
-                                  supervisor, scan, backend)
+                                  supervisor, scan, backend, store.runs())
 
     @rt("/autotune/preview", methods=["POST"])
     async def autotune_preview(req):
         params = await req.form()
         spec = server_page.spec_from_params(params)
         scan, backend = scanned(spec)
+        bench = autotune_page.autotune_from_params(params, spec)
         return (
-            autotune_page.preview(config, spec,
-                                  autotune_page.autotune_from_params(params, spec),
-                                  scan, backend),
+            autotune_page.preview(config, spec, bench, scan, backend),
+            # each "try these again" link carries the rest of the page with it,
+            # so it has to be rewritten whenever the rest of the page changes
+            autotune_page.earlier_panel(spec, bench, store.runs(), oob=True),
             HtmxResponseHeaders(push_url="/autotune?" + autotune_page.state_query(params)),
         )
 
