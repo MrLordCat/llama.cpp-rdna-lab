@@ -604,6 +604,20 @@ static bool set_large_send_buf(sockfd_t sockfd) {
     return ret == 0;
 }
 
+// RPC: enlarge the receive buffer on BOTH ends (client connect and server
+// accept). GET_TENSOR returns multi-MB activations (l_out-16/-43) and the
+// default Windows socket buffer (64 KB - 1 MB) makes the receiver drain at
+// well below the 1 GbE line rate: with a 16 MB window the server-side send
+// does not stall on a full receive window mid-transfer.
+static bool set_large_recv_buf(sockfd_t sockfd) {
+    int size = 16 * 1024 * 1024;
+    int ret = setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, (char *)&size, sizeof(int));
+    if (ret != 0) {
+        GGML_LOG_ERROR("Failed to set SO_RCVBUF\n");
+    }
+    return ret == 0;
+}
+
 static bool set_reuse_addr(sockfd_t sockfd) {
     int flag = 1;
     int ret = setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&flag, sizeof(int));
@@ -617,6 +631,14 @@ socket_ptr socket_t::accept() {
     }
     if (!set_no_delay(client_socket_fd)) {
         GGML_LOG_ERROR("Failed to set TCP_NODELAY\n");
+        return nullptr;
+    }
+    if (!set_large_send_buf(client_socket_fd)) {
+        GGML_LOG_ERROR("Failed to set SO_SNDBUF on accept\n");
+        return nullptr;
+    }
+    if (!set_large_recv_buf(client_socket_fd)) {
+        GGML_LOG_ERROR("Failed to set SO_RCVBUF on accept\n");
         return nullptr;
     }
     return socket_ptr(new socket_t(std::make_unique<impl>(client_socket_fd)));
@@ -660,6 +682,10 @@ socket_ptr socket_t::connect(const char * host, int port) {
     }
     if (!set_large_send_buf(sockfd)) {
         GGML_LOG_ERROR("Failed to set SO_SNDBUF\n");
+        return nullptr;
+    }
+    if (!set_large_recv_buf(sockfd)) {
+        GGML_LOG_ERROR("Failed to set SO_RCVBUF\n");
         return nullptr;
     }
     struct sockaddr_in addr;
