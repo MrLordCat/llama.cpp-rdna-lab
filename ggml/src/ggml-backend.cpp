@@ -880,6 +880,21 @@ struct ggml_backend_sched {
     bool async_staged;
     std::vector<std::vector<uint8_t>> async_staging;
     std::vector<ggml_backend_sched_async_copy> async_waiting_set; // ops with staged data, drained by scheduler
+
+    // P2 (D132): two-slot split snapshots. Graph N+1 must be built+allocated
+    // before the tail splits of graph N are computed; alloc_graph re-splits
+    // sched->splits and rewrites hv_tensor_copies, so a snapshot keeps the
+    // split structure, copy mapping and cur_copy of the pending graph.
+    struct ggml_backend_sched_p2_slot {
+        std::vector<ggml_backend_sched_split> splits;
+        std::vector<ggml_tensor *>            tensor_copies; // hash_set.size * n_backends * n_copies
+        struct ggml_tensor * graph_inputs[GGML_SCHED_MAX_SPLIT_INPUTS] = {};
+        int n_graph_inputs = 0;
+        int cur_copy       = 0;
+        int head_end       = 0;
+        bool used          = false;
+    };
+    ggml_backend_sched_p2_slot p2_slots[2];
 };
 
 #define hash_id(tensor) ggml_hash_find_or_insert(&sched->hash_set, tensor)
@@ -2263,9 +2278,10 @@ enum ggml_status ggml_backend_sched_graph_compute_range(ggml_backend_sched_t sch
 }
 
 // Local fork (P2/D132): exclusive end index of the RPC head part of the
-// currently allocated graph. The head includes every split up to and
-// including the last RPC split; the tail is everything after it. Topologies
-// without an RPC backend return n_splits (all splits are "head").
+// currently allocated graph. The head ends at the first split that consumes
+// an RPC-produced tensor (the GET l_out-*/copy splits are the tail); all
+// RPC graph splits and any local mask splits before that are head. Without
+// an RPC backend, n_splits (everything is "head").
 int ggml_backend_sched_p2_head_end(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
     int rpc_backend_id = -1;
@@ -2279,13 +2295,86 @@ int ggml_backend_sched_p2_head_end(ggml_backend_sched_t sched) {
     if (rpc_backend_id < 0) {
         return sched->n_splits;
     }
-    int head_end = 0;
     for (int s = 0; s < sched->n_splits; ++s) {
-        if (sched->splits[s].backend_id == rpc_backend_id) {
-            head_end = s + 1;
+        struct ggml_backend_sched_split * split = &sched->splits[s];
+        if (split->backend_id == rpc_backend_id) {
+            continue; // RPC graph splits are head
+        }
+        for (int j = 0; j < split->n_inputs; ++j) {
+            ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, split->inputs[j]);
+            if (input_backend != nullptr && ggml_backend_sched_backend_id(sched, input_backend) == rpc_backend_id) {
+                return s;
+            }
         }
     }
-    return head_end;
+    return sched->n_splits;
+}
+
+// Local fork (P2/D132): snapshot the current split layout into one of two
+// alternating slots; the other slot may still hold the pending tail of the
+// previous graph. Call this right after the head phase of a graph.
+bool ggml_backend_sched_p2_save_splits(ggml_backend_sched_t sched, int slot) {
+    GGML_ASSERT(sched);
+    GGML_ASSERT(slot >= 0 && slot < 2);
+    auto & s = sched->p2_slots[slot];
+    s.splits.assign(sched->splits, sched->splits + sched->n_splits);
+    const size_t n_copies = (size_t) sched->hash_set.size * sched->n_backends * sched->n_copies;
+    s.tensor_copies.assign(sched->hv_tensor_copies, sched->hv_tensor_copies + n_copies);
+    memcpy(s.graph_inputs, sched->graph_inputs, sizeof(sched->graph_inputs));
+    s.n_graph_inputs = sched->n_graph_inputs;
+    s.cur_copy       = sched->cur_copy;
+    s.head_end       = ggml_backend_sched_p2_head_end(sched);
+    s.used           = true;
+    return true;
+}
+
+int ggml_backend_sched_p2_saved_n_splits(ggml_backend_sched_t sched, int slot) {
+    GGML_ASSERT(sched && slot >= 0 && slot < 2);
+    return sched->p2_slots[slot].used ? (int) sched->p2_slots[slot].splits.size() : 0;
+}
+
+int ggml_backend_sched_p2_saved_head_end(ggml_backend_sched_t sched, int slot) {
+    GGML_ASSERT(sched && slot >= 0 && slot < 2);
+    return sched->p2_slots[slot].used ? sched->p2_slots[slot].head_end : 0;
+}
+
+// Local fork (P2/D132): compute splits [split_from, split_to) of a saved
+// snapshot (the split structure, tensor-copy mapping and cur_copy are
+// temporarily swapped in; everything is restored afterwards).
+enum ggml_status ggml_backend_sched_p2_compute_saved(ggml_backend_sched_t sched, int slot, int split_from, int split_to) {
+    GGML_ASSERT(sched && slot >= 0 && slot < 2);
+    auto & s = sched->p2_slots[slot];
+    if (!s.used || s.splits.empty()) {
+        GGML_LOG_ERROR("%s: slot %d not used\n", __func__, slot);
+        return GGML_STATUS_FAILED;
+    }
+    GGML_ASSERT(split_from >= 0 && split_to <= (int) s.splits.size() && split_from <= split_to);
+
+    struct ggml_backend_sched_split * old_splits = sched->splits;
+    const int old_n_splits  = sched->n_splits;
+    const int old_cur_copy  = sched->cur_copy;
+    struct ggml_tensor ** old_copies = sched->hv_tensor_copies;
+    struct ggml_tensor * old_graph_inputs[GGML_SCHED_MAX_SPLIT_INPUTS];
+    memcpy(old_graph_inputs, sched->graph_inputs, sizeof(old_graph_inputs));
+    const int old_n_graph_inputs = sched->n_graph_inputs;
+
+    sched->splits           = s.splits.data();
+    sched->n_splits         = (int) s.splits.size();
+    sched->cur_copy         = s.cur_copy;
+    sched->hv_tensor_copies = s.tensor_copies.data();
+    memcpy(sched->graph_inputs, s.graph_inputs, sizeof(sched->graph_inputs));
+    sched->n_graph_inputs   = s.n_graph_inputs;
+
+    const enum ggml_status status = ggml_backend_sched_compute_splits(sched, split_from, split_to);
+
+    sched->splits           = old_splits;
+    sched->n_splits         = old_n_splits;
+    sched->cur_copy         = old_cur_copy;
+    sched->hv_tensor_copies = old_copies;
+    memcpy(sched->graph_inputs, old_graph_inputs, sizeof(old_graph_inputs));
+    sched->n_graph_inputs   = old_n_graph_inputs;
+
+    return status;
 }
 
 void ggml_backend_sched_synchronize(ggml_backend_sched_t sched) {

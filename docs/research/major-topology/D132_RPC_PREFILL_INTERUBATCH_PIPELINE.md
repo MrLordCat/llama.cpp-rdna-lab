@@ -195,6 +195,26 @@ Decision: implement (1) as D132 next block; (2) is a numeric/performance
 shortcut that changes the mask shapes and needs a PPL gate; (3) alone does
 not remove the client-side alloc barrier.
 
+## P2 status 2026-08-27 (two-slot splits API in, decode driver back to pre-P2)
+
+- Two-slot split snapshots implemented in ggml-backend
+  (`ggml_backend_sched_p2_save_splits` / `p2_compute_saved` / `p2_saved_*` +
+  p2_head_end): graph N+1 can be allocated while tail N is still pending;
+  the snapshot swaps in the split layout, tensor-copy mapping, cur_copy and
+  graph inputs for the duration of the tail compute only.
+- **Verified safe**: p2p2j-stable run (pre-P2 llama-context decode driver +
+  two-slot API + server 5.0.2, ts 0.8,1,1.4, MTP n=4): 1301.2 ptps,
+  decode 27.0 t/s, 2/2 tasks, teardown clean. The API is inert without
+  GGML_RPC_PREFILL_PIPELINE=1.
+- **Regression found and isolated**: the P2 decode driver (lambda
+  extract_ubatch_results + phase-2 tail compute in llama-context) crashes
+  the server with 0xC0000005 right after "initializing slots" with MTP,
+  even with the env unset. The pre-P2 decode path (same ggml-backend +
+  server) passes. Cause: P2 integration in llama-context.cpp/h; saved as
+  stash "p2-decode-driver-wip" (not committed).
+- Next block: bisect the llama-context P2 delta (phase params, peek,
+  lambda) - smallest failing change first; keep the driver P2-only.
+
 ## Staged plan
 
 ### P0 - protocol/copy census
