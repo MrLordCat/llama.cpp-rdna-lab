@@ -195,29 +195,29 @@ Decision: implement (1) as D132 next block; (2) is a numeric/performance
 shortcut that changes the mask shapes and needs a PPL gate; (3) alone does
 not remove the client-side alloc barrier.
 
-## P2 status 2026-08-27 (evening): two-slot API safe + POD fix; decode driver needs two graph results
+## P2 status 2026-08-27 (late): decode restored, serial head/tail/extract
 
-- **0xC0000005 root cause found (first tail phase)**: `ggml_backend_sched` is
+- **0xC0000005 root cause (found & fixed)**: `ggml_backend_sched` is
   calloc-allocated, so `std::vector` members in `p2_slots` were never
-  constructed -> UB in `p2_saved_n_splits`. Fixed by POD slots
-  (malloc/memcpy C-arrays + free in `ggml_backend_sched_free`, commit
-  `ce57418f7`). After the fix the snapshot works end-to-end
-  (saved_n=4, head_end=4, empty-tail guard returns SUCCESS).
-- **Next blocker (design, not crash)**: tail extraction of graph N-1 after
-  head N+1 is unsafe because `llm_graph_result` is a single instance per
-  context (`gf_res_prev`); head N+1 rebuilds it and overwrites the tensor
-  pointers of graph N-1 before the tail extract runs. The two-slot split
-  snapshot alone cannot fix this: a second `llm_graph_result` (or a
-  snapshot of the output tensors/logit pointers of the last head graph) is
-  required. This is the next work item.
-- **Verified safe states** (all with server 5.0.2, ts 0.8,1,1.4, MTP n=4):
-  - `p2p2j-stable` (pre-P2 llama-context + two-slot API + POD fix): 1301.2 ptps, decode 27.0, clean teardown.
-  - `p2p2k-inline`: same with inline default extract block + P2 branches compiled in (env unset): 1304.4 ptps, decode 26.5.
-  - `p2p2s-final`: final stable commit build: 1303.4 ptps, decode 26.1, 2/2 tasks, EXIT=0.
-- P2 decode-driver WIP lives in stashes `p2-decode-driver-wip` and
-  `p2-decode-driver-wip-2` (phase-2 early-return + p2_res_saved attempt).
-- Commits on top of fd32dad79: 08694cdf5 (POD slots first attempt as
-  two-slot API), ce57418f7 (POD storage fix). Branch rpc-vulkan ahead 5.
+  constructed -> UB in `p2_saved_n_splits`. Fixed by POD slots (commit
+  `ce57418f7`).
+- **Decode restored** (commit `05ff474fa`): the deferred tail of N-1 after
+  head N+1 was unsafe with a single `llm_graph_result` per context
+  (`gf_res_prev`), because head N+1 rebuilt the result and overwrote the
+  tensor pointers of graph N-1 before extraction. P2 pipeline now runs, for
+  each ubatch: phase1 head (build/alloc + async RPC submit + snapshot) ->
+  phase2 tail (remaining split range on the SAME graph, GET included) ->
+  extract immediately. All result tensors of the current graph stay valid.
+- **Verified** with `GGML_RPC_PREFILL_PIPELINE=1` (server 5.0.2,
+  ts 0.8,1,1.4, MTP n=4, 14K): `p2p2t-serial` 1298.9 ptps / decode 26.7,
+  2/2 tasks, no crash (parity with stable 1303.4; the leftover of the
+  previous regression is gone).
+- Next stage (2-buffer deferred tail): head N+1 build/alloc overlapping
+  the tail N GET; requires saving the head-N result tensors separately
+  (second `llm_graph_result` or snapshot of output tensors) plus the
+  two-slot split snapshots already in place.
+- Commits: fd32dad79 (server+phases), 08694cdf5 (two-slot API),
+  ce57418f7 (POD slots), 05ff474fa (restore decode). Branch ahead 7.
 
 ## Staged plan
 

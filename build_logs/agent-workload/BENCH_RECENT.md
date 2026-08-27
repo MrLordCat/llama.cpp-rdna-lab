@@ -7,6 +7,7 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 
 | Timestamp | Scope | Backend | Label | Model | Ctx | Batch/UBatch | KV | Spec | TPS | Prompt tok/s | Decode tok/s | Errors |
 |---|---|---|---|---|---:|---:|---|---|---:|---:|---:|---:|
+| 2026-08-27 12:22:03 | cold-first | vulkan | p2p2t-serial | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 11.6456 | 1298.9100 | 26.7250 | 0 |
 | 2026-08-27 12:05:21 | cold-first | vulkan | p2p2s-final | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 11.5565 | 1303.3750 | 26.1200 | 0 |
 | 2026-08-27 11:59:52 | cold-first | vulkan | p2p2r-p2x | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 0.0000 | - | - | 2 |
 | 2026-08-27 11:57:31 | cold-first | vulkan | p2p2q-phase2 | Qwen3.8-27B-Q4_K_M.gguf | 12288 | 8192/1024 | q8_0/q8_0 | mtp | 0.0000 | - | - | 2 |
@@ -86,4 +87,3 @@ Retention: `2026-07-01` and newer; latest 80 rows from `BENCH_RUNS.csv`.
 | 2026-08-26 12:22:33 | cold-first | vulkan | rf24-14k-rpc-split-verify | Qwen3.8-27B-Q4_K_M.gguf | 16384 | 8192/1024 | q8_0/q8_0 | mtp | 10.7281 | 1328.6550 | 25.1250 | 0 |
 | 2026-08-26 11:57:54 | cold-first | vulkan | rf23-local-94k-specnone | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | none | 2.6121 | 1335.2100 | 24.7000 | 0 |
 | 2026-08-26 11:55:28 | cold-first | vulkan | rf22-local-94k-control | Qwen3.8-27B-Q4_K_M.gguf | 98304 | 8192/1024 | q8_0/q8_0 | mtp | 2.7202 | 1441.9850 | 51.1900 | 0 |
-| 2026-08-26 11:45:50 | cold-first | vulkan | rf21-14k-ub2048b | Qwen3.8-27B-Q4_K_M.gguf | 16384 | 8192/2048 | q8_0/q8_0 | mtp | 10.2179 | 1205.8200 | 25.4600 | 0 |
