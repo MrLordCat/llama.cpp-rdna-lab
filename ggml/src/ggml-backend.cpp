@@ -885,14 +885,18 @@ struct ggml_backend_sched {
     // before the tail splits of graph N are computed; alloc_graph re-splits
     // sched->splits and rewrites hv_tensor_copies, so a snapshot keeps the
     // split structure, copy mapping and cur_copy of the pending graph.
+    // NOTE: ggml_backend_sched is calloc-allocated, so only POD storage is
+    // allowed here (no std::vector members).
     struct ggml_backend_sched_p2_slot {
-        std::vector<ggml_backend_sched_split> splits;
-        std::vector<ggml_tensor *>            tensor_copies; // hash_set.size * n_backends * n_copies
+        struct ggml_backend_sched_split * splits = nullptr;
+        int    n_splits       = 0;
+        struct ggml_tensor ** tensor_copies = nullptr;
+        size_t n_copies       = 0;
         struct ggml_tensor * graph_inputs[GGML_SCHED_MAX_SPLIT_INPUTS] = {};
-        int n_graph_inputs = 0;
-        int cur_copy       = 0;
-        int head_end       = 0;
-        bool used          = false;
+        int    n_graph_inputs = 0;
+        int    cur_copy       = 0;
+        int    head_end       = 0;
+        bool   used           = false;
     };
     ggml_backend_sched_p2_slot p2_slots[2];
 };
@@ -2168,6 +2172,11 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
     free(sched->leaf_backend_ids);
     free(sched->prev_node_backend_ids);
     free(sched->prev_leaf_backend_ids);
+    // P2 (D132): snapshots are malloc'd
+    for (int i = 0; i < 2; ++i) {
+        free(sched->p2_slots[i].splits);
+        free(sched->p2_slots[i].tensor_copies);
+    }
     free(sched->context_buffer);
     free(sched->graph.nodes);
     free(sched->graph.leafs);
@@ -2317,10 +2326,26 @@ bool ggml_backend_sched_p2_save_splits(ggml_backend_sched_t sched, int slot) {
     GGML_ASSERT(sched);
     GGML_ASSERT(slot >= 0 && slot < 2);
     auto & s = sched->p2_slots[slot];
-    s.splits.assign(sched->splits, sched->splits + sched->n_splits);
     const size_t n_copies = (size_t) sched->hash_set.size * sched->n_backends * sched->n_copies;
-    s.tensor_copies.assign(sched->hv_tensor_copies, sched->hv_tensor_copies + n_copies);
+
+    // free any previous snapshot in this slot
+    free(s.splits);
+    free(s.tensor_copies);
+    s.splits         = (struct ggml_backend_sched_split *) malloc((size_t) sched->n_splits * sizeof(struct ggml_backend_sched_split));
+    s.tensor_copies  = (struct ggml_tensor **) malloc(n_copies * sizeof(struct ggml_tensor *));
+    if (s.splits == nullptr || s.tensor_copies == nullptr) {
+        free(s.splits);
+        free(s.tensor_copies);
+        s.splits = nullptr;
+        s.tensor_copies = nullptr;
+        s.used = false;
+        return false;
+    }
+    memcpy(s.splits, sched->splits, (size_t) sched->n_splits * sizeof(struct ggml_backend_sched_split));
+    memcpy(s.tensor_copies, sched->hv_tensor_copies, n_copies * sizeof(struct ggml_tensor *));
     memcpy(s.graph_inputs, sched->graph_inputs, sizeof(sched->graph_inputs));
+    s.n_splits       = sched->n_splits;
+    s.n_copies       = n_copies;
     s.n_graph_inputs = sched->n_graph_inputs;
     s.cur_copy       = sched->cur_copy;
     s.head_end       = ggml_backend_sched_p2_head_end(sched);
@@ -2330,7 +2355,7 @@ bool ggml_backend_sched_p2_save_splits(ggml_backend_sched_t sched, int slot) {
 
 int ggml_backend_sched_p2_saved_n_splits(ggml_backend_sched_t sched, int slot) {
     GGML_ASSERT(sched && slot >= 0 && slot < 2);
-    return sched->p2_slots[slot].used ? (int) sched->p2_slots[slot].splits.size() : 0;
+    return sched->p2_slots[slot].used ? sched->p2_slots[slot].n_splits : 0;
 }
 
 int ggml_backend_sched_p2_saved_head_end(ggml_backend_sched_t sched, int slot) {
@@ -2344,11 +2369,14 @@ int ggml_backend_sched_p2_saved_head_end(ggml_backend_sched_t sched, int slot) {
 enum ggml_status ggml_backend_sched_p2_compute_saved(ggml_backend_sched_t sched, int slot, int split_from, int split_to) {
     GGML_ASSERT(sched && slot >= 0 && slot < 2);
     auto & s = sched->p2_slots[slot];
-    if (!s.used || s.splits.empty()) {
+    if (!s.used || s.splits == nullptr || s.tensor_copies == nullptr || s.n_splits <= 0) {
         GGML_LOG_ERROR("%s: slot %d not used\n", __func__, slot);
         return GGML_STATUS_FAILED;
     }
-    GGML_ASSERT(split_from >= 0 && split_to <= (int) s.splits.size() && split_from <= split_to);
+    GGML_ASSERT(split_from >= 0 && split_to <= s.n_splits && split_from <= split_to);
+    if (split_from >= split_to) {
+        return GGML_STATUS_SUCCESS;
+    }
 
     struct ggml_backend_sched_split * old_splits = sched->splits;
     const int old_n_splits  = sched->n_splits;
@@ -2358,10 +2386,10 @@ enum ggml_status ggml_backend_sched_p2_compute_saved(ggml_backend_sched_t sched,
     memcpy(old_graph_inputs, sched->graph_inputs, sizeof(old_graph_inputs));
     const int old_n_graph_inputs = sched->n_graph_inputs;
 
-    sched->splits           = s.splits.data();
-    sched->n_splits         = (int) s.splits.size();
+    sched->splits           = s.splits;
+    sched->n_splits         = s.n_splits;
     sched->cur_copy         = s.cur_copy;
-    sched->hv_tensor_copies = s.tensor_copies.data();
+    sched->hv_tensor_copies = s.tensor_copies;
     memcpy(sched->graph_inputs, s.graph_inputs, sizeof(sched->graph_inputs));
     sched->n_graph_inputs   = s.n_graph_inputs;
 
