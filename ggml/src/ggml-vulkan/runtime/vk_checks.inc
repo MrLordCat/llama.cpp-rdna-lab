@@ -289,9 +289,6 @@ static void ggml_vk_check_results_0(ggml_backend_vk_context * ctx, ggml_cgraph *
             case GGML_UNARY_OP_EXP:
                 tensor_clone = ggml_exp(ggml_ctx, src_clone[0]);
                 break;
-            case GGML_UNARY_OP_EXPM1:
-                tensor_clone = ggml_expm1(ggml_ctx, src_clone[0]);
-                break;
             case GGML_UNARY_OP_ELU:
                 tensor_clone = ggml_elu(ggml_ctx, src_clone[0]);
                 break;

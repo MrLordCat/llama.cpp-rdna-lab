@@ -261,8 +261,6 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
         switch (ggml_get_unary_op(dst)) {
             case GGML_UNARY_OP_EXP:
                 return ctx->device->pipeline_exp[dst->type == GGML_TYPE_F16];
-            case GGML_UNARY_OP_EXPM1:
-                return ctx->device->pipeline_expm1[dst->type == GGML_TYPE_F16];
             case GGML_UNARY_OP_ELU:
                 return ctx->device->pipeline_elu[dst->type == GGML_TYPE_F16];
             case GGML_UNARY_OP_SILU:
@@ -635,27 +633,12 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
 }
 
 template <> void init_pushconst_tensor_offsets(ggml_backend_vk_context * ctx, vk_op_unary_push_constants &p, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * src2, const ggml_tensor * src3, ggml_tensor * dst) {
-    const uint32_t a_offset = get_misalign_bytes(ctx, src0) / ggml_type_size(src0->type);
-    const uint32_t d_offset = get_misalign_bytes(ctx, dst) / ggml_type_size(dst->type);
+    const uint32_t a_offset = get_misalign_bytes(ctx, src0) / ggml_vk_device_type_size(src0->type);
+    const uint32_t d_offset = get_misalign_bytes(ctx, dst) / ggml_vk_device_type_size(dst->type);
 
     p.misalign_offsets = (a_offset << 16) | d_offset;
 
     GGML_UNUSED(src1);
-    GGML_UNUSED(src2);
-    GGML_UNUSED(src3);
-}
-
-template <> void init_pushconst_tensor_offsets(ggml_backend_vk_context * ctx, vk_op_glu_push_constants &p, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * src2, const ggml_tensor * src3, ggml_tensor * dst) {
-    const uint32_t a_offset = get_misalign_bytes(ctx, src0) / ggml_type_size(src0->type);
-    const uint32_t b_offset = src1 ? get_misalign_bytes(ctx, src1) / ggml_type_size(src1->type) : a_offset;
-    const uint32_t d_offset = get_misalign_bytes(ctx, dst) / ggml_type_size(dst->type);
-
-    GGML_ASSERT(a_offset < (1u << 8));
-    GGML_ASSERT(b_offset < (1u << 8));
-    GGML_ASSERT(d_offset < (1u << 8));
-
-    p.misalign_offsets = (a_offset << 16) | (b_offset << 8) | d_offset;
-
     GGML_UNUSED(src2);
     GGML_UNUSED(src3);
 }

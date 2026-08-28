@@ -394,6 +394,38 @@ serial, so no -sm-layer tuning can beat single-GPU decode at L0/L1;
 the only real split-mode lever is token pipelining (PP across devices,
 currently only speculative/MTP), or accepting layer-split for the
 long-context/KV-bound lanes where prefill already wins.
+
+### Update (2026-08-28, E274 out of date): pipeline parallelism re-enabled
+
+The fork had an E274-era guard disabling `pipeline_parallel` for any
+Vulkan model with `nextn_predict_layers > 0` (i.e. EVERY `-sm layer`
+run on the Qwen3.8 GGUF, including `spec=none`), because in July it
+produced `sched copies=4` and was slower. Stock b10666 has NO such
+guard, so stock dual-GPU ran with the scheduler pipeline parallelism
+enabled — this is the reference behavior the fork was missing. The
+guard was removed; `LLAMA_MTP_PIPELINE_PARALLEL=0` keeps the opt-out.
+
+A/B (same-day, dual `-dev Vulkan1,Vulkan0 -sm layer`, r3):
+
+| L | PP off | PP on | stock same-day | stock 13:39 |
+|---|---:|---:|---:|---:|
+| 0 | 26.79 | **28.66 (+7.0%)** | 28.88 (parity) | 29.72 (-3.6%) |
+| 1 | 27.47 | **28.11 (+2.3%)** | 28.54 (parity) | 29.44 (-4.5%) |
+| 2 | 25.49 | 25.40 (ns) | – | 27.26 (-6.8%) |
+
+Prefill unchanged/improved (L0 1505, L1 1648, L2 1600 tps); VRAM fine
+(Vulkan1 7178 / Vulkan0 6054 MiB free at startup, PP copies are small).
+PP closes the short-context decode gap to parity with same-day stock
+and keeps the 49K lane unchanged — so the remaining L2 -6.8% is GPU
+compute (attention/MMVQ at 49K), not submission overhead.
+
+MTP smoke with PP on runs both contexts with `pipeline parallelism
+enabled` and does NOT crash, but `draft acceptance rate = 0.00000`
+(0/27, 0/123) — identical to the PP-off run of the same session
+(0/39, 0/183), i.e. a PRE-EXISTING MTP regression on the
+Qwen3.8-27B-Q4_K_M + current build (worked 2026-08-14 at 81.8%
+acceptance on VK 49K), unrelated to this change; needs a separate
+diagnosis (suspects: load-mtp gating / a40af6dd2 guard / draft path).
 - Single-GPU prefill is pre-existing and NOT touched by this work: fork 134
   tps vs stock 711-760 tps at L0/L1 (pre-RPC binary shows the same 132 tps),
   while dual-GPU fork prefill is healthy (1495 tps) and, per §1, faster than

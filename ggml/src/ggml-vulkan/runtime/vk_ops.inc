@@ -905,17 +905,17 @@ static void ggml_vk_l2_norm(ggml_backend_vk_context * ctx, vk_context& subctx, c
 }
 
 static void ggml_vk_unary(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, ggml_tensor * dst) {
-    ggml_vk_op_f32(ctx, subctx, src0, nullptr, nullptr, nullptr, dst, GGML_OP_UNARY, vk_op_unary_push_constants_init(src0, dst));
+    ggml_vk_op_f32<vk_op_push_constants>(ctx, subctx, src0, nullptr, nullptr, nullptr, dst, GGML_OP_UNARY, { (uint32_t)ggml_nelements(src0), 0, 0.0f, 0.0f, 0.0f, 0.0f });
 }
 
 static void ggml_vk_xielu(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, ggml_tensor * dst) {
     float * op_params = (float *)dst->op_params;
-    vk_op_unary_push_constants p = vk_op_unary_push_constants_init(src0, dst);
-    p.param1 = op_params[1];
-    p.param2 = op_params[2];
-    p.param3 = op_params[3];
-    p.param4 = op_params[4];
-    ggml_vk_op_f32(ctx, subctx, src0, nullptr, nullptr, nullptr, dst, GGML_OP_UNARY, std::move(p));
+    ggml_vk_op_f32<vk_op_push_constants>(ctx, subctx, src0, nullptr, nullptr, nullptr, dst, GGML_OP_UNARY,
+        {
+            (uint32_t)ggml_nelements(src0), 0,
+            op_params[1], op_params[2], op_params[3], op_params[4]
+        }
+    );
 }
 
 static void ggml_vk_glu(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
@@ -935,9 +935,6 @@ static void ggml_vk_glu(ggml_backend_vk_context * ctx, vk_context& subctx, const
     }
 
     const uint32_t mode = split ? 2 : (swapped ? 1 : 0);
-    const uint32_t src0_type_size = ggml_type_size(src0->type);
-    const uint32_t src1_type_size = split ? ggml_type_size(src1->type) : src0_type_size;
-    const uint32_t dst_type_size  = ggml_type_size(dst->type);
 
     ggml_vk_op_f32<vk_op_glu_push_constants>(ctx, subctx, src0, src1, nullptr, nullptr, dst, GGML_OP_GLU,
         {
@@ -947,22 +944,16 @@ static void ggml_vk_glu(ggml_backend_vk_context * ctx, vk_context& subctx, const
             mode,
             alpha,
             limit,
-            (uint32_t)(src0->nb[0] / src0_type_size),
-            (uint32_t)(src0->nb[1] / src0_type_size),
-            (uint32_t)(src0->nb[2] / src0_type_size),
-            (uint32_t)(src0->nb[3] / src0_type_size),
-            (uint32_t)((split ? src1->nb[0] : src0->nb[0]) / src1_type_size),
-            (uint32_t)((split ? src1->nb[1] : src0->nb[1]) / src1_type_size),
-            (uint32_t)((split ? src1->nb[2] : src0->nb[2]) / src1_type_size),
-            (uint32_t)((split ? src1->nb[3] : src0->nb[3]) / src1_type_size),
-            (uint32_t)(dst->nb[0] / dst_type_size),
-            (uint32_t)(dst->nb[1] / dst_type_size),
-            (uint32_t)(dst->nb[2] / dst_type_size),
-            (uint32_t)(dst->nb[3] / dst_type_size),
+            (uint32_t)(src0->nb[1] / src0->nb[0]),
+            (uint32_t)(src0->nb[2] / src0->nb[0]),
+            (uint32_t)(src0->nb[3] / src0->nb[0]),
+            (uint32_t)src0->ne[1],
+            (uint32_t)src0->ne[2],
+            (uint32_t)(dst->nb[1] / dst->nb[0]),
+            (uint32_t)(dst->nb[2] / dst->nb[0]),
+            (uint32_t)(dst->nb[3] / dst->nb[0]),
             (uint32_t)dst->ne[1],
-            (uint32_t)dst->ne[2],
-            0,
-            0, 0, 0, 0, 0, 0,
+            (uint32_t)dst->ne[2]
         });
 }
 

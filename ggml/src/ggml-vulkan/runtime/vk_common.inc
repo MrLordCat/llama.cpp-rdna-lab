@@ -788,7 +788,6 @@ struct vk_device_struct {
 
     // [src/dst 0=fp32,1=fp16]
     vk_pipeline pipeline_exp[2];
-    vk_pipeline pipeline_expm1[2];
     vk_pipeline pipeline_elu[2];
     vk_pipeline pipeline_gelu[2];
     vk_pipeline pipeline_gelu_erf[2];
@@ -1160,35 +1159,30 @@ struct vk_op_glu_push_constants {
     uint32_t mode;  // 0: default, 1: swapped, 2: split
     float alpha; // for swiglu_oai
     float limit;
-    uint32_t nb00;
     uint32_t nb01;
     uint32_t nb02;
     uint32_t nb03;
-    uint32_t nb10;
+    uint32_t ne01;
+    uint32_t ne02;
     uint32_t nb11;
     uint32_t nb12;
     uint32_t nb13;
-    uint32_t nb20;
-    uint32_t nb21;
-    uint32_t nb22;
-    uint32_t nb23;
-    uint32_t ne21;
-    uint32_t ne22;
-    uint32_t misalign_offsets;
-    uint32_t ne2_012mp; uint32_t ne2_012L;
-    uint32_t ne2_01mp;  uint32_t ne2_01L;
-    uint32_t ne2_0mp;   uint32_t ne2_0L;
+    uint32_t ne11;
+    uint32_t ne12;
 };
-static_assert(sizeof(vk_op_glu_push_constants) <= 128, "sizeof(vk_op_glu_push_constants) must be <= 128");
 
 struct vk_op_unary_push_constants {
     uint32_t ne;
     uint32_t ne00; uint32_t ne01; uint32_t ne02; uint32_t ne03; uint32_t nb00; uint32_t nb01; uint32_t nb02; uint32_t nb03;
     uint32_t ne10; uint32_t ne11; uint32_t ne12; uint32_t ne13; uint32_t nb10; uint32_t nb11; uint32_t nb12; uint32_t nb13;
     uint32_t misalign_offsets;
-    float param1; float param2; float param3; float param4;
-    uint32_t ne0_012mp; uint32_t ne0_01mp; uint32_t ne0_0mp; uint32_t ne0_Ls;
-    uint32_t ne1_012mp; uint32_t ne1_01mp; uint32_t ne1_0mp; uint32_t ne1_Ls;
+    float param1; float param2;
+    uint32_t ne0_012mp; uint32_t ne0_012L;
+    uint32_t ne0_01mp;  uint32_t ne0_01L;
+    uint32_t ne0_0mp;   uint32_t ne0_0L;
+    uint32_t ne1_012mp; uint32_t ne1_012L;
+    uint32_t ne1_01mp;  uint32_t ne1_01L;
+    uint32_t ne1_0mp;   uint32_t ne1_0L;
 };
 static_assert(sizeof(vk_op_unary_push_constants) <= 128, "sizeof(vk_op_unary_push_constants) must be <= 128");
 
@@ -1298,35 +1292,14 @@ template <typename T> void init_pushconst_fastdiv(T &p) {
     static_assert(!std::is_const<T>::value, "unexpected type");
 }
 
-static uint32_t pack_fastdiv_L(uint32_t L0, uint32_t L1, uint32_t L2) {
-    return L0 | (L1 << 8) | (L2 << 16);
-}
-
 template <> void init_pushconst_fastdiv(vk_op_unary_push_constants &p) {
     // Compute magic values to divide by these six numbers.
-    uint32_t ne0_012L;
-    uint32_t ne0_01L;
-    uint32_t ne0_0L;
-    uint32_t ne1_012L;
-    uint32_t ne1_01L;
-    uint32_t ne1_0L;
-
-    init_fastdiv_values(p.ne02*p.ne01*p.ne00,  p.ne0_012mp,    ne0_012L);
-    init_fastdiv_values(p.ne01*p.ne00,         p.ne0_01mp,     ne0_01L);
-    init_fastdiv_values(p.ne00,                p.ne0_0mp,      ne0_0L);
-    init_fastdiv_values(p.ne12*p.ne11*p.ne10,  p.ne1_012mp,    ne1_012L);
-    init_fastdiv_values(p.ne11*p.ne10,         p.ne1_01mp,     ne1_01L);
-    init_fastdiv_values(p.ne10,                p.ne1_0mp,      ne1_0L);
-
-    p.ne0_Ls = pack_fastdiv_L(ne0_012L, ne0_01L, ne0_0L);
-    p.ne1_Ls = pack_fastdiv_L(ne1_012L, ne1_01L, ne1_0L);
-}
-
-template <> void init_pushconst_fastdiv(vk_op_glu_push_constants &p) {
-    // GLU linearizes over dst, then uses dst coordinates for src0/src1.
-    init_fastdiv_values(p.ne22*p.ne21*p.ne20,  p.ne2_012mp,    p.ne2_012L);
-    init_fastdiv_values(p.ne21*p.ne20,         p.ne2_01mp,     p.ne2_01L);
-    init_fastdiv_values(p.ne20,                p.ne2_0mp,      p.ne2_0L);
+    init_fastdiv_values(p.ne02*p.ne01*p.ne00,  p.ne0_012mp,    p.ne0_012L);
+    init_fastdiv_values(p.ne01*p.ne00,         p.ne0_01mp,     p.ne0_01L);
+    init_fastdiv_values(p.ne00,                p.ne0_0mp,      p.ne0_0L);
+    init_fastdiv_values(p.ne12*p.ne11*p.ne10,  p.ne1_012mp,    p.ne1_012L);
+    init_fastdiv_values(p.ne11*p.ne10,         p.ne1_01mp,     p.ne1_01L);
+    init_fastdiv_values(p.ne10,                p.ne1_0mp,      p.ne1_0L);
 }
 
 struct vk_op_binary_push_constants {
