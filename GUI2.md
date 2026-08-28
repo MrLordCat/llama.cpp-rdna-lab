@@ -162,7 +162,7 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 7 677 lines of Python plus 2 435 of tests, against the old GUI's
+`gui2/` is 7 698 lines of Python plus 2 435 of tests, against the old GUI's
 15 458 with none. The suite is 181 tests and runs in about 20 seconds without
 touching a GPU.
 
@@ -181,6 +181,16 @@ touching a GPU.
 | `core/rpc.py` | the worker command to paste, and the handshake that checks it answered |
 | `proc/` | one GPU slot, a bounded log with stable line numbers, a finish callback |
 | `web/` | FastHTML routes; every panel is an htmx fragment |
+| `web/controls.py` | the one on/off control the whole GUI uses |
+
+Anything that is on or off is a button holding its own word: pressed means on,
+and there is no box beside the label saying the same thing a second time. One
+helper renders all of them — the sweep axes, the flags, the two history
+filters, the RPC worker's two questions — and a device row is the same idea at
+full width, the row itself being the button. The pressed look is decided by
+`:has(input:checked)` in CSS rather than by a class chosen on the server,
+because most clicks are answered with a swap of the preview alone; a class
+would go stale the moment the browser knew something the last response did not.
 
 The Server page is written for someone who has not read llama.cpp's help
 text. Every section says what it is for; every number that a person cannot be
@@ -216,8 +226,8 @@ spend a whole startup timeout finding that out — while a value that arrived
 from a link or an earlier sweep keeps its place whatever the ladder says.
 Every bounded number is a slider with a caption in the unit a person judges it
 by (`3 minutes`, `≈ 12 words`, `≈ 6.0K tokens in front of every prompt`), and
-every on-or-off is a switch with its sentence underneath rather than a bare
-box in a grid.
+every on-or-off is a pressable word with its sentence underneath rather than a
+bare box in a grid.
 
 What it adds is the arithmetic: how many requests a prompt set, a repeat count
 and five sweep axes multiply out to, and the longest the run's own timeouts

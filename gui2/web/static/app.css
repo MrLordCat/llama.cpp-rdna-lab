@@ -138,8 +138,8 @@ td.label { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
 .field select, .field input { width: 100%; }
 .hint { color: var(--muted); font-size: 10.5px; }
 
-/* Which values to try: ticked, not typed. One chip on is a measurement of it,
-   two is a search between them, and the difference is visible without reading. */
+/* Anything that is on or off is a button holding its own word: pressed is on.
+   A box beside a label says the same thing in two places and reads as neither. */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
     display: inline-flex;
@@ -152,17 +152,16 @@ td.label { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
     font-size: 12px;
     cursor: pointer;
     user-select: none;
+    white-space: nowrap;
 }
 .chip:hover { border-color: var(--accent); color: var(--text); }
 .chip:focus-within { outline: 1px solid var(--accent); outline-offset: 2px; }
-/* colour alone would not survive a colour-blind eye or a bad monitor */
 .chip:has(input:checked) {
     border-color: var(--accent);
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 15%, transparent);
     font-weight: 600;
 }
-.chip:has(input:checked) > span::before { content: "✓ "; }
 .chip input[type="checkbox"] {
     appearance: none;
     -webkit-appearance: none;
@@ -174,53 +173,12 @@ td.label { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
     border: 0;
 }
 
-/* On or off, each under the sentence that says what it means */
-.switches { display: flex; flex-direction: column; gap: 1px; margin-top: 12px; }
-.switches .field.inline {
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0 10px;
-    padding: 6px 8px;
-    border-radius: 4px;
-}
-.switches .field.inline:hover { background: var(--panel-2); }
-.switches .field.inline > span:first-child { order: 2; flex: 1; }
-.switches .field.inline .hint { order: 3; display: block; flex-basis: 100%; padding-left: 46px; }
-.switches .field.inline input.switch {
-    order: 1;
-    appearance: none;
-    -webkit-appearance: none;
-    position: relative;
-    width: 36px;
-    min-width: 36px;
-    height: 19px;
-    flex: none;
-    padding: 0;
-    border-radius: 10px;
-    background: var(--panel-2);
-    border: 1px solid var(--line);
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s;
-}
-.switches .field.inline input.switch::after {
-    content: "";
-    position: absolute;
-    top: 3px;
-    left: 3px;
-    width: 11px;
-    height: 11px;
-    border-radius: 50%;
-    background: var(--muted);
-    transition: transform 0.12s, background 0.12s;
-}
-.switches .field.inline input.switch:checked {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 22%, transparent);
-}
-.switches .field.inline input.switch:checked::after {
-    transform: translateX(17px);
-    background: var(--accent);
-}
+/* One switch, with the sentence that says what it means under it */
+.field.switch { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.field.switch .hint { padding-left: 2px; }
+.switches { display: flex; flex-wrap: wrap; gap: 9px 10px; margin-top: 12px; }
+/* a switch that explains itself gets the width to do it; the rest sit in a row */
+.field.switch:has(.hint) { flex-basis: 100%; }
 
 textarea {
     background: var(--panel-2);
@@ -319,17 +277,36 @@ button.small { padding: 2px 8px; font-size: 11px; }
 
 .devlist { display: flex; flex-direction: column; gap: 2px; margin: 4px 0; }
 .devrow {
+    position: relative;
     display: grid;
-    grid-template-columns: 18px 84px 1fr auto;
+    grid-template-columns: 84px 1fr auto;
     align-items: center;
     gap: 8px;
-    padding: 3px 6px;
-    border: 1px solid transparent;
+    padding: 4px 8px;
+    border: 1px solid var(--line);
     border-radius: 4px;
     cursor: pointer;
 }
-.devrow:hover { background: var(--panel-2); border-color: var(--line); }
-.devrow input[type="checkbox"] { width: auto; min-width: 0; }
+.devrow:hover { background: var(--panel-2); border-color: var(--accent); }
+/* the row is the button; a box in front of it would say "selected" twice */
+.devrow:has(input:checked) {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.devrow:has(input:checked) .devname { color: var(--accent); font-weight: 600; }
+/* absolute so it takes no column of the grid, but still submits and still focuses */
+.devrow input[type="checkbox"] {
+    position: absolute;
+    appearance: none;
+    -webkit-appearance: none;
+    width: 0;
+    height: 0;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+.devrow:focus-within { outline: 1px solid var(--accent); outline-offset: 2px; }
 .devrow .devname { color: var(--text); font-size: 12px; }
 .devrow .devdesc { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .devrow .devmem { color: var(--muted); font-variant-numeric: tabular-nums; }

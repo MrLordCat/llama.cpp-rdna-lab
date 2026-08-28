@@ -70,6 +70,7 @@ from gui2.core.runspec import (
     validate,
 )
 from gui2.proc import Busy, Supervisor
+from gui2.web.controls import toggle
 from gui2.web.layout import PROBLEM_STYLE, command_lines, problem_lines, shell
 
 #: Never echoed into the address bar, browser history or the access log.
@@ -334,7 +335,7 @@ def _control(param: Param, spec: RunSpec, options: dict, facts: ModelFacts | Non
         return Select(*[Option(label, value=item, selected=item == value)
                         for label, item in options[param.name]], name=param.name, **hooks)
     if param.kind == "bool":
-        return Input(type="checkbox", name=param.name, checked=bool(value))
+        return toggle(param.name, param.label, bool(value), title=param.help)
     if param.kind == "slider":
         return _slider(param, spec, facts)
     if param.kind == "choice":
@@ -429,11 +430,14 @@ def _host_hint(spec: RunSpec) -> str:
 
 def _field(param: Param, spec: RunSpec, options: dict, facts: ModelFacts | None):
     hint = _hint(param, spec, facts)
+    if param.kind == "bool":
+        # the button carries the label, so a Label around it would say it twice
+        return Div(_control(param, spec, options, facts), cls="field switch", title=hint)
     return Label(
         Span(param.label),
         _control(param, spec, options, facts),
         Span(hint, cls="hint") if hint else None,
-        cls="field inline" if param.kind == "bool" else "field",
+        cls="field",
         title=hint,
     )
 
@@ -617,12 +621,10 @@ def worker_panel(params, oob: bool = False) -> Div:
                         placeholder="empty = every device that machine has"),
                   Span("names as that machine sees them, e.g. Vulkan0", cls="hint"),
                   cls="field"),
-            Label(Input(type="checkbox", name="rpc_open", checked=plan.open_to_network),
-                  Span("Reachable from this machine"),
-                  cls="field inline"),
-            Label(Input(type="checkbox", name="rpc_cache", checked=plan.cache),
-                  Span("Cache tensors on the worker's disk"),
-                  cls="field inline"),
+            Div(toggle("rpc_open", "Reachable from this machine", plan.open_to_network),
+                cls="field switch"),
+            Div(toggle("rpc_cache", "Cache tensors on the worker's disk", plan.cache),
+                cls="field switch"),
             cls="grid",
         ),
         Span("Run this on the other machine:", cls="hint block"),
@@ -719,6 +721,10 @@ def rpc_guide(plan: WorkerPlan) -> Details:
 def _section(section: Section, config: AppConfig, spec: RunSpec, options: dict,
              facts: ModelFacts | None, scan: Scan, backend: str, params=None):
     named = [name for name in section.names if name != "devices"]
+    # the on/off buttons sit together rather than one per column of the grid,
+    # where they would be three short pills spaced like three long text boxes
+    switches = [name for name in named if name in BY_NAME and BY_NAME[name].kind == "bool"]
+    named = [name for name in named if name not in switches]
     fields = [_build_field(spec, config, options) if name == "build_dir"
               else _field(BY_NAME[name], spec, options, facts)
               for name in named]
@@ -735,6 +741,9 @@ def _section(section: Section, config: AppConfig, spec: RunSpec, options: dict,
         body.append(worker_panel(params))
     if fields:
         body.append(Div(*fields, cls="grid"))
+    if switches:
+        body.append(Div(*[_field(BY_NAME[name], spec, options, facts) for name in switches],
+                        cls="switches"))
     if "tensor_split" in named:
         body.append(split_line(spec, facts, run_devices(scan, spec, backend)))
     if "rpc_endpoints" in named:

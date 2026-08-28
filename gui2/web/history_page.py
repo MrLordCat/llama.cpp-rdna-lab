@@ -46,6 +46,7 @@ from gui2.core.history import (
     summarize,
 )
 from gui2.web.chart import backend_color, config_chart, progress_chart
+from gui2.web.controls import toggle
 from gui2.web.layout import number, shell
 
 LIMITS = (50, 100, 250, 1000)
@@ -166,14 +167,8 @@ def _filters(state: ViewState, available) -> Form:
             Select(*[Option(str(item), value=str(item), selected=item == state.limit) for item in LIMITS],
                    name="limit"),
         ),
-        Label(
-            Input(type="checkbox", name="hide_errors", checked=state.run_filter.hide_errors),
-            "hide failed runs", cls="inline",
-        ),
-        Label(
-            Input(type="checkbox", name="best_only", checked=state.run_filter.best_only),
-            "lane bests only", cls="inline",
-        ),
+        toggle("hide_errors", "hide failed runs", state.run_filter.hide_errors),
+        toggle("best_only", "lane bests only", state.run_filter.best_only),
         A("reset", href="/history", cls="muted"),
         cls="filters panel",
         hx_get="/history/rows",

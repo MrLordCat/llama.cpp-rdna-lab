@@ -81,6 +81,7 @@ from gui2.core.runspec import Problem, RunSpec, mask_api_key
 from gui2.proc import Busy, Supervisor
 from gui2.proc.hidden import console_python
 from gui2.web import server_page
+from gui2.web.controls import toggle
 from gui2.web.layout import command_lines, problem_lines, shell
 
 #: These fields need a submission marker of their own. The Server page's link
@@ -205,17 +206,12 @@ def _offered(param: Param, bench: BenchSpec, facts: ModelFacts | None) -> list[s
 
 
 def _chips(param: Param, bench: BenchSpec, facts: ModelFacts | None) -> Div:
-    # the ticked look comes from the box's own state in CSS, not from a class
-    # decided here: only the preview is swapped back, so a class would go stale
     chosen = set(items(getattr(bench, param.name)))
     helps = {"sweep_kv": KV_CHIP_HELP, "sweep_spec": SPEC_CHIP_HELP}.get(param.name, {})
     return Div(*[
-        Label(
-            Input(type="checkbox", name=param.name, value=value, checked=value in chosen),
-            Span(_chip_label(param, value)),
-            cls="chip",
-            title=helps.get(value, ""),
-        ) for value in _offered(param, bench, facts)
+        toggle(param.name, _chip_label(param, value), value in chosen,
+               value=value, title=helps.get(value, ""))
+        for value in _offered(param, bench, facts)
     ], cls="chips")
 
 
@@ -259,7 +255,7 @@ def _control(param: Param, bench: BenchSpec, facts: ModelFacts | None):
     if param.kind == "slider":
         return _slider(param, bench)
     if param.kind == "bool":
-        return Input(type="checkbox", name=param.name, checked=bool(value), cls="switch")
+        return toggle(param.name, param.label, bool(value), title=param.help)
     if param.kind == "choice":
         return Select(*[Option(_choice_label(param, choice), value=choice, selected=choice == value)
                         for choice in param.choices], name=param.name)
@@ -319,12 +315,15 @@ WIDE = frozenset({"tasks", "task_ids", "real_context_mode", "background_server_p
 
 def _field(param: Param, bench: BenchSpec, facts: ModelFacts | None = None):
     hint = _hint(param, bench)
+    if param.kind == "bool":
+        # the button carries the label, so a Label around it would say it twice
+        return Div(_control(param, bench, facts),
+                   Span(hint, cls="hint") if hint else None, cls="field switch")
     return Label(
         Span(param.label),
         _control(param, bench, facts),
         Span(hint, cls="hint") if hint else None,
-        cls="field inline" if param.kind == "bool"
-        else ("field wide" if param.name in WIDE else "field"),
+        cls="field wide" if param.name in WIDE else "field",
         title=hint,
     )
 
