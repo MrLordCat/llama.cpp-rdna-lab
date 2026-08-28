@@ -428,7 +428,8 @@ def _host_hint(spec: RunSpec) -> str:
     return f"{HOST_HELP['0.0.0.0']}{where}. Anyone who can reach it can use the model."
 
 
-def _field(param: Param, spec: RunSpec, options: dict, facts: ModelFacts | None):
+def _field(param: Param, spec: RunSpec, options: dict, facts: ModelFacts | None,
+           scan: Scan | None = None, backend: str = ""):
     hint = _hint(param, spec, facts)
     if param.kind == "bool":
         # the button carries the label, so a Label around it would say it twice;
@@ -436,13 +437,51 @@ def _field(param: Param, spec: RunSpec, options: dict, facts: ModelFacts | None)
         return Div(_control(param, spec, options, facts),
                    Span(param.help, cls="hint") if param.help else None,
                    cls="field switch", title=hint)
+    verdict = _model_verdict(spec, facts, scan, backend) if param.name == "model" else ""
+    hooks = {}
+    if param.name == "model" and scan is not None and not scan.ready:
+        # the verdict needs the device scan, which lands after the first render;
+        # the field asks for itself once, exactly like the device picker does
+        hooks = {"id": "modelfield",
+                 "hx_get": f"/server/modelfield?{spec_link(spec)}",
+                 "hx_trigger": "load delay:700ms",
+                 "hx_target": "#modelfield",
+                 "hx_swap": "outerHTML"}
     return Label(
         Span(param.label),
         _control(param, spec, options, facts),
+        Span(verdict, cls="problem err" if verdict.startswith("⚠") else "hint")
+        if verdict else None,
         Span(hint, cls="hint") if hint else None,
         cls="field",
         title=hint,
+        **hooks,
     )
+
+
+def _model_verdict(spec: RunSpec, facts: ModelFacts | None, scan: Scan | None,
+                   backend: str) -> str:
+    """The question the model select is really asked: will this load here.
+
+    The Memory panel answers it fully; this line exists for the moment before
+    the eye reaches the right column and for the width at which the columns
+    stack. Empty means there is nothing honest to say yet.
+    """
+    if facts is None or scan is None or not scan.ready or facts.error:
+        return ""
+    devices = run_devices(scan, spec, backend)
+    report = estimate(spec, facts, devices=max(1, len(devices)),
+                      mmproj_bytes=_file_size(spec.mmproj))
+    if not report.terms:
+        return ""
+    budget, parts, measured = _budget(devices)
+    if budget <= 0:
+        return ""
+    headroom = budget - report.total_mib
+    source = "free" if measured else "installed"
+    if headroom >= 0:
+        return f"fits — {gib(report.total_mib)} of {gib(budget)} {source} ({' + '.join(parts)})"
+    return f"⚠ {gib(-headroom)} over the {gib(budget)} {source} ({' + '.join(parts)})"
 
 
 def _build_field(spec: RunSpec, config: AppConfig, options: dict):
@@ -457,6 +496,13 @@ def _build_field(spec: RunSpec, config: AppConfig, options: dict):
              cls="hint"),
         cls="field",
     )
+
+
+def model_field(config: AppConfig, spec: RunSpec, scan: Scan, backend: str):
+    """The Model select as its own fragment, for the refresh that waits for
+    the device scan: the fit verdict is honest only once the cards answered."""
+    return _field(BY_NAME["model"], spec, _options(config, spec), model_facts(spec),
+                  scan, backend)
 
 
 def _ceiling_of(name: str, facts: ModelFacts | None) -> int:
@@ -730,7 +776,7 @@ def _section(section: Section, config: AppConfig, spec: RunSpec, options: dict,
     switches = [name for name in named if name in BY_NAME and BY_NAME[name].kind == "bool"]
     named = [name for name in named if name not in switches]
     fields = [_build_field(spec, config, options) if name == "build_dir"
-              else _field(BY_NAME[name], spec, options, facts)
+              else _field(BY_NAME[name], spec, options, facts, scan, backend)
               for name in named]
 
     body: list = []
@@ -1231,4 +1277,5 @@ def page(config: AppConfig, spec: RunSpec, supervisor: Supervisor, scan: Scan, b
                 run_panel(supervisor), log_panel(supervisor), cls="stack"),
             cls="split",
         ),
+        nav={"/autotune": spec_link(spec)},
     )

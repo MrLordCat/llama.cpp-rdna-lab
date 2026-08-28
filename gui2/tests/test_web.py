@@ -586,6 +586,20 @@ def test_an_earlier_sweep_of_the_same_model_is_offered_back(client, models, tmp_
     assert "runs=3" in link.group(1)
 
 
+def test_the_header_links_carry_what_each_page_comes_from(client, models):
+    """Server → Autotune in the header must not open an empty sweep."""
+    html = client.get("/server", params={"model": models["long"], "ctx_size": "32768"}).text
+    link = re.search(r'href="/autotune\?([^"]*)"', html)
+    assert link, "the header link to Autotune has to carry the run"
+    assert "model=" in link.group(1) and "ctx_size=32768" in link.group(1)
+    assert "_form=1" in link.group(1)
+
+    html = client.get("/autotune", params={"model": models["long"], "ctx_size": "32768",
+                                            "_form": "1"}).text
+    link = re.search(r'href="/server\?([^"]*)"', html)
+    assert link and "model=" in link.group(1) and "ctx_size=32768" in link.group(1)
+
+
 def test_the_autotune_page_keeps_the_whole_run_in_the_address_bar(client, models):
     response = client.post("/autotune/preview", data={
         "_form": "1", "_autotune": "1", "model": models["long"],

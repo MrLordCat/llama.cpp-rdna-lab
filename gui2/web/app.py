@@ -144,6 +144,12 @@ def create_app(config: AppConfig | None = None):
         devices.start(parse_rpc_endpoints(spec.rpc_endpoints), backend)
         return server_page.devices_field(spec, devices.state(), backend)
 
+    @rt("/server/modelfield", methods=["GET"])
+    def server_modelfield(req):
+        spec = server_page.spec_from_params(req.query_params)
+        scan, backend = scanned(spec)
+        return server_page.model_field(config, spec, scan, backend)
+
     @rt("/server/devices", methods=["POST"])
     async def server_devices_rescan(req):
         spec = server_page.spec_from_params(await req.form())

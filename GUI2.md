@@ -162,8 +162,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 7 708 lines of Python plus 2 435 of tests, against the old GUI's
-15 458 with none. The suite is 181 tests and runs in about 20 seconds without
+`gui2/` is 7 770 lines of Python plus 2 449 of tests, against the old GUI's
+15 458 with none. The suite is 182 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -199,7 +199,15 @@ last response did not.
 The Server page is written for someone who has not read llama.cpp's help
 text. Every section says what it is for; every number that a person cannot be
 expected to know is either read from the machine or declared automatic with
-the automatic value spelled out.
+the automatic value spelled out. The Model field answers its own question
+before the eye reaches the right column: "fits — 18.8 GiB of 30.1 GiB free"
+or "2.7 GiB over the 15.9 GiB installed", and it asks for itself once the
+device scan lands, exactly as the device picker does.
+
+The header links carry the page they come from: Server's "Autotune" opens the
+sweep of what is on screen, Autotune's "Server" opens the same run again.
+The pages are pieces of one question, not four separate forms, so moving
+between them does not cost the configuration.
 
 The build list is dated and ordered by date rather than by name. Eight
 `build-*` directories accrete over a few months of trying backends, and the

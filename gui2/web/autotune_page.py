@@ -703,4 +703,5 @@ def page(config: AppConfig, spec: RunSpec, bench: BenchSpec, supervisor: Supervi
                 server_page.log_panel(supervisor), cls="stack"),
             cls="split",
         ),
+        nav={"/server": server_page.spec_link(spec)},
     )

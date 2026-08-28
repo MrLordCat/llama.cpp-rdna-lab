@@ -51,12 +51,19 @@ def command_lines(argv: list[str]) -> str:
     return "\n".join(lines)
 
 
-def shell(title: str, active: str, config: AppConfig, *content):
+def shell(title: str, active: str, config: AppConfig, *content,
+          nav: dict[str, str] | None = None):
+    """`nav` keeps the page the link comes from: Server's "Autotune" opens the
+    sweep of what is on screen, Autotune's "Server" opens the same run, rather
+    than two empty forms."""
     return (
         Title(f"GUI 2.0 — {title}"),
         Header(
             H1("llama.cpp RDNA lab — GUI 2.0"),
-            Nav(*[A(label, href=href, cls="active" if href == active else None) for href, label in NAV]),
+            Nav(*[A(label,
+                    href=f"{href}?{nav[href]}" if nav and href in nav else href,
+                    cls="active" if href == active else None)
+                  for href, label in NAV]),
             Span(str(config.data_root), cls="path"),
             cls="top",
         ),

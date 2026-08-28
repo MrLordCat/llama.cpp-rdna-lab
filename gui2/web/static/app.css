@@ -57,6 +57,14 @@ form.filters {
 
 form.filters label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 11px; }
 form.filters label.inline { flex-direction: row; align-items: center; gap: 6px; font-size: 12px; }
+/* the on/off filter buttons keep their own left-aligned row under the selects */
+form.filters .filters-toggles {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    flex-basis: 100%;
+}
 
 select, input {
     background: var(--panel-2);
