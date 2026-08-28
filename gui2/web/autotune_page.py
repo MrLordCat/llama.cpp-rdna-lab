@@ -40,6 +40,12 @@ from fasthtml.common import (
     Select,
     Span,
     Summary,
+    Table,
+    Tbody,
+    Td,
+    Th,
+    Thead,
+    Tr,
 )
 
 from gui2.config import AppConfig
@@ -350,16 +356,35 @@ def memory_panel(spec: RunSpec, bench: BenchSpec, scan: Scan, backend: str) -> D
     return Div(H3("Room for it"), verdict, *rest, cls="panel memory")
 
 
-def _winner_text(chosen: dict[str, str]) -> str:
-    return (f"{context_text(int(chosen['sweep_ctx']))} context, batch "
-            f"{chosen['sweep_batch']}/{chosen['sweep_ubatch']}, KV {chosen['sweep_kv']}, "
-            f"speculation {chosen['sweep_spec']}")
+#: name, and whether the column holds a number that should line up with the one above
+EARLIER_COLUMNS: tuple[tuple[str, bool], ...] = (
+    ("When", False), ("Build", False), ("Context", False), ("Batch / ubatch", False),
+    ("KV", False), ("Spec", False), ("t/s", True), ("Decode", True), ("", False),
+)
 
 
-def _speed_text(run: Run) -> str:
-    figures = [f"{run.aggregate_tps:.1f} t/s overall" if run.aggregate_tps else "",
-               f"{run.decode_eval_tps:.1f} t/s decoding" if run.decode_eval_tps else ""]
-    return ", ".join(part for part in figures if part) or "no speed recorded"
+def _number(value: float | None) -> str:
+    return f"{value:.1f}" if value else "-"
+
+
+def _earlier_row(spec: RunSpec, bench: BenchSpec, run: Run) -> Tr:
+    chosen = winning_config(run)
+    mine = bool(spec.build_dir) and run.build_name == Path(spec.build_dir).name
+    return Tr(
+        Td(run.time_text, cls="when"),
+        Td(run.build_name, cls="mine" if mine else None,
+           title="the build now selected" if mine else run.backend),
+        Td(context_text(int(chosen["sweep_ctx"]))),
+        Td(f"{chosen['sweep_batch']} / {chosen['sweep_ubatch']}"),
+        Td(chosen["sweep_kv"]),
+        Td(chosen["sweep_spec"]),
+        Td(_number(run.aggregate_tps), cls="num"),
+        Td(_number(run.decode_eval_tps), cls="num"),
+        Td(A("use", href=f"/autotune?{page_link(spec, bench, **chosen)}", cls="button small")),
+        # what the numbers were measured over, which is what makes them comparable
+        title=f"{run.tasks} prompts, context from {run.real_context_mode or 'off'}, "
+              f"{run.backend}",
+    )
 
 
 def earlier_panel(spec: RunSpec, bench: BenchSpec, runs: list[Run], oob: bool = False) -> Div:
@@ -370,39 +395,28 @@ def earlier_panel(spec: RunSpec, bench: BenchSpec, runs: list[Run], oob: bool = 
     `best_config`. Reading that back is what turns a second sweep into a
     narrower one instead of the same three hours again.
 
-    Redrawn with every edit, because each "try these again" link carries the
-    rest of the page with it: a stale one would quietly undo whatever was
-    changed since the page was opened.
+    Redrawn with every edit, because each "use" link carries the rest of the
+    page with it: a stale one would quietly undo whatever was changed since the
+    page was opened.
     """
     earlier = past_sweeps(runs, spec.model)
     if not earlier:
         return Div(id="earlier", hx_swap_oob="true" if oob else None)
-    rows = []
-    for run in earlier:
-        chosen = winning_config(run)
-        same_build = run.build_name == Path(spec.build_dir).name if spec.build_dir else False
-        rows.append(Div(
-            Div(f"{run.time_text} · {run.build_name} ({run.backend})"
-                + (" · this build" if same_build else ""), cls="hint"),
-            Div(_winner_text(chosen), cls="detail"),
-            Div(f"{_speed_text(run)} — over {run.tasks}"
-                + (f", context from {run.real_context_mode}" if run.real_context_mode else ""),
-                cls="hint"),
-            A("Try these five again →", href=f"/autotune?{page_link(spec, bench, **chosen)}",
-              cls="button small"),
-            cls="earlier",
-        ))
     return Div(
         Details(
             Summary(f"What {len(earlier)} earlier sweep{'s' if len(earlier) != 1 else ''} of "
                     f"this model chose"),
             Span("A sweep records only its winner, so this is what each one decided rather "
-                 "than everything it tried. Reusing one turns the next sweep into a check of "
+                 "than everything it tried. Using one turns the next sweep into a check of "
                  "it, or a search around it once a second value is added.", cls="hint block"),
-            *rows,
+            Div(Table(
+                Thead(Tr(*[Th(name, cls="num" if numeric else None)
+                           for name, numeric in EARLIER_COLUMNS])),
+                Tbody(*[_earlier_row(spec, bench, run) for run in earlier]),
+            ), cls="table-wrap earlier"),
             A("All of them in History →",
               href=f"/history?q={quote_plus(Path(spec.model).name)}&mode=autotune",
-              cls="button"),
+              cls="button small"),
             cls="panel",
         ),
         id="earlier",
@@ -437,7 +451,9 @@ def inherited(config: AppConfig, spec: RunSpec) -> Details:
     facts = server_page.model_facts(spec)
     rows = [
         ("Model", Path(spec.model).name if spec.model else "— none selected —"),
-        ("Build", f"{build.name} ({build.backend})" if build else "— none selected —"),
+        # when it was linked, because a sweep of a stale binary measures the wrong thing
+        ("Build", f"{build.name} ({build.backend}) · built {build.built_text}" if build
+         else "— none selected —"),
         ("Devices", spec.devices or "all of them"),
         ("GPU layers", "all of them" if spec.gpu_layers_all else str(spec.gpu_layers)),
         ("Parallel slots", str(spec.parallel)),

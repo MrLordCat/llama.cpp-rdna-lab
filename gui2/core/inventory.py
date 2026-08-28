@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from gui2.core.gguf import is_first_part, split_group
@@ -27,10 +29,30 @@ class Build:
     backend: str
     server_bin: Path | None
     supports_rpc: bool | None
+    #: when llama-server was last linked; 0 when there is none to ask
+    built_at: float = 0.0
 
     @property
     def usable(self) -> bool:
         return self.server_bin is not None
+
+    @property
+    def built_text(self) -> str:
+        """How old this binary is, which is what "is it current" really asks."""
+        if not self.built_at:
+            return "never built"
+        hours = (time.time() - self.built_at) / 3600
+        if hours < 1:
+            return f"{max(1, int(hours * 60))} min ago"
+        if hours < 48:
+            return f"{hours:.0f} h ago"
+        return f"{hours / 24:.0f} days ago"
+
+    @property
+    def built_on(self) -> str:
+        if not self.built_at:
+            return "-"
+        return datetime.fromtimestamp(self.built_at).strftime("%Y-%m-%d %H:%M")
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,26 +142,45 @@ def _backend_of(build_dir: Path, flags: dict[str, bool]) -> str:
     return "cpu"
 
 
+def _linked_at(server_bin: Path | None) -> float:
+    """When the binary was written, not when the tree was configured.
+
+    CMakeCache.txt is older than every rebuild that reused it, so it answers a
+    different question than the one being asked.
+    """
+    try:
+        return server_bin.stat().st_mtime if server_bin else 0.0
+    except OSError:
+        return 0.0
+
+
 def read_build(build_dir: Path) -> Build:
     flags = _cmake_flags(build_dir)
+    server_bin = _server_binary(build_dir)
     return Build(
         path=build_dir,
         name=build_dir.name,
         backend=_backend_of(build_dir, flags),
-        server_bin=_server_binary(build_dir),
+        server_bin=server_bin,
         supports_rpc=flags.get("GGML_RPC"),
+        built_at=_linked_at(server_bin),
     )
 
 
 def discover_builds(root: Path) -> list[Build]:
-    """`build-*` directories under `root`, usable ones first."""
+    """`build-*` directories under `root`, freshest usable one first.
+
+    Newest first rather than alphabetical: with eight build directories the
+    question is almost always "which one did I just build", and a name sort
+    answers it only by accident.
+    """
     try:
-        candidates = sorted(entry for entry in root.iterdir()
-                            if entry.is_dir() and entry.name.startswith("build-"))
+        candidates = [entry for entry in root.iterdir()
+                      if entry.is_dir() and entry.name.startswith("build-")]
     except OSError:
         return []
     builds = [read_build(entry) for entry in candidates]
-    return sorted(builds, key=lambda build: (not build.usable, build.name))
+    return sorted(builds, key=lambda build: (not build.usable, -build.built_at, build.name))
 
 
 def discover_models(models_dir: Path) -> list[ModelFile]:

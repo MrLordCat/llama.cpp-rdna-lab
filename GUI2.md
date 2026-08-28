@@ -162,8 +162,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 7 483 lines of Python plus 2 291 of tests, against the old GUI's
-15 458 with none. The suite is 169 tests and runs in about 20 seconds without
+`gui2/` is 7 547 lines of Python plus 2 370 of tests, against the old GUI's
+15 458 with none. The suite is 176 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -177,6 +177,7 @@ touching a GPU.
 | `core/memstore.py` | the same, kept between runs and rescaled across contexts |
 | `core/machine.py` | cores, free ports, this machine's LAN address |
 | `core/devices.py` | the device list, from past logs and the registry — never from a driver |
+| `core/inventory.py` | the `build-*` directories and the model files, with each build dated by when its `llama-server` was last linked |
 | `core/rpc.py` | the worker command to paste, and the handshake that checks it answered |
 | `proc/` | one GPU slot, a bounded log with stable line numbers, a finish callback |
 | `web/` | FastHTML routes; every panel is an htmx fragment |
@@ -185,6 +186,13 @@ The Server page is written for someone who has not read llama.cpp's help
 text. Every section says what it is for; every number that a person cannot be
 expected to know is either read from the machine or declared automatic with
 the automatic value spelled out.
+
+The build list is dated and ordered by date rather than by name. Eight
+`build-*` directories accrete over a few months of trying backends, and the
+question asked of the list is never which is first alphabetically but which one
+was just built; each entry reads `build-vulkan · vulkan · 9 h ago`, and the
+date comes from the binary rather than from `CMakeCache.txt`, which survives
+every rebuild that reuses it and so dates the wrong event.
 
 The Models page answers the question a directory listing cannot: not "is the
 file there" but "will it load here, and how much context is left once its
@@ -213,10 +221,12 @@ wants, what the largest one that does fit is, and how much time the failures
 would take — from the model header, so no process is started to find out.
 
 And it closes the loop with the history. Every earlier sweep of the same model
-is shown with the configuration it chose and the speed that won it, each with a
-link that puts those five values back on the axes — carrying the rest of the
-page with it, so following one changes only the five. A second sweep is then a
-check of the first, or a search around it once a second value is added.
+is one row of a table — when, on which build, the five values it chose and the
+speed that won them — so the four of them are read down a column instead of as
+four paragraphs saying nearly the same thing. Each row ends in a link that puts
+those five values back on the axes, carrying the rest of the page with it, so
+following one changes only the five. A second sweep is then a check of the
+first, or a search around it once a second value is added.
 
 ## Facts about llama.cpp worth not rediscovering
 

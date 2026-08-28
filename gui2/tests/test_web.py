@@ -508,8 +508,12 @@ def test_an_earlier_sweep_of_the_same_model_is_offered_back(client, models, tmp_
     html = client.get("/autotune", params={"model": models["long"], "runs": "3",
                                            "_form": "1", "_autotune": "1"}).text
     assert "What 1 earlier sweep of this model chose" in html
-    assert "12K context, batch 8192/1024, KV q4_0" in html
-    assert "13.3 t/s overall" in html
+    # one row, read across: when, which build, and the five it settled on
+    assert "2026-08-19 18:26:10" in html
+    assert "build-vulkan" in html
+    assert "8192 / 1024" in html
+    assert ">q4_0<" in html
+    assert ">13.3<" in html
 
     link = re.search(r'href="/autotune\?([^"]*)"', html)
     assert link and "sweep_ubatch=1024" in link.group(1)

@@ -251,20 +251,16 @@ button.small { padding: 2px 8px; font-size: 11px; }
 .devrow .devmem { color: var(--muted); font-variant-numeric: tabular-nums; }
 .devrow.unconfirmed .devname { color: var(--muted); font-style: italic; }
 
-/* One earlier sweep and what it chose */
-.earlier {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 3px;
-    padding: 6px 8px;
-    margin: 6px 0;
-    border: 1px solid var(--line);
-    border-radius: 4px;
-    background: var(--panel-2);
-}
-.earlier .detail { color: var(--text); font-size: 12px; }
-.earlier > a { margin-top: 3px; }
+/* What earlier sweeps chose: one row each, so they can be read down a column */
+.earlier { margin: 2px 0 10px; }
+.earlier table { font-size: 12px; }
+.earlier th { position: static; }
+.earlier th.num { text-align: right; }
+/* only the link at the end of a row does anything */
+.earlier tbody tr { cursor: default; }
+.earlier td.when { color: var(--muted); }
+.earlier td.mine { color: var(--accent); }
+.earlier td:last-child { text-align: right; width: 1%; }
 
 /* Process control and log */
 button, a.button {

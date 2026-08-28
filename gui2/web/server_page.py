@@ -230,7 +230,8 @@ def _options(config: AppConfig, spec: RunSpec) -> dict[str, list[tuple[str, str]
     if spec.model and spec.model not in {value for _label, value in models}:
         models.insert(0, (f"{Path(spec.model).name}  (not in models dir)", spec.model))
 
-    builds = [(f"{build.name} · {build.backend}" + ("" if build.usable else " · no llama-server"), build.name)
+    builds = [(f"{build.name} · {build.backend} · "
+               + (build.built_text if build.usable else "no llama-server"), build.name)
               for build in discover_builds(config.builds)]
     return {
         "model": [("— select —", "")] + models,
@@ -431,12 +432,16 @@ def _field(param: Param, spec: RunSpec, options: dict, facts: ModelFacts | None)
     )
 
 
-def _build_field(spec: RunSpec, options: dict):
+def _build_field(spec: RunSpec, config: AppConfig, options: dict):
+    chosen = build_of(config, spec)
+    when = (f"built {chosen.built_on} — {chosen.built_text}" if chosen and chosen.usable
+            else "newest first, so the top one is the last thing built")
     return Label(
         Span("Build"),
         Select(*[Option(label, value=item, selected=item == spec.build_dir)
                  for label, item in options["build_dir"]], name="build_dir"),
-        Span("supplies llama-server; its capabilities are read from CMakeCache", cls="hint"),
+        Span(f"supplies llama-server; capabilities are read from CMakeCache. {when}",
+             cls="hint"),
         cls="field",
     )
 
@@ -705,10 +710,10 @@ def rpc_guide(plan: WorkerPlan) -> Details:
 # -- form ------------------------------------------------------------------
 
 
-def _section(section: Section, spec: RunSpec, options: dict, facts: ModelFacts | None,
-             scan: Scan, backend: str, params=None):
+def _section(section: Section, config: AppConfig, spec: RunSpec, options: dict,
+             facts: ModelFacts | None, scan: Scan, backend: str, params=None):
     named = [name for name in section.names if name != "devices"]
-    fields = [_build_field(spec, options) if name == "build_dir"
+    fields = [_build_field(spec, config, options) if name == "build_dir"
               else _field(BY_NAME[name], spec, options, facts)
               for name in named]
 
@@ -737,7 +742,7 @@ def _section(section: Section, spec: RunSpec, options: dict, facts: ModelFacts |
 def form(config: AppConfig, spec: RunSpec, scan: Scan, backend: str, params=None) -> Form:
     options = _options(config, spec)
     facts = model_facts(spec)
-    panels = [_section(section, spec, options, facts, scan, backend, params)
+    panels = [_section(section, config, spec, options, facts, scan, backend, params)
               for section in LAYOUT]
 
     panels.append(Details(
