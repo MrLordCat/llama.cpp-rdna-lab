@@ -162,8 +162,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 7 547 lines of Python plus 2 370 of tests, against the old GUI's
-15 458 with none. The suite is 176 tests and runs in about 20 seconds without
+`gui2/` is 7 677 lines of Python plus 2 435 of tests, against the old GUI's
+15 458 with none. The suite is 181 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -202,10 +202,22 @@ costs one stat and a few kilobytes per model and starts nothing.
 The Autotune page does not describe a run twice. The model, build, devices and
 layer split arrive from the Server page in the query string and are shown but
 not edited; this page chooses what is asked of that server and which
-configurations to try. Arriving from the Server page fills all five sweep axes
-with what that page chose, so the page opens as a measurement of the run being
-described and becomes a search the moment a second value is typed anywhere —
+configurations to try. Arriving from the Server page ticks one value on each of
+the five sweep axes, so the page opens as a measurement of the run being
+described and becomes a search the moment a second value is ticked anywhere —
 which is why there is no second mode.
+
+Nothing on it is typed that can be ticked or dragged instead. Each axis is a
+row of values to tick rather than a comma-separated line to spell: one ticked
+is a measurement of it, two is a search between them, and the difference is
+visible without reading. The rows are also honest about what is possible — a
+context the model was not trained for is not offered, because the sweep would
+spend a whole startup timeout finding that out — while a value that arrived
+from a link or an earlier sweep keeps its place whatever the ladder says.
+Every bounded number is a slider with a caption in the unit a person judges it
+by (`3 minutes`, `≈ 12 words`, `≈ 6.0K tokens in front of every prompt`), and
+every on-or-off is a switch with its sentence underneath rather than a bare
+box in a grid.
 
 What it adds is the arithmetic: how many requests a prompt set, a repeat count
 and five sweep axes multiply out to, and the longest the run's own timeouts

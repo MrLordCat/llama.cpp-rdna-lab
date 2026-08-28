@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import sys
+from urllib.parse import urlencode
 
 import pytest
 from starlette.testclient import TestClient
@@ -426,10 +427,21 @@ def test_arriving_from_the_server_page_sweeps_that_one_configuration(client, mod
     assert "One configuration" in html, "a sweep of one value is a measurement"
 
 
+#: The five axes are tick lists: a browser sends one entry per ticked chip and
+#: nothing at all for an axis with none ticked, so a form that omits one is
+#: saying it was emptied. Tests that are not about that must send all five.
+SWEPT = {"sweep_ctx": "131072", "sweep_batch": "512", "sweep_ubatch": "128",
+         "sweep_kv": "f16", "sweep_spec": "none"}
+
+
+def autotune_form(model: str, **overrides) -> dict:
+    return {"_form": "1", "_autotune": "1", "model": model, **SWEPT, **overrides}
+
+
 def test_the_autotune_page_counts_the_run_before_anything_is_started(client, models):
-    html = client.post("/autotune/preview", data={
-        "_form": "1", "_autotune": "1", "model": models["long"], "tasks": "quick", "runs": "3",
-        "task_hard_timeout": "30", "startup_timeout": "120"}).text
+    html = client.post("/autotune/preview", data=autotune_form(
+        models["long"], tasks="quick", runs="3",
+        task_hard_timeout="30", startup_timeout="120")).text
 
     assert "2 prompts × 3 repeats — 6 requests in all" in html
     assert "cannot outlast" in html
@@ -453,15 +465,68 @@ def test_clearing_an_autotune_checkbox_in_the_form_still_clears_it(client, model
 
 
 def test_a_sweep_says_how_many_configurations_it_multiplies_out_to(client, models):
-    html = client.post("/autotune/preview", data={
-        "_form": "1", "_autotune": "1", "model": models["long"],
-        "sweep_batch": "256,512", "sweep_ubatch": "64,128"}).text
+    html = client.post("/autotune/preview", data=autotune_form(
+        models["long"], sweep_batch="256,512", sweep_ubatch="64,128")).text
 
     assert "4 server configurations (1 × 2 × 2 × 1 × 1)" in html
     assert "2 prompts against each of them — 8 requests in all" in html
     # the settings the Server page chose for these are not what is measured
-    assert "is replaced by the lines above" in html
+    assert "is replaced by what is ticked above" in html
     assert "--autotune" in bench_command(html)
+
+
+def test_the_five_axes_are_ticked_rather_than_typed(client, models):
+    """Every value is one box, and several boxes share the axis's name."""
+    html = client.get("/autotune", params={"model": models["long"], "_form": "1",
+                                           "ctx_size": "32768"}).text
+
+    assert 'name="sweep_kv" value="q8_0"' in html, "every KV type is offered as a chip"
+    assert 'name="sweep_spec" value="ngram-mtp"' in html
+    # and the one the Server page chose arrives already ticked
+    ticked = re.search(r'name="sweep_ctx" value="32768"[^>]*checked', html)
+    assert ticked, "the run's own context is the one configuration on the axis"
+
+
+def test_a_context_the_model_cannot_reach_is_not_offered(client, models):
+    """llama-server refuses it, and the sweep would take a startup timeout to find out."""
+    html = client.get("/autotune", params={"model": models["short"], "_form": "1",
+                                           "ctx_size": "32768"}).text
+
+    assert 'name="sweep_ctx" value="32768"' in html
+    # short.gguf was trained to 40960
+    assert 'name="sweep_ctx" value="49152"' not in html
+    assert 'name="sweep_ctx" value="131072"' not in html
+
+
+def test_a_context_already_chosen_stays_on_the_axis_whatever_the_model_says(client, models):
+    """Dropping a ticked value would change the run without saying so."""
+    html = client.get("/autotune", params={"model": models["short"], "_form": "1",
+                                           "ctx_size": "131072"}).text
+
+    assert re.search(r'name="sweep_ctx" value="131072"[^>]*checked', html)
+
+
+def test_the_address_bar_keeps_every_ticked_value_not_just_the_last(client, models):
+    """Several boxes share an axis's name; keeping one would narrow the sweep on reload."""
+    data = autotune_form(models["long"])
+    del data["sweep_kv"]
+    response = client.post("/autotune/preview", content=urlencode(
+        list(data.items()) + [("sweep_kv", "q8_0"), ("sweep_kv", "q4_0")]),
+        headers={"content-type": "application/x-www-form-urlencoded"})
+
+    pushed = response.headers["hx-push-url"]
+    assert "sweep_kv=q8_0&sweep_kv=q4_0" in pushed
+    # and reloading it sweeps both again rather than only the second
+    assert "--autotune-kv-values q8_0,q4_0" in bench_command(client.get(pushed).text)
+
+
+def test_unticking_every_value_on_an_axis_is_reported_rather_than_ignored(client, models):
+    """Silently falling back to the default would sweep something nobody asked for."""
+    data = autotune_form(models["long"])
+    del data["sweep_kv"]
+
+    html = client.post("/autotune/preview", data=data).text
+    assert "KV cache types" in html and "nothing to try" in html.lower()
 
 
 def test_a_server_already_on_the_gpus_stops_the_run_before_it_starts(

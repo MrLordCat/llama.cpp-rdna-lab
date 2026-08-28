@@ -66,6 +66,13 @@ DRAFT_MODES = frozenset({"mtp", "ngram-mtp"})
 SWEEP_KV_TYPES = KV_TYPES
 SWEEP_SPEC_MODES = SPEC_TYPES + ("ngram-mtp",)
 
+#: What each numeric axis offers as one click. Not a limit: a value arriving
+#: from a link or an earlier sweep is added to the row rather than dropped, and
+#: the context row is trimmed to what the model can actually hold.
+CTX_LADDER = (4096, 8192, 16384, 32768, 49152, 65536, 98304, 131072)
+BATCH_LADDER = (512, 1024, 2048, 4096, 8192)
+UBATCH_LADDER = (128, 256, 512, 1024, 2048)
+
 # flags the bench script passes to llama-server itself
 BENCH_OWNED: frozenset[str] = frozenset().union(*(
     aliases_of(flag) for flag in (
@@ -134,7 +141,7 @@ class BenchSpec:
 
         Arriving from the Server page, every axis holds the value that page
         chose: the sweep is then a measurement of it, and becomes a search
-        only when a second value is typed anywhere.
+        only when a second value is ticked anywhere.
         """
         return replace(self, **{axis: str(getattr(spec, field))
                                 for axis, _flag, field in SWEEP_AXES})
@@ -168,20 +175,22 @@ B_OUTPUT = "What is written down"
 #: `to_bench_argv` spells it out, because several of these flags are pairs
 #: (--reuse/--no-reuse) and one of them rewrites another (--autotune-min-ctx).
 BENCH_SCHEMA: tuple[Param, ...] = (
-    Param("sweep_ctx", "Contexts to try", "text", B_SWEEP,
-          help="one value measures it; several search it"),
-    Param("sweep_batch", "Batch sizes to try", "text", B_SWEEP,
+    Param("sweep_ctx", "Contexts to try", "multi", B_SWEEP,
+          choices=tuple(str(value) for value in CTX_LADDER),
+          help="one measures that context; several search for the one the cards like"),
+    Param("sweep_batch", "Batch sizes to try", "multi", B_SWEEP,
+          choices=tuple(str(value) for value in BATCH_LADDER),
           help="how many tokens the server reads at once"),
-    Param("sweep_ubatch", "Ubatch sizes to try", "text", B_SWEEP,
-          help="how much of a batch reaches the GPU in one go"),
-    # the vocabularies are spelled out from the constants: a hint that lists
-    # fewer types than the validator accepts is how f8_e4m3 goes unnoticed
-    Param("sweep_kv", "KV cache types to try", "text", B_SWEEP,
-          help=f"{', '.join(SWEEP_KV_TYPES)} — smaller buys context and may cost quality"),
-    Param("sweep_spec", "Speculation modes to try", "text", B_SWEEP,
-          help=f"{', '.join(SWEEP_SPEC_MODES)} — the sweep sets this itself, so the "
-               f"Server page's choice is replaced by whatever is listed here"),
-    Param("sweep_max", "Refuse to start above", "int", B_SWEEP, minimum=1, maximum=512,
+    Param("sweep_ubatch", "Ubatch sizes to try", "multi", B_SWEEP,
+          choices=tuple(str(value) for value in UBATCH_LADDER),
+          help="how much of a batch reaches the GPU in one go — never above the batch"),
+    Param("sweep_kv", "KV cache types to try", "multi", B_SWEEP, choices=SWEEP_KV_TYPES,
+          help="what the context is stored as — smaller buys context and may cost quality"),
+    Param("sweep_spec", "Speculation modes to try", "multi", B_SWEEP, choices=SWEEP_SPEC_MODES,
+          help="the sweep sets this itself, so the Server page's choice is replaced by "
+               "whatever is ticked here"),
+    Param("sweep_max", "Refuse to start above", "slider", B_SWEEP,
+          minimum=1, maximum=256, step=1,
           help="configurations; every extra value multiplies the run rather than adding "
                "to it"),
     Param("smart_prune", "Abandon a direction that keeps getting slower", "bool", B_SWEEP,
@@ -193,14 +202,15 @@ BENCH_SCHEMA: tuple[Param, ...] = (
           help="which prompts the model is asked to answer"),
     Param("task_ids", "Only these prompts", "text", B_WHAT,
           help="leave empty for the whole set; a name that is not in it stops the run"),
-    Param("runs", "Repeats", "int", B_WHAT, minimum=1, maximum=50,
+    Param("runs", "Repeats", "slider", B_WHAT, minimum=1, maximum=20, step=1,
           help="how many times each prompt is asked — more repeats, steadier numbers"),
-    Param("max_tokens", "Answer length", "int", B_WHAT, minimum=1, maximum=8192,
+    Param("max_tokens", "Answer length", "slider", B_WHAT, minimum=16, maximum=2048, step=16,
           help="tokens to generate per answer; this is what decode speed is measured over"),
     Param("real_context_mode", "Incoming context", "choice", B_PROMPT,
           choices=REAL_CONTEXT_MODES,
           help="whether each prompt carries a slab of real repository text in front of it"),
-    Param("real_context_chars", "How much of it", "int", B_PROMPT, minimum=0, maximum=4_000_000,
+    Param("real_context_chars", "How much of it", "slider", B_PROMPT,
+          minimum=0, maximum=262144, step=4096,
           help="characters of that text; 0 lets the script fill the context it was given"),
     Param("no_reuse", "Start every prompt cold", "bool", B_FAIR,
           help="throws away the prompt cache between prompts, so prompt speed is measured "
@@ -214,14 +224,15 @@ BENCH_SCHEMA: tuple[Param, ...] = (
     Param("background_server_policy", "If a server is already running", "choice", B_FAIR,
           choices=BACKGROUND_POLICIES,
           help="another llama-server shares the same GPUs and skews everything measured here"),
-    Param("request_timeout", "Give up on one answer after", "float", B_LIMITS,
-          minimum=1, maximum=3600, help="seconds to wait for a reply before calling it lost"),
-    Param("task_hard_timeout", "Abandon the whole run after", "float", B_LIMITS,
-          minimum=0, maximum=3600,
-          help="seconds after which a stuck prompt also stops the server; 0 turns it off"),
-    Param("startup_timeout", "Wait for the server to load for", "float", B_LIMITS,
-          minimum=10, maximum=7200,
-          help="seconds; a large model over RPC can take minutes before it answers"),
+    Param("request_timeout", "Give up on one answer after", "slider", B_LIMITS,
+          minimum=10, maximum=900, step=10,
+          help="one reply is allowed this long before it counts as lost"),
+    Param("task_hard_timeout", "Abandon the whole run after", "slider", B_LIMITS,
+          minimum=0, maximum=600, step=5,
+          help="a stuck prompt also stops the server after this; 0 turns it off"),
+    Param("startup_timeout", "Wait for the server to load for", "slider", B_LIMITS,
+          minimum=60, maximum=3600, step=30,
+          help="a large model over RPC can take minutes before it answers"),
     Param("label", "Name this run", "text", B_OUTPUT,
           help="how it will appear in the history table; empty gets a timestamp"),
     Param("write_diagnostics", "Keep the per-run breakdown", "bool", B_OUTPUT,
@@ -231,6 +242,11 @@ BENCH_SCHEMA: tuple[Param, ...] = (
 )
 
 BENCH_BY_NAME: dict[str, Param] = {param.name: param for param in BENCH_SCHEMA}
+
+#: axes ticked rather than typed: several boxes share one name, so reading the
+#: form back needs every value, and none ticked means an empty axis
+MULTI_NAMES: frozenset[str] = frozenset(
+    param.name for param in BENCH_SCHEMA if param.kind == "multi")
 
 
 def items(text: str) -> list[str]:
@@ -540,11 +556,13 @@ def plan(spec: RunSpec, bench: BenchSpec) -> Plan:
 
 
 def _vocabulary_problems(bench: BenchSpec) -> list[Problem]:
-    """Values on a sweep line that nothing downstream would accept.
+    """Values on a sweep axis that nothing downstream would accept.
 
-    The numeric axes reach `parse_int_csv`, which drops what it cannot read --
-    so a typo shrinks the sweep silently. The word axes reach llama-server,
-    which refuses to start, once per configuration, for the whole timeout.
+    The page offers these as tick lists, so they can only arrive from a link or
+    an older saved run. They are still worth naming: the numeric axes reach
+    `parse_int_csv`, which drops what it cannot read, and the word axes reach
+    llama-server, which refuses to start once per configuration for the whole
+    timeout.
     """
     problems: list[Problem] = []
     for axis, label in (("sweep_ctx", "Contexts"), ("sweep_batch", "Batch sizes"),
@@ -553,7 +571,7 @@ def _vocabulary_problems(bench: BenchSpec) -> list[Problem]:
         if bad:
             problems.append(Problem(
                 "error",
-                f"{label} to try: {', '.join(bad)} — every value on that line has to be a "
+                f"{label} to try: {', '.join(bad)} — every value on that axis has to be a "
                 f"plain number of tokens, and one that is not is quietly dropped"))
     for axis, label, allowed in (("sweep_kv", "KV cache types", SWEEP_KV_TYPES),
                                  ("sweep_spec", "Speculation modes", SWEEP_SPEC_MODES)):
@@ -634,8 +652,9 @@ def validate_bench(spec: RunSpec, bench: BenchSpec) -> list[Problem]:
     if empty:
         problems.append(Problem(
             "error",
-            f"{', '.join(name.removeprefix('sweep_') for name in empty)}: an empty line means "
-            "nothing to try, and one empty axis leaves the whole sweep with no configurations"))
+            f"{', '.join(BENCH_BY_NAME[name].label.removesuffix(' to try') for name in empty)}: "
+            "nothing to try. One axis with nothing ticked leaves the whole sweep with no "
+            "configurations to run."))
     elif (count := config_count(bench)) > bench.sweep_max:
         # the script's own check: an error, unless smart pruning is on, in which
         # case it prints a warning and works through the list anyway

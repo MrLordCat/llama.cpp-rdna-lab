@@ -149,7 +149,7 @@ def test_a_sweep_over_its_cap_is_refused_only_when_it_may_not_prune():
 
 def test_an_empty_sweep_axis_is_an_error_not_a_missing_dimension():
     bench = BENCH_DEFAULTS.with_values({"sweep_kv": "  "})
-    assert any(problem.level == "error" and "empty line" in problem.message
+    assert any(problem.level == "error" and "nothing to try" in problem.message
                for problem in validate_bench(DEFAULTS, bench))
 
 

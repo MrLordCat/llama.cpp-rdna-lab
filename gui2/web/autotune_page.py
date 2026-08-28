@@ -1,10 +1,10 @@
 """Autotune: trying server configurations and finding out which is fastest.
 
 There is no separate "just measure it" mode, because a sweep with one value on
-every line is exactly that. Arriving from the Server page fills all five lines
-with what that page chose, so the first thing this page offers is a measurement
-of the run being described; it becomes a search the moment a second value is
-typed anywhere.
+every axis is exactly that. Arriving from the Server page ticks one value on
+each of the five, so the first thing this page offers is a measurement of the
+run being described; it becomes a search the moment a second value is ticked
+anywhere.
 
 The run itself is not described twice. The model, the build, the devices and
 the layer split come from the Server page and travel here in the query string;
@@ -61,20 +61,22 @@ from gui2.core.bench import (
     B_WHAT,
     BenchSpec,
     Fit,
+    MULTI_NAMES,
     Plan,
     TASK_IDS,
     Weighed,
     fit,
+    items,
     plan,
     sweep_values,
     to_bench_argv,
     validate_bench,
 )
 from gui2.core.devices import Scan, pool
-from gui2.core.gguf import context_text
+from gui2.core.gguf import ModelFacts, context_text
 from gui2.core.history import Run, past_sweeps, winning_config
 from gui2.core.memory import gib
-from gui2.core.params import Param
+from gui2.core.params import Param, bounds
 from gui2.core.runspec import Problem, RunSpec, mask_api_key
 from gui2.proc import Busy, Supervisor
 from gui2.proc.hidden import console_python
@@ -88,10 +90,10 @@ from gui2.web.layout import command_lines, problem_lines, shell
 AUTOTUNE_MARKER = "_autotune"
 
 SECTIONS: tuple[tuple[str, str], ...] = (
-    (B_SWEEP, "One value on a line measures that setting; two or more search it. Every "
-              "extra value multiplies the run rather than adding to it — three contexts "
-              "and two batch sizes are six server loads, not five — which is why there "
-              "is a cap."),
+    (B_SWEEP, "One value ticked on a row measures that setting; two or more search it. "
+              "Every extra value multiplies the run rather than adding to it — three "
+              "contexts and two batch sizes are six server loads, not five — which is why "
+              "there is a cap."),
     (B_WHAT, "Each configuration is judged by asking it the same prompts the same number "
              "of times. These decide how much work that is, and everything below is "
              "about keeping the comparison honest."),
@@ -118,20 +120,32 @@ def autotune_from_params(params, spec: RunSpec) -> BenchSpec:
     """
     if not params or AUTOTUNE_MARKER not in params:
         seeded = BENCH_DEFAULTS.seeded_from(spec)
-        return seeded.with_values({key: params[key] for key in params.keys()}) \
-            if params else seeded
-    values = {key: params[key] for key in params.keys()}
+        return seeded.with_values(_read(params)) if params else seeded
+    values = _read(params)
     # an unchecked box submits nothing; only a real submission may read that
-    # silence as "off" (the same rule the Server page follows)
+    # silence as "off" -- or, for an axis, as emptied (the Server page's rule)
     for param in BENCH_BY_NAME.values():
         if param.kind == "bool":
             values[param.name] = param.name in params
+        elif param.kind == "multi":
+            values.setdefault(param.name, "")
     return BENCH_DEFAULTS.with_values(values)
 
 
+def _read(params) -> dict:
+    """The form as a flat dict, with the tick lists rejoined into one axis each."""
+    getlist = getattr(params, "getlist", None)
+    return {key: ",".join(getlist(key)) if getlist and key in MULTI_NAMES else params[key]
+            for key in params.keys()}
+
+
 def state_query(params) -> str:
-    """The whole page as a link: the run, the sweep, no secrets."""
-    return server_page.state_query(params)
+    """The whole page as a link: the run, the sweep, no secrets.
+
+    The five axes arrive as several boxes under one name, like the device
+    list. Keeping only the last would silently narrow the sweep on reload.
+    """
+    return server_page.state_query(params, multi=server_page.MULTI_PARAMS | MULTI_NAMES)
 
 
 def page_link(spec: RunSpec, bench: BenchSpec, **overrides: str) -> str:
@@ -156,13 +170,96 @@ def page_link(spec: RunSpec, bench: BenchSpec, **overrides: str) -> str:
 # -- fields ----------------------------------------------------------------
 
 
-def _control(param: Param, bench: BenchSpec):
-    """These flags are plainer than llama-server's: no sliders, no devices, no
-    value whose limits another file decides. A separate small renderer costs
-    less than teaching the Server page's one about a second dataclass."""
+KV_CHIP_HELP = {
+    "f16": "exact, and twice the size of everything else",
+    "q8_0": "half the size, no measurable loss",
+    "f8_e4m3": "half the size, newer format",
+    "q4_0": "a quarter of the size, and it can show",
+}
+
+SPEC_CHIP_HELP = {
+    "none": "the model generates every token itself",
+    "mtp": "the model's own draft head guesses ahead",
+    "ngram-mod": "repeats already in the prompt are guessed from it",
+    "ngram-mtp": "both at once",
+}
+
+
+def _chip_label(param: Param, value: str) -> str:
+    if param.name == "sweep_ctx" and value.isdigit():
+        return context_text(int(value))
+    return value
+
+
+def _offered(param: Param, bench: BenchSpec, facts: ModelFacts | None) -> list[str]:
+    """The row of values to tick, with whatever is already chosen kept in it.
+
+    A context the model cannot reach is not offered, because the sweep would
+    spend a whole startup timeout discovering that llama-server refuses it.
+    """
+    ceiling = facts.n_ctx_train if param.name == "sweep_ctx" and facts else 0
+    offered = [choice for choice in param.choices
+               if not (ceiling and choice.isdigit() and int(choice) > ceiling)]
+    chosen = items(getattr(bench, param.name))
+    return offered + [value for value in chosen if value not in offered]
+
+
+def _chips(param: Param, bench: BenchSpec, facts: ModelFacts | None) -> Div:
+    # the ticked look comes from the box's own state in CSS, not from a class
+    # decided here: only the preview is swapped back, so a class would go stale
+    chosen = set(items(getattr(bench, param.name)))
+    helps = {"sweep_kv": KV_CHIP_HELP, "sweep_spec": SPEC_CHIP_HELP}.get(param.name, {})
+    return Div(*[
+        Label(
+            Input(type="checkbox", name=param.name, value=value, checked=value in chosen),
+            Span(_chip_label(param, value)),
+            cls="chip",
+            title=helps.get(value, ""),
+        ) for value in _offered(param, bench, facts)
+    ], cls="chips")
+
+
+def _slider(param: Param, bench: BenchSpec):
+    low, high, step = bounds(param)
     value = getattr(bench, param.name)
+    shown = f"{value:g}" if isinstance(value, float) else str(value)
+    caption = _caption(param, float(value))
+    return Div(
+        Div(
+            # the range is nameless: the number box is what the form submits
+            Input(type="range", value=shown, min=low, max=high, step=step, cls="range",
+                  aria_label=param.label, oninput="this.nextElementSibling.value=this.value"),
+            Input(type="number", name=param.name, value=shown, min=low, max=high, step=step,
+                  cls="numberbox", oninput="this.previousElementSibling.value=this.value"),
+            cls="slider",
+        ),
+        Span(caption, cls="ceiling") if caption else None,
+        cls="sliderbox",
+    )
+
+
+def _caption(param: Param, value: float) -> str:
+    """The number in the unit a person judges it by, not the one the flag wants."""
+    if param.group == B_LIMITS:
+        return "off" if value <= 0 else duration(value)
+    if param.name == "max_tokens":
+        return f"≈ {value * 0.75:.0f} words"
+    if param.name == "real_context_chars":
+        return "fill whatever context the configuration has" if value <= 0 \
+            else f"≈ {value / 4 / 1024:.1f}K tokens in front of every prompt"
+    return ""
+
+
+def _control(param: Param, bench: BenchSpec, facts: ModelFacts | None):
+    """Nothing here is typed that can be ticked or dragged instead: the five
+    axes are closed lists, and every number worth setting has two ends."""
+    value = getattr(bench, param.name)
+    if param.kind == "multi":
+        return _chips(param, bench, facts)
+    if param.kind == "slider":
+        return _slider(param, bench)
     if param.kind == "bool":
-        return Input(type="checkbox", name=param.name, checked=bool(value))
+        return Input(type="checkbox", name=param.name, checked=bool(value), cls="switch")
     if param.kind == "choice":
         return Select(*[Option(_choice_label(param, choice), value=choice, selected=choice == value)
                         for choice in param.choices], name=param.name)
@@ -213,17 +310,18 @@ def _hint(param: Param, bench: BenchSpec) -> str:
     return param.help
 
 
-#: choices whose options carry their own explanation, and text whose hint
-#: lists what may go in it: a column of a grid is not wide enough for either
+#: choices whose options carry their own explanation, and tick rows that would
+#: wrap: a column of a grid is not wide enough for either, and an axis that
+#: wraps stops reading as one row of values to choose between
 WIDE = frozenset({"tasks", "task_ids", "real_context_mode", "background_server_policy",
-                  "sweep_spec", "sweep_kv"})
+                  "sweep_ctx", "sweep_batch", "sweep_ubatch", "sweep_spec", "sweep_kv"})
 
 
-def _field(param: Param, bench: BenchSpec):
+def _field(param: Param, bench: BenchSpec, facts: ModelFacts | None = None):
     hint = _hint(param, bench)
     return Label(
         Span(param.label),
-        _control(param, bench),
+        _control(param, bench, facts),
         Span(hint, cls="hint") if hint else None,
         cls="field inline" if param.kind == "bool"
         else ("field wide" if param.name in WIDE else "field"),
@@ -254,7 +352,7 @@ def _plan_lines(bench: BenchSpec, run: Plan) -> list[str]:
         lines.append(f"{run.configs} server configurations ({axes}), each loaded from scratch")
     else:
         lines.append("One configuration — a measurement rather than a search, until a "
-                     "second value is added to one of the lines above")
+                     "second value is ticked on one of the rows above")
     prompts = f"{run.tasks} prompt{'s' if run.tasks != 1 else ''}"
     each = " against each of them" if run.configs > 1 else ""
     repeats = f" × {run.runs} repeats" if run.runs > 1 else ""
@@ -295,7 +393,7 @@ def _under_test(bench: BenchSpec) -> str:
                          for value in swept["sweep_ctx"]) or "none"
     return (f"Contexts under test: {contexts}. The sweep sets the context, batch, ubatch, "
             f"KV type and speculation itself, so the Server page's choice of those five "
-            f"is replaced by the lines above.")
+            f"is replaced by what is ticked above.")
 
 
 def _weighed_label(item: Weighed, kinds: int, ubatches: int) -> str:
@@ -528,20 +626,26 @@ def preview(config: AppConfig, spec: RunSpec, bench: BenchSpec, scan: Scan, back
     )
 
 
-def _section(title: str, hint: str, bench: BenchSpec) -> Details:
+def _section(title: str, hint: str, bench: BenchSpec, facts: ModelFacts | None) -> Details:
     names = [param for param in BENCH_BY_NAME.values() if param.group == title]
+    # switches read as a list of statements about the run; boxes in a grid do not
+    switches = [param for param in names if param.kind == "bool"]
+    rest = [param for param in names if param.kind != "bool"]
     return Details(
         Summary(title),
         Span(hint, cls="hint block"),
-        Div(*[_field(param, bench) for param in names], cls="grid"),
+        Div(*[_field(param, bench, facts) for param in rest], cls="grid") if rest else None,
+        Div(*[_field(param, bench, facts) for param in switches],
+            cls="switches") if switches else None,
         cls="panel",
         open=True if title in {B_SWEEP, B_WHAT} else None,
     )
 
 
 def form(config: AppConfig, spec: RunSpec, bench: BenchSpec, runs: list[Run]) -> Form:
+    facts = server_page.model_facts(spec)
     panels = [inherited(config, spec), earlier_panel(spec, bench, runs)]
-    panels += [_section(title, hint, bench) for title, hint in SECTIONS]
+    panels += [_section(title, hint, bench, facts) for title, hint in SECTIONS]
     panels.append(Div(
         Button("Start autotune", type="button", cls="primary",
                hx_post="/autotune/start", hx_target="#runstate", hx_swap="outerHTML"),

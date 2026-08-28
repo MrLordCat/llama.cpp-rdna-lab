@@ -137,8 +137,14 @@ LAYOUT: tuple[Section, ...] = (
 )
 
 
-def state_query(params, refit: RunSpec | None = None) -> str:
-    """Query string that reproduces the form on reload, without the secrets."""
+def state_query(params, refit: RunSpec | None = None,
+                multi: frozenset[str] = MULTI_PARAMS) -> str:
+    """Query string that reproduces the form on reload, without the secrets.
+
+    `multi` names the fields that legitimately arrive more than once; the
+    Autotune page passes its own, because its sweep axes are ticked the same
+    way the device list is.
+    """
     items = params.multi_items() if hasattr(params, "multi_items") else list(params.items())
     skip = SECRET_PARAMS | INTERNAL_PARAMS
     # a slider the new model just moved has to reach the address bar as it now reads
@@ -153,7 +159,7 @@ def state_query(params, refit: RunSpec | None = None) -> str:
         # a device list is many checkboxes under one name; anything else that
         # arrives twice is a panel that was submitted along with the form, and
         # the later value is the current one
-        if key in MULTI_PARAMS or key not in at:
+        if key in multi or key not in at:
             at[key] = len(ordered)
             ordered.append(pair)
         else:

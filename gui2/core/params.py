@@ -14,7 +14,8 @@ from typing import Literal
 
 from gui2.core import machine
 
-Kind = Literal["int", "float", "text", "bool", "choice", "slider", "devices"]
+#: "multi" is a closed list of which values to try, not one value to use
+Kind = Literal["int", "float", "text", "bool", "choice", "slider", "multi", "devices"]
 Emit = Literal["value", "presence", "absence", "composite"]
 
 #: the four that are actually worth choosing between; the exotic types llama.cpp
