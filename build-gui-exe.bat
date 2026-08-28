@@ -5,7 +5,7 @@ echo ============================================================
 echo Building RDNA LLM Studio Executable
 echo ============================================================
 
-python build_exe.py
+python scripts\build_gui_exe.py
 
 if %ERRORLEVEL% EQU 0 (
     echo.

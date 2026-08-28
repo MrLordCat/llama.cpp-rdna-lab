@@ -76,7 +76,9 @@ matched benchmark ratio.
 
 - projector: `mmproj-F16.gguf`;
 - `ctx=8192`, thinking disabled, `spec=none`;
-- input image: `media/matmul.png`;
+- input image: the matrix-multiplication diagram formerly stored as
+  `media/matmul.png` (the validation result is retained, the binary asset is
+  not);
 - prompt/completion: `4074/64` tokens;
 - output correctly identified matrix multiplication, transposed matrices, and
   row-major/column-major storage shown in the image;

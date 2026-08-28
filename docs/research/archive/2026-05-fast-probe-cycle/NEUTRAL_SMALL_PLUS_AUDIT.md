@@ -4,7 +4,7 @@
 
 ## Что именно отобрано
 
-Источник: строки из [docs/research/RESULTS_LOG.md](docs/research/RESULTS_LOG.md) по 22 ID, где результат был:
+Источник: строки из [docs/research/RESULTS_LOG.md](../../RESULTS_LOG.md) по 22 ID, где результат был:
 
 - tie/noise, или
 - небольшой плюс без устойчивого подтверждения/промоута в default, или

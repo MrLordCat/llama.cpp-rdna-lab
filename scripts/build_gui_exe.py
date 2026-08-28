@@ -23,7 +23,7 @@ def check_pyinstaller():
 
 def build_exe(windowed=False):
     """Build the executable"""
-    project_root = Path(__file__).parent
+    project_root = Path(__file__).resolve().parent.parent
     gui_dir = project_root / "gui"
     dist_dir = project_root / "dist"
 
@@ -126,7 +126,7 @@ def build_exe(windowed=False):
 
             if not windowed:
                 print("📝 NOTE: Built with console window for debugging.")
-                print("   Run 'python build_exe.py --release' for windowless version.")
+                print("   Run 'python scripts/build_gui_exe.py --release' for windowless version.")
                 print()
 
             # Copy exe to project root for convenience
@@ -145,7 +145,7 @@ def build_exe(windowed=False):
 
 def clean_build():
     """Clean build artifacts"""
-    project_root = Path(__file__).parent
+    project_root = Path(__file__).resolve().parent.parent
 
     dirs_to_clean = [
         project_root / "build_temp",
