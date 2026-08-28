@@ -431,8 +431,11 @@ def _host_hint(spec: RunSpec) -> str:
 def _field(param: Param, spec: RunSpec, options: dict, facts: ModelFacts | None):
     hint = _hint(param, spec, facts)
     if param.kind == "bool":
-        # the button carries the label, so a Label around it would say it twice
-        return Div(_control(param, spec, options, facts), cls="field switch", title=hint)
+        # the button carries the label, so a Label around it would say it twice;
+        # the sentence underneath is what the switch means, not what it emits
+        return Div(_control(param, spec, options, facts),
+                   Span(param.help, cls="hint") if param.help else None,
+                   cls="field switch", title=hint)
     return Label(
         Span(param.label),
         _control(param, spec, options, facts),
@@ -621,12 +624,13 @@ def worker_panel(params, oob: bool = False) -> Div:
                         placeholder="empty = every device that machine has"),
                   Span("names as that machine sees them, e.g. Vulkan0", cls="hint"),
                   cls="field"),
-            Div(toggle("rpc_open", "Reachable from this machine", plan.open_to_network),
+            cls="grid",
+        ),
+        Div(Div(toggle("rpc_open", "Reachable from this machine", plan.open_to_network),
                 cls="field switch"),
             Div(toggle("rpc_cache", "Cache tensors on the worker's disk", plan.cache),
                 cls="field switch"),
-            cls="grid",
-        ),
+            cls="switches"),
         Span("Run this on the other machine:", cls="hint block"),
         _copyable(plan.text()),
         id="rpcworker",

@@ -162,7 +162,7 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 7 698 lines of Python plus 2 435 of tests, against the old GUI's
+`gui2/` is 7 708 lines of Python plus 2 435 of tests, against the old GUI's
 15 458 with none. The suite is 181 tests and runs in about 20 seconds without
 touching a GPU.
 
@@ -187,10 +187,14 @@ Anything that is on or off is a button holding its own word: pressed means on,
 and there is no box beside the label saying the same thing a second time. One
 helper renders all of them — the sweep axes, the flags, the two history
 filters, the RPC worker's two questions — and a device row is the same idea at
-full width, the row itself being the button. The pressed look is decided by
-`:has(input:checked)` in CSS rather than by a class chosen on the server,
-because most clicks are answered with a swap of the preview alone; a class
-would go stale the moment the browser knew something the last response did not.
+full width, the row itself being the button. The buttons are not scattered
+into the field grid, which spaces a short pill as if it were a long text box:
+each panel's grid of inputs comes first, and the buttons sit beneath it in one
+left-aligned column, each with the sentence saying what it means under it. The
+pressed look is decided by `:has(input:checked)` in CSS rather than by a class
+chosen on the server, because most clicks are answered with a swap of the
+preview alone; a class would go stale the moment the browser knew something the
+last response did not.
 
 The Server page is written for someone who has not read llama.cpp's help
 text. Every section says what it is for; every number that a person cannot be

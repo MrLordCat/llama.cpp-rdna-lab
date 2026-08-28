@@ -173,12 +173,12 @@ td.label { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
     border: 0;
 }
 
-/* One switch, with the sentence that says what it means under it */
+/* One switch, with the sentence that says what it means under it. The block is
+   a column so the buttons line up on the left instead of drifting at different
+   heights, and a sentence never squeezes a neighbour aside. */
 .field.switch { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
 .field.switch .hint { padding-left: 2px; }
-.switches { display: flex; flex-wrap: wrap; gap: 9px 10px; margin-top: 12px; }
-/* a switch that explains itself gets the width to do it; the rest sit in a row */
-.field.switch:has(.hint) { flex-basis: 100%; }
+.switches { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
 
 textarea {
     background: var(--panel-2);
