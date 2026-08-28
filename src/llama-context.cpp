@@ -13,6 +13,7 @@
 #include "llama.h"
 
 #include <cinttypes>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>

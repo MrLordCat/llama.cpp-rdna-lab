@@ -1,5 +1,39 @@
 # Results Log
 
+## 2026-08-28 - D136 short-context Vulkan decode isolation
+
+- Same-toolchain GCC 16 controls reduced the stock-vs-fork decode gap to
+  4.2% at L0, 2.6% at L1, and parity at L2 (three-run averages).
+- Vulkan timestamp traces excluded flash attention: comparable 4096-KV FA
+  work was 50.2 ms / 1008 calls in the fork versus 51.3 ms / 1008 in stock.
+  Remaining per-node deltas are distributed across MMVQ and small auxiliary
+  kernels; total GPU time per decode block differs by about 2.5%.
+- The proposed manual port `f9f33654a` was rejected as a duplicate before
+  editing. Fork commit `90488bd1b` is already in `master`, has the identical
+  stable patch-id, and owns the active coalesced Q4_K/Q5_K scale-load code.
+  The measured fork baseline therefore already contains that optimization.
+- No Vulkan shader change was made and no redundant benchmark was run. Next
+  candidate: isolate the submission-batching delta around `803b7fcae`.
+
+## 2026-08-28 - D136 night: 30x CPY/GET_ROWS gap isolated to upstream unary/glu sync
+
+- Single-GPU full-layer isolation (fork 19.15 tps / 53.38 ms GPU vs stock
+  31.76 tps / 32.60 ms GPU) pins the fork loss to two node types:
+  GET_ROWS 121 us and CPY 114 us (stock: 5 us / 3.3 us). All other nodes
+  are at parity or faster in the fork; MMVQ q4_K is even 84.3 vs 88.1 us.
+  Shaped traces, buffer names (Vulkan device buffers on both sides),
+  submit counts (2633 vs 3303) and the 402 MB CPY micro A/B (455 vs
+  458 GB/s) are all identical — the raw kernels are NOT slower.
+- The only hard runtime divergence on that path: the fork's
+  `vk_op_unary_push_constants` / `generic_unary_head.glsl` predate
+  upstream `1a7718b4c` (#24215, 2026-06-13), which packs fastdiv L values
+  and adds non-contig support. Generated `cpy_f32_f32.spv` /
+  `contig_cpy_f32_f32.spv` differ; `get_rows_f32_f32.spv` is identical.
+- Conclusion: port `1a7718b4c` (unary/glu layout+shaders, ~18 files)
+  as next action; it is the leaf explanation. All temporary traces were
+  reverted; both trees `git diff --check` clean. See
+  `docs/research/D136_STOCK_VULKAN_DECODE_EDGE.md` §9.
+
 ## 2026-08-27 - D135 финал ветки rpc-vulkan: паритет + жизнеспособность 200K
 
 - Итоговая сводка ветки: `docs/research/rpc-vulkan/RPC_BRANCH_FINAL.md`.
