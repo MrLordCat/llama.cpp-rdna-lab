@@ -21,7 +21,7 @@ LOGS = ROOT / "build_logs" / "agent-workload"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("awb", ROOT / "scripts" / "agent_workload_bench.py")
+    spec = importlib.util.spec_from_file_location("awb", ROOT / "scripts" / "legacy" / "agent_workload_bench.py")
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     return m

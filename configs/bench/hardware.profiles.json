@@ -1,0 +1,39 @@
+{
+  "default_profile": "rdna-lab",
+  "profiles": {
+    "rdna-lab": {
+      "name": "llama.cpp-rdna-lab (2x RX 9070 XT, ROCm 7.1)",
+      "default_batch": 8192,
+      "default_ubatch": 1024,
+      "max_ctx": 262144,
+      "backend_defaults": {
+        "rocm": {
+          "dev": "ROCm1,ROCm0",
+          "sm": "layer",
+          "ts": "1,1"
+        },
+        "vk": {
+          "dev": "Vulkan1,Vulkan0",
+          "sm": "layer",
+          "ts": "1,1"
+        },
+        "cpu": {
+          "dev": "",
+          "sm": "",
+          "ts": ""
+        }
+      }
+    },
+    "generic": {
+      "name": "generic (user-provided backend flags)",
+      "default_batch": 4096,
+      "default_ubatch": 512,
+      "max_ctx": 131072,
+      "backend_defaults": {
+        "rocm": {"dev": "ROCm1,ROCm0", "sm": "layer", "ts": "1,1"},
+        "vk": {"dev": "Vulkan1,Vulkan0", "sm": "layer", "ts": "1,1"},
+        "cpu": {"dev": "", "sm": "", "ts": ""}
+      }
+    }
+  }
+}

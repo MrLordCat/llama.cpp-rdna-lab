@@ -1,0 +1,27 @@
+{
+  "$doc": "Агентные сессии: 10 ходов, контекст растёт, KV переиспользуется (cache_prompt). input_tokens - входная часть каждого хода (текст 'запроса агента'), decode_tokens - генерация на ход.",
+  "sessions": {
+    "1": {
+      "name": "light",
+      "ctx": 32768,
+      "turns": 10,
+      "input_tokens": 1024,
+      "decode_tokens": 128
+    },
+    "2": {
+      "name": "medium",
+      "ctx": 98304,
+      "turns": 10,
+      "input_tokens": 2048,
+      "decode_tokens": 256
+    },
+    "3": {
+      "name": "heavy",
+      "ctx": 131072,
+      "turns": 10,
+      "input_tokens": 4096,
+      "decode_tokens": 512
+    }
+  },
+  "omit_meta_length": true
+}
