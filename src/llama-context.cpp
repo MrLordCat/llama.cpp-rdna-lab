@@ -40,18 +40,40 @@ static llm_graph_type llama_ctx_type_to_graph_type(llama_context_type ctx_type) 
 // with it the per-token KV-cache reads) to the local backend via the scheduler
 // input-placement heuristic, which was measured to collapse decode throughput
 // (RPC-3080 16k 27B: 3.5 tok/s vs 22.9 baseline).
+static bool llama_backend_is_rpc(ggml_backend_t backend) {
+#ifdef GGML_USE_RPC
+    return ggml_backend_is_rpc(backend);
+#else
+    (void) backend;
+    return false;
+#endif
+}
+
 static void pin_causal_mask_to_local_backend(ggml_backend_sched_t sched, ggml_cgraph * gf, const llama_model * model) {
     ggml_backend_t local = nullptr;
     ggml_backend_t host  = nullptr;
+    bool has_rpc = false;
     for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
         ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
-        if (!ggml_backend_is_rpc(backend) && local == nullptr) {
+        if (llama_backend_is_rpc(backend)) {
+            has_rpc = true;
+        }
+        if (!llama_backend_is_rpc(backend) && local == nullptr) {
             local = backend;
         }
         if (ggml_backend_get_device(backend) != nullptr &&
             ggml_backend_dev_type(ggml_backend_get_device(backend)) == GGML_BACKEND_DEVICE_TYPE_CPU) {
             host = backend;
         }
+    }
+
+    // The pins below are RPC-lane optimizations only. In a local (non-RPC)
+    // lane the scheduler must keep its natural placement: with multi-device
+    // backend types (e.g. two HIP/Vulkan devices) the weight-buffer match
+    // would pin every "__fattn__-<il>" node to the first device and break
+    // the -sm layer balance (measured ~-5% prefill, ROCm 49K).
+    if (!has_rpc) {
+        return;
     }
 
     // GGML_RPC_MASK_PIN_HOST: pin the F16 mask cast to the host backend
