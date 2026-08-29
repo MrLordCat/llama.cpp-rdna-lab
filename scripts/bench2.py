@@ -359,9 +359,14 @@ def start_server(cmd: list[str], log_path: Path, out_stream: Any) -> subprocess.
     return proc
 
 
-def wait_health(host: str, port: int, timeout: float = 180.0, poll: float = 1.0) -> bool:
+def wait_health(host: str, port: int, timeout: float = 180.0, poll: float = 1.0,
+                proc: subprocess.Popen | None = None) -> bool:
+    """True when /health answers. A server that dies before answering is a
+    failure now, not a full timeout later: its exit code is what diagnoses it."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return False
         try:
             with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=2) as resp:
                 if resp.status == 200:
@@ -965,14 +970,22 @@ def cmd_run(args: argparse.Namespace) -> int:
         writer.event("server_start", cmd=" ".join(server_cmd), host=host, port=port)
         proc = start_server(server_cmd, writer.run_dir / "server.log", sys.stderr)
         writer.event("server_spawned", pid=proc.pid)
-        if not wait_health(host, port, timeout=args.health_timeout):
-            tail = ""
+        if not wait_health(host, port, timeout=args.health_timeout, proc=proc):
+            # read the log before touching the process: stopping it would
+            # flush whatever it still had to say straight to the bit bucket
             log_path = writer.run_dir / "server.log"
+            tail = ""
             if log_path.exists():
                 tail = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-20:])
-            print(f"[bench2] server health timeout after {args.health_timeout}s; log tail:\n{tail}",
-                  file=sys.stderr, flush=True)
-            writer.event("server_health_timeout", tail=tail)
+            rc = proc.poll()
+            if rc is not None:
+                print(f"[bench2] server exited with code {rc} before becoming ready; "
+                      f"log tail:\n{tail}", file=sys.stderr, flush=True)
+                writer.event("server_exited", rc=rc, tail=tail)
+            else:
+                print(f"[bench2] server health timeout after {args.health_timeout}s; "
+                      f"log tail:\n{tail}", file=sys.stderr, flush=True)
+                writer.event("server_health_timeout", tail=tail)
             stop_server(proc)
             return 3
         print(f"[bench2] server ready: {server_cmd[0]} (pid {proc.pid}, port {port})", flush=True)
