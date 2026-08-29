@@ -12,6 +12,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #ifdef __APPLE__
@@ -503,10 +507,18 @@ void ggml_backend_tensor_copy(const struct ggml_tensor * src, struct ggml_tensor
 #ifndef NDEBUG
         GGML_LOG_DEBUG("%s: warning: slow copy from %s to %s\n", __func__, ggml_backend_buffer_name(src->buffer), ggml_backend_buffer_name(dst->buffer));
 #endif // NDEBUG
+        const bool trace = getenv("GGML_SCHED_SPLIT_TIMING") != nullptr;
         size_t nbytes = ggml_nbytes(src);
         void * data = malloc(nbytes);
+        const int64_t t_get_us = trace ? ggml_time_us() : 0;
         ggml_backend_tensor_get(src, data, 0, nbytes);
+        const int64_t t_set_us = trace ? ggml_time_us() : 0;
         ggml_backend_tensor_set(dst, data, 0, nbytes);
+        if (trace) {
+            GGML_LOG_INFO("%s: slow copy %s -> %s bytes=%zu get=%.3f set=%.3f ms\n", __func__,
+                    ggml_backend_buffer_name(src->buffer), ggml_backend_buffer_name(dst->buffer),
+                    nbytes, (t_set_us - t_get_us) / 1000.0, (ggml_time_us() - t_set_us) / 1000.0);
+        }
         free(data);
     }
 }
@@ -785,6 +797,14 @@ struct ggml_backend_sched_split {
     struct ggml_cgraph graph;
 };
 
+// one pending async outbound copy of a split input (GGML_SCHED_ASYNC_SPLIT_COPY)
+struct ggml_backend_sched_async_copy {
+    int src_id;
+    int dst_id;
+    struct ggml_tensor * src;
+    struct ggml_tensor * dst;
+};
+
 struct ggml_backend_sched {
     bool is_reset; // true if the scheduler has been reset since the last graph split
     bool is_alloc;
@@ -839,6 +859,20 @@ struct ggml_backend_sched {
     int debug_realloc;
     int debug_graph_size;
     int debug_prev_graph_size;
+
+    // experimental async outbound split-input copies (GGML_SCHED_ASYNC_SPLIT_COPY=1):
+    // a worker thread waits for the producing backend event, reads the tensor
+    // and sets it on the destination backend, so the scheduler thread does not
+    // block on the source GPU graph while the data is streamed out.
+    bool async_split_copy;
+    bool split_recorded[GGML_SCHED_MAX_BACKENDS]; // event for this call recorded?
+    ggml_backend_event_t split_events[GGML_SCHED_MAX_BACKENDS];
+    std::vector<ggml_backend_sched_async_copy> async_pending;
+    std::mutex async_mutex;
+    std::condition_variable async_cv;
+    std::atomic<bool> async_busy;
+    std::atomic<int> async_src_id; // source backend of the running worker, -1 if idle
+    bool async_shutdown;
 };
 
 #define hash_id(tensor) ggml_hash_find_or_insert(&sched->hash_set, tensor)
@@ -1552,12 +1586,77 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
     return true;
 }
 
+// wait until a previously started async copy worker has finished
+static void ggml_backend_sched_async_copy_idle(ggml_backend_sched_t sched) {
+    std::unique_lock<std::mutex> lock(sched->async_mutex);
+    sched->async_cv.wait(lock, [sched] { return !sched->async_busy; });
+}
+
+// async copy worker: waits for the producing backend event, reads the tensor
+// into host memory and streams it to the destination backend. The scheduler
+// thread only submits this, so it can continue to the next ubatch local
+// layers while the previous split input is still being read/streamed.
+static void ggml_backend_sched_async_copy_worker(ggml_backend_sched_t sched) {
+    static const bool dbg = getenv("GGML_SCHED_ASYNC_DEBUG") != nullptr;
+    std::vector<ggml_backend_sched_async_copy> ops;
+    {
+        std::unique_lock<std::mutex> lock(sched->async_mutex);
+        ops.swap(sched->async_pending);
+    }
+    std::vector<uint8_t> host;
+    for (const auto & op : ops) {
+        if (dbg) fprintf(stderr, "ASYNC_COPY_DEBUG: worker start src_id=%d src=%s\n", op.src_id, op.src->name);
+        ggml_backend_event_t ev = sched->split_events[op.src_id];
+        if (ev != nullptr) {
+            // the event is recorded at the end of the producing split, so
+            // reading the tensor here is race-free with the next ubatch graph
+            ggml_backend_event_synchronize(ev);
+        }
+        if (dbg) fprintf(stderr, "ASYNC_COPY_DEBUG: event done src=%s\n", op.src->name);
+        const size_t nbytes = ggml_nbytes(op.src);
+        host.resize(nbytes);
+        ggml_backend_tensor_get(op.src, host.data(), 0, nbytes);
+        if (dbg) fprintf(stderr, "ASYNC_COPY_DEBUG: get done src=%s\n", op.src->name);
+        ggml_backend_tensor_set(op.dst, host.data(), 0, nbytes);
+        if (dbg) fprintf(stderr, "ASYNC_COPY_DEBUG: set done src=%s\n", op.src->name);
+    }
+    // atomics: no lock needed here, avoids any lock-ordering with the
+    // scheduler thread waiting in the guard
+    sched->async_busy = false;
+    sched->async_src_id = -1;
+    sched->async_cv.notify_all();
+    if (dbg) fprintf(stderr, "ASYNC_COPY_DEBUG: worker finished\n");
+}
+
+// start the worker for the queued async copies, if any. The worker drains all
+// pending ops, so it is safe to re-enter while a previous run is still active
+// (it disowns the ops list and the next start sees them already swapped).
+static void ggml_backend_sched_async_copy_start(ggml_backend_sched_t sched) {
+    std::unique_lock<std::mutex> lock(sched->async_mutex);
+    if (sched->async_busy || sched->async_pending.empty()) {
+        if (getenv("GGML_SCHED_ASYNC_DEBUG") != nullptr && !sched->async_pending.empty()) {
+            fprintf(stderr, "ASYNC_COPY_DEBUG: start skipped, busy=%d pending=%zu\n",
+                    sched->async_busy.load() ? 1 : 0, sched->async_pending.size());
+        }
+        return;
+    }
+    sched->async_busy = true;
+    sched->async_src_id = sched->async_pending[0].src_id;
+    std::thread(ggml_backend_sched_async_copy_worker, sched).detach();
+}
+
 static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
     struct ggml_backend_sched_split * splits = sched->splits;
 
+    if (sched->async_split_copy) {
+        memset(sched->split_recorded, 0, sizeof(sched->split_recorded));
+    }
+
     static const bool trace_split_timing = getenv("GGML_SCHED_SPLIT_TIMING") != nullptr;
     static const bool trace_split_sync   = trace_split_timing && getenv("GGML_SCHED_SPLIT_TIMING_SYNC") != nullptr;
+    static const bool trace_split_summary = getenv("GGML_SCHED_SPLIT_SUMMARY") != nullptr;
+    const bool measure_split_timing = trace_split_timing || trace_split_summary;
 
     ggml_tensor * prev_ids_tensor = nullptr;
     std::vector<int32_t> ids;
@@ -1567,46 +1666,89 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         struct ggml_backend_sched_split * split = &splits[split_id];
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
-        const int64_t t_split_start_us   = trace_split_timing ? ggml_time_us() : 0;
-        const int64_t t_copy_start_us    = trace_split_timing ? ggml_time_us() : 0;
+        const int64_t t_split_start_us   = measure_split_timing ? ggml_time_us() : 0;
+        const int64_t t_copy_start_us    = measure_split_timing ? ggml_time_us() : 0;
         int64_t       t_copy_us          = 0;
         int64_t       t_compute_us       = 0;
         int64_t       t_compute_sync_us  = 0;
         int64_t       t_event_us         = 0;
 
+        // A running async outbound copy may still be reading its source
+        // tensor. Before a split on the same source backend runs (which would
+        // overwrite the tensor in the next ubatch graph), wait for the copy to
+        // finish reading it.
+        if (sched->async_busy && sched->async_src_id == split_backend_id) {
+            if (getenv("GGML_SCHED_ASYNC_DEBUG") != nullptr) {
+                fprintf(stderr, "ASYNC_COPY_DEBUG: guard wait split=%d backend_id=%d src_id=%d\n",
+                        split_id, split_backend_id, sched->async_src_id.load());
+            }
+            ggml_backend_sched_async_copy_idle(sched);
+            if (getenv("GGML_SCHED_ASYNC_DEBUG") != nullptr) {
+                fprintf(stderr, "ASYNC_COPY_DEBUG: guard done split=%d\n", split_id);
+            }
+        }
+
         // copy the input tensors to the split backend
         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+            const int64_t t_input_start_us = trace_split_timing ? ggml_time_us() : 0;
             ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, split->inputs[input_id]);
             struct ggml_tensor * input = split->inputs[input_id];
             struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, sched->cur_copy);
 
-            if (trace_split_timing) {
-                GGML_LOG_INFO(
-                    "%s: split input split=%d input=%d/%d name=%s bytes=%zu src=%s dst=%s flags=%d usage=%d\n",
-                    __func__, split_id + 1, input_id + 1, split->n_inputs, input->name,
-                    ggml_nbytes(input), ggml_backend_name(input_backend), ggml_backend_name(split_backend),
-                    input->flags, (int) ggml_backend_buffer_get_usage(input->buffer));
-            }
-
             if (input->flags & GGML_TENSOR_FLAG_INPUT) {
-                // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
-                if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
+                // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done.
+                // RPC destinations take the async path: the payload is
+                // snapshotted at submit and queued on the per-socket worker,
+                // so the user data can be overwritten immediately and the
+                // following graph command is queued after the copy
+                // (ordering preserved by the queue).
+                if (split_backend->iface.cpy_tensor_async != NULL &&
+                        split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
+                    // async copy queued - no barrier needed here
+                } else if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
                     ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
+                    ggml_backend_tensor_copy(input, input_cpy);
                 } else {
                     ggml_backend_synchronize(split_backend);
+                    ggml_backend_tensor_copy(input, input_cpy);
                 }
-                ggml_backend_tensor_copy(input, input_cpy);
             } else {
                 // wait for the split backend to finish using the input before overwriting it
-                if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
-                    ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
-                } else {
-                    ggml_backend_synchronize(split_backend);
+                // When the destination copy is routed through an async path
+                // with its own ordered queue (RPC), this wait is redundant:
+                // the copy is queued strictly after the previous graph on the
+                // same socket, and the producing GPU is synchronized by the
+                // scheduler thread inside the copy submit. Waiting here
+                // blocks the scheduler on the slowest queued transfer, which
+                // is the serializing barrier measured in the split-timing
+                // traces (259-288 ms on a 4-byte input).
+                const bool async_dst = split_backend->iface.cpy_tensor_async != NULL;
+                if (!async_dst) {
+                    if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
+                        ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
+                    } else {
+                        ggml_backend_synchronize(split_backend);
+                    }
                 }
 
                 // when offloading MoE weights, we can reduce the amount of data copied by copying only the experts that are used
                 ggml_tensor * node = split->graph.nodes[0];
-                if (split->graph.n_nodes > 0 &&
+                const int input_backend_id = ggml_backend_sched_backend_id(sched, input_backend);
+                if (sched->async_split_copy &&
+                    !sched->async_busy &&
+                    input_backend_id >= 0 &&
+                    sched->split_events[input_backend_id] != nullptr &&
+                    sched->split_recorded[input_backend_id] &&
+                    input_backend->iface.cpy_tensor_async != NULL &&
+                    split_backend->iface.cpy_tensor_async == NULL) {
+                    // Async outbound split-input copy: a worker waits for the
+                    // event recorded at the end of the producing split, reads
+                    // the tensor and streams it to the destination. The graph
+                    // command is queued after this copy on the destination, so
+                    // command order is preserved; the scheduler thread does not
+                    // block on the source GPU graph.
+                    sched->async_pending.push_back({ input_backend_id, split_backend_id, input, input_cpy });
+                } else if (split->graph.n_nodes > 0 &&
                     ggml_backend_buffer_get_usage(input->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
                     ggml_backend_buffer_is_host(input->buffer) && (
                     (node->src[0] == input_cpy && node->op == GGML_OP_MUL_MAT_ID)
@@ -1703,12 +1845,26 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     }
                 }
             }
+            if (trace_split_timing) {
+                GGML_LOG_INFO("%s: split input done split=%d input=%d/%d name=%s bytes=%zu src=%s dst=%s copy=%.3f ms\n",
+                        __func__, split_id + 1, input_id + 1, split->n_inputs, input->name,
+                        ggml_nbytes(input), ggml_backend_name(input_backend), ggml_backend_name(split_backend),
+                        (ggml_time_us() - t_input_start_us) / 1000.0);
+            }
         }
         if (trace_split_timing) {
+            GGML_LOG_INFO("%s: split inputs split=%d/%d backend=%s copy=%.3f ms\n", __func__, split_id + 1, sched->n_splits, ggml_backend_name(split_backend), (ggml_time_us() - t_copy_start_us) / 1000.0);
+        }
+        if (measure_split_timing) {
             t_copy_us = ggml_time_us() - t_copy_start_us;
         }
 
-        const int64_t t_compute_start_us = trace_split_timing ? ggml_time_us() : 0;
+        // kick off any async outbound copies queued for this split before the
+        // graph command is submitted, so the destination receives the copies
+        // (queued first) and then the graph in submission order
+        ggml_backend_sched_async_copy_start(sched);
+
+        const int64_t t_compute_start_us = measure_split_timing ? ggml_time_us() : 0;
         if (!sched->callback_eval) {
             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
             if (ec != GGML_STATUS_SUCCESS) {
@@ -1747,7 +1903,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 j0 = j1;
             }
         }
-        if (trace_split_timing) {
+        if (measure_split_timing) {
             t_compute_us = ggml_time_us() - t_compute_start_us;
             if (trace_split_sync) {
                 const int64_t t_sync_start_us = ggml_time_us();
@@ -1757,18 +1913,23 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
 
         // record the event of this copy
-        const int64_t t_event_start_us = trace_split_timing ? ggml_time_us() : 0;
+        const int64_t t_event_start_us = measure_split_timing ? ggml_time_us() : 0;
         if (split->n_inputs > 0) {
             if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
                 ggml_backend_event_record(sched->events[split_backend_id][sched->cur_copy], split_backend);
             }
+            if (sched->split_events[split_backend_id] != nullptr) {
+                ggml_backend_event_record(sched->split_events[split_backend_id], split_backend);
+                sched->split_recorded[split_backend_id] = true;
+            }
         }
-        if (trace_split_timing) {
+        if (measure_split_timing) {
             t_event_us = ggml_time_us() - t_event_start_us;
             const int64_t t_total_us = ggml_time_us() - t_split_start_us;
             const ggml_tensor * first_node = split->graph.n_nodes > 0 ? split->graph.nodes[0] : nullptr;
             const ggml_tensor * last_node  = split->graph.n_nodes > 0 ? split->graph.nodes[split->graph.n_nodes - 1] : nullptr;
-            GGML_LOG_INFO(
+                if (trace_split_timing) {
+                GGML_LOG_INFO(
                     "%s: split timing split=%d/%d backend=%s backend_id=%d cur_copy=%d nodes=%d inputs=%d "
                     "first=%s:%s last=%s:%s copy=%.3f compute=%.3f compute_sync=%.3f event=%.3f total=%.3f ms\n",
                     __func__, split_id + 1, sched->n_splits, ggml_backend_name(split_backend), split_backend_id,
@@ -1779,6 +1940,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     last_node ? last_node->name : "none",
                     t_copy_us/1000.0, t_compute_us/1000.0, t_compute_sync_us/1000.0,
                     t_event_us/1000.0, t_total_us/1000.0);
+                } else {
+                GGML_LOG_INFO(
+                    "%s: split summary split=%d/%d backend=%s nodes=%d inputs=%d copy=%.3f compute=%.3f event=%.3f total=%.3f ms\n",
+                    __func__, split_id + 1, sched->n_splits, ggml_backend_name(split_backend),
+                    split->graph.n_nodes, split->n_inputs, t_copy_us/1000.0, t_compute_us/1000.0,
+                    t_event_us/1000.0, t_total_us/1000.0);
+                }
         }
     }
 
@@ -1809,6 +1977,31 @@ ggml_backend_sched_t ggml_backend_sched_new(
     sched->debug_realloc = GGML_SCHED_DEBUG_REALLOC ? atoi(GGML_SCHED_DEBUG_REALLOC) : sched->debug_realloc;
 
     sched->n_backends = n_backends;
+
+    // experimental async outbound split-input copies; creates one event per
+    // backend so the copy worker can wait for the producing graph without
+    // blocking the scheduler thread on the source backend.
+    sched->async_split_copy = getenv("GGML_SCHED_ASYNC_SPLIT_COPY") != nullptr;
+    sched->async_busy = false;
+    sched->async_src_id = -1;
+    sched->async_shutdown = false;
+    if (sched->async_split_copy) {
+        for (int b = 0; b < n_backends; ++b) {
+            if (ggml_backend_dev_type(backends[b]->device) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+                continue;
+            }
+            sched->split_events[b] = ggml_backend_event_new(backends[b]->device);
+            if (sched->split_events[b] == nullptr) {
+                sched->async_split_copy = false;
+                GGML_LOG_INFO("%s: async split copy disabled, backend %s has no events\n",
+                        __func__, ggml_backend_name(backends[b]));
+                break;
+            }
+        }
+        if (sched->async_split_copy) {
+            GGML_LOG_INFO("%s: async outbound split copies enabled (GGML_SCHED_ASYNC_SPLIT_COPY)\n", __func__);
+        }
+    }
     sched->n_copies = parallel ? GGML_SCHED_MAX_COPIES : 1;
     if (parallel) {
         bool has_rocm_backend = false;
@@ -1885,10 +2078,12 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
     if (sched == NULL) {
         return;
     }
+    ggml_backend_sched_async_copy_idle(sched);
     for (int b = 0; b < sched->n_backends; b++) {
         for (int c = 0; c < sched->n_copies; c++) {
             ggml_backend_event_free(sched->events[b][c]);
         }
+        ggml_backend_event_free(sched->split_events[b]);
     }
     ggml_gallocr_free(sched->galloc);
     ggml_free(sched->ctx);
@@ -1916,6 +2111,9 @@ void ggml_backend_sched_reset(ggml_backend_sched_t sched) {
         sched->is_reset = true;
     }
     sched->is_alloc = false;
+
+    // do not tear down buffers/tensors an async copy worker is still reading
+    ggml_backend_sched_async_copy_idle(sched);
 }
 
 void ggml_backend_sched_reserve_size(ggml_backend_sched_t sched, struct ggml_cgraph * measure_graph, size_t * sizes) {
@@ -1991,6 +2189,7 @@ enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sch
 
 void ggml_backend_sched_synchronize(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
+    ggml_backend_sched_async_copy_idle(sched);
     for (int i = 0; i < sched->n_backends; i++) {
         ggml_backend_synchronize(sched->backends[i]);
     }

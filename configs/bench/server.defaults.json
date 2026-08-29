@@ -1,0 +1,27 @@
+{
+  "$doc": "Общие значения по умолчанию для запуска llama-server. Все переопределяются CLI (--batch-size, --ubatch-size, --kv-k, ...) и профилем железа.",
+  "server": {
+    "n_gpu_layers": 999,
+    "parallel": 1,
+    "flash_attn": true,
+    "kv_k": "q8_0",
+    "kv_v": "q8_0",
+    "no_warmup": true,
+    "seed": 42,
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "fit": "off",
+    "cache_ram": 0,
+    "ctx_checkpoints": 0,
+    "spec": "none",
+    "warmup_shot": true,
+    "warmup_tokens": 512,
+    "warmup_decode": 16
+  },
+  "results": {
+    "dir": "build_logs/bench",
+    "index_csv": "index.csv",
+    "index_md": "index.md",
+    "keep_server_log": true
+  }
+}

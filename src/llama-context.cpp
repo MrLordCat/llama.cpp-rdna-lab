@@ -1,6 +1,9 @@
 #include "llama-context.h"
 
+#include <algorithm>
+
 #include "ggml.h"
+#include "ggml-rpc.h"
 #include "llama-arch.h"
 #include "llama-impl.h"
 #include "llama-batch.h"
@@ -25,6 +28,105 @@ static llm_graph_type llama_ctx_type_to_graph_type(llama_context_type ctx_type) 
     }
 
     return LLM_GRAPH_TYPE_DECODER;
+}
+
+// RPC: pin the F16 cast of the single-sequence causal attention mask to the
+// first non-RPC backend. The RPC server regenerates causal masks internally
+// (FA src[3] = NULL), so the cast must not live on the RPC backend: the set is
+// skipped by name in the RPC buffer, and the get is avoided by locality. The
+// F32 mask itself must stay on host (llama_kv_cache::set_input_kq_mask asserts
+// a host buffer) and is filled locally.
+//
+// Additionally, pin every FA node ("__fattn__-<il>") to the backend that owns
+// the layer's weights. Otherwise the mask pin above can pull the FA node (and
+// with it the per-token KV-cache reads) to the local backend via the scheduler
+// input-placement heuristic, which was measured to collapse decode throughput
+// (RPC-3080 16k 27B: 3.5 tok/s vs 22.9 baseline).
+static bool llama_backend_is_rpc(ggml_backend_t backend) {
+#ifdef GGML_USE_RPC
+    return ggml_backend_is_rpc(backend);
+#else
+    (void) backend;
+    return false;
+#endif
+}
+
+static void pin_causal_mask_to_local_backend(ggml_backend_sched_t sched, ggml_cgraph * gf, const llama_model * model) {
+    ggml_backend_t local = nullptr;
+    ggml_backend_t host  = nullptr;
+    bool has_rpc = false;
+    for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+        ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
+        if (llama_backend_is_rpc(backend)) {
+            has_rpc = true;
+        }
+        if (!llama_backend_is_rpc(backend) && local == nullptr) {
+            local = backend;
+        }
+        if (ggml_backend_get_device(backend) != nullptr &&
+            ggml_backend_dev_type(ggml_backend_get_device(backend)) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+            host = backend;
+        }
+    }
+
+    // The pins below are RPC-lane optimizations only. In a local (non-RPC)
+    // lane the scheduler must keep its natural placement: with multi-device
+    // backend types (e.g. two HIP/Vulkan devices) the weight-buffer match
+    // would pin every "__fattn__-<il>" node to the first device and break
+    // the -sm layer balance (measured ~-5% prefill, ROCm 49K).
+    if (!has_rpc) {
+        return;
+    }
+
+    // GGML_RPC_MASK_PIN_HOST: pin the F16 mask cast to the host backend
+    // instead of the local GPU. The local-GPU pin forces the mask copy to the
+    // GPU as its own scheduler split, and that copy waits on the previous
+    // local GPU graph event (measured ~423 ms per 1024-token ubatch on the
+    // 12K local-RPC lane). Because the server-side FA split reads the mask
+    // from the GPU buffer, the server GRAPH_COMPUTE cannot start until that
+    // wait finishes: server and local GPU serialize instead of overlapping.
+    // With the mask on host, the RPC-side copy sources CPU directly (no GPU
+    // event), the server graph starts right after its inputs, and the local
+    // mask copy overlaps the server pass.
+    ggml_backend_t mask_backend = std::getenv("GGML_RPC_MASK_PIN_HOST") != nullptr ? host : local;
+
+    for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+        ggml_tensor * t = ggml_graph_node(gf, i);
+        const char * name = ggml_get_name(t);
+        if (strcmp(name, "attn_inp_kq_mask (copy)") == 0) {
+            if (mask_backend != nullptr) {
+                ggml_backend_sched_set_tensor_backend(sched, t, mask_backend);
+            }
+        } else if (strncmp(name, "rs_s_copy", strlen("rs_s_copy")) == 0) {
+            // recurrent state-copy indices (s_copy and its " (view)" slices):
+            // llm_graph_input_rs::set_input asserts a host buffer, so pin to
+            // the CPU backend. Local GDN/SSM layers then read the indices
+            // locally instead of pulling 4 bytes from the RPC server each
+            // ubatch (which forced a server-side GPU sync, ~90 ms per ubatch).
+            if (host != nullptr) {
+                ggml_backend_sched_set_tensor_backend(sched, t, host);
+            }
+        } else if (model != nullptr && strncmp(name, "__fattn__-", strlen("__fattn__-")) == 0) {
+            // pin the FA node to the backend that owns this layer's weights
+            const int il = atoi(name + strlen("__fattn__-"));
+            if (il >= 0 && il < (int) model->layers.size()) {
+                ggml_tensor * w = model->layers[il].attn_norm;
+                if (w == nullptr) {
+                    w = model->layers[il].wq;
+                }
+                if (w != nullptr && w->buffer != nullptr) {
+                    ggml_backend_buffer_type_t wbuft = ggml_backend_buffer_get_type(w->buffer);
+                    for (int b = 0; b < ggml_backend_sched_get_n_backends(sched); ++b) {
+                        ggml_backend_t backend = ggml_backend_sched_get_backend(sched, b);
+                        if (ggml_backend_get_default_buffer_type(backend) == wbuft) {
+                            ggml_backend_sched_set_tensor_backend(sched, t, backend);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 static uint32_t llama_env_u32_clamped(const char * name, uint32_t fallback, uint32_t min_value, uint32_t max_value) {
@@ -1374,7 +1476,34 @@ bool llama_context::store_nextn_device_output(
     }
 
     auto dst = nextn_tensor_row_view(nextn_device_output.tensor, first_row, n_rows);
+    if (getenv("LLAMA_MTP_DEVICE_HANDOFF_TRACE")) {
+        static int trace_count = 0;
+        if (trace_count++ < 16) {
+            LLAMA_LOG_INFO("%s: store rows=%u first=%u cap=%u src=%s dst=%s valid=%u\n",
+                    __func__, n_rows, first_row, nextn_device_output.rows_capacity,
+                    ggml_backend_name(backend), ggml_backend_name(nextn_device_output.backend),
+                    nextn_device_output.rows_valid);
+        }
+    }
     ggml_backend_tensor_copy_async(backend, nextn_device_output.backend, src, &dst);
+    if (getenv("LLAMA_MTP_STORE_CHECK")) {
+        static bool checked = false;
+        if (!checked) {
+            checked = true;
+            const int64_t nelem = (int64_t) n_rows * dst.ne[0];
+            std::vector<float> a(nelem), b(nelem);
+            ggml_backend_tensor_get(src, a.data(), 0, nelem * sizeof(float));
+            ggml_backend_tensor_get(&dst, b.data(), 0, nelem * sizeof(float));
+            float maxdiff = 0.0f;
+            for (int64_t i = 0; i < nelem; i++) {
+                float d = std::fabs(a[i] - b[i]);
+                if (d > maxdiff) { maxdiff = d; }
+            }
+            LLAMA_LOG_INFO("%s: STORE CHECK rows=%u first=%u nelem=%lld maxdiff=%g src=%s dst=%s\n",
+                    __func__, n_rows, first_row, (long long) nelem, maxdiff,
+                    ggml_backend_name(backend), ggml_backend_name(nextn_device_output.backend));
+        }
+    }
     nextn_device_output.rows_valid = std::max(nextn_device_output.rows_valid, first_row + n_rows);
     return true;
 }
@@ -1881,7 +2010,15 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
     const auto gparams = graph_params(res, ubatch, mctx, gtype);
 
-    const bool can_reuse_graph = !graph_reuse_disable && res->can_reuse(gparams);
+    // Prefill run-ahead (LLAMA_RPC_RUN_AHEAD=1): prefill ubatches only use
+    // non-overlapping KV regions, so graph N+1 is data-independent from N.
+    // Force a fresh alloc for each ubatch: ggml_backend_sched_alloc_graph
+    // then rotates the per-copy split buffers (cur_copy/next_copy) and the
+    // per-copy events keep the pipeline race-free, removing the global
+    // ggml_backend_sched_synchronize between ubatches (the serializing
+    // barrier that capped the RPC lane at local+server wall sum).
+    const bool run_ahead_prefill = getenv("LLAMA_RPC_RUN_AHEAD") != nullptr && ubatch.n_tokens > 1;
+    const bool can_reuse_graph = !run_ahead_prefill && !graph_reuse_disable && res->can_reuse(gparams);
     if (trace_dflash) {
         LLAMA_LOG_INFO("%s: DFlash graph reuse check: disable=%d can_reuse=%d gf=%p\n",
                 __func__, graph_reuse_disable ? 1 : 0, can_reuse_graph ? 1 : 0, (void *) gf);
@@ -1928,6 +2065,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             ret = GGML_STATUS_FAILED;
             return nullptr;
         }
+
+        pin_causal_mask_to_local_backend(sched.get(), gf, &model);
 
         const int64_t t_alloc_start_us = trace_timing ? ggml_time_us() : 0;
         if (trace_dflash) {
@@ -3096,6 +3235,8 @@ ggml_cgraph * llama_context::graph_reserve(
     auto * gf = model.build_graph(gparams);
 
     this->n_outputs = save_n_outputs;
+
+    pin_causal_mask_to_local_backend(sched.get(), gf, &model);
 
     // initialize scheduler with the specified graph
     if (split_only) {

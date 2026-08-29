@@ -1,0 +1,25 @@
+{
+  "$doc": "Одиночные уровни: один большой промпт + декод. tokens - целевые значения, фактическое число берётся из timings сервера.",
+  "levels": {
+    "0": {"name": "smoke",        "ctx": 8192,   "prompt_tokens": 4096,  "decode_tokens": 64},
+    "1": {"name": "test",         "ctx": 16384,  "prompt_tokens": 8192,  "decode_tokens": 128},
+    "2": {"name": "standard",     "ctx": 49152,  "prompt_tokens": 31744, "decode_tokens": 256},
+    "3": {"name": "large",        "ctx": 98304,  "prompt_tokens": 66560, "decode_tokens": 256},
+    "4": {"name": "very-large",   "ctx": 131072, "prompt_tokens": 97280, "decode_tokens": 256},
+    "5": {"name": "max",          "ctx": 200704, "prompt_tokens": 194560,"decode_tokens": 256}
+  },
+  "default_context_source": "synthetic",
+  "context_sources": {
+    "synthetic": {
+      "$doc": "Детерминированный текстовый контекст (seed), повторяющиеся уникальные секции.",
+      "chars_per_token": 3.9
+    },
+    "repo-snapshot": {
+      "$doc": "Снапшот репозитория (как в старом бенче); ограничен ~52K токенов - пригоден только до L2.",
+      "max_tokens": 53000
+    },
+    "file": {
+      "$doc": "Произвольный текстовый файл из --context-file."
+    }
+  }
+}

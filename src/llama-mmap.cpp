@@ -523,15 +523,51 @@ struct llama_mmap::impl {
         mapped_fragments = std::move(new_mapped_fragments);
     }
 
-    ~impl() {
+    void unmap() {
         for (const auto & frag : mapped_fragments) {
             if (munmap((char *) addr + frag.first, frag.second - frag.first)) {
                 LLAMA_LOG_WARN("warning: munmap failed: %s\n", strerror(errno));
             }
         }
+        mapped_fragments.clear();
+    }
+
+    void unmap_ranges(const std::vector<std::pair<size_t, size_t>> & keep) {
+        // Release every page of the currently mapped fragments that is not
+        // covered by a kept interval. unmap_fragment() keeps the fragment
+        // bookkeeping consistent, so the destructor stays correct.
+        std::vector<std::pair<size_t, size_t>> gaps;
+        for (const auto & frag : mapped_fragments) {
+            size_t cur = frag.first;
+            for (const auto & k : keep) {
+                if (k.second <= cur) {
+                    continue;
+                }
+                if (k.first >= frag.second) {
+                    break;
+                }
+                const size_t ks = std::max(k.first, frag.first);
+                const size_t ke = std::min(k.second, frag.second);
+                if (ks > cur) {
+                    gaps.emplace_back(cur, ks);
+                }
+                cur = std::max(cur, ke);
+            }
+            if (cur < frag.second) {
+                gaps.emplace_back(cur, frag.second);
+            }
+        }
+        for (const auto & gap : gaps) {
+            unmap_fragment(gap.first, gap.second);
+        }
+    }
+
+    ~impl() {
+        unmap();
     }
 #elif defined(_WIN32)
     HANDLE hMapping = nullptr;
+    std::vector<void *> views; // every active file view (whole file, or remapped kept ranges)
 
     impl(struct llama_file * file, size_t prefetch, bool numa) {
         GGML_UNUSED(numa);
@@ -554,6 +590,7 @@ struct llama_mmap::impl {
             CloseHandle(hMapping);
             throw std::runtime_error(format("MapViewOfFile failed: %s", llama_format_win_err(error).c_str()));
         }
+        views.emplace_back(addr);
 
         if (prefetch > 0) {
 #if _WIN32_WINNT >= 0x602
@@ -582,19 +619,107 @@ struct llama_mmap::impl {
         GGML_UNUSED(last);
     }
 
-    ~impl() {
+    // Unlike the POSIX version, the view covers the whole file, so a
+    // fragment cannot be unmapped separately; release everything at once.
+    // After unmap_ranges() the kept ranges are separate views, so every
+    // active view is released here.
+    void unmap() {
         if (hMapping) {
-            if (addr) {
-                if (!UnmapViewOfFile(addr)) {
-                    LLAMA_LOG_WARN("warning: UnmapViewOfFile failed: %s\n",
-                            llama_format_win_err(GetLastError()).c_str());
+            for (auto * view : views) {
+                if (view) {
+                    if (!UnmapViewOfFile(view)) {
+                        LLAMA_LOG_WARN("warning: UnmapViewOfFile failed: %s\n",
+                                llama_format_win_err(GetLastError()).c_str());
+                    }
                 }
             }
+            views.clear();
             if (!CloseHandle(hMapping)) {
                 LLAMA_LOG_WARN("warning: CloseHandle failed: %s\n",
                         llama_format_win_err(GetLastError()).c_str());
             }
+            hMapping = nullptr;
+            addr = nullptr;
         }
+    }
+
+    void unmap_ranges(const std::vector<std::pair<size_t, size_t>> & keep) {
+        if (hMapping == nullptr) {
+            return;
+        }
+        if (keep.empty()) {
+            unmap();
+            return;
+        }
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        const size_t gran = (size_t) si.dwAllocationGranularity;
+
+        // Round the kept intervals out to the allocation granularity and merge
+        // overlaps, then remap exactly those ranges at their original address
+        // so already computed tensor/device-base pointers stay valid. Any
+        // failure falls back to the full view: correctness beats freeing RAM.
+        std::vector<std::pair<size_t, size_t>> ranges;
+        for (const auto & k : keep) {
+            const size_t first = k.first & ~(gran - 1);
+            const size_t last  = std::min((k.second + gran - 1) & ~(gran - 1), size);
+            if (last <= first) {
+                continue;
+            }
+            if (!ranges.empty() && first <= ranges.back().second) {
+                ranges.back().second = std::max(ranges.back().second, last);
+            } else {
+                ranges.emplace_back(first, last);
+            }
+        }
+        if (ranges.size() == 1 && ranges[0].first == 0 && ranges[0].second == size) {
+            return; // nothing to release
+        }
+
+        void * orig_addr = addr;
+        if (!UnmapViewOfFile(orig_addr)) {
+            LLAMA_LOG_WARN("warning: UnmapViewOfFile failed: %s\n",
+                    llama_format_win_err(GetLastError()).c_str());
+        }
+        views.clear();
+
+        std::vector<void *> new_views;
+        bool restored = true;
+        for (const auto & r : ranges) {
+            void * view = MapViewOfFileEx(hMapping, FILE_MAP_READ,
+                    (DWORD) (r.first >> 32), (DWORD) (r.first & 0xFFFFFFFF),
+                    r.second - r.first, (char *) orig_addr + r.first);
+            if (view != (char *) orig_addr + r.first) {
+                restored = false;
+                if (view) {
+                    UnmapViewOfFile(view);
+                }
+                break;
+            }
+            new_views.emplace_back(view);
+        }
+        if (!restored) {
+            for (auto * view : new_views) {
+                UnmapViewOfFile(view);
+            }
+            void * full = MapViewOfFileEx(hMapping, FILE_MAP_READ, 0, 0, 0, orig_addr);
+            if (full != orig_addr) {
+                if (full) {
+                    UnmapViewOfFile(full);
+                }
+                throw std::runtime_error(format(
+                        "failed to restore mmap view after partial unmap (set LLAMA_KEEP_MMAPPED_WEIGHTS=1 to disable)"));
+            }
+            views.emplace_back(full);
+            LLAMA_LOG_WARN("warning: partial unmap of model file view failed, keeping full mapping\n");
+        } else {
+            views = std::move(new_views);
+        }
+        // addr keeps its original value in both cases
+    }
+
+    ~impl() {
+        unmap();
     }
 #else
     impl(struct llama_file * file, size_t prefetch, bool numa) {
@@ -611,6 +736,15 @@ struct llama_mmap::impl {
 
         throw std::runtime_error("mmap not supported");
     }
+
+    void unmap() {
+        GGML_UNUSED(addr);
+        GGML_UNUSED(size);
+    }
+
+    void unmap_ranges(const std::vector<std::pair<size_t, size_t>> & keep) {
+        GGML_UNUSED(keep);
+    }
 #endif
 
     void * addr;
@@ -624,6 +758,10 @@ size_t llama_mmap::size() const { return pimpl->size; }
 void * llama_mmap::addr() const { return pimpl->addr; }
 
 void llama_mmap::unmap_fragment(size_t first, size_t last) { pimpl->unmap_fragment(first, last); }
+
+void llama_mmap::unmap() { pimpl->unmap(); }
+
+void llama_mmap::unmap_ranges(const std::vector<std::pair<size_t, size_t>> & keep) { pimpl->unmap_ranges(keep); }
 
 #if defined(_POSIX_MEMLOCK_RANGE) || defined(_WIN32)
 const bool llama_mmap::SUPPORTED  = true;

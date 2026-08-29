@@ -7,7 +7,9 @@
 
 // bump if necessary
 #define LLAMA_MAX_LAYERS  512
-#define LLAMA_MAX_EXPERTS 512 // Qwen3 Next
+#define LLAMA_MAX_EXPERTS 1024 // Kimi K3
+#define LLAMA_MAX_PLE_NGRAM 8  // qwen4exp
+#define LLAMA_MAX_PLE_HEADS 64 // qwen4exp
 
 enum llama_expert_gating_func_type {
     LLAMA_EXPERT_GATING_FUNC_TYPE_NONE           = 0,
@@ -43,6 +45,7 @@ struct llama_hparams {
     uint32_t n_ctx_train; // context size the model was trained on
     uint32_t n_embd;
     uint32_t n_layer;
+    uint32_t n_layer_all = 0; // all layers incl. nextn/MTP (qwen4exp uses it for per-layer tables)
     int32_t n_layer_kv_from_start = -1; // if non-negative, the first n_layer_kv_from_start layers have KV cache
     uint32_t n_expert = 0;
     uint32_t n_expert_used = 0;
@@ -209,6 +212,30 @@ struct llama_hparams {
     uint32_t indexer_head_size = 0;
     uint32_t indexer_top_k     = 0;
 
+    // 0 = full rank (DeepSeek-V4)
+    uint32_t hc_low_rank = 0;
+    uint32_t dsv4_hc_mult = 0; // qwen4exp hyper-connection count
+    std::array<uint32_t, LLAMA_MAX_LAYERS> dsv4_compress_ratios;
+
+    uint32_t ple_ngram_size      = 0;
+    uint32_t ple_heads_per_ngram = 0;
+    uint32_t ple_conv_kernel     = 0;
+    uint32_t ple_n_heads         = 0;   // (ngram_size - 1) * heads_per_ngram
+    uint32_t ple_head_dim        = 0;
+    uint32_t ple_eos_token_id    = 0;
+    // placeholder the PLE hash sees where an image chunk is spliced in; 0 means the
+    // file predates this key and the loader falls back to EOS
+    uint32_t ple_image_token_id  = 0;
+    std::array<uint32_t, LLAMA_MAX_LAYERS> is_ple_impl;
+    std::array<uint64_t, LLAMA_MAX_PLE_NGRAM>  ple_layer_multipliers;
+    std::array<uint64_t, LLAMA_MAX_PLE_HEADS>  ple_head_offsets;
+    std::array<uint64_t, LLAMA_MAX_PLE_HEADS>  ple_head_vocab_sizes;
+
+    bool is_ple(uint32_t il) const;
+
+    // PLE conv history rows: (kernel - 1) * ngram_size; 0 without a PLE module
+    uint32_t ple_conv_state() const;
+
     // qwen3vl deepstack
     uint32_t n_deepstack_layers = 0;
 
@@ -302,6 +329,9 @@ struct llama_hparams {
 
     // whether or not the given layer is recurrent (for hybrid models)
     bool is_recurrent(uint32_t il) const;
+
+    // alias used by the upstream hybrid codepaths
+    bool is_recr(uint32_t il) const { return is_recurrent(il); }
 
     uint32_t n_pos_per_embd() const;
 

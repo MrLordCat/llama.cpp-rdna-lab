@@ -17,7 +17,7 @@ from PyQt6.QtCore import Qt, QTimer
 
 from backend_names import backend_key_from_display, display_backend_from_key
 from threads import ServerThread
-from server_backend_panels import BackendPanels
+from server_backend_panels import BackendPanels, RpcServersPanel, build_supports_rpc
 from server_monitor import ServerMonitorPanel, ServerMonitorThread
 from server_presets import ServerPresetsMixin
 from ui_widgets import CollapsibleSection, LogPanel, StatusPill
@@ -233,6 +233,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_build_backend_combo = QComboBox()
         self.server_build_backend_combo.currentTextChanged.connect(self._on_build_backend_changed)
         self.server_build_version_combo = QComboBox()
+        self.server_build_version_combo.currentTextChanged.connect(self._refresh_rpc_build_support)
 
         self._grid_pair(server_grid, 0, 0, "Host:", self.server_host_input)
         self._grid_pair(server_grid, 0, 1, "Port:", self.server_port_spinbox)
@@ -265,6 +266,20 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         backend_panels_layout.addWidget(self.backend_panels)
         backend_panels_group.setLayout(backend_panels_layout)
         scroll_layout.addWidget(backend_panels_group)
+
+        # Remote RPC workers: collapsed by default so the common local-only
+        # setup stays unchanged. Enabling it adds RPC0..RPCn device profiles
+        # to the Backend Settings device list above.
+        self.rpc_panel = RpcServersPanel()
+        self.rpc_panel.changed.connect(self._on_rpc_config_changed)
+        rpc_section = CollapsibleSection(
+            "Remote GPUs (RPC)",
+            self.rpc_panel,
+            settings=self.parent.settings if hasattr(self.parent, "settings") else None,
+            settings_key="server/rpc_expanded",
+            expanded=False,
+        )
+        scroll_layout.addWidget(rpc_section)
 
         # Resources + Speculative Decoding share one row: params are narrow,
         # so pairing groups uses the panel width instead of growing downward
@@ -923,6 +938,16 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         if not self.server_auto_fit_check.isChecked():
             command.extend(["-fit", "off"])
 
+        # Remote RPC workers first: --rpc registers RPC0..RPCn before -dev is
+        # parsed, otherwise those device names cannot be resolved.
+        rpc_args = self.rpc_panel.args() if hasattr(self, "rpc_panel") else []
+        if rpc_args and not extra_has_any("--rpc"):
+            command.extend(rpc_args)
+            if build_supports_rpc(build_dir) is False:
+                problems.append("Selected build has GGML_RPC=OFF — --rpc will be rejected")
+            else:
+                notes.append(f"Remote RPC workers: {self.rpc_panel.summary()}")
+
         # Backend-specific args from the active Backend Settings sub-tab
         # (device selection / split mode etc.). Skipped when the user already
         # provided the same flag via Extra Arguments.
@@ -1170,6 +1195,18 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
             return
         model_name = Path(self.server_model_path.text().strip()).name
         self.backend_panels.apply_model_recommendation(model_name, self.server_context_spinbox.value())
+
+    def _on_rpc_config_changed(self, *_args) -> None:
+        """Publish RPC workers to the device profiles and refresh the preview."""
+        if not hasattr(self, "rpc_panel"):
+            return
+        self.backend_panels.set_rpc_endpoint_count(self.rpc_panel.device_count())
+        self._refresh_rpc_build_support()
+        self._schedule_command_preview()
+
+    def _refresh_rpc_build_support(self, *_args) -> None:
+        if hasattr(self, "rpc_panel"):
+            self.rpc_panel.set_build_support(build_supports_rpc(self._resolve_selected_build_dir()))
 
     def _on_kv_type_changed(self, kv_type: str) -> None:
         # Native Vulkan/ROCm FP8 E4M3 KV requires Flash Attention.
@@ -1449,6 +1486,12 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         self.server_port_spinbox.setValue(int(settings.value("server/port", 8000)))
 
         try:
+            # RPC first: the saved device profile may reference an RPC0.. entry
+            rpc_raw = settings.value("server/rpc", "")
+            if rpc_raw:
+                self.rpc_panel.from_settings(json.loads(rpc_raw))
+            self.backend_panels.set_rpc_endpoint_count(self.rpc_panel.device_count())
+
             panels_raw = settings.value("server/backend_panels", "")
             if panels_raw:
                 self.backend_panels.from_settings(json.loads(panels_raw))
@@ -1532,6 +1575,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
 
         self.on_spec_type_changed()
         self._apply_backend_model_recommendation()
+        self._refresh_rpc_build_support()
 
     def save_settings(self):
         """Save server settings"""
@@ -1543,6 +1587,7 @@ class ServerTabWidget(ServerPresetsMixin, QWidget):
         settings.setValue("server/host", self.server_host_input.text().strip())
         settings.setValue("server/port", self.server_port_spinbox.value())
         settings.setValue("server/backend_panels", json.dumps(self.backend_panels.to_settings()))
+        settings.setValue("server/rpc", json.dumps(self.rpc_panel.to_settings()))
         settings.setValue("server/mode", self.server_mode_combo.currentText())
         settings.setValue("server/build_backend", self.server_build_backend_combo.currentText())
         settings.setValue("server/build", self.server_build_backend_combo.currentText())

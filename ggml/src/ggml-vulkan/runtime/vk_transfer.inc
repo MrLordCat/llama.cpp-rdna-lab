@@ -1046,12 +1046,21 @@ static void ggml_vk_buffer_copy(vk_buffer& dst, size_t dst_offset, vk_buffer& sr
     } else {
         VK_LOG_DEBUG("ggml_vk_buffer_copy(MULTI_DEVICE, " << size << ")");
         // Copy device to device
+        const auto tc0 = std::chrono::steady_clock::now();
         ggml_vk_ensure_sync_staging_buffer(src->device, size);
 
         // Copy to src staging buffer
         ggml_vk_buffer_copy(src->device->sync_staging, 0, src, src_offset, size);
+        const auto tc1 = std::chrono::steady_clock::now();
         // Copy to dst buffer
         ggml_vk_buffer_write(dst, dst_offset, src->device->sync_staging->ptr, size);
+        const auto tc2 = std::chrono::steady_clock::now();
+        if (getenv("GGML_VK_TRACE") != nullptr) {
+            const double ms0 = std::chrono::duration<double, std::milli>(tc1 - tc0).count();
+            const double ms1 = std::chrono::duration<double, std::milli>(tc2 - tc1).count();
+            fprintf(stderr, "[vk-copy] multi size=%zu read=%.2fms write=%.2fms total=%.2fms\n",
+                    size, ms0, ms1, ms0 + ms1);
+        }
     }
 }
 

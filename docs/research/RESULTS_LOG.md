@@ -1,5 +1,234 @@
 # Results Log
 
+## 2026-08-28 - D136 short-context Vulkan decode isolation
+
+- Same-toolchain GCC 16 controls reduced the stock-vs-fork decode gap to
+  4.2% at L0, 2.6% at L1, and parity at L2 (three-run averages).
+- Vulkan timestamp traces excluded flash attention: comparable 4096-KV FA
+  work was 50.2 ms / 1008 calls in the fork versus 51.3 ms / 1008 in stock.
+  Remaining per-node deltas are distributed across MMVQ and small auxiliary
+  kernels; total GPU time per decode block differs by about 2.5%.
+- The proposed manual port `f9f33654a` was rejected as a duplicate before
+  editing. Fork commit `90488bd1b` is already in `master`, has the identical
+  stable patch-id, and owns the active coalesced Q4_K/Q5_K scale-load code.
+  The measured fork baseline therefore already contains that optimization.
+- No Vulkan shader change was made and no redundant benchmark was run. Next
+  candidate: isolate the submission-batching delta around `803b7fcae`.
+
+## 2026-08-28 - D136 night: 30x CPY/GET_ROWS gap isolated to upstream unary/glu sync
+
+- Single-GPU full-layer isolation (fork 19.15 tps / 53.38 ms GPU vs stock
+  31.76 tps / 32.60 ms GPU) pins the fork loss to two node types:
+  GET_ROWS 121 us and CPY 114 us (stock: 5 us / 3.3 us). All other nodes
+  are at parity or faster in the fork; MMVQ q4_K is even 84.3 vs 88.1 us.
+  Shaped traces, buffer names (Vulkan device buffers on both sides),
+  submit counts (2633 vs 3303) and the 402 MB CPY micro A/B (455 vs
+  458 GB/s) are all identical — the raw kernels are NOT slower.
+- The only hard runtime divergence on that path: the fork's
+  `vk_op_unary_push_constants` / `generic_unary_head.glsl` predate
+  upstream `1a7718b4c` (#24215, 2026-06-13), which packs fastdiv L values
+  and adds non-contig support. Generated `cpy_f32_f32.spv` /
+  `contig_cpy_f32_f32.spv` differ; `get_rows_f32_f32.spv` is identical.
+- Conclusion: port `1a7718b4c` (unary/glu layout+shaders, ~18 files)
+  as next action; it is the leaf explanation. All temporary traces were
+  reverted; both trees `git diff --check` clean. See
+  `docs/research/D136_STOCK_VULKAN_DECODE_EDGE.md` §9.
+
+## 2026-08-27 - D135 финал ветки rpc-vulkan: паритет + жизнеспособность 200K
+
+- Итоговая сводка ветки: `docs/research/rpc-vulkan/RPC_BRANCH_FINAL.md`.
+- Локальный RPC 14K (pin-host + многопоточные F16-конверсии сервера,
+  2/2): `16.76-16.85 agg / 1545.9-1558.3 ptps / 52.8-52.9 tps` против
+  no-RPC `16.92/1643.16/48.86` → aggregate −0.4% (паритет), prefill
+  −5.2%, decode +8%. Старая база 12.47 agg (без фиксов) → +35%.
+- Многопоточные F32↔F16 конверсии: `rpc_f32_to_f16`/`rpc_f16_to_f32` в
+  `ggml/src/ggml-rpc/rpc_internal.h`, серверные get/set_tensor
+  (`rpc_server.cpp`) — серверный SET 16-19 мс → ~1-3 мс; acceptance
+  бит-идентичен (88/153, 93/136).
+- Отклонено в D135: `GGML_RPC_SERVER_MAKE_MASK`+`ENABLE_MASK_NULL`
+  (decode −68%, NULL-маска = полное внимание), F16-сжатие input_embed
+  (регрессия на 3080: серверная конверсия дороже выигрыша; input_embed
+  остаётся F32), Q8-активации на 14K (без выигрыша, сеть почти скрыта).
+- 3080-lane диагноз (серверный TL, 14K): сеть ~200 мс/уб (20-22%),
+  но 46% цикла — простой сервера из-за баланса `-ts 0.8,1,1.4`;
+  равный `-ts 1,1,1` хуже (10.61 agg).
+- **200K ctx / 116K токенов (спилл)**: локальный 2×9070 XT
+  `183.71 ptps / 21.33 tps`; **RPC 3 карты (3080+2×9070 XT)
+  `635.28 ptps / 29.83 tps` → prefill ×3.45, decode +40%**. ГЛАВНЫЙ
+  ВЫВОД: RPC-связка делает сценарий «промпт больше VRAM двух карт»
+  жизнеспособным — 22 слоя+KV на 3080 снимают часть RAM spill.
+- Для полного 160K-промпта: фактическая плотность репо-снапшота
+  ~3.96 chars/token (не 2.6) → `--real-context-chars 634000
+  --real-context-chars-per-token 4.0`.
+- Артефакты: `d135-local-rpc-pinhhost-r1/r2`, `d135-local-rpc-mtconv-r1/r2`,
+  `d135-dx-14k-rpc3080-tlser-r1`, `d135-smoke-14k-rpc3080-{r1,pinh-r1,
+  q8-r1,q8-tl-r1,nof16emb-r1,q8emb-r1/r2,3eq-r1/r2}`,
+  `d135-200k-160k-local-r1`, `d135-200k-116k-rpc3080-r1`.
+
+## 2026-08-27 - D135 local RPC: диагностика протокола без 3080
+
+- Новый lane: обе RX 9070 XT локально, сервер `rpc-server -d Vulkan1 -p
+  50056`, клиент `--rpc 127.0.0.1:50056 -dev RPC0,Vulkan0 -sm layer -ts 1,1`,
+  Qwen3.8-27B-Q4_K_M, `ctx=12288`, `b8192/ub1024`, q8/q8 KV, MTP n4.
+- Контроль local no-RPC `-dev Vulkan1,Vulkan0 -ts 1,1`: `16.91-16.92`
+  aggregate, `1642.85-1643.16` prompt, `48.86-49.00` decode TPS.
+- Local RPC (база): `12.34/1014.87/52.55`. Разрыв prefill `-37.8%`;
+  decode через RPC не проседает.
+- Диагностика таймлайнами: серверный prefill GRAPH = честные 425 мс GPU
+  (матмулы n=1024), не медленнее локальной карты. Разрыв создаёт маска:
+  `pin_causal_mask_to_local_backend` пинит её на Vulkan0, копия маски в
+  локальный буфер — отдельный split, ждущий событие Vulkan0-графа N-1
+  (423 мс/уб), и только потом маска уходит на сервер → серверный
+  GRAPH(N) сериализуется с локальным хвостом. В no-RPC оба графа
+  перекрываются событиями (стена 515 мс/уб = max(VK1,VK0)+копии).
+- Фикс F16 input_embed — шум, оставлен (гигиена). Серверная генерация
+  маски (ENABLE_MASK_NULL+SERVER_MAKE_MASK) — отклонено: prefill +2%,
+  decode -68% (readback маски на каждый decode-токен).
+- РЕШЕНИЕ: `GGML_RPC_MASK_PIN_HOST=1` в `pin_causal_mask_to_local_backend`
+  (llama-context.cpp) — маска на host вместо локального GPU. RPC-копия
+  маски идёт из CPU без GPU-события, серверный GRAPH(N) перекрывается с
+  локальным хвостом. Результат 2/2: `16.61/1517.03/53.63` и
+  `16.43/1513.76/51.90` → разрыв prefill `-7.7%`, aggregate `-2.9%`,
+  decode ВЫШЕ контроля. Acceptance идентичен (88/153, 93/136) —
+  placement-only правка, качество не меняется (PPL не требуется).
+- Остаток ~125 мс/уб: GET l_out readback ~20 мс + входы + неполное
+  перекрытие. Правка env-gated; дефолт — после проверки 3080-контура.
+- ДОБАВЛЕНО (2026-08-27): многопоточные F32↔F16 конверсии сервера
+  (`rpc_f32_to_f16`/`rpc_f16_to_f32` в rpc_internal.h, использованы в
+  серверных get_tensor/set_tensor вместо однопоточных ggml-хелперов;
+  каркас как у q8_0, GGML_RPC_ACT_THREADS=8). Серверный SET входов был
+  16-19 мс, GET l_out ~20 мс — в основном однопоточная конверсия.
+  Результат 2/2: `16.76-16.85 agg / 1545.85-1558.32 ptps / 52.8-52.9 tps`,
+  acceptance 88/153+93/136 бит-идентичен. Разрыв к no-RPC: prefill
+  `-5.2%`, aggregate `-0.4%` (паритет), decode `+8%`. Остаток: mini-граф
+  49 мс/уб (разрез scheduler) + staging фикс. Повторно отклонено:
+  ENABLE_MASK_NULL (decode -68%, NULL-маска = полное внимание).
+- Смоук 14K / RTX 3080 (`d135-smoke-14k-rpc3080-r1`, тот же контракт
+  d133-r2: `--rpc 192.168.1.60:50052 -dev RPC0,Vulkan0,Vulkan1 -ts 0.8,1,1.4
+  ...ctx 12288 b8192/ub1024 mtp n4`): `12.54 agg / 1083.27 ptps / 46.81 tps`
+  — «прогресса» не было, потому что: (а) фиксы pin-host/MT-конверсии
+  бьют по loopback-узким местам, которых нет на удалённом 3080-lane;
+  (б) F16-сжатие input_embed (добавлено 19:34 — ПОСЛЕ d133-r2 18:02)
+  оказалось РЕГРЕССИЕЙ на 3080: серверная однопоточная конверсия
+  f16→f32 + второй буфер съедали выигрыш от меньшего трафика.
+- Прямой замер LAN 2026-08-27: ping RTT 0 мс; 50 МБ scp = 0.77 с →
+  ~110 МБ/с (потолок 1 GbE). Сеть НЕ узкое место: 5.6-10 МБ на убатч
+  = 50-90 мс из ~500 мс окна (~15-20%).
+- 3080-деплой: новый rpc-server (md5 8b2c1ea3…) задеплоен в
+  C:\rpc-3080\ (21:05, schtasks перезапуск, порт 50052 OK).
+- РЕЗУЛЬТАТ (новый рекорд 14K 3080): `d135-smoke-14k-rpc3080-nof16emb-r1`
+  (Q8 activations + GGML_RPC_MASK_PIN_HOST + без F16 input_embed):
+  `14.07 agg / 1229.19 ptps / 50.04 tps`, acceptance 96/121+94/128.
+  Старый рекорд d133-r2: `13.01/1217.02/39.88`. Prompt +1%, decode +25%.
+  Q8 = GGML_RPC_ACT_Q8_0=1 (реализация D134, PPL≈F16).
+- ВНИМАНИЕ: откат F16 input_embed НЕ измерен на локальном контуре —
+  нужен локальный контроль после отката (mtconv-числа были с F16).
+- Owning note: `docs/research/major-topology/D135_RPC_LOCAL_PROTOCOL_DIAGNOSIS.md`.
+## 2026-08-27 - D134 R2 Q8 activation wire is a reproducible, PPL-neutral short-lane win
+
+- Priority lane: RPC RTX3080 plus both local Vulkan GPUs,
+  `-dev RPC0,Vulkan0,Vulkan1 -ts 0.8,1,1.4`, Qwen3.8-27B-Q4_K_M,
+  `ctx=12288`, `b8192/ub1024`, q8/q8 KV, MTP n4, 128 output tokens.
+- Clean F16 control `d134-r2-f16-control-r1`: `12.9731` aggregate,
+  `1219.395` prompt, `39.185` decode TPS. Existing adjacent R2 control
+  `d133-r2-rpc3080-dualvulkan-14k` was `13.0091/1217.015/39.875`.
+- Existing opt-in `GGML_RPC_ACT_Q8_0=1`: `d134-r2-q8-wire-r1/r2`
+  `14.4432/1296.105/48.175` and `14.3348/1278.785/48.185` aggregate/prompt/decode.
+  The two-run center is `+5.68%` prompt and `+10.76%` aggregate versus the
+  new F16 control. Acceptance was stable per task at `96/121` and `94/128`
+  in both Q8 runs; this is a smoke result, not a PPL/quality clearance.
+- Existing opt-in `GGML_RPC_ACT_F8=1` was prompt-negative:
+  `13.0656/1167.950/44.160`, `-4.12%` prompt and only `+0.57%` aggregate
+  versus F16. Reject for the current prompt-focused R2 lane.
+- Quality gate on the same RPC R2 topology, WikiText-2, two chunks,
+  `n_ctx=8192`, `b1024/ub1024`: F16 `PPL=4.9183 +/- 0.12282` versus Q8
+  `PPL=4.9194 +/- 0.12287` (`+0.0011`, about `+0.02%`). The initial
+  `b8192` attempt hit the Vulkan pinned-memory buffer limit and was discarded;
+  the final control and candidate used identical safe settings.
+- Existing scheduling opt-ins were negative on this short Q8 R2 lane:
+  Q8+run-ahead `13.84/1238.59/46.37`, Q8+async `14.03/1229.90/49.28`,
+  and Q8+both `13.71/1223.71/45.98` aggregate/prompt/decode TPS. Keep them
+  default-off; they do not improve the RPC wire route here.
+- Q8 diagnostic reduced observed `GET_TENSOR` calls from `103` to `88`; the
+  14 full `l_out-16` reads changed from 10,485,760 F16 wire bytes to
+  5,570,560 block-Q8 bytes. Large-read client wait moved `5393.4 -> 5248.2`
+  ms total (`385.2 -> 374.9` ms/read). Keep protocol/receive effects and
+  remote graph timing separate from this speed claim.
+- Verdict: retain Q8 as an RPC-only opt-in candidate; the short PPL gate is
+  neutral and the repeated R2 speed signal is positive, but do not enable it
+  by default yet. Next measure the receive/protocol path around the smaller
+  payload and keep longer quality evidence separate.
+- Owning note: `docs/research/major-topology/D134_RPC_BOUNDARY_WIRE_GATES.md`.
+
+## 2026-08-27 - D133 RPC topology controls identify the boundary candidate
+
+- Locked 14K smoke controls on Qwen3.8-27B-Q4_K_M, context `12288`,
+  batch/ubatch `8192/1024`, q8/q8 KV, MTP n=4, 128 output tokens:
+  local dual Vulkan `1636.54/48.67` prompt/decode TPS; remote RTX3080 plus
+  Vulkan1 `933.05/41.165`; remote RTX3080 plus both local GPUs
+  `1217.015/39.875`. All runs completed 2/2 tasks with comparable MTP
+  acceptance (`54.57%`, `57.89%`, `55.73%`).
+- RPC-first placement is required: `RPC0,Vulkan1` for the two-device lane and
+  `RPC0,Vulkan0,Vulkan1` for the production three-device lane.
+- Diagnostic timeline: 206 synchronous `GRAPH_COMPUTE` commands took
+  `7277.0 ms` on the remote server; 103 client-side `GET_TENSOR` waits took
+  `8484.7 ms`, including 14 `l_out-16` transfers of 20 MiB logical size at
+  `385.2 ms` average. The remote GET handlers themselves took only
+  `328.4 ms` total (`19.0 ms` average for the 14 large handlers).
+- Verdict: the next RPC experiment should target serialized command/receive
+  behavior or activation wire volume, with diagnostic and clean speed runs
+  kept separate. D133 adds no runtime change; D132 remains closed.
+- Owning note: `docs/research/major-topology/D133_RPC_TOPOLOGY_CONTROL_MATRIX.md`.
+
+## 2026-08-26 - model file mappings are released after device upload (RAM fix)
+
+- Problem: with mmap (default), an entire GGUF file stayed mapped for the
+  whole model lifetime, so even a fully VRAM-resident model pinned its file
+  in host memory - especially on Windows, where `llama_mmap::unmap_fragment`
+  is a no-op. A partial 30 GB VRAM / 50 GB RAM scenario would pin ~80 GB.
+- Fix (branch rpc-vulkan, default-on): after `load_tensors` copies weight
+  ranges into device buffers, compute the still-referenced mapping intervals
+  (tensor `data` pointers + `buffer_from_host_ptr` bases) and release
+  everything else, per file. New `llama_mmap::unmap_ranges()`: POSIX unmaps
+  the gaps inside the tracked fragments; Windows cannot partially unmap a
+  file view, so it remaps the kept ranges at their original addresses with
+  `MapViewOfFileEx` (allocation-granularity aligned, merged) and falls back
+  to the full view on any failure (correctness wins). Whole-unreferenced
+  mappings use `llama_mmap::unmap()`. A mapping that still hosts CPU-side
+  tensors is kept owned by the model (the remapped views belong to it until
+  teardown); Windows tracks every active view and releases them all in the
+  destructor.
+- Rollback env: `LLAMA_KEEP_MMAPPED_WEIGHTS=1` keeps the old behavior.
+- Validation (Vulkan):
+  * Qwen3.8-27B-Q4_K_M 16.34 GiB, `-ngl 999`: CPU_Mapped 682.03 MiB
+    (input embeddings) + Vulkan0/1 7455.29/8207.60 MiB; log
+    `released 1 model file mappings / 15632.3 MiB`; no warnings, clean
+    teardown, Host footprint after load 683 MiB (was ~16.3 GiB pre-fix).
+  * Qwen3.5-9B Q5_K_M 6.28 GiB, `-ngl 999`: CPU_Mapped 666.88 MiB +
+    Vulkan 2558.63/3059.89 MiB; released 5606.2 MiB; prompt 1661.27,
+    decode 61.80.
+  * Qwen3.5-9B, `-ngl 10`: CPU_Mapped 4116.77 MiB kept, released 2156.3 MiB
+    (only the device-copied ranges).
+- Impact: the 80 GB Qwen3.8 Flash Next target (30 GB VRAM + 50 GB RAM) is
+  now structurally possible - GPU-copied weight ranges leave RAM after load,
+  while the CPU-offloaded 50 GB stays zero-copy on the mmap.
+
+## 2026-08-26 - D132 RPC Q8_0 boundary wire clears the 94K gate
+
+- The RPC-first split boundary is F32 `l_out-*`: 20,971,520 bytes per
+  1024-token ubatch. Existing F16 wire is 10,485,760 bytes; opt-in block
+  Q8_0 is 5,570,560 bytes (`-46.875%` versus F16).
+- Protocol `5.0.1` adds fail-closed Q8_0 negotiation. Parallel conversion
+  used 16 client threads and the remote server default of 8; final logits
+  remain F16.
+- Locked 94K lane: adjacent F16 rf59 `1016.82/37.59`; Q8_0 plus run-ahead
+  rf62 `1065.39/40.48`, exact repeat rf63 `1062.35/38.45`. Center is
+  **1063.87/39.47**, `+4.63%` prompt, with `0.29%` repeat spread.
+- Local dual-Vulkan rf64 `1443.85/50.67` matches rf22
+  `1441.99/51.19`; no common-path regression was detected.
+- Retain as opt-in pending a separate PPL/quality gate. Full H81/P2
+  inter-ubatch overlap remains open. Design and negatives: D132.
+
 ## 2026-08-14 - W12 decode-token census: MUL_MAT dominates, track paused
 
 - Whole-lane node-timing census (GGML_TRACE_CUDA_NODE_TIMING + SYNC, 49K

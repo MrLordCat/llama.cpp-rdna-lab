@@ -95,8 +95,9 @@ llama_kv_cache::llama_kv_cache(
            llama_swa_type   swa_type,
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse,
-                     bool   is_mtp_context) :
-    model(model), hparams(model.hparams), v_trans(v_trans),
+                     bool   is_mtp_context,
+    const llama_hparams * hparams_override) :
+    model(model), hparams(hparams_override ? *hparams_override : model.hparams), v_trans(v_trans),
     n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa), swa_type(swa_type) {
 
     GGML_ASSERT(kv_size % n_pad == 0);
@@ -1392,6 +1393,12 @@ uint32_t llama_kv_cache::get_size() const {
 
 uint32_t llama_kv_cache::get_n_stream() const {
     return n_stream;
+}
+
+const llama_kv_cells & llama_kv_cache::get_cells(llama_seq_id seq_id) const {
+    const uint32_t stream = seq_to_stream[seq_id];
+    GGML_ASSERT(stream < v_cells.size());
+    return v_cells[stream];
 }
 
 bool llama_kv_cache::get_has_shift() const {

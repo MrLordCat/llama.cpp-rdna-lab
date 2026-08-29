@@ -76,7 +76,6 @@
 /ggml/src/ggml.cpp                      @ggerganov
 /ggml/src/gguf.cpp                      @JohannesGaessler @Green-Sky
 /gguf-py/                               @CISC
-/media/                                 @ggerganov
 /scripts/gen*                           @ggerganov
 /scripts/get*                           @ggerganov
 /scripts/sync*                          @ggerganov
@@ -111,6 +110,6 @@
 /CONTRIBUTING.md                        @ggerganov
 /LICENSE                                @ggerganov
 /README.md                              @ggerganov
-/SECURITY.md                            @ggerganov
+/docs/SECURITY.md                            @ggerganov
 /build-xcframework.sh                   @danbev
 requirements*.txt                       @CISC

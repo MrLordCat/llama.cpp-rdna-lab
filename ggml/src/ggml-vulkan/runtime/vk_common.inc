@@ -1,5 +1,6 @@
 // Shared includes, Vulkan-Hpp dispatcher setup, runtime types, and loggers.
 #include "ggml-vulkan.h"
+#include <chrono>
 #include <vulkan/vulkan_core.h>
 #if defined(GGML_VULKAN_RUN_TESTS) || defined(GGML_VULKAN_CHECK_RESULTS)
 #include <chrono>
