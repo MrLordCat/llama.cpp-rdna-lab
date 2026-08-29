@@ -1,68 +1,11 @@
 #!/usr/bin/env python3
+"""Entry point for GUI 2.0 — the local web UI in gui2/.
+
+The whole GUI lives in gui2/ and starts with `python -m gui2`; this file only
+keeps the old launch habit working.
 """
-Quick launcher for RDNA LLM Studio with automatic dependency checking
-Run this script to start the GUI with automatic dependency installation
-"""
 
-import sys
-import os
-import platform
-from pathlib import Path
-
-# Ensure ROCm is in PATH on Linux if installed
-if platform.system() == "Linux":
-    rocm_bin = "/opt/rocm/bin"
-    rocm_lib = "/opt/rocm/lib"
-    if os.path.isdir(rocm_bin) and rocm_bin not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = f"{rocm_bin}:{os.environ.get('PATH', '')}"
-    if os.path.isdir(rocm_lib):
-        os.environ["LD_LIBRARY_PATH"] = f"{rocm_lib}:{os.environ.get('LD_LIBRARY_PATH', '')}"
-
-# Add GUI directory to path
-gui_dir = Path(__file__).parent / "gui"
-sys.path.insert(0, str(gui_dir))
-
-from proc_utils import suppress_windows_error_dialogs
-
-# child probes (llama-server --help etc.) inherit this; without it a build
-# with missing DLLs pops a modal system dialog and freezes the GUI
-suppress_windows_error_dialogs()
-
-from dependency_checker import init_dependencies
-
-def main():
-    print("\n🚀 RDNA LLM Studio Launcher\n")
-    
-    # Initialize and check dependencies
-    if not init_dependencies():
-        print("❌ Failed to initialize dependencies")
-        print("Please fix the issues above and try again\n")
-        sys.exit(1)
-    
-    print("✅ All dependencies ready! Starting GUI...\n")
-    
-    # Import and start GUI
-    try:
-        from PyQt6.QtWidgets import QApplication
-        from gui_theme import apply_modern_theme
-        from main_window import LlamaCppGUI
-        
-        app = QApplication(sys.argv)
-        app.setApplicationName("RDNA LLM Studio")
-        app.setApplicationDisplayName("RDNA LLM Studio")
-        app.setOrganizationName("llama.cpp-rdna-lab")
-        app.setStyle("Fusion")  # Modern style
-        apply_modern_theme(app)
-        
-        window = LlamaCppGUI()
-        window.show()
-        
-        sys.exit(app.exec())
-    except Exception as e:
-        print(f"❌ Error starting GUI: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+from gui2.__main__ import main
 
 if __name__ == "__main__":
     main()

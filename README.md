@@ -3,7 +3,7 @@
 `llama.cpp-rdna-lab` is a hardware-focused fork of
 [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp) for local AI on
 Windows with two AMD RDNA4 GPUs. It combines a maintained subset of the
-`llama.cpp` runtime with a PyQt6 desktop application, reproducible
+`llama.cpp` runtime with a local web GUI (GUI 2.0, in `gui2/`), reproducible
 benchmark/autotune tooling, long-context work, and AMD-specific Vulkan and
 ROCm/HIP optimizations.
 
@@ -44,7 +44,7 @@ decode gain does not impose an unacceptable prefill cost.
 | Primary model | Qwen3.8-27B Q4_K_M with MTP |
 | Experimental model | Ternary Bonsai 27B `PQ2_0` on CPU and ROCm |
 | Main objective | Maximum cold prompt evaluation without sacrificing useful decode speed |
-| Serving | OpenAI-compatible `llama-server` plus a PyQt6 desktop GUI |
+| Serving | OpenAI-compatible `llama-server` plus the local web GUI (GUI 2.0) |
 
 The fork is currently substantially faster than the measured stock upstream
 checkout on the same long-prompt contract. See
@@ -480,7 +480,7 @@ benchmark configurations to the measured recommended order instead of `Auto`.
 
 | Path | Purpose |
 | --- | --- |
-| `gui/` | PyQt6 desktop application |
+| `gui2/` | GUI 2.0: the local web UI (FastHTML + HTMX) |
 | `src/`, `common/`, `include/` | llama runtime and speculative pipeline |
 | `ggml/src/ggml-vulkan/` | Vulkan backend and generated shaders |
 | `ggml/src/ggml-hip/` | ROCm/HIP build integration |

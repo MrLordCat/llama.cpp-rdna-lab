@@ -9,7 +9,7 @@ describe the location and purpose of this checkout.
 |---|---|
 | This worktree | `D:\GitHub\llama.cpp-gui2` |
 | Branch | `gui-2.0`, branched from `master` |
-| Other checkout | `D:\GitHub\llama.cpp-with-GUI` on `rpc-vulkan` — **another agent works there** |
+| Other checkout | `D:\GitHub\llama.cpp-with-GUI` — **another agent works there** (branch moves between `rpc-vulkan` and `master`) |
 
 `AGENTS.md` says the canonical root is `D:\GitHub\llama.cpp-with-GUI`. That is
 true for the performance lab, not for this task. Both directories are git
@@ -20,10 +20,10 @@ changes you did not make there. It is safe to *read* files from it.
 
 ## Inherited constraints that still apply
 
-- Everything in `AGENTS.md` about **driver safety** stays in force. GPU work in
-  this task is not needed at all: GUI 2.0 development is pure Python + web.
-- **The GPUs are busy.** The other agent runs RPC/benchmark work. Do not launch
-  `llama-server`, benchmarks, or hardware discovery from this worktree.
+- Everything in `AGENTS.md` about **driver safety** stays in force.
+- Real server and benchmark launches go through the GUI only when the user
+  says the GPUs are free; before that, no `llama-server`, benchmarks, or
+  hardware discovery from this worktree.
 - `.vscode/tasks.json` was inherited from the performance lab and contains
   build/benchmark tasks. Do not run them from here.
 - Supported backends remain CPU / Vulkan / ROCm. Do not reintroduce others.
@@ -31,8 +31,9 @@ changes you did not make there. It is safe to *read* files from it.
 ## What is being built
 
 A from-scratch rewrite of the PyQt6 GUI as a **local web UI**. Same
-capabilities, smaller and cleaner codebase. The old GUI is kept in `gui/` as
-reference only; GUI 2.0 does not import from it.
+capabilities, smaller and cleaner codebase. The old PyQt6 GUI (`gui/`, plus
+its `run.py`, `start-gui.bat` and PyInstaller scripts) is deleted: GUI 2.0 is
+the GUI, and `python -m gui2` is its entry point.
 
 **Stack: FastHTML + HTMX + Jinja partials, SSE for log/metric streams.**
 Server-rendered, no npm, no SPA build step, one language.
@@ -128,13 +129,11 @@ download, dependency install. That is ~3 300 lines of the old GUI
 
 ## Reference material
 
-- Old GUI: `gui/` in this worktree (master snapshot).
-- Newer RPC and device-placement work is **uncommitted** in
-  `D:\GitHub\llama.cpp-with-GUI\gui\` — `server_backend_panels.py`,
-  `server_tab.py`, `benchmark_tab.py`. Read it for the `--rpc` and
-  `-dev/-sm/-ts` contract.
-- Benchmark runner CLI: `scripts/agent_workload_bench.py`. Unchanged; GUI 2.0
-  calls it the same way the old GUI does (`--server-extra "<args>"`).
+- The RPC and device-placement contract now lives on `master` (`--rpc` before
+  `-dev`, `RPC0`-naming per device). Read `ggml/src/ggml-rpc/` and
+  `tools/rpc/` for the wire protocol.
+- Benchmark runner CLI: `scripts/bench2.py`, in this worktree after the merge
+  with `master`. GUI 2.0 calls it the same way the lab does.
 - History data, tracked in git: `build_logs/agent-workload/BENCH_RUNS.csv`
   (~1650 rows), `BENCH_RECENT.md`, `BENCH_LANES.md`.
 

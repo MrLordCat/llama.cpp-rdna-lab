@@ -1,44 +1,20 @@
 @echo off
-REM Запуск RDNA LLM Studio
-echo ========================================
-echo    RDNA LLM Studio Launcher
-echo ========================================
-echo.
+REM Launch GUI 2.0 - the local web UI (http://127.0.0.1:8770 by default)
 
-REM Проверка наличия Python
-python --version >nul 2>&1
+python -c "import fasthtml, uvicorn" >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Python не найден! Установите Python 3.9+
-    pause
-    exit /b 1
-)
-
-echo [OK] Python найден
-echo.
-
-REM Проверка зависимостей
-echo Проверка зависимостей...
-python -c "import PyQt6" 2>nul
-if errorlevel 1 (
-    echo [INFO] Устанавливаю зависимости...
-    pip install -r gui\requirements-gui.txt
+    echo [INFO] Installing GUI 2.0 dependencies...
+    pip install -r gui2\requirements.txt
     if errorlevel 1 (
-        echo [ERROR] Не удалось установить зависимости
+        echo [ERROR] Could not install dependencies
         pause
         exit /b 1
     )
 )
 
-echo [OK] Зависимости установлены
-echo.
-echo Запуск GUI...
-echo.
-
-REM Запуск GUI
-python run.py
-
+python -m gui2
 if errorlevel 1 (
     echo.
-    echo [ERROR] Ошибка при запуске GUI
+    echo [ERROR] GUI 2.0 failed to start
     pause
 )

@@ -7,7 +7,7 @@ runtime profiles. This file collects the larger README sections so the main
 
 ## Key Fork Features
 
-- PyQt6 GUI for dependency checks, builds, server launch, monitoring, and logs.
+- Local web GUI (GUI 2.0) for server launch, monitoring, logs, and autotune.
 - Vulkan/ROCm-aware benchmark and autotune UI with live prompt progress.
 - OpenAI-compatible `llama-server` for local applications and coding agents.
 - Dual-GPU layer placement and explicit output-device controls.

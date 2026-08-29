@@ -8,9 +8,9 @@
 ## Project identity
 
 This is `llama.cpp-rdna-lab`, a local fork for Windows and two AMD Radeon RX
-9070 XT GPUs. It combines a PyQt6 GUI, long-context benchmark/autotune tooling,
-MTP/DFlash and local ggml performance work. Do not treat it as a clean upstream
-checkout.
+9070 XT GPUs. It combines a local web GUI (GUI 2.0 in `gui2/`), long-context
+benchmark/autotune tooling, MTP/DFlash and local ggml performance work. Do not
+treat it as a clean upstream checkout.
 
 The canonical repository root on this machine is:
 
@@ -97,8 +97,8 @@ MTP.md
 PROJECT_PROFILE.md
 QWEN_SPEED_RESEARCH.md
 UPSTREAM_SYNC.md
-gui/**
-scripts/agent_workload_bench.py
+gui2/**
+scripts/bench2.py
 ```
 
 ## Instruction precedence and multi-agent work

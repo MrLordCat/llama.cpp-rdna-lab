@@ -7,7 +7,7 @@ a full mirror.
 
 Keep these local systems intact:
 
-- PyQt6 GUI and build registry;
+- GUI 2.0 (local web UI) and build registry;
 - benchmark/autotune tooling and generated history format;
 - MTP/DFlash integration;
 - dual-RX 9070 XT Vulkan and ROCm optimizations;
