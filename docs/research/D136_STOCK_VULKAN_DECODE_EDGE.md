@@ -426,6 +426,32 @@ enabled` and does NOT crash, but `draft acceptance rate = 0.00000`
 Qwen3.8-27B-Q4_K_M + current build (worked 2026-08-14 at 81.8%
 acceptance on VK 49K), unrelated to this change; needs a separate
 diagnosis (suspects: load-mtp gating / a40af6dd2 guard / draft path).
+
+### 10.1 Root cause of the MTP acceptance regression (2026-08-29)
+
+Bisect against 572cdc0f7 (pre-port) + PP-on: acceptance 0.62/0.60/0.53
+vs 0.00000 with the port. The regression is NOT the new unary/glu
+kernel path itself — with unary/GLU forced to CPU (supports_op=false)
+acceptance stays 0.00000, and stock b10666 (same upstream `1a7718b4c`)
+gives 0.50 in an identical MTP f16-KV run. Root cause: the port also
+replaced the fork-local `norm.comp`, `l2_norm.comp`, `copy.comp`,
+`contig_copy.comp`, `copy_to_quant.comp` with upstream versions, but the
+fork runtime (`ggml_vk_norm`, `ggml_vk_l2_norm`, `ggml_vk_cpy`) still
+uses the OLD push-constant layout (`vk_op_push_constants`, local
+strided-aware shaders), while upstream shaders expect
+`vk_op_unary_push_constants` — layout mismatch => MTP draft/target
+streams compute wrong norm/copy results, accepted 0.
+
+Fix: keep the upstream unary/glu port (new `unary.comp`,
+`generic_unary_head.glsl`, fastdiv layout) but restore the fork-local
+five shaders from 572cdc0f7 (norm, l2_norm, copy, contig_copy,
+copy_to_quant), which match the fork runtime. Result (same MTP f16 KV
+n2 dual r2): acceptance 0.62/0.60/0.53, decode 36 tps, PP on, no
+regression. Artifacts:
+`build_logs/bench/{bisect-prestock-mtp-f16kv-n2-dual-l0-r2,
+bisect-gating-mtp-f16kv-n2-dual-l0-r2,revert-unary-mtp-f16kv-n2-dual-l0-r2,
+diag-unary-cpu-mtp-f16kv-n2-dual-l0-r2,port-localnorm-mtp-f16kv-n2-dual-l0-r2,
+stock-b10666-mtp-f16kv-n2-dual-l0-r2c}`.
 - Single-GPU prefill is pre-existing and NOT touched by this work: fork 134
   tps vs stock 711-760 tps at L0/L1 (pre-RPC binary shows the same 132 tps),
   while dual-GPU fork prefill is healthy (1495 tps) and, per §1, faster than
