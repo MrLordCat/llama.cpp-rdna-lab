@@ -1,99 +1,113 @@
-"""Autotune invocation, derived from the same RunSpec.
+"""bench2 invocation, derived from the same RunSpec.
 
-`scripts/agent_workload_bench.py` is only ever run as a sweep. A sweep of one
-value per axis is a plain measurement of one configuration, so the second mode
-would buy nothing but a second command to keep in step with this one.
+`scripts/bench2.py` measures one server per run: it loads the model once,
+sized to the largest scenario asked of it, and works through every level and
+session against that one server. Batch, ubatch, KV type and speculation are
+therefore properties of a run rather than axes inside it -- so a search over
+them is several runs, and this module produces the list, one command per
+configuration, named so bench2's own index can tell them apart afterwards.
 
-The script owns a few llama-server knobs natively and the sweep overwrites
-five more per configuration; the rest of the generated server command is
-forwarded verbatim via --server-extra, so server launches and measured runs
-cannot drift apart.
+What bench2 does not own is forwarded verbatim through --server-extra, so the
+server the GUI describes and the server the benchmark starts cannot drift.
 """
 
 from __future__ import annotations
 
 import re
-import shlex
 from dataclasses import dataclass, fields, replace
+from itertools import product
 from pathlib import Path
 
 from gui2.core.gguf import ModelFacts
 from gui2.core.memory import estimate
-from gui2.core.params import KV_TYPES, SPEC_TYPES, Param, aliases_of
+from gui2.core.params import KV_TYPES, Param, aliases_of
 from gui2.core.runspec import ALL_LAYERS, Problem, RunSpec, to_argv
 
-TASK_SETS = ("quick", "full", "v2", "v2-mini", "v2-review")
-REAL_CONTEXT_MODES = ("off", "repo-snapshot")
-BACKGROUND_POLICIES = ("fail", "warn", "ignore")
-TRACE_PRESETS = ("none", "kernel-full", "vulkan-routes", "vulkan-perf", "vulkan-q3-stats")
+CONTEXT_SOURCES = ("synthetic", "repo-snapshot", "file")
 
-#: The prompts in each set, copied from the script's own task tables. They are
-#: here so a run can be counted before it is started; the script is still the
-#: authority, so an unrecognised set is reported as unknown rather than as zero.
-#: `v2-mini` really is one prompt -- its --tasks help text says two, and the
-#: code that filters `TASKS_V2` disagrees with it.
-TASK_IDS: dict[str, tuple[str, ...]] = {
-    "quick": ("triage_diff", "review_bug"),
-    "full": ("triage_diff", "review_bug", "implementation_plan", "config_compare"),
-    "v2": ("v2_code_review", "v2_write_function", "v2_debug_trace",
-           "v2_refactor_plan", "v2_perf_analysis"),
-    "v2-mini": ("v2_write_function",),
-    "v2-review": ("v2_code_review",),
+#: bench2 speaks two speculation modes; llama.cpp's other ones have no flag of
+#: its own to reach them
+SPEC_MODES = ("none", "mtp")
+
+#: key and value are set together here, because a run that mixes them is not
+#: something anyone has wanted to measure
+BENCH_KV_TYPES = KV_TYPES
+
+#: the repository snapshot runs out at roughly this many tokens, so it cannot
+#: fill a large level and the run would measure a shorter prompt than it names
+REPO_SNAPSHOT_MAX_TOKENS = 53000
+
+
+@dataclass(frozen=True, slots=True)
+class Scenario:
+    """One row of bench2's level or session table."""
+
+    key: str
+    name: str
+    ctx: int
+    prompt_tokens: int
+    decode_tokens: int
+    turns: int = 1
+
+    @property
+    def decoded(self) -> int:
+        return self.decode_tokens * self.turns
+
+    @property
+    def prefilled(self) -> int:
+        """Tokens actually run through prefill.
+
+        A session re-sends the whole conversation every turn, but the server
+        keeps the KV cache, so only each turn's new text is prefilled.
+        """
+        return self.prompt_tokens * self.turns
+
+
+#: Copied from `configs/bench/levels.json`. bench2 reads that file itself; this
+#: is here so a run can be sized before anything is started.
+LEVELS: dict[str, Scenario] = {
+    "0": Scenario("0", "smoke", 8192, 4096, 64),
+    "1": Scenario("1", "test", 16384, 8192, 128),
+    "2": Scenario("2", "standard", 49152, 31744, 256),
+    "3": Scenario("3", "large", 98304, 66560, 256),
+    "4": Scenario("4", "very-large", 131072, 97280, 256),
+    "5": Scenario("5", "max", 200704, 194560, 256),
 }
 
-#: Above this the script stops with "above the active 130k benchmark policy"
-#: unless the run says it meant it. The flag that says so is spelled
-#: --allow-ctx-above-16k, a name left over from when the limit was 16384.
-POLICY_MAX_CTX = 131072
+#: Copied from `configs/bench/sessions.json`: ten turns in one conversation,
+#: context kept between them, so the KV cache grows the way an agent grows it.
+SESSIONS: dict[str, Scenario] = {
+    "1": Scenario("1", "light", 32768, 1024, 128, turns=10),
+    "2": Scenario("2", "medium", 98304, 2048, 256, turns=10),
+    "3": Scenario("3", "heavy", 131072, 4096, 512, turns=10),
+}
 
-#: The sweep axes, and the RunSpec field each one replaces. Every axis is a
-#: setting the Server page also has; a sweep of one value is that setting.
-SWEEP_AXES: tuple[tuple[str, str, str], ...] = (
-    ("sweep_ctx", "--autotune-ctx-values", "ctx_size"),
-    ("sweep_batch", "--autotune-batch-values", "batch_size"),
-    ("sweep_ubatch", "--autotune-ubatch-values", "ubatch_size"),
-    ("sweep_kv", "--autotune-kv-values", "cache_type_k"),
-    ("sweep_spec", "--autotune-spec-values", "spec_type"),
-)
-
-#: sweep modes that need the n-gram window, and the ones that need a draft budget
-NGRAM_MODES = frozenset({"ngram-mod", "ngram-mtp"})
-DRAFT_MODES = frozenset({"mtp", "ngram-mtp"})
-
-#: What may be written on the two word-shaped axes. The sweep knows one mode
-#: the Server page does not -- `ngram-mtp` is assembled by the autotune loop
-#: out of two flags and has no single setting behind it.
-SWEEP_KV_TYPES = KV_TYPES
-SWEEP_SPEC_MODES = SPEC_TYPES + ("ngram-mtp",)
-
-#: What each numeric axis offers as one click. Not a limit: a value arriving
-#: from a link or an earlier sweep is added to the row rather than dropped, and
-#: the context row is trimmed to what the model can actually hold.
-CTX_LADDER = (4096, 8192, 16384, 32768, 49152, 65536, 98304, 131072)
-BATCH_LADDER = (512, 1024, 2048, 4096, 8192)
-UBATCH_LADDER = (128, 256, 512, 1024, 2048)
-
-# flags the bench script passes to llama-server itself
+# flags bench2 passes to llama-server itself, from options of its own
 BENCH_OWNED: frozenset[str] = frozenset().union(*(
     aliases_of(flag) for flag in (
         "-m", "--host", "--port", "-c", "--batch-size", "--ubatch-size",
         "-ngl", "--parallel", "--cache-type-k", "--cache-type-v", "--flash-attn",
+        "-dev", "-sm", "-ts", "-fit",
     )
-)) | {"--no-warmup"}
+)) | {"--no-warmup", "--seed"}
 
 #: Flags dropped rather than forwarded.
 #:
-#: --api-key: the script sends no Authorization header, so a server started
-#: with one answers 401 to every request it makes; and the server it starts is
-#: loopback-only anyway (--host is one of the flags it owns).
+#: --api-key: bench2 sends no Authorization header, so a server started with
+#: one answers 401 to every request it makes; and that server is loopback-only
+#: anyway, since --host is one of the flags bench2 owns.
 #:
-#: --spec-type and its companions: the sweep appends its own per configuration.
-#: Two would not break llama-server -- the last wins -- but the history row
-#: takes its spec_mode from `infer_spec_mode`, which reads the *first*, so
-#: every measurement would be filed under the mode it did not run.
+#: --spec-type and its companions: bench2 appends its own, chosen by --spec.
+#: Two would not break llama-server, but the run would be filed under one mode
+#: and measured under the other.
+#:
+#: --cache-ram and the checkpoint flags: bench2 pins these to zero so a level
+#: measures prefill rather than a cache hit. Forwarding the Server page's
+#: values would quietly change what the numbers mean.
 BENCH_DROPPED: frozenset[str] = frozenset().union(*(
     aliases_of(flag) for flag in (
-        "--api-key", "--spec-type", "--spec-draft-n-max",
+        "--api-key", "--spec-type", "--spec-draft-n-max", "--cache-ram",
+        "--ctx-checkpoints", "--checkpoint-every-n-tokens",
         "--spec-ngram-mod-n-min", "--spec-ngram-mod-n-match", "--spec-ngram-mod-n-max",
     )
 ))
@@ -101,33 +115,29 @@ BENCH_DROPPED: frozenset[str] = frozenset().union(*(
 
 @dataclass(frozen=True, slots=True)
 class BenchSpec:
-    label: str = ""
-    tasks: str = "quick"
-    task_ids: str = ""
+    run_name: str = ""
+    #: which scenarios to run against the one server, as bench2 spells them
+    levels: str = "1"
+    session_levels: str = ""
     runs: int = 1
-    max_tokens: int = 16
-    real_context_mode: str = "repo-snapshot"
-    real_context_chars: int = 24576
-    no_reuse: bool = True
-    v2_prime_pass: bool = False
-    disable_thinking: bool = False
-    request_timeout: float = 180.0
-    startup_timeout: float = 900.0
-    task_hard_timeout: float = 45.0
-    background_server_policy: str = "fail"
-    write_diagnostics: bool = True
-    trace_preset: str = "none"
-    #: sweep axes, as the script wants them: comma-separated lists. The
-    #: defaults are replaced by the run's own settings on arrival, so a page
-    #: opened from the Server page measures exactly what it describes.
-    sweep_ctx: str = "131072"
-    sweep_batch: str = "512"
-    sweep_ubatch: str = "128"
-    sweep_kv: str = "f16"
-    sweep_spec: str = "none"
-    sweep_max: int = 48
-    smart_prune: bool = True
-    resume: bool = True
+    context_source: str = "synthetic"
+    context_file: str = ""
+    #: server settings to try. bench2 fixes each of these for a whole run, so
+    #: more than one value here is more than one run.
+    batch: str = "8192"
+    ubatch: str = "1024"
+    kv: str = "q8_0"
+    spec: str = "none"
+    spec_n: int = 2
+    sweep_max: int = 12
+    warmup_shot: bool = True
+    warmup_tokens: int = 512
+    warmup_decode: int = 16
+    seed: int = 42
+    temperature: float = 0.2
+    top_p: float = 0.9
+    health_timeout: float = 300.0
+    fail_fast: bool = False
 
     def with_values(self, values: dict) -> "BenchSpec":
         """A copy with whatever the form named, ignoring everything else."""
@@ -137,17 +147,30 @@ class BenchSpec:
         return replace(self, **updates)
 
     def seeded_from(self, spec: RunSpec) -> "BenchSpec":
-        """The sweep set to the one configuration the run already describes.
+        """The run the Server page describes, as the smallest thing to measure.
 
-        Arriving from the Server page, every axis holds the value that page
-        chose: the sweep is then a measurement of it, and becomes a search
-        only when a second value is ticked anywhere.
+        The context is not a setting here: bench2 sizes the server from the
+        levels asked of it, so the page opens on the level that context has
+        room for rather than on a context box of its own.
         """
-        return replace(self, **{axis: str(getattr(spec, field))
-                                for axis, _flag, field in SWEEP_AXES})
+        return replace(
+            self,
+            batch=str(spec.batch_size),
+            ubatch=str(spec.ubatch_size),
+            kv=spec.cache_type_k,
+            spec=spec.spec_type if spec.spec_type in SPEC_MODES else "none",
+            spec_n=spec.spec_draft_n_max,
+            levels=level_for_context(spec.ctx_size),
+        )
 
 
 BENCH_DEFAULTS = BenchSpec()
+
+
+def level_for_context(ctx: int) -> str:
+    """The largest level the given context has room for."""
+    fitting = [key for key, level in LEVELS.items() if level.ctx <= ctx]
+    return max(fitting, key=lambda key: LEVELS[key].ctx) if fitting else "0"
 
 
 def _coerce(value, current):
@@ -163,82 +186,68 @@ def _coerce(value, current):
     return str(value).strip()
 
 
-B_SWEEP = "What to try"
-B_WHAT = "What each one is measured with"
-B_PROMPT = "How big the prompts are"
+B_WORK = "What to measure"
+B_SWEEP = "Server settings to try"
+B_PROMPT = "What the prompt is made of"
 B_FAIR = "What the numbers are allowed to include"
 B_LIMITS = "When to give up"
 B_OUTPUT = "What is written down"
 
-#: Presentation for the bench script's flags, in the same shape as the
-#: llama-server schema. Unlike that one it does not generate the command:
-#: `to_bench_argv` spells it out, because several of these flags are pairs
-#: (--reuse/--no-reuse) and one of them rewrites another (--autotune-min-ctx).
+#: Presentation for bench2's flags, in the same shape as the llama-server
+#: schema. Unlike that one it does not generate the command: `to_bench_argv`
+#: spells it out, because several of these are pairs and four of them are axes
+#: the GUI multiplies out itself.
 BENCH_SCHEMA: tuple[Param, ...] = (
-    Param("sweep_ctx", "Contexts to try", "multi", B_SWEEP,
-          choices=tuple(str(value) for value in CTX_LADDER),
-          help="one measures that context; several search for the one the cards like"),
-    Param("sweep_batch", "Batch sizes to try", "multi", B_SWEEP,
-          choices=tuple(str(value) for value in BATCH_LADDER),
+    Param("levels", "Single levels", "multi", B_WORK, choices=tuple(LEVELS),
+          help="one big prompt and then a decode; the level sets both, and the "
+               "largest one ticked sizes the server"),
+    Param("session_levels", "Agent sessions", "multi", B_WORK, choices=tuple(SESSIONS),
+          help="ten turns of one conversation with the context kept between them, "
+               "which is what an agent actually does to a server"),
+    Param("runs", "Repeats", "slider", B_WORK, minimum=1, maximum=10, step=1,
+          help="how many times each scenario is measured — more repeats, steadier numbers"),
+    Param("batch", "Batch sizes to try", "multi", B_SWEEP,
+          choices=("512", "1024", "2048", "4096", "8192"),
           help="how many tokens the server reads at once"),
-    Param("sweep_ubatch", "Ubatch sizes to try", "multi", B_SWEEP,
-          choices=tuple(str(value) for value in UBATCH_LADDER),
+    Param("ubatch", "Ubatch sizes to try", "multi", B_SWEEP,
+          choices=("128", "256", "512", "1024", "2048"),
           help="how much of a batch reaches the GPU in one go — never above the batch"),
-    Param("sweep_kv", "KV cache types to try", "multi", B_SWEEP, choices=SWEEP_KV_TYPES,
-          help="what the context is stored as — smaller buys context and may cost quality"),
-    Param("sweep_spec", "Speculation modes to try", "multi", B_SWEEP, choices=SWEEP_SPEC_MODES,
-          help="the sweep sets this itself, so the Server page's choice is replaced by "
-               "whatever is ticked here"),
-    Param("sweep_max", "Refuse to start above", "slider", B_SWEEP,
-          minimum=1, maximum=256, step=1,
-          help="configurations; every extra value multiplies the run rather than adding "
-               "to it"),
-    Param("smart_prune", "Abandon a direction that keeps getting slower", "bool", B_SWEEP,
-          help="stops walking up batch and ubatch once the speed has dropped twice "
-               "running; also what lets a sweep exceed the cap above"),
-    Param("resume", "Continue an interrupted sweep", "bool", B_SWEEP,
-          help="picks up from the checkpoint file if the same sweep was started before"),
-    Param("tasks", "Prompt set", "choice", B_WHAT, choices=TASK_SETS,
-          help="which prompts the model is asked to answer"),
-    Param("task_ids", "Only these prompts", "text", B_WHAT,
-          help="leave empty for the whole set; a name that is not in it stops the run"),
-    Param("runs", "Repeats", "slider", B_WHAT, minimum=1, maximum=20, step=1,
-          help="how many times each prompt is asked — more repeats, steadier numbers"),
-    Param("max_tokens", "Answer length", "slider", B_WHAT, minimum=16, maximum=2048, step=16,
-          help="tokens to generate per answer; this is what decode speed is measured over"),
-    Param("real_context_mode", "Incoming context", "choice", B_PROMPT,
-          choices=REAL_CONTEXT_MODES,
-          help="whether each prompt carries a slab of real repository text in front of it"),
-    Param("real_context_chars", "How much of it", "slider", B_PROMPT,
-          minimum=0, maximum=262144, step=4096,
-          help="characters of that text; 0 lets the script fill the context it was given"),
-    Param("no_reuse", "Start every prompt cold", "bool", B_FAIR,
-          help="throws away the prompt cache between prompts, so prompt speed is measured "
-               "rather than remembered"),
-    Param("disable_thinking", "Turn thinking off", "bool", B_FAIR,
-          help="asks the chat template not to emit reasoning, which otherwise counts "
-               "towards the answer"),
-    Param("v2_prime_pass", "One unmeasured warm-up pass", "bool", B_FAIR,
-          help="only for the v2 sets with n-gram speculation and a single repeat: fills "
-               "the speculative state first so the measured pass is not the cold one"),
-    Param("background_server_policy", "If a server is already running", "choice", B_FAIR,
-          choices=BACKGROUND_POLICIES,
-          help="another llama-server shares the same GPUs and skews everything measured here"),
-    Param("request_timeout", "Give up on one answer after", "slider", B_LIMITS,
-          minimum=10, maximum=900, step=10,
-          help="one reply is allowed this long before it counts as lost"),
-    Param("task_hard_timeout", "Abandon the whole run after", "slider", B_LIMITS,
-          minimum=0, maximum=600, step=5,
-          help="a stuck prompt also stops the server after this; 0 turns it off"),
-    Param("startup_timeout", "Wait for the server to load for", "slider", B_LIMITS,
+    Param("kv", "KV cache types to try", "multi", B_SWEEP, choices=BENCH_KV_TYPES,
+          help="what the context is stored as; key and value are set together"),
+    Param("spec", "Speculation to try", "multi", B_SWEEP, choices=SPEC_MODES,
+          help="whether the model's own draft head guesses ahead of itself"),
+    Param("spec_n", "Draft tokens per step", "slider", B_SWEEP, minimum=1, maximum=8, step=1,
+          help="how far ahead it guesses; used only where speculation is on"),
+    Param("sweep_max", "Refuse to start above", "slider", B_SWEEP, minimum=1, maximum=64, step=1,
+          help="runs; every extra value multiplies the search rather than adding to it"),
+    Param("context_source", "Prompt text", "choice", B_PROMPT, choices=CONTEXT_SOURCES,
+          help="what fills the tokens the level asks for"),
+    Param("context_file", "Text file", "text", B_PROMPT,
+          help="only for the file source: the text put in front of every prompt"),
+    Param("warmup_shot", "One unmeasured shot first", "bool", B_FAIR,
+          help="a short request before anything is recorded, so the first measured "
+               "answer is not paying for the first kernel launch"),
+    Param("warmup_tokens", "Warm-up prompt", "slider", B_FAIR, minimum=64, maximum=4096, step=64,
+          help="tokens in that unmeasured request"),
+    Param("warmup_decode", "Warm-up answer", "slider", B_FAIR, minimum=4, maximum=128, step=4,
+          help="tokens it is asked to generate"),
+    Param("temperature", "Temperature", "slider", B_FAIR, minimum=0.0, maximum=2.0, step=0.1,
+          help="low keeps answers the length they were asked for, which is what "
+               "decode speed is measured over"),
+    Param("top_p", "Top-p", "slider", B_FAIR, minimum=0.0, maximum=1.0, step=0.05,
+          help="how much of the probability mass sampling may reach into"),
+    Param("seed", "Seed", "int", B_FAIR, minimum=0,
+          help="the same seed asks the model the same question twice"),
+    Param("health_timeout", "Wait for the server to load for", "slider", B_LIMITS,
           minimum=60, maximum=3600, step=30,
-          help="a large model over RPC can take minutes before it answers"),
-    Param("label", "Name this run", "text", B_OUTPUT,
-          help="how it will appear in the history table; empty gets a timestamp"),
-    Param("write_diagnostics", "Keep the per-run breakdown", "bool", B_OUTPUT,
-          help="parses the server log into a json/markdown summary next to the results"),
-    Param("trace_preset", "Backend tracing", "choice", B_OUTPUT, choices=TRACE_PRESETS,
-          help="records what the backend did, at the cost of doing it slower"),
+          help="a large model, or one spread over RPC workers, can take minutes "
+               "before it answers"),
+    Param("fail_fast", "Stop at the first failure", "bool", B_LIMITS,
+          help="otherwise a scenario that fails is recorded as failed and the rest "
+               "still run"),
+    Param("run_name", "Name these runs", "text", B_OUTPUT,
+          help="the folder each result lands in; empty names it after the backend "
+               "and the model"),
 )
 
 BENCH_BY_NAME: dict[str, Param] = {param.name: param for param in BENCH_SCHEMA}
@@ -248,41 +257,104 @@ BENCH_BY_NAME: dict[str, Param] = {param.name: param for param in BENCH_SCHEMA}
 MULTI_NAMES: frozenset[str] = frozenset(
     param.name for param in BENCH_SCHEMA if param.kind == "multi")
 
+#: the four settings bench2 fixes for a whole run, and so the four the GUI has
+#: to run more than once to compare
+SWEEP_NAMES: tuple[str, ...] = ("batch", "ubatch", "kv", "spec")
+
 
 def items(text: str) -> list[str]:
-    """One sweep axis, split however the person happened to type it."""
+    """One axis, split however the person happened to type it."""
     return [chunk for chunk in re.split(r"[,;\s]+", (text or "").strip()) if chunk]
 
 
-def sweep_values(bench: BenchSpec) -> dict[str, list[str]]:
-    """Each axis of the sweep, in the order the script multiplies them out."""
-    return {name: items(getattr(bench, name)) for name, _flag, _field in SWEEP_AXES}
+def scenarios(bench: BenchSpec) -> list[Scenario]:
+    """Every level and session one run works through, in bench2's order."""
+    chosen = [LEVELS[key] for key in items(bench.levels) if key in LEVELS]
+    chosen += [SESSIONS[key] for key in items(bench.session_levels) if key in SESSIONS]
+    return chosen
+
+
+def server_context(bench: BenchSpec) -> int:
+    """The context the one server is started with.
+
+    bench2 takes the largest scenario asked of it and sizes the server to that,
+    so adding a small level to a large one costs no extra memory and no extra
+    model load.
+    """
+    return max((item.ctx for item in scenarios(bench)), default=0)
+
+
+@dataclass(frozen=True, slots=True)
+class Configuration:
+    """One server the search will measure, and what its results are called."""
+
+    batch: int
+    ubatch: int
+    kv: str
+    spec: str
+
+    @property
+    def suffix(self) -> str:
+        return f"b{self.batch}-u{self.ubatch}-{self.kv}-{self.spec}"
+
+    def describe(self, varied: frozenset[str]) -> str:
+        """Named by whatever tells it apart from the others."""
+        parts = [f"batch {self.batch}" if "batch" in varied else "",
+                 f"ubatch {self.ubatch}" if "ubatch" in varied else "",
+                 self.kv if "kv" in varied else "",
+                 self.spec if "spec" in varied else ""]
+        return ", ".join(part for part in parts if part) or "one configuration"
+
+
+def axis_values(bench: BenchSpec) -> dict[str, list[str]]:
+    return {name: items(getattr(bench, name)) for name in SWEEP_NAMES}
+
+
+def varied(bench: BenchSpec) -> frozenset[str]:
+    """The axes with more than one value, which is what a run is named after."""
+    return frozenset(name for name, values in axis_values(bench).items() if len(values) > 1)
+
+
+def configurations(bench: BenchSpec) -> list[Configuration]:
+    """Every combination of the four, in the order the runs would happen."""
+    values = axis_values(bench)
+    return [Configuration(int(batch), int(ubatch), kv, spec)
+            for batch, ubatch, kv, spec in product(values["batch"], values["ubatch"],
+                                                   values["kv"], values["spec"])
+            if batch.isdigit() and ubatch.isdigit()]
 
 
 def config_count(bench: BenchSpec) -> int:
-    """How many server configurations a sweep would work through.
-
-    The script builds them with `itertools.product`, so one more value on any
-    axis multiplies the whole run rather than adding to it -- which is the
-    thing that turns an afternoon into a week.
-    """
     total = 1
-    for values in sweep_values(bench).values():
+    for values in axis_values(bench).values():
         total *= len(values)
     return total
 
 
-def _sweep_contexts(bench: BenchSpec) -> list[int]:
-    contexts = []
-    for value in items(bench.sweep_ctx):
-        try:
-            contexts.append(int(value))
-        except ValueError:
-            continue
-    return contexts
+def base_name(spec: RunSpec, bench: BenchSpec, backend: str = "") -> str:
+    """What the result folders are called when nobody has typed a name.
+
+    Deterministic rather than stamped with the time, so the command shown is
+    the command that runs; the price is that repeating a search overwrites the
+    first one, which is worth a warning rather than a surprise.
+    """
+    if bench.run_name:
+        return bench.run_name
+    stem = Path(spec.model).stem.lower() if spec.model else "model"
+    stem = re.sub(r"[^a-z0-9]+", "-", stem).strip("-")[:32] or "model"
+    return f"{backend or 'run'}-{stem}"
 
 
-# -- what the sweep will ask of the cards ----------------------------------
+def run_names(spec: RunSpec, bench: BenchSpec, backend: str = "") -> list[str]:
+    """One folder name per configuration, distinct even when the base is not."""
+    base = base_name(spec, bench, backend)
+    found = configurations(bench)
+    if len(found) == 1:
+        return [base]
+    return [f"{base}-{config.suffix}" for config in found]
+
+
+# -- what the run will ask of the cards -------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,12 +369,12 @@ class Weighed:
 
 @dataclass(frozen=True, slots=True)
 class Fit:
-    """How much of a sweep the devices have room for.
+    """How much of a search the devices have room for.
 
-    A configuration too big for the cards is not skipped: the server fails to
-    load, the script prints CONFIG FAILED and moves on. So each one costs the
-    whole startup timeout and produces no measurement, which is worth knowing
-    before the sweep is started rather than after.
+    A server too big to load is not skipped: bench2 waits out the whole health
+    timeout, records the failure and moves on to the next configuration. So
+    each one costs that timeout and produces no measurement, which is worth
+    knowing before the search rather than after.
     """
 
     budget_mib: float = 0.0
@@ -329,45 +401,46 @@ class Fit:
 
     @property
     def largest_fitting(self) -> Weighed | None:
-        """The most demanding configuration that still loads."""
         within = [item for item in self.weighed if item.mib <= self.budget_mib]
         return within[-1] if within else None
 
 
 def fit(spec: RunSpec, facts: ModelFacts | None, bench: BenchSpec, budget_mib: float,
         devices: int = 1, mmproj_bytes: int = 0) -> Fit | None:
-    """The sweep priced against the memory there is, or None if it cannot be.
+    """The search priced against the memory there is, or None if it cannot be.
 
-    Only three axes move the bill: the context and the KV type set the cache,
-    the ubatch sets the compute buffers. Batch size and speculative mode do
-    not, so each distinct bill is computed once and counted for all of them.
+    Only the KV type and the ubatch move the bill: the context is the same for
+    every configuration, because bench2 sizes the server from the largest
+    scenario and that does not change from run to run.
     """
-    if facts is None or not facts.known or budget_mib <= 0:
+    ctx = server_context(bench)
+    if facts is None or not facts.known or budget_mib <= 0 or ctx <= 0:
         return None
-    values = sweep_values(bench)
-    contexts = sorted({int(value) for value in values["sweep_ctx"] if value.isdigit()})
-    ubatches = sorted({int(value) for value in values["sweep_ubatch"] if value.isdigit()})
-    kv_types = [value for value in values["sweep_kv"] if value in SWEEP_KV_TYPES]
-    if not (contexts and ubatches and kv_types):
+    values = axis_values(bench)
+    ubatches = sorted({int(value) for value in values["ubatch"] if value.isdigit()})
+    kv_types = [value for value in values["kv"] if value in BENCH_KV_TYPES]
+    if not (ubatches and kv_types):
         return None
 
     weighed: list[Weighed] = []
-    for ctx in contexts:
-        for kv in kv_types:
-            for ubatch in ubatches:
-                probe = replace(spec, ctx_size=ctx, ubatch_size=ubatch,
-                                cache_type_k=kv, cache_type_v=kv)
-                report = estimate(probe, facts, devices=devices, mmproj_bytes=mmproj_bytes)
-                if not report.complete:
-                    return None
-                weighed.append(Weighed(ctx, kv, ubatch, report.total_mib))
+    for kv in kv_types:
+        for ubatch in ubatches:
+            probe = replace(spec, ctx_size=ctx, ubatch_size=ubatch,
+                            cache_type_k=kv, cache_type_v=kv)
+            report = estimate(probe, facts, devices=devices, mmproj_bytes=mmproj_bytes)
+            if not report.complete:
+                return None
+            weighed.append(Weighed(ctx, kv, ubatch, report.total_mib))
     weighed.sort(key=lambda item: item.mib)
-    each = max(1, len(values["sweep_batch"])) * max(1, len(values["sweep_spec"]))
+    each = max(1, len(values["batch"])) * max(1, len(values["spec"]))
     return Fit(budget_mib=budget_mib, weighed=tuple(weighed), each=each)
 
 
+# -- the command ------------------------------------------------------------
+
+
 def server_extra_tokens(spec: RunSpec) -> list[str]:
-    """Generated server flags minus the ones the bench script sets or refuses."""
+    """Generated server flags minus the ones bench2 sets or refuses."""
     tokens = to_argv(spec)[1:]
     kept: list[str] = []
     index = 0
@@ -390,287 +463,239 @@ def _flag(value: bool, on: str, off: str) -> list[str]:
 def to_bench_argv(
     spec: RunSpec,
     bench: BenchSpec,
+    config: Configuration,
     script: str | Path,
     server_bin: str | Path,
+    run_name: str = "",
+    backend: str = "",
     python: str = "python",
 ) -> list[str]:
-    """Full `python scripts/agent_workload_bench.py ...` command line.
+    """One `python scripts/bench2.py run ...` command line.
 
-    The context, batch, ubatch, KV type and speculative mode are absent on
-    purpose: the sweep overwrites all five for every configuration it runs, so
-    naming them here would describe a run that does not happen.
+    The context is absent on purpose: bench2 sizes the server from the levels
+    it is given, so naming one here would describe a server it never starts.
     """
-    argv = [
-        python, str(script),
-        "--server-bin", str(server_bin),
-        "--model", spec.model,
+    argv = [python, str(script), "run"]
+    if run_name:
+        argv += ["--run-name", run_name]
+    if levels := [key for key in items(bench.levels) if key in LEVELS]:
+        argv += ["--level", ",".join(levels)]
+    if sessions := [key for key in items(bench.session_levels) if key in SESSIONS]:
+        argv += ["--session-level", ",".join(sessions)]
+    argv += ["--runs", str(bench.runs)]
+    argv += ["--server-bin", str(server_bin), "--model", spec.model]
+    if backend:
+        # left unsaid, bench2 guesses from the binary's path and falls back to rocm
+        argv += ["--backend", backend]
+    argv += [
+        "--batch-size", str(config.batch),
+        "--ubatch-size", str(config.ubatch),
+        "--kv-k", config.kv, "--kv-v", config.kv,
+        "--spec", config.spec,
+    ]
+    if config.spec != "none":
+        argv += ["--spec-n", str(bench.spec_n)]
+    argv += [
         "--gpu-layers", ALL_LAYERS if spec.gpu_layers_all else str(spec.gpu_layers),
         "--parallel", str(spec.parallel),
     ]
     argv += _flag(spec.flash_attn != "off", "--flash-attn", "--no-flash-attn")
-
-    if bench.label:
-        argv += ["--label", bench.label]
-    argv += ["--tasks", bench.tasks]
-    if chosen := items(bench.task_ids):
-        # the script splits this on commas only, so a list typed with spaces
-        # would reach it as one unknown id and stop the run
-        argv += ["--task-ids", ",".join(chosen)]
+    # the device list belongs to bench2 rather than to --server-extra: left out,
+    # it falls back to the hardware profile, which names cards of its own
+    argv += ["--dev", spec.devices, "--sm", spec.split_mode, "--ts", spec.tensor_split]
+    argv += ["--context-source", bench.context_source]
+    if bench.context_source == "file" and bench.context_file:
+        argv += ["--context-file", bench.context_file]
     argv += [
-        "--runs", str(bench.runs),
-        "--max-tokens", str(bench.max_tokens),
-        "--real-context-mode", bench.real_context_mode,
-        "--real-context-chars", str(bench.real_context_chars),
+        "--seed", str(bench.seed),
+        "--temperature", f"{bench.temperature:g}",
+        "--top-p", f"{bench.top_p:g}",
     ]
-    argv += _flag(bench.no_reuse, "--no-reuse", "--reuse")
-    argv += _flag(bench.disable_thinking, "--disable-thinking", "--no-disable-thinking")
-    argv += _flag(bench.v2_prime_pass, "--v2-prime-pass", "--no-v2-prime-pass")
-    argv += _flag(bench.write_diagnostics, "--write-diagnostics", "--no-write-diagnostics")
-    argv += [
-        "--request-timeout", f"{bench.request_timeout:g}",
-        "--startup-timeout", f"{bench.startup_timeout:g}",
-        "--task-hard-timeout", f"{bench.task_hard_timeout:g}",
-        "--background-server-policy", bench.background_server_policy,
-    ]
-    if bench.trace_preset != "none":
-        argv += ["--trace-preset", bench.trace_preset]
-
-    argv.append("--autotune")
-    for name, flag, _field in SWEEP_AXES:
-        argv += [flag, ",".join(items(getattr(bench, name)))]
-
-    contexts = _sweep_contexts(bench)
-    if contexts:
-        # --autotune-min-ctx discards every swept context below itself and
-        # defaults to 131072, so a sweep of smaller ones silently empties out.
-        # Pinning it to the smallest value asked for is the only way to sweep
-        # what was typed.
-        argv += ["--autotune-min-ctx", str(min(contexts))]
-    argv += ["--autotune-max-configs", str(bench.sweep_max)]
-    # both default to on in the script, so an unticked box has to say so
-    argv += _flag(bench.smart_prune, "--autotune-smart-prune", "--no-autotune-smart-prune")
-    argv += _flag(bench.resume, "--autotune-resume", "--no-autotune-resume")
-
-    # the sweep names a speculative mode but not its numbers, and takes those
-    # from flags of its own; the Server page is where they were chosen
-    modes = set(items(bench.sweep_spec))
-    if modes & NGRAM_MODES:
-        argv += ["--autotune-ngram-min", str(spec.ngram_n_min),
-                 "--autotune-ngram-match", str(spec.ngram_n_match),
-                 "--autotune-ngram-max", str(spec.ngram_n_max)]
-    if modes & DRAFT_MODES:
-        argv += ["--autotune-mtp-draft-n-max", str(spec.spec_draft_n_max)]
-
-    # The policy gate is an exit code, not a warning: without this the script
-    # refuses every context above 130 000 before it starts anything.
-    if contexts and max(contexts) > POLICY_MAX_CTX:
-        argv.append("--allow-ctx-above-16k")
+    argv += _flag(bench.warmup_shot, "--warmup-shot", "--no-warmup-shot")
+    if bench.warmup_shot:
+        argv += ["--warmup-tokens", str(bench.warmup_tokens),
+                 "--warmup-decode", str(bench.warmup_decode)]
+    argv += ["--health-timeout", str(int(bench.health_timeout))]
+    if bench.fail_fast:
+        argv.append("--fail-fast")
 
     extra = server_extra_tokens(spec)
     if extra:
-        # --flag=value form: a separate value starting with '-' would be read as a new option
-        argv.append("--server-extra=" + " ".join(shlex.quote(token) for token in extra))
+        # --flag=value form: a separate value starting with '-' would be read as
+        # a new option. Joined with plain spaces because bench2 splits the string
+        # on whitespace and nothing else -- quoting it would arrive as quotes.
+        argv.append("--server-extra=" + " ".join(extra))
     return argv
 
 
-# -- what the run will do, counted before it does it -----------------------
+def bench_commands(
+    spec: RunSpec,
+    bench: BenchSpec,
+    script: str | Path,
+    server_bin: str | Path,
+    backend: str = "",
+    python: str = "python",
+) -> list[tuple[str, list[str]]]:
+    """Every run the search comes to, as (folder name, command line).
 
-
-V2_SETS = frozenset({"v2", "v2-mini", "v2-review"})
-
-#: the script raises --max-tokens for the v2 sets only when it finds this exact
-#: value, so any other number is taken as a deliberate choice and left alone
-V2_MAX_TOKENS_TRIGGER = 160
-
-
-def selected_tasks(bench: BenchSpec) -> tuple[list[str], list[str]]:
-    """The prompts that would run, and the names that match nothing.
-
-    An unknown name is not ignored: the script prints what it does not
-    recognise and exits before starting a server, which is a slow way to find
-    out about a typo.
+    One configuration is one command, so the page reads the same either way:
+    a search over one value is a measurement of it.
     """
-    available = TASK_IDS.get(bench.tasks, ())
-    asked = items(bench.task_ids)
-    if not asked:
-        return list(available), []
-    wanted = set(asked)
-    return ([name for name in available if name in wanted],
-            [name for name in asked if name not in available])
+    return [
+        (name, to_bench_argv(spec, bench, config, script, server_bin,
+                             run_name=name, backend=backend, python=python))
+        for name, config in zip(run_names(spec, bench, backend), configurations(bench))
+    ]
+
+
+# -- what the run will do, counted before it does it ------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class Plan:
     """The size of a run, in the units that decide how long it takes."""
 
-    tasks: int = 0
-    runs: int = 1
+    requests: int = 0
+    decoded: int = 0
+    prefilled: int = 0
     configs: int = 1
-    #: configurations that also get one unmeasured pass to fill n-gram state
-    primed: int = 0
-    per_request_s: float = 0.0
     startup_s: float = 0.0
 
     @property
-    def requests(self) -> int:
-        return self.tasks * (self.runs * self.configs + self.primed)
-
-    @property
-    def worst_case_s(self) -> float:
-        """The longest the run may take before its own timeouts end it.
-
-        Not an estimate of how long it will take -- a real request finishes in
-        a fraction of its ceiling. It is the number that answers "can I leave
-        this running overnight", which an estimate cannot.
-        """
-        return self.requests * self.per_request_s + self.configs * self.startup_s
+    def loads(self) -> int:
+        """Model loads. One per configuration, and they are the slow part."""
+        return self.configs
 
 
-def _primed_configs(bench: BenchSpec) -> int:
-    """Configurations that get a priming pass, which is not all of them.
-
-    `run_suite` decides per configuration, from the speculative mode the sweep
-    gave that one -- so a sweep that tries n-gram alongside anything else
-    primes only the n-gram half of it.
-    """
-    if not bench.v2_prime_pass or bench.tasks not in V2_SETS or bench.runs != 1:
-        return 0
-    modes = sweep_values(bench)["sweep_spec"]
-    if not modes:
-        return 0
-    return config_count(bench) // len(modes) * modes.count("ngram-mod")
-
-
-def plan(spec: RunSpec, bench: BenchSpec) -> Plan:
-    """How many requests this configuration works out to, and at what ceiling."""
-    chosen, _unknown = selected_tasks(bench)
-    limits = [value for value in (bench.task_hard_timeout, bench.request_timeout) if value > 0]
+def plan(bench: BenchSpec) -> Plan:
+    """How much work the chosen scenarios come to, before anything is started."""
+    chosen = scenarios(bench)
+    each = max(1, bench.runs) * max(1, config_count(bench))
     return Plan(
-        tasks=len(chosen),
-        runs=max(1, bench.runs),
-        configs=config_count(bench),
-        primed=_primed_configs(bench),
-        per_request_s=min(limits) if limits else 0.0,
-        startup_s=max(0.0, bench.startup_timeout),
+        requests=sum(item.turns for item in chosen) * each,
+        decoded=sum(item.decoded for item in chosen) * each,
+        prefilled=sum(item.prefilled for item in chosen) * each,
+        configs=max(1, config_count(bench)),
+        startup_s=max(0.0, bench.health_timeout),
     )
 
 
+# -- what would stop it -----------------------------------------------------
+
+
 def _vocabulary_problems(bench: BenchSpec) -> list[Problem]:
-    """Values on a sweep axis that nothing downstream would accept.
+    """Values on an axis that nothing downstream would accept.
 
     The page offers these as tick lists, so they can only arrive from a link or
-    an older saved run. They are still worth naming: the numeric axes reach
-    `parse_int_csv`, which drops what it cannot read, and the word axes reach
-    llama-server, which refuses to start once per configuration for the whole
-    timeout.
+    an older saved run. bench2 exits on an unknown level before starting a
+    server; llama-server refuses an unknown KV type after loading one.
     """
     problems: list[Problem] = []
-    for axis, label in (("sweep_ctx", "Contexts"), ("sweep_batch", "Batch sizes"),
-                        ("sweep_ubatch", "Ubatch sizes")):
-        bad = [value for value in items(getattr(bench, axis)) if not value.isdigit()]
-        if bad:
-            problems.append(Problem(
-                "error",
-                f"{label} to try: {', '.join(bad)} — every value on that axis has to be a "
-                f"plain number of tokens, and one that is not is quietly dropped"))
-    for axis, label, allowed in (("sweep_kv", "KV cache types", SWEEP_KV_TYPES),
-                                 ("sweep_spec", "Speculation modes", SWEEP_SPEC_MODES)):
+    for axis, label, allowed in (("levels", "Single levels", tuple(LEVELS)),
+                                 ("session_levels", "Agent sessions", tuple(SESSIONS)),
+                                 ("kv", "KV cache types", BENCH_KV_TYPES),
+                                 ("spec", "Speculation", SPEC_MODES)):
         bad = [value for value in items(getattr(bench, axis)) if value not in allowed]
         if bad:
             problems.append(Problem(
                 "error",
-                f"{label} to try: {', '.join(bad)} — the ones that work here are "
+                f"{label}: {', '.join(bad)} — the ones that work here are "
                 f"{', '.join(allowed)}"))
+    for axis, label in (("batch", "Batch sizes"), ("ubatch", "Ubatch sizes")):
+        bad = [value for value in items(getattr(bench, axis)) if not value.isdigit()]
+        if bad:
+            problems.append(Problem(
+                "error",
+                f"{label} to try: {', '.join(bad)} — every value on that axis has to be "
+                f"a plain number of tokens"))
     return problems
 
 
-def validate_bench(spec: RunSpec, bench: BenchSpec) -> list[Problem]:
-    """Everything that would stop this run, said before it is started.
+def validate_bench(spec: RunSpec, bench: BenchSpec,
+                   facts: ModelFacts | None = None,
+                   existing: frozenset[str] = frozenset()) -> list[Problem]:
+    """Everything that would stop or spoil this run, said before it is started.
 
-    Each of these is an exit code in the script -- after it has been launched,
-    and in some cases after it has worked through part of the sweep.
+    Most of these are an exit code in bench2 -- after it has been launched, and
+    some of them after it has already loaded the model once.
     """
     problems: list[Problem] = []
-    chosen, unknown = selected_tasks(bench)
+    problems += _vocabulary_problems(bench)
 
-    if bench.tasks not in TASK_IDS:
-        problems.append(Problem("warn", f"Unknown task set {bench.tasks!r}: "
-                                        "the run cannot be counted in advance"))
-    elif unknown:
+    chosen = scenarios(bench)
+    if not chosen:
         problems.append(Problem(
             "error",
-            f"{', '.join(unknown)} — not in the {bench.tasks} set. It has "
-            f"{', '.join(TASK_IDS[bench.tasks])}."))
-    elif not chosen:
-        problems.append(Problem("error", "No prompts selected, so there is nothing to measure"))
+            "Nothing ticked to measure. Given neither a level nor a session bench2 "
+            "falls back to level 1, which measures something nobody asked for."))
 
     if bench.runs < 1:
-        problems.append(Problem("error", "A run count below one measures nothing"))
+        problems.append(Problem("error", "A repeat count below one measures nothing"))
 
-    if bench.tasks in V2_SETS and bench.max_tokens < V2_MAX_TOKENS_TRIGGER:
+    for name in SWEEP_NAMES:
+        if not items(getattr(bench, name)):
+            problems.append(Problem(
+                "error",
+                f"{BENCH_BY_NAME[name].label.removesuffix(' to try')}: nothing ticked. "
+                f"One empty axis leaves the search with no configurations to run."))
+
+    if (count := config_count(bench)) > bench.sweep_max:
+        problems.append(Problem(
+            "error",
+            f"{count} runs against a cap of {bench.sweep_max}. Each one loads the model "
+            f"again, so raise the cap deliberately or drop a value."))
+
+    for config in configurations(bench):
+        if config.ubatch > config.batch:
+            problems.append(Problem(
+                "error",
+                f"ubatch {config.ubatch} above batch {config.batch}: llama-server "
+                f"refuses that pair, and it would refuse it once per run"))
+            break
+
+    ctx = server_context(bench)
+    if facts is not None and facts.n_ctx_train and ctx > facts.n_ctx_train:
+        too_big = [item.name for item in chosen if item.ctx > facts.n_ctx_train]
+        problems.append(Problem(
+            "error",
+            f"{', '.join(too_big)} wants {ctx} tokens of context and this model was "
+            f"trained for {facts.n_ctx_train}"))
+
+    if bench.context_source == "file" and not bench.context_file:
+        problems.append(Problem("error", "The file source needs a file to read"))
+    if bench.context_source == "repo-snapshot":
+        large = [item.name for item in chosen
+                 if item.turns == 1 and item.prompt_tokens > REPO_SNAPSHOT_MAX_TOKENS]
+        if large:
+            problems.append(Problem(
+                "warn",
+                f"The repository snapshot runs out at about {REPO_SNAPSHOT_MAX_TOKENS} "
+                f"tokens, so {', '.join(large)} would measure a shorter prompt than the "
+                f"level names."))
+
+    if spec.spec_type not in SPEC_MODES:
         problems.append(Problem(
             "note",
-            f"The v2 prompts ask for whole functions and reviews; {bench.max_tokens} tokens "
-            f"stops the answer almost immediately. The script raises this by itself only "
-            f"when it is left at exactly {V2_MAX_TOKENS_TRIGGER}."))
+            f"The Server page's {spec.spec_type} has no flag in bench2, which knows only "
+            f"{' and '.join(SPEC_MODES)}; these runs use what is ticked above."))
 
-    if bench.v2_prime_pass:
-        blocked = []
-        if bench.tasks not in V2_SETS:
-            blocked.append(f"the {bench.tasks} prompts are not one of the v2 sets")
-        if bench.runs != 1:
-            blocked.append(f"each prompt is measured {bench.runs} times, not once")
-        if "ngram-mod" not in items(bench.sweep_spec):
-            blocked.append("no configuration tries ngram-mod")
-        if blocked:
-            problems.append(Problem(
-                "note", "No priming pass will happen: " + ", and ".join(blocked) + "."))
-        elif (primed := _primed_configs(bench)) < config_count(bench):
-            problems.append(Problem(
-                "note",
-                f"Only the {primed} ngram-mod configurations are primed. The others measure "
-                "a cold start, which is what they are for."))
-
-    if bench.trace_preset != "none":
+    if spec.fit != "off":
         problems.append(Problem(
-            "warn",
-            f"Tracing ({bench.trace_preset}) instruments the backend and slows it down. "
-            "Numbers from a traced run are for finding where time goes, not for comparing "
-            "against untraced ones."))
+            "note",
+            "bench2 pins -fit off so that every run is given the same memory to work "
+            "in. The Server page's auto fit is left out rather than measured around."))
 
     if spec.api_key:
         problems.append(Problem(
             "note",
-            "The API key is left out of this command. The benchmark script sends no "
-            "Authorization header, and the server it starts only listens on this "
-            "machine, so a key would lock it out of its own server."))
+            "The API key is left out of these commands. bench2 sends no Authorization "
+            "header, and the server it starts only listens on this machine, so a key "
+            "would lock it out of its own server."))
 
-
-    problems += _vocabulary_problems(bench)
-
-    empty = [name for name, values in sweep_values(bench).items() if not values]
-    if empty:
+    if overlap := sorted(existing.intersection(run_names(spec, bench))):
         problems.append(Problem(
-            "error",
-            f"{', '.join(BENCH_BY_NAME[name].label.removesuffix(' to try') for name in empty)}: "
-            "nothing to try. One axis with nothing ticked leaves the whole sweep with no "
-            "configurations to run."))
-    elif (count := config_count(bench)) > bench.sweep_max:
-        # the script's own check: an error, unless smart pruning is on, in which
-        # case it prints a warning and works through the list anyway
-        problems.append(Problem("warn", f"{count} configurations against a cap of "
-                                        f"{bench.sweep_max}. It will start anyway, because "
-                                        "abandoning a losing direction may bring it under the "
-                                        "cap — but nothing promises it will.")
-                        if bench.smart_prune else
-                        Problem("error", f"{count} configurations against a cap of "
-                                         f"{bench.sweep_max}. Raise the cap, drop a value, or "
-                                         "let it abandon directions that keep getting slower; "
-                                         "as set it refuses to start."))
-
-    contexts = _sweep_contexts(bench)
-    if contexts and max(contexts) > POLICY_MAX_CTX:
-        problems.append(Problem("note", "Contexts above 130 000 are outside the lab's standard "
-                                        "lane; the command says so explicitly."))
+            "warn",
+            f"{', '.join(overlap)} already in the results folder, and would be written "
+            f"over. Name this search to keep both."))
 
     return problems

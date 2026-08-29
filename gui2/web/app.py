@@ -184,13 +184,14 @@ def create_app(config: AppConfig | None = None):
 
     @rt("/autotune", methods=["GET"])
     def autotune(req):
-        # the run under test arrives in the query string from the Server page;
-        # a link without sweep values is read as a sweep of that one run
+        # the server under test arrives in the query string from the Server page;
+        # a link without bench values is read as a measurement of that one run
         spec = server_page.spec_from_params(req.query_params)
         scan, backend = scanned(spec)
         return autotune_page.page(config, spec,
                                   autotune_page.autotune_from_params(req.query_params, spec),
-                                  supervisor, scan, backend, store.runs())
+                                  supervisor, scan, backend,
+                                  autotune_page.measured(config, spec))
 
     @rt("/autotune/preview", methods=["POST"])
     async def autotune_preview(req):
@@ -200,9 +201,9 @@ def create_app(config: AppConfig | None = None):
         bench = autotune_page.autotune_from_params(params, spec)
         return (
             autotune_page.preview(config, spec, bench, scan, backend),
-            # each "try these again" link carries the rest of the page with it,
-            # so it has to be rewritten whenever the rest of the page changes
-            autotune_page.earlier_panel(spec, bench, store.runs(), oob=True),
+            # the model can change under this form, and what has been measured
+            # of the old one says nothing about the new one
+            autotune_page.earlier_panel(autotune_page.measured(config, spec), oob=True),
             HtmxResponseHeaders(push_url="/autotune?" + autotune_page.state_query(params)),
         )
 

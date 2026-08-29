@@ -54,7 +54,19 @@ class AppConfig:
 
     @property
     def bench_script(self) -> Path:
-        return REPO_ROOT / "scripts" / "agent_workload_bench.py"
+        """bench2, preferably the copy belonging to the builds being measured.
+
+        bench2 reads its level tables and writes its results relative to its
+        own location, so running the lab's copy is what puts the numbers where
+        the rest of the lab's numbers are, and what makes the commit it records
+        the commit that was actually built.
+        """
+        lab = self.builds / "scripts" / "bench2.py"
+        return lab if lab.is_file() else REPO_ROOT / "scripts" / "bench2.py"
+
+    @property
+    def bench_results(self) -> Path:
+        return self.bench_script.parent.parent / "build_logs" / "bench"
 
     @property
     def state_dir(self) -> Path:

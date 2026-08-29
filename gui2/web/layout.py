@@ -46,7 +46,9 @@ def command_lines(argv: list[str]) -> str:
             lines.append(current)
             current = "  " + token
         else:
-            current += f" {token}"
+            # an empty value is an argument, and one that means something:
+            # left invisible the flag above it would read as having none
+            current += f" {token}" if token else " ''"
     lines.append(current)
     return "\n".join(lines)
 

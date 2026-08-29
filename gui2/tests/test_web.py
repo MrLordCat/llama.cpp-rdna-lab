@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import sys
+from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
@@ -408,14 +409,19 @@ def test_a_benchmark_is_not_filed_as_a_server_run(client):
     assert record is None
 
 
+def bench_commands_shown(html: str) -> list[str]:
+    """Every bench2 command the page is offering to run, in order."""
+    return re.findall(r"<pre>[^<]*bench2\.py(.*?)</pre>", html, re.S)
+
+
 def bench_command(html: str) -> str:
-    """The autotune line as the page shows it."""
-    block = re.search(r"<pre>[^<]*agent_workload_bench\.py(.*?)</pre>", html, re.S)
-    assert block, "the autotune command is missing from the response"
-    return block.group(1)
+    """The bench2 line as the page shows it."""
+    found = bench_commands_shown(html)
+    assert found, "the bench2 command is missing from the response"
+    return found[0]
 
 
-def test_arriving_from_the_server_page_sweeps_that_one_configuration(client, models):
+def test_arriving_from_the_server_page_measures_that_one_configuration(client, models):
     html = client.get("/autotune", params={"model": models["long"], "ctx_size": "32768",
                                            "_form": "1"}).text
 
@@ -423,167 +429,220 @@ def test_arriving_from_the_server_page_sweeps_that_one_configuration(client, mod
     # the run under test travels with the page but is edited in one place only
     assert 'name="ctx_size" value="32768"' in html.replace("'", '"')
     assert 'href="/server?model=' in html
-    assert "--autotune-ctx-values 32768" in bench_command(html)
-    assert "One configuration" in html, "a sweep of one value is a measurement"
+    # 32768 reaches level 1's 16K of context but not level 2's 48K
+    assert "--level 1" in bench_command(html)
+    assert "One configuration" in html, "one value per row is a measurement"
 
 
-#: The five axes are tick lists: a browser sends one entry per ticked chip and
-#: nothing at all for an axis with none ticked, so a form that omits one is
-#: saying it was emptied. Tests that are not about that must send all five.
-SWEPT = {"sweep_ctx": "131072", "sweep_batch": "512", "sweep_ubatch": "128",
-         "sweep_kv": "f16", "sweep_spec": "none"}
+#: The six rows are tick lists: a browser sends one entry per ticked word and
+#: nothing at all for a row with none ticked, so a form that omits one is
+#: saying it was emptied. Tests that are not about that must send them all.
+TICKED = {"levels": "1", "batch": "8192", "ubatch": "1024", "kv": "q8_0", "spec": "none"}
 
 
 def autotune_form(model: str, **overrides) -> dict:
-    return {"_form": "1", "_autotune": "1", "model": model, **SWEPT, **overrides}
+    return {"_form": "1", "_autotune": "1", "model": model, **TICKED, **overrides}
 
 
 def test_the_autotune_page_counts_the_run_before_anything_is_started(client, models):
     html = client.post("/autotune/preview", data=autotune_form(
-        models["long"], tasks="quick", runs="3",
-        task_hard_timeout="30", startup_timeout="120")).text
+        models["long"], runs="3", health_timeout="120")).text
 
-    assert "2 prompts × 3 repeats — 6 requests in all" in html
-    assert "cannot outlast" in html
+    assert "L1 against one server of 16K" in html
+    assert "3 requests in all" in html
+    assert "2 minutes to answer" in html
+
+
+def test_a_session_is_measured_beside_the_single_levels(client, models):
+    """The new mode: one conversation kept between turns, not one big prompt."""
+    command = bench_command(client.post("/autotune/preview", data=autotune_form(
+        models["long"], levels="", session_levels="1")).text)
+
+    assert "--session-level 1" in command
+    assert "--level" not in command, "nothing was ticked on the levels row"
+
+
+def test_a_session_is_ten_turns_and_the_page_counts_them(client, models):
+    html = client.post("/autotune/preview", data=autotune_form(
+        models["long"], levels="", session_levels="1")).text
+
+    assert "SL1 against one server of 32K" in html
+    assert "10 requests in all" in html
+
+
+def test_levels_and_sessions_share_the_one_server_the_largest_asks_for(client, models):
+    """bench2 loads once per run, so a big session lifts the small level's server."""
+    html = client.post("/autotune/preview", data=autotune_form(
+        models["long"], levels="0", session_levels="1")).text
+
+    assert "L0, SL1 against one server of 32K" in html
+    assert len(bench_commands_shown(html)) == 1, "one server is one command"
 
 
 def test_the_server_pages_link_does_not_clear_the_autotune_defaults(client, models):
     """It carries `_form` for the run, which is not an autotune submission."""
-    html = client.get("/autotune", params={"model": models["long"], "_form": "1"}).text
-    command = bench_command(html)
+    command = bench_command(client.get("/autotune", params={
+        "model": models["long"], "_form": "1"}).text)
 
-    assert "--no-reuse" in command, "'start every prompt cold' is on by default"
-    assert "--write-diagnostics" in command and "--no-write-diagnostics" not in command
-
-
-def test_clearing_an_autotune_checkbox_in_the_form_still_clears_it(client, models):
-    command = bench_command(client.post("/autotune/preview", data={
-        "_form": "1", "_autotune": "1", "model": models["long"]}).text)
-
-    assert "--reuse" in command and "--no-reuse" not in command
-    assert "--no-write-diagnostics" in command
+    assert "--warmup-shot" in command, "'one unmeasured shot first' is on by default"
+    assert "--no-warmup-shot" not in command
+    # and the run's own settings seed the rows rather than emptying them
+    assert "--level 4" in command, "the default 128K context reaches level 4"
+    assert "--kv-k f16" in command, "which is what the Server page's KV type is"
 
 
-def test_a_sweep_says_how_many_configurations_it_multiplies_out_to(client, models):
+def test_clearing_an_autotune_switch_in_the_form_still_clears_it(client, models):
+    """Absent means off, but only because this really is a submission."""
+    command = bench_command(client.post(
+        "/autotune/preview", data=autotune_form(models["long"])).text)
+
+    assert "--no-warmup-shot" in command
+
+
+def test_a_search_says_how_many_runs_it_multiplies_out_to(client, models):
     html = client.post("/autotune/preview", data=autotune_form(
-        models["long"], sweep_batch="256,512", sweep_ubatch="64,128")).text
+        models["long"], batch=["4096", "8192"], kv=["q8_0", "q4_0"])).text
 
-    assert "4 server configurations (1 × 2 × 2 × 1 × 1)" in html
-    assert "2 prompts against each of them — 8 requests in all" in html
-    # the settings the Server page chose for these are not what is measured
-    assert "is replaced by what is ticked above" in html
-    assert "--autotune" in bench_command(html)
+    assert "4 commands, in this order" in html
+    assert "4 runs, one per combination of batch, kv" in html
+    assert len(bench_commands_shown(html)) == 4, "one bench2 process per configuration"
+    # and each is named after whatever tells it apart from the others
+    assert "run-long-b4096-u1024-q4_0-none" in html
 
 
-def test_the_five_axes_are_ticked_rather_than_typed(client, models):
-    """Every value is one box, and several boxes share the axis's name."""
+def test_the_ticked_rows_are_buttons_rather_than_boxes_to_type_in(client, models):
+    """Every value is one button holding its own word."""
     html = client.get("/autotune", params={"model": models["long"], "_form": "1",
                                            "ctx_size": "32768"}).text
 
-    assert 'name="sweep_kv" value="q8_0"' in html, "every KV type is offered as a chip"
-    assert 'name="sweep_spec" value="ngram-mtp"' in html
-    # and the one the Server page chose arrives already ticked
-    ticked = re.search(r'name="sweep_ctx" value="32768"[^>]*checked', html)
-    assert ticked, "the run's own context is the one configuration on the axis"
+    assert 'name="kv" value="q8_0"' in html, "every KV type is offered"
+    assert 'name="spec" value="mtp"' in html
+    assert 'name="session_levels" value="1"' in html, "sessions sit beside the levels"
+    # and the level the Server page's context reaches arrives already ticked
+    assert re.search(r'name="levels" value="1"[^>]*checked', html)
 
 
-def test_a_context_the_model_cannot_reach_is_not_offered(client, models):
-    """llama-server refuses it, and the sweep would take a startup timeout to find out."""
-    html = client.get("/autotune", params={"model": models["short"], "_form": "1",
-                                           "ctx_size": "32768"}).text
+def test_a_scenario_the_model_cannot_reach_is_not_offered(client, models):
+    """llama-server refuses it, and bench2 would spend a health timeout finding out."""
+    html = client.get("/autotune", params={"model": models["short"], "_form": "1"}).text
 
-    assert 'name="sweep_ctx" value="32768"' in html
-    # short.gguf was trained to 40960
-    assert 'name="sweep_ctx" value="49152"' not in html
-    assert 'name="sweep_ctx" value="131072"' not in html
+    # short.gguf was trained to 40960: level 1 fits, level 2's 48K does not
+    assert 'name="levels" value="1"' in html
+    assert 'name="levels" value="2"' not in html
+    assert 'name="session_levels" value="1"' in html
+    assert 'name="session_levels" value="2"' not in html
 
 
-def test_a_context_already_chosen_stays_on_the_axis_whatever_the_model_says(client, models):
+def test_a_scenario_already_chosen_stays_on_the_row_whatever_the_model_says(client, models):
     """Dropping a ticked value would change the run without saying so."""
-    html = client.get("/autotune", params={"model": models["short"], "_form": "1",
-                                           "ctx_size": "131072"}).text
+    html = client.get("/autotune", params=autotune_form(models["short"], levels="5")).text
 
-    assert re.search(r'name="sweep_ctx" value="131072"[^>]*checked', html)
+    assert re.search(r'name="levels" value="5"[^>]*checked', html)
 
 
 def test_the_address_bar_keeps_every_ticked_value_not_just_the_last(client, models):
-    """Several boxes share an axis's name; keeping one would narrow the sweep on reload."""
+    """Several buttons share a row's name; keeping one would narrow it on reload."""
     data = autotune_form(models["long"])
-    del data["sweep_kv"]
+    del data["kv"]
     response = client.post("/autotune/preview", content=urlencode(
-        list(data.items()) + [("sweep_kv", "q8_0"), ("sweep_kv", "q4_0")]),
+        list(data.items()) + [("kv", "q8_0"), ("kv", "q4_0")]),
         headers={"content-type": "application/x-www-form-urlencoded"})
 
     pushed = response.headers["hx-push-url"]
-    assert "sweep_kv=q8_0&sweep_kv=q4_0" in pushed
-    # and reloading it sweeps both again rather than only the second
-    assert "--autotune-kv-values q8_0,q4_0" in bench_command(client.get(pushed).text)
+    assert "kv=q8_0&kv=q4_0" in pushed
+    # and reloading it measures both again rather than only the second
+    reloaded = bench_commands_shown(client.get(pushed).text)
+    assert len(reloaded) == 2
+    assert "--kv-k q8_0" in reloaded[0] and "--kv-k q4_0" in reloaded[1]
 
 
-def test_unticking_every_value_on_an_axis_is_reported_rather_than_ignored(client, models):
-    """Silently falling back to the default would sweep something nobody asked for."""
+def test_unticking_every_value_on_a_row_is_reported_rather_than_ignored(client, models):
+    """Silently falling back to the default would measure something nobody asked for."""
     data = autotune_form(models["long"])
-    del data["sweep_kv"]
+    del data["kv"]
 
     html = client.post("/autotune/preview", data=data).text
-    assert "KV cache types" in html and "nothing to try" in html.lower()
+    assert "KV cache types: nothing ticked" in html
+
+
+def test_nothing_ticked_to_measure_is_refused_rather_than_defaulted(client, models):
+    """Given neither, bench2 falls back to level 1 on its own."""
+    data = autotune_form(models["long"])
+    del data["levels"]
+
+    html = client.post("/autotune/preview", data=data).text
+    assert "Nothing ticked to measure" in html
+    assert "falls back to level 1" in html
+
+
+def test_the_workers_reach_bench2_through_the_server_arguments(client, models):
+    """A search over RPC is the point of having RPC: it must survive the handover."""
+    command = bench_command(client.post("/autotune/preview", data=autotune_form(
+        models["long"], rpc_endpoints="10.0.0.5:50052", devices="RPC0,Vulkan0")).text)
+
+    # bench2 has its own device list, and would otherwise pick cards from its profile
+    assert "--dev RPC0,Vulkan0" in command
+    # but it has no notion of a worker, so the endpoints ride along to llama-server
+    assert "--rpc 10.0.0.5:50052" in command
 
 
 def test_a_server_already_on_the_gpus_stops_the_run_before_it_starts(
         client, models, monkeypatch):
-    """The script's own --background-server-policy fail, said in advance."""
+    """bench2's preflight refuses outright; there is no policy to soften it."""
     monkeypatch.setattr("gui2.core.machine.running_servers", lambda *a, **k: ("26924",))
 
-    html = client.post("/autotune/preview", data={
-        "_form": "1", "_autotune": "1", "model": models["long"]}).text
+    html = client.post("/autotune/preview", data=autotune_form(models["long"])).text
     assert "already running (pid 26924)" in html
-    assert "will not start" in html
+    assert "refuses to start while one is" in html
 
     # and pressing start anyway is refused rather than queued behind it
-    started = client.post("/autotune/start", data={
-        "_form": "1", "_autotune": "1", "model": models["long"]}).text
+    started = client.post("/autotune/start", data=autotune_form(models["long"])).text
     assert "already running" in started
     assert client.app.state.supervisor.snapshot() is None
 
-    # told to share, it measures anyway and says the numbers include the other run
-    shared = client.post("/autotune/preview", data={
-        "_form": "1", "_autotune": "1", "model": models["long"],
-        "background_server_policy": "warn"}).text
-    assert "includes its load" in shared
 
-
-def _write_sweep_history(tmp_path, model: str, best: str) -> None:
-    """One finished autotune run of `model`, as the script records it."""
-    from gui2.tests.test_history import HEADER
-
-    folder = tmp_path / "build_logs" / "agent-workload"
+def _write_bench_index(root, model: str) -> None:
+    """One finished bench2 session of `model`, as bench2 records it."""
+    folder = root / "build_logs" / "bench"
     folder.mkdir(parents=True, exist_ok=True)
-    row = ("2026-08-19 18:26:10,run-x,bld-1,build-vulkan,vulkan,autotune,earlier,"
-           f"{model},0,quick,,1,12288,sweep,sweep,sweep,sweep,none,base,,1,-1,1,on,16,"
-           "repo-snapshot,24576,0.88,1,0.2,0.9,13.3,13.3,1600.0,28.4,,,0,autotune,vulkan|lane,"
-           f"{best},,,x.csv,x.log,0")
-    (folder / "BENCH_RUNS.csv").write_text(f"{HEADER}\n{row}\n", encoding="utf-8")
+    header = ("run_name,timestamp,type,level,backend,commit,model,ctx,prefill_tps,"
+              "decode_tps,aggregate_tps,decode_slope,session_turns,status")
+    row = (f"vk-long,2026-08-19T18:26:10+03:00,session,1,vk,a1b2c3d,{Path(model).name},"
+           f"32768,1600.0,28.4,31.2,-0.21,10,ok")
+    (folder / "index.csv").write_text(f"{header}\n{row}\n", encoding="utf-8")
 
 
-def test_an_earlier_sweep_of_the_same_model_is_offered_back(client, models, tmp_path):
-    """A sweep records only its winner; that is what makes the next one narrower."""
-    _write_sweep_history(tmp_path, models["long"],
-                         "ctx=12288 b=8192 ub=1024 kv=q4_0 spec=none")
+def test_what_bench2_already_measured_of_this_model_is_offered_back(models, tmp_path):
+    """Not settings to reuse: an answer to "has this been measured already"."""
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts" / "bench2.py").write_text("", encoding="utf-8")
+    _write_bench_index(tmp_path, models["long"])
 
-    html = client.get("/autotune", params={"model": models["long"], "runs": "3",
-                                           "_form": "1", "_autotune": "1"}).text
-    assert "What 1 earlier sweep of this model chose" in html
-    # one row, read across: when, which build, and the five it settled on
+    app = create_app(AppConfig(data_root=tmp_path, builds_root=tmp_path))
+    with TestClient(app) as owner:
+        html = owner.get("/autotune", params=autotune_form(models["long"])).text
+
+    assert "What 1 earlier measurement of this model found" in html
+    # one row, read across: when, what was measured, and how fast it went
     assert "2026-08-19 18:26:10" in html
-    assert "build-vulkan" in html
-    assert "8192 / 1024" in html
-    assert ">q4_0<" in html
-    assert ">13.3<" in html
+    assert ">a1b2c3d<" in html, "the commit bench2 recorded for that build"
+    assert ">SL1<" in html
+    assert ">28.40<" in html
+    assert ">-0.210<" in html, "how much a session slows down as it grows"
 
-    link = re.search(r'href="/autotune\?([^"]*)"', html)
-    assert link and "sweep_ubatch=1024" in link.group(1)
-    # and it carries the rest of the page, so following it changes only the five
-    assert "runs=3" in link.group(1)
+
+def test_a_name_already_in_the_results_folder_is_a_warning_not_a_surprise(models, tmp_path):
+    """bench2's folder names are deterministic, so a repeat writes over the first."""
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts" / "bench2.py").write_text("", encoding="utf-8")
+    (tmp_path / "build_logs" / "bench" / "run-long").mkdir(parents=True)
+
+    app = create_app(AppConfig(data_root=tmp_path, builds_root=tmp_path))
+    with TestClient(app) as owner:
+        html = owner.post("/autotune/preview", data=autotune_form(models["long"])).text
+
+    assert "run-long already in the results folder" in html
+    assert "written over" in html
 
 
 def test_the_header_links_carry_what_each_page_comes_from(client, models):

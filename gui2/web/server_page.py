@@ -34,7 +34,7 @@ from fasthtml.common import (
 
 from gui2.config import AppConfig
 from gui2.core import machine
-from gui2.core.bench import BenchSpec, to_bench_argv
+from gui2.core.bench import BenchSpec, bench_commands
 from gui2.core.devices import Device, DeviceService, Scan, pool
 from gui2.core.gguf import ModelFacts, context_text, read_facts
 from gui2.core.inventory import Build, discover_builds, discover_models, find_build
@@ -1105,9 +1105,10 @@ def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
     problems += _port_problems(spec)
 
     argv = to_argv(spec, binary)
-    # seeded_from: a sweep of one value per axis, which is a measurement of
-    # this configuration -- the same command the Autotune page opens with
-    bench_argv = to_bench_argv(spec, BenchSpec().seeded_from(spec), config.bench_script, binary)
+    # seeded_from: one value per axis, which is a measurement of this
+    # configuration -- the same command the Autotune page opens with
+    _, bench_argv = bench_commands(spec, BenchSpec().seeded_from(spec),
+                                   config.bench_script, binary, backend=backend)[0]
     bench_query = spec_link(spec)
 
     known = reading(argv, supervisor, store)
@@ -1124,8 +1125,8 @@ def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
         memory_panel(spec, facts, scan, backend, known),
         Details(
             Summary("Measure this configuration"),
-            Span("The same settings, asked a fixed set of prompts and timed. Add a second "
-                 "context or batch size on the Autotune page and it searches instead.",
+            Span("The same settings, asked a fixed set of prompts and timed. Tick a second "
+                 "batch size or KV type on the Autotune page and it measures each in turn.",
                  cls="hint block"),
             Pre(command_lines(mask_api_key(bench_argv))),
             A("Open in Autotune →", href=f"/autotune?{bench_query}", cls="button"),

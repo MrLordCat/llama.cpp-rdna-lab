@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from gui2.core.bench import BenchSpec, server_extra_tokens, to_bench_argv
+from gui2.core.bench import BenchSpec, bench_commands, server_extra_tokens
 from gui2.core.params import SCHEMA
 from gui2.core.runspec import (
     DEFAULTS,
@@ -145,25 +145,32 @@ def test_validation_notes_do_not_block(tmp_path: Path):
 
 
 def test_bench_argv_reuses_the_server_command():
+    """What was chosen on the Server page is what bench2 is told to measure."""
     spec = RunSpec(model="models/Q4.gguf", ctx_size=49152, batch_size=8192, ubatch_size=1024,
                    cache_type_k="q4_0", cache_type_v="q4_0", flash_attn="on", spec_type="mtp",
                    devices="Vulkan1,Vulkan0", split_mode="layer", tensor_split="1,1", no_mmap=True)
-    bench = BenchSpec(label="d131-r1", task_ids="triage_diff").seeded_from(spec)
-    argv = to_bench_argv(spec, bench, script="scripts/agent_workload_bench.py",
-                         server_bin="build-vulkan/bin/llama-server.exe")
+    bench = BenchSpec().seeded_from(spec)
+    (name, argv), = bench_commands(spec, bench, "scripts/bench2.py",
+                                   "build-vulkan/bin/llama-server.exe", backend="vk")
 
-    # the five settings the sweep owns arrive as its axes, not as server flags
-    assert flag_value(argv, "--autotune-ctx-values") == "49152"
-    assert flag_value(argv, "--autotune-kv-values") == "q4_0"
-    assert flag_value(argv, "--autotune-spec-values") == "mtp"
+    # the settings bench2 owns arrive as its own options, not as server flags
+    assert flag_value(argv, "--batch-size") == "8192"
+    assert flag_value(argv, "--kv-k") == "q4_0" and flag_value(argv, "--kv-v") == "q4_0"
+    assert flag_value(argv, "--spec") == "mtp"
+    assert flag_value(argv, "--backend") == "vk"
     assert "--flash-attn" in argv
-    assert flag_value(argv, "--label") == "d131-r1"
+    # 49152 is level 2's context, so that is the level asked for
+    assert flag_value(argv, "--level") == "2"
+    assert flag_value(argv, "--run-name") == name == "vk-q4"
+    # the cards are named rather than left to bench2's hardware profile
+    assert flag_value(argv, "--dev") == "Vulkan1,Vulkan0"
+    assert flag_value(argv, "--ts") == "1,1"
 
     extra = next(item for item in argv if item.startswith("--server-extra="))
-    # bench owns these; forwarding them again would duplicate the flag
+    # bench2 owns these; forwarding them again would duplicate the flag
     assert "--ctx-size" not in extra and "-ngl" not in extra and "-m " not in extra
-    assert "--spec-type" not in extra, "the sweep appends its own, and the first one wins"
-    assert "-dev Vulkan1,Vulkan0" in extra
+    assert "-dev " not in extra, "bench2 passes the devices itself"
+    assert "--spec-type" not in extra, "bench2 appends its own, and the first one wins"
     assert "--no-mmap" in extra
 
 
