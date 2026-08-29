@@ -229,6 +229,54 @@ On Qwen3.8 the Vulkan FP8 prompt advantage over q8 is roughly parity at
 context-research material (60.8% acceptance vs q8's 71.5%), not a default
 recommendation.
 
+## Fork vs Stock Vulkan b10666 (bench2, 2026-08-29)
+
+Same-day, same-session A/B (`bench2`, GPU-free precheck, warmup on, `seed 42`,
+`-c 98304 -b 8192 -ub 1024 -ngl 999 --flash-attn on --cache-type-k/v q8_0
+-dev Vulkan1,Vulkan0 -sm layer -ts 1,1 -fit off`, synthetic prompt). Fork =
+`build-vulkan-gcc16` (GCC 16.2, `572cdc0f7` + MTP load gating), stock =
+`ggml-org/llama.cpp` b10666 (GCC 16.2).
+
+**Spec `none`, L0-L3 r1:**
+
+| Lane | Fork prefill | Stock prefill | Δ% | Fork decode | Stock decode | Δ% |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| L0 (8K) | 1158.6 | 827.1 | +40.1% | 29.47 | 30.22 | −2.5% |
+| L1 (16K) | 1411.0 | 1141.1 | +23.7% | 29.04 | 29.66 | −2.1% |
+| L2 (49K) | 1353.5 | 1148.1 | +17.9% | 27.75 | 27.91 | −0.6% |
+| L3 (98K) | 1172.4 | 976.8 | +20.0% | 26.45 | 25.89 | +2.2% |
+
+**Spec `draft-mtp` (n=2), L0-L3 r1:**
+
+| Lane | Fork prefill | Stock prefill | Δ% | Fork decode | Stock decode | Δ% |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| L0 (8K) | 1034.0 | 898.1 | +15.1% | 39.28 | 49.89 | −21.3% |
+| L1 (16K) | 1346.4 | 1097.2 | +22.7% | 52.72 | 51.33 | +2.7% |
+| L2 (49K) | 1412.4 | 1015.8 | +39.1% | 39.43 | 48.85 | −19.3% |
+| L3 (98K) | 1241.3 | 853.4 | +45.5% | 34.65 | 41.14 | −15.8% |
+
+Fork wins prompt eval everywhere; decode is at parity for `none`, but stock
+keeps the MTP-decode edge on L0/L2/L3 (L1 is fork `+2.7%`). Artifacts:
+`vk-l0123-20260829-{1133,1135,1414,1340}`.
+
+**How it was run (short commands):**
+
+```bash
+# fork (default build-vulkan/bin)
+python scripts/bench2.py run --level 0,1,2,3 --runs 1 --backend vk
+python scripts/bench2.py run --level 0,1,2,3 --runs 1 --backend vk \
+    --server-extra "--spec-type draft-mtp --spec-draft-n-max 2"
+# stock: point build-vulkan/bin at the stock binary first, then the same commands
+cp bench2-bins/stock_vk/llama-server.exe build-vulkan/bin/llama-server.exe
+```
+
+**Pipeline parallelism (PP) note (2026-08-29, deferred):** on Vulkan, enabling
+PP lowers prompt prefill (fork L0-MTP: `1034.0 -> 792.4` ptps) but restores
+decode (stock L0-MTP: `40.11 -> 49.98` tps with PP on; stock PP-off `-ngl 65`
+was `691.3 / 40.11`). The fork PP path is not yet equivalent to stock, so the
+PP-for-MTP reconciliation (keep prefill advantage, catch the stock decode) is
+left for further investigation.
+
 ## Fork Highlights
 
 The fork's main differences from stock, beyond benchmark tooling and the GUI:

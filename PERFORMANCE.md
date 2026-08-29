@@ -256,6 +256,34 @@ model, graph, kernel, scheduler, or speculative-decoding source was changed.
 The stock tree does not implement the fork-specific `LLAMA_OUTPUT_DEVICE` or
 `GGML_VK_FORCE_AMD_LARGE_MATMUL` controls.
 
+### Fork vs Stock Vulkan b10666 (bench2, 2026-08-29)
+
+Same-day, same-session A/B with `scripts/bench2.py` (GPU-free precheck, warmup
+on, `seed 42`, `-c 98304 -b 8192 -ub 1024 -ngl 999 --flash-attn on
+--cache-type-k/v q8_0 -dev Vulkan1,Vulkan0 -sm layer -ts 1,1 -fit off`,
+synthetic prompt). Fork = `build-vulkan-gcc16` (GCC 16.2, `572cdc0f7` + MTP
+load gating); stock = `ggml-org/llama.cpp` b10666 (GCC 16.2).
+
+| Spec | Lane | Fork prefill | Stock prefill | Fork decode | Stock decode |
+| --- | --- | ---: | ---: | ---: | ---: |
+| none | L0 (8K) | **1158.6** | 827.1 | 29.47 | **30.22** |
+| none | L1 (16K) | **1411.0** | 1141.1 | 29.04 | **29.66** |
+| none | L2 (49K) | **1353.5** | 1148.1 | 27.75 | **27.91** |
+| none | L3 (98K) | **1172.4** | 976.8 | **26.45** | 25.89 |
+| MTP n2 | L0 (8K) | **1034.0** | 898.1 | 39.28 | **49.89** |
+| MTP n2 | L1 (16K) | **1346.4** | 1097.2 | **52.72** | 51.33 |
+| MTP n2 | L2 (49K) | **1412.4** | 1015.8 | 39.43 | **48.85** |
+| MTP n2 | L3 (98K) | **1241.3** | 853.4 | 34.65 | **41.14** |
+
+Fork keeps the prompt-eval lead on every lane. Decode is at parity for
+`none`; with MTP the stock still wins L0/L2/L3 while fork wins L1. Artifacts:
+`build_logs/bench/vk-l0123-20260829-{1133,1135,1414,1340}`.
+
+**PP brief (2026-08-29, deferred):** stock PP-on L0-MTP = `902.4 / 49.98`
+(prefill/decode), stock PP-off (`-ngl 65`) = `691.3 / 40.11`; fork PP-off =
+`1034.0 / 39.28`, fork PP-on = `792.4 / 38.41`. Enabling PP lowers fork prefill
+but restores stock decode; fork PP-for-MTP needs further investigation.
+
 ### Extended ROCm Long Prompt
 
 | Mode | Prompt / output | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |

@@ -1,5 +1,7 @@
 #include "llama-context.h"
 
+#include <algorithm>
+
 #include "ggml.h"
 #include "ggml-rpc.h"
 #include "llama-arch.h"
