@@ -44,7 +44,7 @@ void llama_model_glm_dsa::load_arch_hparams(llama_model_loader & ml) {
         default: type = LLM_TYPE_UNKNOWN;
     }
 }
-void llama_model_glm_dsa::load_arch_tensors(llama_model_loader & ml) {
+void llama_model_glm_dsa::load_arch_tensors(llama_model_loader &) {
     LLAMA_LOAD_LOCALS;
     const int64_t n_expert_shared = hparams.n_expert_shared;
 
@@ -78,10 +78,9 @@ void llama_model_glm_dsa::load_arch_tensors(llama_model_loader & ml) {
     for (int i = 0; i < n_layer; ++i) {
         int flags = 0;
         if (hparams.nextn_predict_layers > 0 && static_cast<uint32_t>(i) >= n_layer - hparams.nextn_predict_layers) {
-            flags |= TENSOR_NOT_REQUIRED;
-            if (!ml.load_mtp) {
-                flags |= TENSOR_SKIP;
-            }
+            // skip all tensors in the NextN layers
+            // TODO @ngxson : TENSOR_NOT_REQUIRED was a hack, need to remove it later
+            flags |= TENSOR_SKIP | TENSOR_NOT_REQUIRED;
         }
 
         auto & layer = layers[i];

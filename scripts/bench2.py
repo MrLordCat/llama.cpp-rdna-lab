@@ -359,20 +359,15 @@ def start_server(cmd: list[str], log_path: Path, out_stream: Any) -> subprocess.
     return proc
 
 
-def wait_health(host: str, port: int, timeout: float = 180.0, poll: float = 1.0,
-                proc: subprocess.Popen[str] | None = None) -> bool:
+def wait_health(host: str, port: int, timeout: float = 180.0, poll: float = 1.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if proc is not None and proc.poll() is not None:
-            return False
         try:
             with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=2) as resp:
                 if resp.status == 200:
                     return True
         except (urllib.error.URLError, OSError, ValueError):
             pass
-        if proc is not None and proc.poll() is not None:
-            return False
         time.sleep(poll)
     return False
 
@@ -405,8 +400,7 @@ def stop_server(proc: subprocess.Popen[str], timeout: float = 180.0) -> None:
 # --------------------------------------------------------------------------- #
 def post_completion(host: str, port: int, prompt: str, n_predict: int,
                     temperature: float, top_p: float, seed: int,
-                    cache_prompt: bool, timeout: float,
-                    payload_extra: dict[str, Any] | None = None) -> dict[str, Any]:
+                    cache_prompt: bool, timeout: float) -> dict[str, Any]:
     """Chat-completions request (needed for thinking models: raw /completion
     without chat template makes Qwen3.x emit EOG as the first token)."""
     payload = {
@@ -425,8 +419,6 @@ def post_completion(host: str, port: int, prompt: str, n_predict: int,
         "cache_prompt": cache_prompt,
         "stream": False,
     }
-    if payload_extra:
-        payload.update(payload_extra)
     req = urllib.request.Request(
         f"http://{host}:{port}/v1/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
@@ -724,7 +716,6 @@ def run_warmup(cfg: Config, writer: RunWriter, host: str, port: int,
         resp = post_completion(
             host, port, prompt, n_predict, s["temperature"], s["top_p"],
             s["seed"], cache_prompt=False, timeout=600,
-            payload_extra=getattr(cfg.args, "api_extra", None),
         )
         wall = time.monotonic() - t0
     except Exception as exc:
@@ -773,7 +764,6 @@ def run_single_level(cfg: Config, writer: RunWriter, backend: str, host: str,
             host, port, prompt, decode_tokens, s["temperature"], s["top_p"],
             s["seed"] + shot, cache_prompt=False,
             timeout=3600 if ctx >= 98304 else 900,
-            payload_extra=getattr(cfg.args, "api_extra", None),
         )
         wall = time.monotonic() - t0
     except Exception as exc:
@@ -845,7 +835,6 @@ def run_session(cfg: Config, writer: RunWriter, backend: str, host: str,
                 host, port, prompt, decode_tokens, s["temperature"], s["top_p"],
                 s["seed"] + shot + turn, cache_prompt=True,
                 timeout=1800 if ctx >= 98304 else 600,
-                payload_extra=getattr(cfg.args, "api_extra", None),
             )
         except Exception as exc:
             writer.event("turn_error", turn=turn, error=str(exc))
@@ -928,17 +917,6 @@ def run_session(cfg: Config, writer: RunWriter, backend: str, host: str,
 # --------------------------------------------------------------------------- #
 def cmd_run(args: argparse.Namespace) -> int:
     cfg = Config(args)
-    if args.api_extra:
-        try:
-            extra = json.loads(args.api_extra)
-            if not isinstance(extra, dict):
-                raise ValueError("expected a JSON object")
-        except Exception as exc:
-            print(f"bench2: --api-extra invalid: {exc}", file=sys.stderr)
-            return 2
-        args.api_extra = extra
-    else:
-        args.api_extra = None
     ok, reason = preflight(cfg)
     if not ok:
         print(f"bench2: preflight failed: {reason}", file=sys.stderr)
@@ -987,21 +965,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         writer.event("server_start", cmd=" ".join(server_cmd), host=host, port=port)
         proc = start_server(server_cmd, writer.run_dir / "server.log", sys.stderr)
         writer.event("server_spawned", pid=proc.pid)
-        if not wait_health(host, port, timeout=args.health_timeout, proc=proc):
+        if not wait_health(host, port, timeout=args.health_timeout):
             tail = ""
             log_path = writer.run_dir / "server.log"
             if log_path.exists():
                 tail = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-20:])
-            returncode = proc.poll()
-            if returncode is not None:
-                print(f"[bench2] server exited during startup (code {returncode}); log tail:\n{tail}",
-                      file=sys.stderr, flush=True)
-                writer.event("server_exited", returncode=returncode, tail=tail)
-            else:
-                print(f"[bench2] server health timeout after {args.health_timeout}s; log tail:\n{tail}",
-                      file=sys.stderr, flush=True)
-                writer.event("server_health_timeout", tail=tail)
-                stop_server(proc)
+            print(f"[bench2] server health timeout after {args.health_timeout}s; log tail:\n{tail}",
+                  file=sys.stderr, flush=True)
+            writer.event("server_health_timeout", tail=tail)
+            stop_server(proc)
             return 3
         print(f"[bench2] server ready: {server_cmd[0]} (pid {proc.pid}, port {port})", flush=True)
     print(f"[bench2] run {run_name} | backend={backend} | model={model.name} | "
@@ -1176,9 +1148,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--warmup-tokens", type=int, default=None, help="warmup prompt tokens (default 512)")
     run.add_argument("--warmup-decode", type=int, default=None, help="warmup decode tokens (default 16)")
     run.add_argument("--server-extra", default="", help="raw extra server args")
-    run.add_argument("--api-extra", default="",
-                     help="extra JSON object merged into every completion payload "
-                          "(e.g. '{\"chat_format\": 0}')")
     run.add_argument("--results-dir", default=None)
     run.add_argument("--health-timeout", type=int, default=300,
                      help="seconds to wait for server /health (default 300)")
