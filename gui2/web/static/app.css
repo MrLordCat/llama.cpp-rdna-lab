@@ -12,6 +12,10 @@
 
 * { box-sizing: border-box; }
 
+/* a link is a pointer, not a browser-blue jump: the accent is the theme's own */
+a { color: var(--accent); }
+a:hover { color: var(--text); }
+
 body {
     margin: 0;
     background: var(--bg);
@@ -98,6 +102,22 @@ th a { color: inherit; text-decoration: none; cursor: pointer; }
 th a.sorted { color: var(--accent); }
 tbody tr { cursor: pointer; }
 tbody tr:hover { background: var(--panel-2); }
+
+/* the Autotune results table is a report, not a list of links */
+.results tbody tr { cursor: default; }
+.results td.runname { font-family: var(--mono, monospace); font-size: 11px; color: var(--muted); }
+.results td.status { color: var(--muted); }
+
+/* the share-per-device balancer: one slider per card, always summing to the
+   scale, with the numbers it writes and the percent beside each bar */
+.splitbalance { margin: 8px 0 2px; }
+.splitbars { display: grid; gap: 4px; }
+.splitbar { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.splitbar > span:first-child { width: 150px; flex: none; color: var(--muted); }
+.splitbar input[type=range] { flex: 1; min-width: 0; }
+.splitbar .share { width: 42px; flex: none; color: var(--text);
+                   text-align: right; font-variant-numeric: tabular-nums; }
+.splitactions { display: flex; gap: 10px; align-items: center; margin-top: 6px; }
 td.num { text-align: right; }
 td.label { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
 

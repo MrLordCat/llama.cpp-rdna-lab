@@ -161,8 +161,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 7 950 lines of Python plus 2 548 of tests, against the old GUI's
-15 458 with none. The suite is 197 tests and runs in about 20 seconds without
+`gui2/` is 9 002 lines of Python plus 3 021 of tests, against the old GUI's
+15 458 with none. The suite is 216 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -220,13 +220,32 @@ file there" but "will it load here, and how much context is left once its
 weights are down". Both come from the header and the device list, so the page
 costs one stat and a few kilobytes per model and starts nothing.
 
-The Autotune page does not describe a run twice. The model, build, devices and
-layer split arrive from the Server page in the query string and are shown but
-not edited; this page chooses what is asked of that server and which
-configurations to try. Arriving from the Server page ticks one value on each of
-the five sweep axes, so the page opens as a measurement of the run being
-described and becomes a search the moment a second value is ticked anywhere —
-which is why there is no second mode.
+The Autotune page describes the run once and edits it where it is. The model,
+build, devices, layer split, workers, GPU layers, parallel slots and flash
+attention sit in the first panel of the same form; the Server page keeps the
+rest (threads, cache policy, metrics, mmproj), which still reaches the
+benchmark through the command it is given. This page chooses what is asked of
+that server and which configurations to try. Arriving from the Server page
+ticks one value on each of the six sweep axes — batch, ubatch, KV,
+speculation and draft tokens — so the page opens as a measurement of the run
+being described and becomes a search the moment a second value is ticked
+anywhere — which is why there is no second mode.
+
+A search does not print a command per run into the right column: the runs are
+one table, and the commands (identical except for batch, ubatch, KV,
+speculation and draft count) stay folded behind "show the commands" — a
+single run's command folds the same way. A ubatch above its batch is dropped
+from the search with a warning instead of blocking it. Draft tokens are an
+axis of their own: ticking 2 and 3 queues one run per count, and only where
+speculation is on. Once a run starts, the Results panel follows it: one row
+per run, filled in from bench2's own index as each scenario is recorded. The
+Autotune history page lists every finished run the same way, filtered by
+lane, backend, speculation and build, sorted by any column, with ▸ expanding
+a run into the scenarios it is made of.
+
+The layer split is edited with one slider per device (however many cards the
+build has) instead of a text list: the bars always sum to the scale and write
+the `-ts` list the form submits.
 
 Nothing on it is typed that can be ticked or dragged instead. Each axis is a
 row of values to tick rather than a comma-separated line to spell: one ticked
@@ -253,13 +272,23 @@ returns nothing. The page says how many of them there are, what the heaviest
 wants, what the largest one that does fit is, and how much time the failures
 would take — from the model header, so no process is started to find out.
 
-And it closes the loop with the history. Every earlier sweep of the same model
-is one row of a table — when, on which build, the five values it chose and the
-speed that won them — so the four of them are read down a column instead of as
-four paragraphs saying nearly the same thing. Each row ends in a link that puts
-those five values back on the axes, carrying the rest of the page with it, so
-following one changes only the five. A second sweep is then a check of the
-first, or a search around it once a second value is added.
+And it closes the loop with the history. Every earlier measurement of the same
+model is one row of a table — when, on which build, which level, the four
+settings it ran with and the speed they produced — read down a column instead
+of as paragraphs saying nearly the same thing. The settings come from that
+run's own `run.json`, because bench2's index records what a run measured and
+never what it was measured with; a row whose folder has since been deleted
+keeps its numbers and loses only its link. Each row ends in `use`, which puts
+that row back on the rows below — its level and its four settings, nothing
+else — so the next attempt differs from a known one by a single thing.
+
+Nothing is written over by accident, because a result folder is named after
+what it holds: `vk-qwen3-8-27b-q4-k-m-l2-b8192-u1024-q8_0-none`. Trying one
+combination after another used to land every attempt in the folder the last one
+wrote, and the way out was typing a fresh name before each — which is the whole
+of the work when the point is to try combinations. A clash can now only mean
+the same thing measured twice, which is worth saying plainly: that is what
+re-checking a build is, and the page says so instead of warning about a name.
 
 ## Facts about llama.cpp worth not rediscovering
 

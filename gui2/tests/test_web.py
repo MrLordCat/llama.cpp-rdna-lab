@@ -6,12 +6,16 @@ these tests must stay safe to run while the real GPUs are busy.
 
 from __future__ import annotations
 
+import csv
+import json
 import re
 import sys
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
+from fasthtml.common import to_xml
 from starlette.testclient import TestClient
 
 from gui2.config import AppConfig
@@ -503,11 +507,47 @@ def test_a_search_says_how_many_runs_it_multiplies_out_to(client, models):
     html = client.post("/autotune/preview", data=autotune_form(
         models["long"], batch=["4096", "8192"], kv=["q8_0", "q4_0"])).text
 
-    assert "4 commands, in this order" in html
+    # the search is one compact panel: the commands are there, but collapsed
+    assert "Show the 4 commands" in html
     assert "4 runs, one per combination of batch, kv" in html
     assert len(bench_commands_shown(html)) == 4, "one bench2 process per configuration"
-    # and each is named after whatever tells it apart from the others
-    assert "run-long-b4096-u1024-q4_0-none" in html
+    # and each is named after the workload and the combination it measures
+    assert "run-long-l1-b4096-u1024-q4_0-none" in html
+
+
+def test_a_ubatch_above_one_batch_is_skipped_rather_than_blocking(client, models):
+    """llama-server refuses the pair; dropping it keeps the rest of the search."""
+    html = client.get("/autotune", params=autotune_form(
+        models["long"], batch=["1024", "8192"], ubatch=["128", "1024", "2048"],
+        spec=["none", "mtp"], spec_n=["2"])).text
+
+    # (1024, 2048) is the pair that cannot run: 2 of 12 combinations
+    assert "2 of 12 combinations skipped" in html
+    assert "Start 10 runs" in html
+    assert "Show the 10 commands" in html
+
+
+def test_the_results_table_follows_the_queue_bench2_is_measuring(client):
+    """One row per run, filling in as bench2 records; no scraping of its log."""
+    from gui2.core.bench import Configuration
+    client.app.state.live_board = [
+        ("run-a-b1024-u128-q8_0-none", Configuration(1024, 128, "q8_0", "none")),
+        ("run-a-b8192-u1024-q8_0-none", Configuration(8192, 1024, "q8_0", "none")),
+    ]
+    supervisor = client.app.state.supervisor
+    # a child that stays up for the assertions, like a real model load would
+    sleeper = [sys.executable, "-c",
+               "import time; print('loading'); time.sleep(30)"]
+    supervisor.start("autotune", "bench2 · run-a-b1024-u128-q8_0-none", sleeper)
+    try:
+        html = client.get("/autotune/results").text
+        assert 'id="results"' in html
+        assert "b1024-u128-q8_0-none" in html, "the run's settings name its row"
+        assert "measuring" in html and "queued" in html
+        assert "no result" not in html, "a queue that just started has no dead runs yet"
+    finally:
+        supervisor.force_stop()
+        assert supervisor.wait(timeout=30) is not None
 
 
 def test_the_ticked_rows_are_buttons_rather_than_boxes_to_type_in(client, models):
@@ -586,6 +626,246 @@ def test_the_workers_reach_bench2_through_the_server_arguments(client, models):
     assert "--rpc 10.0.0.5:50052" in command
 
 
+def test_the_autotune_page_edits_the_servers_own_settings_in_place(client, models):
+    """Model, build, devices and split are the point of the run; changing them
+    here must not need a round trip through the Server page."""
+    html = client.get("/autotune", params={"model": models["long"], "_form": "1"}).text
+
+    assert 'name="model"' in html and 'name="build_dir"' in html
+    assert 'id="devicefield"' in html, "the device picker sits on this form too"
+    assert 'name="rpc_endpoints"' in html
+    assert 'name="split_mode"' in html and 'name="tensor_split"' in html
+    assert 'name="gpu_layers"' in html and 'name="gpu_layers_all"' in html
+    assert 'name="parallel"' in html and 'name="flash_attn"' in html
+    # one control per setting: no hidden twin arguing with the visible one
+    assert html.count('name="model"') == 1
+    assert html.count('name="build_dir"') == 1
+    # a model change has to refresh the whole form, not just the preview
+    assert 'hx-post="/autotune/form"' in html
+
+
+def test_server_settings_changed_on_autotune_reach_bench2(client, models):
+    """The point of editing them here: they must land in the command."""
+    command = bench_command(client.post("/autotune/preview", data=autotune_form(
+        models["long"], gpu_layers="12", parallel="2", flash_attn="off",
+        split_mode="layer", tensor_split="3,2", devices="Vulkan0",
+        rpc_endpoints="10.0.0.5:50052")).text)
+
+    assert "--gpu-layers 12" in command
+    assert "--parallel 2" in command
+    assert "--no-flash-attn" in command
+    assert "--dev Vulkan0" in command
+    assert "--sm layer" in command and "--ts 3,2" in command
+    assert "--rpc 10.0.0.5:50052" in command
+
+
+def test_changing_the_model_rerenders_the_whole_form(client, models):
+    """The level chips and the fit verdict follow the model, so the preview
+    alone is not enough."""
+    response = client.post("/autotune/form", data=autotune_form(models["short"]))
+
+    assert 'id="autotuneform"' in response.text
+    assert "short.gguf" in response.text
+    # the preview and the measured list refresh in the same answer, out of band
+    assert 'id="autotunepreview"' in response.text
+    assert 'id="earlier"' in response.text and 'hx-swap-oob="true"' in response.text
+    assert response.headers["hx-push-url"].startswith("/autotune?")
+
+
+def test_draft_tokens_are_an_axis_of_their_own(client, models):
+    """Tick 2 and 3: two runs, one per guess-ahead count."""
+    html = client.post("/autotune/preview", data=autotune_form(
+        models["long"], spec=["mtp"], spec_n=["2", "3"])).text
+
+    assert "2 runs, one per combination of spec_n" in html
+    commands = bench_commands_shown(html)
+    assert len(commands) == 2
+    assert "--spec-n 2" in commands[0] and "--spec-n 3" in commands[1]
+
+
+def test_the_share_balancer_draws_one_slider_per_device():
+    """1,1 and 0.8,1 become sliders; the hidden box still submits the -ts list."""
+    from gui2.core.devices import Device
+    from gui2.core.runspec import DEFAULTS
+    from gui2.web import server_page
+    devices = (Device(name="Vulkan0", total_mib=16384),
+               Device(name="Vulkan1", total_mib=16384),
+               Device(name="Vulkan2", total_mib=16384))
+    html = to_xml(server_page.split_balancer(DEFAULTS, devices))
+
+    assert html.count('type="range"') == 3, "one slider per card, however many there are"
+    assert 'name="split_Vulkan0"' in html and 'name="split_Vulkan2"' in html
+    assert 'name="tensor_split"' in html, "the face writes what the form submits"
+    assert 'onclick="splitAuto(this)"' in html, "Automatic returns to llama.cpp's own split"
+    # a written share like 3,2 scales onto the bars: 6 and 4 of 10
+    ratio = to_xml(server_page.split_balancer(
+        replace(DEFAULTS, tensor_split="3,2"), devices[:2]))
+    assert 'value="6"' in ratio and 'value="4"' in ratio
+
+
+def _write_bench_rows(root: Path, rows: list[dict]) -> Path:
+    """bench2's index.csv, with the columns this page reads."""
+    folder = root / "build_logs" / "bench"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "index.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        keys = ["run_name", "type", "level", "timestamp", "backend", "model",
+                "ctx", "prefill_tps", "decode_tps", "aggregate_tps",
+                "mtp_draft_n", "status", "path", "session_turns"]
+        writer = csv.DictWriter(handle, fieldnames=keys)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+    return folder
+
+
+def test_the_autotune_history_filters_and_expands(tmp_path):
+    """One row per run (its best decode), filtered by lane/backend/spec/build,
+    and ▸ lists the scenarios the run is made of."""
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts" / "bench2.py").write_text("", encoding="utf-8")
+    folder = tmp_path / "build_logs" / "bench"
+    folder.mkdir(parents=True, exist_ok=True)
+    _write_bench_rows(tmp_path, [
+        dict(run_name="vk-model-b1024-u128-q8_0-none", type="single", level="1",
+             timestamp="2026-08-29T10:00:00+03:00", backend="vk", model="long.gguf",
+             ctx="8192", prefill_tps="900", decode_tps="30", aggregate_tps="28",
+             mtp_draft_n="", status="ok", path=str(folder / "run-vk-none"),
+             session_turns="0"),
+        dict(run_name="vk-model-b1024-u128-q8_0-none", type="single", level="2",
+             timestamp="2026-08-29T10:02:00+03:00", backend="vk", model="long.gguf",
+             ctx="49152", prefill_tps="1000", decode_tps="35", aggregate_tps="32",
+             mtp_draft_n="", status="ok", path=str(folder / "run-vk-none"),
+             session_turns="0"),
+        dict(run_name="rocm-model-b1024-u128-q8_0-mtp-n2", type="single", level="1",
+             timestamp="2026-08-29T11:00:00+03:00", backend="rocm", model="long.gguf",
+             ctx="8192", prefill_tps="800", decode_tps="40", aggregate_tps="36",
+             mtp_draft_n="2", status="ok", path=str(folder / "run-rocm-mtp"),
+             session_turns="0"),
+    ])
+    run_dir = folder / "run-vk-none"
+    run_dir.mkdir(exist_ok=True)
+    (run_dir / "run.json").write_text(
+        '{"server": {"server_bin": "D:/x/build-vulkan-gcc16/bin/llama-server.exe"}}',
+        encoding="utf-8")
+
+    app = create_app(AppConfig(data_root=tmp_path, builds_root=tmp_path))
+    with TestClient(app) as owner:
+        html = owner.get("/autotune/history").text
+        assert html.count('class="run-row"') == 2, "one row per run, not per scenario"
+        assert "35.0" in html, "the row shows the run's best decode"
+
+        backend = owner.get("/autotune/history", params={"backend": "rocm"}).text
+        assert backend.count('class="run-row"') == 1 and "vk-model" not in backend
+
+        mtp = owner.get("/autotune/history", params={"mtp": "mtp"}).text
+        assert mtp.count('class="run-row"') == 1 and "rocm-model" in mtp
+
+        lane = owner.get("/autotune/history", params={"lane": "L1"}).text
+        assert "30.0" in lane and "35.0" not in lane, \
+            "the lane picks which scenario stands for the run"
+
+        build = owner.get("/autotune/history", params={"build": "build-vulkan-gcc16"}).text
+        assert build.count('class="run-row"') == 1 and "vk-model" in build
+
+        detail = owner.get("/autotune/history/run",
+                           params={"run_name": "vk-model-b1024-u128-q8_0-none"}).text
+        assert "every scenario" in detail and "35.0" in detail and "30.0" in detail
+
+
+def test_rows_written_before_this_run_are_not_shown_as_its_results(tmp_path):
+    """bench2 leaves the previous search's rows in the index until the run of
+    the same folder name finishes; the panel must not read them as this one's."""
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts" / "bench2.py").write_text("", encoding="utf-8")
+    _write_bench_rows(tmp_path, [
+        dict(run_name="base-b1024-u128-q8_0-mtp-n2", type="single", level="1",
+             timestamp="2026-08-29T10:00:00+03:00", backend="vk", model="long.gguf",
+             ctx="8192", prefill_tps="900", decode_tps="30", aggregate_tps="28",
+             mtp_draft_n="2", status="ok", path="", session_turns="0"),
+    ])
+
+    import gui2.web.autotune_page as autotune_page
+    from gui2.config import AppConfig
+    from gui2.core.bench import Configuration
+    config = AppConfig(data_root=tmp_path, builds_root=tmp_path)
+    board = [("base-b1024-u128-q8_0-mtp-n2", Configuration(1024, 128, "q8_0", "mtp", 2))]
+
+    # the previous search finished at 10:00; this queue began at noon, so its
+    # old row is silent until bench2 records the new run's own
+    assert autotune_page.board_results(config, board, "2026-08-29T12:00:00+03:00") == {}
+    found = autotune_page.board_results(config, board, "2026-08-29T09:00:00+03:00")
+    assert found["base-b1024-u128-q8_0-mtp-n2"].decode_tps == 30
+    # and no cut-off at all keeps working (page load without a run in progress)
+    assert autotune_page.board_results(config, board)["base-b1024-u128-q8_0-mtp-n2"]
+
+
+def test_the_results_panel_hides_stale_rows_while_the_new_run_is_queued(tmp_path):
+    """The live panel route uses the same cut-off as the page render: an old row
+    of the same run name must not read as this queue's result."""
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts" / "bench2.py").write_text("", encoding="utf-8")
+    _write_bench_rows(tmp_path, [
+        dict(run_name="base-b1024-u128-q8_0-mtp-n2", type="single", level="3",
+             timestamp="2026-08-29T10:00:00+03:00", backend="vk", model="long.gguf",
+             ctx="8192", prefill_tps="900", decode_tps="30", aggregate_tps="28",
+             mtp_draft_n="2", status="ok", path="", session_turns="0"),
+        dict(run_name="base-b1024-u128-q8_0-mtp-n2", type="single", level="1",
+             timestamp="2026-08-29T12:05:00+03:00", backend="vk", model="long.gguf",
+             ctx="8192", prefill_tps="1500", decode_tps="41.35", aggregate_tps="39",
+             mtp_draft_n="2", status="ok", path="", session_turns="0"),
+    ])
+
+    from gui2.config import AppConfig
+    from gui2.core.bench import Configuration
+    app = create_app(AppConfig(data_root=tmp_path, builds_root=tmp_path))
+    with TestClient(app) as owner:
+        owner.app.state.live_board = [
+            ("base-b1024-u128-q8_0-mtp-n2", Configuration(1024, 128, "q8_0", "mtp", 2))]
+        owner.app.state.live_started = "2026-08-29T12:00:00+03:00"
+        html = owner.get("/autotune/results").text
+    assert "41.35" in html, "the row bench2 just wrote is shown"
+    assert "30.00" not in html, "the previous search's row is not read as this one's"
+
+
+def test_history_and_analytics_shows_finished_autotune_runs(tmp_path):
+    """History & Analytics reads BENCH_RUNS.csv; a finished autotune run lands
+    there as soon as the history page is opened, resolved from bench2's index."""
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts" / "bench2.py").write_text("", encoding="utf-8")
+    run_dir = tmp_path / "build_logs" / "bench" / "run-vk"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    _write_bench_rows(tmp_path, [
+        dict(run_name="vk-qwen-b1024-u128-f8_e4m3-mtp-n2", type="single", level="1",
+             timestamp="2026-08-29T10:00:00+03:00", backend="vk", model="qwen.gguf",
+             ctx="8192", prefill_tps="900", decode_tps="30", aggregate_tps="28",
+             mtp_draft_n="2", status="ok", path=str(run_dir), session_turns="0"),
+        dict(run_name="vk-qwen-b1024-u128-f8_e4m3-mtp-n2", type="single", level="2",
+             timestamp="2026-08-29T10:02:00+03:00", backend="vk", model="qwen.gguf",
+             ctx="49152", prefill_tps="1000", decode_tps="35", aggregate_tps="32",
+             mtp_draft_n="2", status="ok", path=str(run_dir), session_turns="0"),
+    ])
+    import json as _json
+    (run_dir / "run.json").write_text(_json.dumps({
+        "model": "D:/x/models/qwen.gguf",
+        "type": "single",
+        "levels": ["1", "2"],
+        "server": {"batch_size": 1024, "ubatch_size": 128, "kv_k": "f8_e4m3",
+                   "kv_v": "f8_e4m3", "spec": "mtp", "spec_n": 2, "gpu_layers": 64,
+                   "parallel": 1, "context_source": "synthetic", "runs": 1,
+                   "temperature": 0.2, "top_p": 0.9, "flash_attn": True},
+    }), encoding="utf-8")
+
+    from gui2.config import AppConfig
+    app = create_app(AppConfig(data_root=tmp_path, builds_root=tmp_path))
+    with TestClient(app) as owner:
+        html = owner.get("/history").text
+    assert "vk-qwen-b1024-u128-f8_e4m3-mtp-n2" in html, "the run is in History & Analytics"
+    assert "autotune" in html
+    # and the canonical CSV actually carries it, for anything else that reads it
+    assert (tmp_path / "build_logs" / "agent-workload" / "BENCH_RUNS.csv").is_file()
+
+
 def test_a_server_already_on_the_gpus_stops_the_run_before_it_starts(
         client, models, monkeypatch):
     """bench2's preflight refuses outright; there is no policy to soften it."""
@@ -601,19 +881,27 @@ def test_a_server_already_on_the_gpus_stops_the_run_before_it_starts(
     assert client.app.state.supervisor.snapshot() is None
 
 
-def _write_bench_index(root, model: str) -> None:
-    """One finished bench2 session of `model`, as bench2 records it."""
+def _write_bench_index(root, model: str, setup: dict | None = None) -> None:
+    """One finished bench2 session of `model`, as bench2 records it.
+
+    The index row and the run folder beside it, because the settings behind a
+    measurement are written only in the folder's own run.json.
+    """
     folder = root / "build_logs" / "bench"
-    folder.mkdir(parents=True, exist_ok=True)
+    run = folder / "vk-long"
+    run.mkdir(parents=True, exist_ok=True)
     header = ("run_name,timestamp,type,level,backend,commit,model,ctx,prefill_tps,"
-              "decode_tps,aggregate_tps,decode_slope,session_turns,status")
+              "decode_tps,aggregate_tps,decode_slope,session_turns,status,path")
     row = (f"vk-long,2026-08-19T18:26:10+03:00,session,1,vk,a1b2c3d,{Path(model).name},"
-           f"32768,1600.0,28.4,31.2,-0.21,10,ok")
+           f"32768,1600.0,28.4,31.2,-0.21,10,ok,{run}")
     (folder / "index.csv").write_text(f"{header}\n{row}\n", encoding="utf-8")
+    server = {"batch": 4096, "ubatch": 512, "kv_k": "q4_0", "spec": "none"}
+    (run / "run.json").write_text(json.dumps({"server": {**server, **(setup or {})}}),
+                                  encoding="utf-8")
 
 
 def test_what_bench2_already_measured_of_this_model_is_offered_back(models, tmp_path):
-    """Not settings to reuse: an answer to "has this been measured already"."""
+    """Each row is a combination someone tried, with the numbers it produced."""
     (tmp_path / "scripts").mkdir(exist_ok=True)
     (tmp_path / "scripts" / "bench2.py").write_text("", encoding="utf-8")
     _write_bench_index(tmp_path, models["long"])
@@ -623,26 +911,68 @@ def test_what_bench2_already_measured_of_this_model_is_offered_back(models, tmp_
         html = owner.get("/autotune", params=autotune_form(models["long"])).text
 
     assert "What 1 earlier measurement of this model found" in html
-    # one row, read across: when, what was measured, and how fast it went
+    # one row, read across: when, what was measured, what it was set to, how fast
     assert "2026-08-19 18:26:10" in html
     assert ">a1b2c3d<" in html, "the commit bench2 recorded for that build"
     assert ">SL1<" in html
+    assert ">4096<" in html and ">512<" in html and ">q4_0<" in html
     assert ">28.40<" in html
     assert ">-0.210<" in html, "how much a session slows down as it grows"
 
 
-def test_a_name_already_in_the_results_folder_is_a_warning_not_a_surprise(models, tmp_path):
-    """bench2's folder names are deterministic, so a repeat writes over the first."""
+def test_an_earlier_combination_can_be_put_back_on_the_rows(models, tmp_path):
+    """Trying combinations means starting from one that was already tried."""
     (tmp_path / "scripts").mkdir(exist_ok=True)
     (tmp_path / "scripts" / "bench2.py").write_text("", encoding="utf-8")
-    (tmp_path / "build_logs" / "bench" / "run-long").mkdir(parents=True)
+    _write_bench_index(tmp_path, models["long"])
+
+    app = create_app(AppConfig(data_root=tmp_path, builds_root=tmp_path))
+    with TestClient(app) as owner:
+        html = owner.get("/autotune", params=autotune_form(models["long"])).text
+        link = re.search(r'href="(/autotune\?[^"]*)"[^>]*>use<', html)
+        assert link, "an earlier run whose folder is still there can be tried again"
+        back = owner.get(link.group(1).replace("&amp;", "&")).text
+
+    # the row's own settings arrive ticked, and so does the scenario it measured
+    assert 'name="batch" value="4096" checked' in back
+    assert 'name="ubatch" value="512" checked' in back
+    assert 'name="kv" value="q4_0" checked' in back
+    # the row is a session, so it comes back on that row and not as a single level
+    assert 'name="session_levels" value="1" checked' in back
+    assert 'name="levels" value="1" checked' not in back
+
+
+def test_a_run_whose_folder_is_gone_keeps_its_numbers_and_loses_its_link(models, tmp_path):
+    """The index outlives the folders; a row it cannot explain must not pretend to."""
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts" / "bench2.py").write_text("", encoding="utf-8")
+    _write_bench_index(tmp_path, models["long"])
+    (tmp_path / "build_logs" / "bench" / "vk-long" / "run.json").unlink()
+
+    app = create_app(AppConfig(data_root=tmp_path, builds_root=tmp_path))
+    with TestClient(app) as owner:
+        html = owner.get("/autotune", params=autotune_form(models["long"])).text
+
+    assert ">28.40<" in html, "the measurement is still worth showing"
+    assert not re.search(r'href="/autotune[^"]*"[^>]*>use<', html)
+
+
+def test_measuring_the_same_thing_twice_is_a_warning_not_a_surprise(models, tmp_path):
+    """The folder name carries the settings, so a clash is a repeat of that exact run."""
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts" / "bench2.py").write_text("", encoding="utf-8")
+    taken = tmp_path / "build_logs" / "bench" / "run-long-l1-b8192-u1024-q8_0-none"
+    taken.mkdir(parents=True)
 
     app = create_app(AppConfig(data_root=tmp_path, builds_root=tmp_path))
     with TestClient(app) as owner:
         html = owner.post("/autotune/preview", data=autotune_form(models["long"])).text
+        changed = owner.post("/autotune/preview",
+                             data=autotune_form(models["long"], ubatch="512")).text
 
-    assert "run-long already in the results folder" in html
-    assert "written over" in html
+    assert "Measured before" in html and taken.name in html
+    # and the next combination is a different folder, so it says nothing at all
+    assert "Measured before" not in changed
 
 
 def test_the_header_links_carry_what_each_page_comes_from(client, models):

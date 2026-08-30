@@ -128,7 +128,7 @@ class BenchSpec:
     ubatch: str = "1024"
     kv: str = "q8_0"
     spec: str = "none"
-    spec_n: int = 2
+    spec_n: str = "2"
     sweep_max: int = 12
     warmup_shot: bool = True
     warmup_tokens: int = 512
@@ -159,7 +159,7 @@ class BenchSpec:
             ubatch=str(spec.ubatch_size),
             kv=spec.cache_type_k,
             spec=spec.spec_type if spec.spec_type in SPEC_MODES else "none",
-            spec_n=spec.spec_draft_n_max,
+            spec_n=str(spec.spec_draft_n_max),
             levels=level_for_context(spec.ctx_size),
         )
 
@@ -216,8 +216,10 @@ BENCH_SCHEMA: tuple[Param, ...] = (
           help="what the context is stored as; key and value are set together"),
     Param("spec", "Speculation to try", "multi", B_SWEEP, choices=SPEC_MODES,
           help="whether the model's own draft head guesses ahead of itself"),
-    Param("spec_n", "Draft tokens per step", "slider", B_SWEEP, minimum=1, maximum=8, step=1,
-          help="how far ahead it guesses; used only where speculation is on"),
+    Param("spec_n", "Draft tokens to try", "multi", B_SWEEP,
+          choices=tuple(str(n) for n in range(1, 9)),
+          help="how far ahead it guesses; tick several to queue one run per value — "
+               "used only where speculation is on"),
     Param("sweep_max", "Refuse to start above", "slider", B_SWEEP, minimum=1, maximum=64, step=1,
           help="runs; every extra value multiplies the search rather than adding to it"),
     Param("context_source", "Prompt text", "choice", B_PROMPT, choices=CONTEXT_SOURCES,
@@ -245,9 +247,9 @@ BENCH_SCHEMA: tuple[Param, ...] = (
     Param("fail_fast", "Stop at the first failure", "bool", B_LIMITS,
           help="otherwise a scenario that fails is recorded as failed and the rest "
                "still run"),
-    Param("run_name", "Name these runs", "text", B_OUTPUT,
-          help="the folder each result lands in; empty names it after the backend "
-               "and the model"),
+    Param("run_name", "Label these runs", "text", B_OUTPUT,
+          help="goes in front of the folder name; what was measured is added after it "
+               "either way, so attempts never write over each other"),
 )
 
 BENCH_BY_NAME: dict[str, Param] = {param.name: param for param in BENCH_SCHEMA}
@@ -257,9 +259,9 @@ BENCH_BY_NAME: dict[str, Param] = {param.name: param for param in BENCH_SCHEMA}
 MULTI_NAMES: frozenset[str] = frozenset(
     param.name for param in BENCH_SCHEMA if param.kind == "multi")
 
-#: the four settings bench2 fixes for a whole run, and so the four the GUI has
+#: the five settings bench2 fixes for a whole run, and so the five the GUI has
 #: to run more than once to compare
-SWEEP_NAMES: tuple[str, ...] = ("batch", "ubatch", "kv", "spec")
+SWEEP_NAMES: tuple[str, ...] = ("batch", "ubatch", "kv", "spec", "spec_n")
 
 
 def items(text: str) -> list[str]:
@@ -292,22 +294,47 @@ class Configuration:
     ubatch: int
     kv: str
     spec: str
+    spec_n: int = 2
 
     @property
     def suffix(self) -> str:
-        return f"b{self.batch}-u{self.ubatch}-{self.kv}-{self.spec}"
+        draft = f"-n{self.spec_n}" if self.spec != "none" else ""
+        return f"b{self.batch}-u{self.ubatch}-{self.kv}-{self.spec}{draft}"
 
     def describe(self, varied: frozenset[str]) -> str:
         """Named by whatever tells it apart from the others."""
         parts = [f"batch {self.batch}" if "batch" in varied else "",
                  f"ubatch {self.ubatch}" if "ubatch" in varied else "",
                  self.kv if "kv" in varied else "",
-                 self.spec if "spec" in varied else ""]
+                 self.spec if "spec" in varied else "",
+                 f"draft {self.spec_n}" if "spec_n" in varied and self.spec != "none" else ""]
         return ", ".join(part for part in parts if part) or "one configuration"
 
 
 def axis_values(bench: BenchSpec) -> dict[str, list[str]]:
     return {name: items(getattr(bench, name)) for name in SWEEP_NAMES}
+
+
+def _all_configurations(bench: BenchSpec) -> list[Configuration]:
+    """Every raw combination, valid or not; configurations() filters these.
+
+    Draft tokens only multiply a run when speculation is on: with `spec none`
+    they would produce the same command several times under one name.
+    """
+    values = axis_values(bench)
+    drafts = values["spec_n"]
+    found: list[Configuration] = []
+    for batch, ubatch, kv, spec in product(values["batch"], values["ubatch"],
+                                           values["kv"], values["spec"]):
+        if not (batch.isdigit() and ubatch.isdigit()):
+            continue
+        # no speculation: one run whatever drafts are ticked, or the default
+        # when none are — several would be the same command several times
+        ns = ["2"] if spec == "none" else (drafts or ["2"])
+        for draft in ns:
+            if draft.isdigit():
+                found.append(Configuration(int(batch), int(ubatch), kv, spec, int(draft)))
+    return found
 
 
 def varied(bench: BenchSpec) -> frozenset[str]:
@@ -316,42 +343,56 @@ def varied(bench: BenchSpec) -> frozenset[str]:
 
 
 def configurations(bench: BenchSpec) -> list[Configuration]:
-    """Every combination of the four, in the order the runs would happen."""
-    values = axis_values(bench)
-    return [Configuration(int(batch), int(ubatch), kv, spec)
-            for batch, ubatch, kv, spec in product(values["batch"], values["ubatch"],
-                                                   values["kv"], values["spec"])
-            if batch.isdigit() and ubatch.isdigit()]
+    """Every combination of the four that would actually run, in order.
+
+    A ubatch above its batch is left out rather than run: llama-server
+    refuses the pair, and it would refuse it once per run.
+    """
+    return [config for config in _all_configurations(bench)
+            if config.ubatch <= config.batch]
+
+
+def dropped_configs(bench: BenchSpec) -> int:
+    """Combinations skipped because ubatch must never exceed its batch."""
+    return len(_all_configurations(bench)) - len(configurations(bench))
 
 
 def config_count(bench: BenchSpec) -> int:
-    total = 1
-    for values in axis_values(bench).values():
-        total *= len(values)
-    return total
+    return len(configurations(bench))
+
+
+def scenario_tag(bench: BenchSpec) -> str:
+    """The workload a name is told apart by: `l0`, `l013`, `l0-s1`."""
+    levels = "".join(key for key in items(bench.levels) if key in LEVELS)
+    sessions = "".join(key for key in items(bench.session_levels) if key in SESSIONS)
+    return "-".join(part for part in (f"l{levels}" if levels else "",
+                                      f"s{sessions}" if sessions else "") if part)
 
 
 def base_name(spec: RunSpec, bench: BenchSpec, backend: str = "") -> str:
-    """What the result folders are called when nobody has typed a name.
+    """What goes in front of every folder name of one search.
 
     Deterministic rather than stamped with the time, so the command shown is
-    the command that runs; the price is that repeating a search overwrites the
-    first one, which is worth a warning rather than a surprise.
+    the command that runs. What tells one attempt from the next is added after
+    it by `run_names`, not here.
     """
     if bench.run_name:
         return bench.run_name
     stem = Path(spec.model).stem.lower() if spec.model else "model"
     stem = re.sub(r"[^a-z0-9]+", "-", stem).strip("-")[:32] or "model"
-    return f"{backend or 'run'}-{stem}"
+    return "-".join(part for part in (backend or "run", stem, scenario_tag(bench)) if part)
 
 
 def run_names(spec: RunSpec, bench: BenchSpec, backend: str = "") -> list[str]:
-    """One folder name per configuration, distinct even when the base is not."""
+    """One folder per configuration, each named after the configuration it is.
+
+    The settings are in the name even when only one is being measured. Trying a
+    second combination would otherwise land in the folder the first one wrote,
+    and the way out of that would be typing a fresh name before every attempt --
+    which is the whole of the work when the point is to try combinations.
+    """
     base = base_name(spec, bench, backend)
-    found = configurations(bench)
-    if len(found) == 1:
-        return [base]
-    return [f"{base}-{config.suffix}" for config in found]
+    return [f"{base}-{config.suffix}" for config in configurations(bench)]
 
 
 # -- what the run will ask of the cards -------------------------------------
@@ -432,7 +473,10 @@ def fit(spec: RunSpec, facts: ModelFacts | None, bench: BenchSpec, budget_mib: f
                 return None
             weighed.append(Weighed(ctx, kv, ubatch, report.total_mib))
     weighed.sort(key=lambda item: item.mib)
-    each = max(1, len(values["batch"])) * max(1, len(values["spec"]))
+    # batch and speculation multiply the bill without moving it; draft tokens
+    # do only where speculation is on, which is the same collapse as configurations()
+    each = (max(1, len(values["batch"])) * max(1, len(values["spec"]))
+            * max(1, len(values["spec_n"]) if "mtp" in values["spec"] else 1))
     return Fit(budget_mib=budget_mib, weighed=tuple(weighed), each=each)
 
 
@@ -494,7 +538,7 @@ def to_bench_argv(
         "--spec", config.spec,
     ]
     if config.spec != "none":
-        argv += ["--spec-n", str(bench.spec_n)]
+        argv += ["--spec-n", str(config.spec_n)]
     argv += [
         "--gpu-layers", ALL_LAYERS if spec.gpu_layers_all else str(spec.gpu_layers),
         "--parallel", str(spec.parallel),
@@ -633,6 +677,10 @@ def validate_bench(spec: RunSpec, bench: BenchSpec,
         problems.append(Problem("error", "A repeat count below one measures nothing"))
 
     for name in SWEEP_NAMES:
+        # draft tokens mean nothing without speculation, and an empty row then
+        # is not a hole in the search
+        if name == "spec_n" and "mtp" not in items(bench.spec):
+            continue
         if not items(getattr(bench, name)):
             problems.append(Problem(
                 "error",
@@ -645,13 +693,18 @@ def validate_bench(spec: RunSpec, bench: BenchSpec,
             f"{count} runs against a cap of {bench.sweep_max}. Each one loads the model "
             f"again, so raise the cap deliberately or drop a value."))
 
-    for config in configurations(bench):
-        if config.ubatch > config.batch:
-            problems.append(Problem(
-                "error",
-                f"ubatch {config.ubatch} above batch {config.batch}: llama-server "
-                f"refuses that pair, and it would refuse it once per run"))
-            break
+    if (skipped := dropped_configs(bench)) > 0:
+        problems.append(Problem(
+            "warn",
+            f"{skipped} of {skipped + config_count(bench)} combinations skipped: ubatch "
+            f"above its batch, which llama-server refuses once per run"))
+
+    if not configurations(bench) and all(items(getattr(bench, name)) for name in SWEEP_NAMES):
+        bad = _all_configurations(bench)[0]
+        problems.append(Problem(
+            "error",
+            f"Nothing left to run: ubatch {bad.ubatch} above batch {bad.batch}, and "
+            f"llama-server refuses the pair"))
 
     ctx = server_context(bench)
     if facts is not None and facts.n_ctx_train and ctx > facts.n_ctx_train:
@@ -693,9 +746,12 @@ def validate_bench(spec: RunSpec, bench: BenchSpec,
             "would lock it out of its own server."))
 
     if overlap := sorted(existing.intersection(run_names(spec, bench))):
+        # the name carries the settings, so a clash means this exact thing was measured
+        shown = ", ".join(overlap[:3]) + (f" and {len(overlap) - 3} more" if len(overlap) > 3 else "")
         problems.append(Problem(
             "warn",
-            f"{', '.join(overlap)} already in the results folder, and would be written "
-            f"over. Name this search to keep both."))
+            f"Measured before: {shown}. Running it again writes over those results, "
+            f"which is what re-checking a build is for, and not what a new combination "
+            f"needs — that one gets a folder of its own."))
 
     return problems

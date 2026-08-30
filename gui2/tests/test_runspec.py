@@ -161,7 +161,8 @@ def test_bench_argv_reuses_the_server_command():
     assert "--flash-attn" in argv
     # 49152 is level 2's context, so that is the level asked for
     assert flag_value(argv, "--level") == "2"
-    assert flag_value(argv, "--run-name") == name == "vk-q4"
+    # the folder says what it holds: the backend, the model, the level, the settings
+    assert flag_value(argv, "--run-name") == name == "vk-q4-l2-b8192-u1024-q4_0-mtp-n2"
     # the cards are named rather than left to bench2's hardware profile
     assert flag_value(argv, "--dev") == "Vulkan1,Vulkan0"
     assert flag_value(argv, "--ts") == "1,1"

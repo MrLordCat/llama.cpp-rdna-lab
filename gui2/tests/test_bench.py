@@ -191,17 +191,30 @@ def test_a_second_value_on_a_row_is_a_second_run_with_its_own_name():
     assert counted.requests == 4
 
 
-def test_a_single_configuration_keeps_the_plain_name():
-    assert run_names(DEFAULTS, BENCH_DEFAULTS, "vk") == ["vk-model"]
+def test_a_run_is_named_after_what_it_measures_even_when_it_is_the_only_one():
+    """Otherwise the next combination lands in this one's folder and erases it."""
+    assert run_names(DEFAULTS, BENCH_DEFAULTS, "vk") == ["vk-model-l1-b8192-u1024-q8_0-none"]
     named = BENCH_DEFAULTS.with_values({"run_name": "recheck"})
-    assert run_names(DEFAULTS, named, "vk") == ["recheck"]
+    assert run_names(DEFAULTS, named, "vk") == ["recheck-b8192-u1024-q8_0-none"]
 
 
-def test_a_name_already_in_the_results_folder_is_a_warning_not_a_surprise():
-    """bench2 writes into the folder it is given, and the index replaces its rows."""
-    problems = validate_bench(DEFAULTS, BENCH_DEFAULTS, existing=frozenset({"run-model"}))
-    assert any(problem.level == "warn" and "written over" in problem.message
+def test_trying_one_combination_after_another_never_reuses_a_folder():
+    """The whole point of the naming: attempts accumulate instead of overwriting."""
+    tried = ({"ubatch": "512"}, {"ubatch": "1024"}, {"kv": "q4_0"},
+             {"spec": "mtp"}, {"levels": "0"}, {"batch": "4096"})
+    names = [run_names(DEFAULTS, BENCH_DEFAULTS.with_values(values), "vk")[0]
+             for values in tried]
+    assert len(set(names)) == len(tried), names
+
+
+def test_a_folder_already_written_means_this_exact_thing_was_measured():
+    """A clash can no longer be two different searches, so it is worth saying so."""
+    name = run_names(DEFAULTS, BENCH_DEFAULTS)[0]
+    problems = validate_bench(DEFAULTS, BENCH_DEFAULTS, existing=frozenset({name}))
+    assert any(problem.level == "warn" and "Measured before" in problem.message
                for problem in problems)
+    others = validate_bench(DEFAULTS, BENCH_DEFAULTS, existing=frozenset({"something-else"}))
+    assert not any(problem.level == "warn" for problem in others)
 
 
 def test_an_empty_axis_is_an_error_rather_than_a_missing_dimension():
@@ -229,6 +242,29 @@ def test_a_ubatch_above_its_batch_is_refused_before_the_model_is_loaded():
     bench = BENCH_DEFAULTS.with_values({"batch": "512", "ubatch": "1024"})
     assert any("above batch 512" in message
                for message in errors(validate_bench(DEFAULTS, bench)))
+
+
+def test_a_ubatch_above_one_batch_is_skipped_rather_than_fatal():
+    """The pair llama-server refuses is dropped; the rest of the search runs."""
+    bench = BENCH_DEFAULTS.with_values({"batch": "1024,8192", "ubatch": "128,2048"})
+    # (1024, 128), (8192, 128), (8192, 2048) — (1024, 2048) cannot exist
+    assert config_count(bench) == 3
+    problems = validate_bench(DEFAULTS, bench)
+    assert not errors(problems)
+    assert any("skipped" in problem.message for problem in problems
+               if problem.level == "warn")
+
+
+def test_draft_tokens_are_an_axis_only_where_speculation_is_on():
+    bench = BENCH_DEFAULTS.with_values({"spec": "mtp", "spec_n": "2,3"})
+    assert config_count(bench) == 2
+    assert value_after(command(DEFAULTS, bench, configurations(bench)[1]), "--spec-n") == "3"
+    assert configurations(bench)[0].suffix.endswith("-mtp-n2")
+
+    # with no speculation, ticked drafts collapse: they would be the same command
+    plain = BENCH_DEFAULTS.with_values({"spec": "none", "spec_n": "2,3"})
+    assert config_count(plain) == 1
+    assert "--spec-n" not in command(DEFAULTS, plain, configurations(plain)[0])
 
 
 def test_a_search_over_the_cap_is_refused_because_every_run_reloads_the_model():

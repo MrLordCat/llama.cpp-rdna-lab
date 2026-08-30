@@ -8,12 +8,16 @@ numeric batch/ubatch columns, so every numeric field is parsed defensively.
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
 import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from statistics import median
+
+from gui2.core.results import Result, build_of_run, read_index
 
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -463,7 +467,6 @@ def group_stats(runs: list[Run]) -> list[GroupStat]:
 
 class HistoryStore:
     """Reloads the history CSV only when the file changes on disk."""
-
     def __init__(self, csv_path: Path):
         self.csv_path = csv_path
         self._lock = threading.Lock()
@@ -484,3 +487,201 @@ class HistoryStore:
                 self._runs = load_runs(self.csv_path)
                 self._stamp = stamp
             return self._runs
+
+
+# -- autotune -> canonical history -------------------------------------------
+# BENCH_RUNS.csv is what History & Analytics reads. bench2, which the Autotune
+# page measures with, keeps its own index instead. The exporter below carries
+# finished autotune runs into the canonical CSV in the same schema, so the
+# history page shows everything the lab measured, not only what
+# agent_workload_bench.py recorded.
+
+#: the canonical column order, matching scripts/agent_workload_bench.py
+HISTORY_FIELDS: tuple[str, ...] = (
+    "timestamp", "run_id", "build_id", "build_name", "build_backend",
+    "mode", "label", "model", "is_mtp_model", "tasks", "task_ids", "runs",
+    "ctx", "batch", "ubatch", "kv_k", "kv_v", "spec_mode", "extra_preset",
+    "extra_args", "no_reuse", "gpu_layers", "parallel", "flash_attn",
+    "max_tokens", "real_context_mode", "real_context_chars",
+    "real_context_safe_fill", "no_v2_prime_pass", "temperature", "top_p",
+    "aggregate_tps", "mean_task_tps", "prompt_eval_tps", "decode_eval_tps",
+    "prompt_eval_ms", "decode_eval_ms", "errors", "metric_scope", "lane_key",
+    "best_config", "jsonl_file", "csv_file", "summary_file", "server_log_file",
+    "is_group_best",
+)
+
+AUTOTUNE_MODE = "autotune"
+
+#: bench2 run names name everything: <base>-b<batch>-u<ubatch>-<kv>-<spec>[-n<draft>]
+_RUN_SUFFIX = re.compile(r"-b(\d+)-u(\d+)-([a-zA-Z0-9_]+)-(none|mtp)(?:-n(\d+))?$")
+
+_SYNC_LOCK = threading.Lock()
+
+
+def _autotune_run_id(run_name: str, when: str, model: str) -> str:
+    """Stable per launch; a rerun of the same configuration gets a new id."""
+    seed = f"{when}|{run_name}|autotune|{model}"
+    digest = hashlib.sha1(seed.encode("utf-8", errors="replace")).hexdigest()[:10]
+    return f"run-{digest}"
+
+
+def _config_from_name(run_name: str) -> dict[str, str]:
+    match = _RUN_SUFFIX.search(run_name)
+    if not match:
+        return {}
+    return {"batch": match.group(1), "ubatch": match.group(2), "kv": match.group(3),
+            "spec": match.group(4), "spec_n": match.group(5) or ""}
+
+
+def _autotune_lane(backend: str, model_path: str, ctx: int, batch: str, ubatch: str,
+                   kv_k: str, kv_v: str, spec: str, tasks: str, task_ids: str,
+                   context_source: str) -> str:
+    """The same lane shape as the legacy script, so both feeds stay comparable."""
+    model = Path(model_path).name or "-"
+    kv = f"{kv_k or '-'}/{kv_v or '-'}"
+    task_part = f"{tasks}:{task_ids}" if task_ids else (tasks or "-")
+    return (f"{backend or '-'}|{model}|ctx{ctx or '-'}|b{batch or '-'}/ub{ubatch or '-'}"
+            f"|kv{kv}|spec={spec or '-'}|reuse|tasks={task_part}"
+            f"|max=-|ctxsrc={context_source or '-'}")
+
+
+def _read_run_meta(items: list[Result]) -> dict:
+    for item in items:
+        if not item.path:
+            continue
+        try:
+            return json.loads((Path(item.path) / "run.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+    return {}
+
+
+def _autotune_row(run_name: str, rows: list[Result], meta: dict,
+                  build: str) -> dict[str, str] | None:
+    """One BENCH_RUNS row for a finished run, named by its fastest decode."""
+    finished = [row for row in rows if row.ok]
+    if not finished:
+        return None
+    best = max(finished, key=lambda row: (row.decode_tps, row.aggregate_tps))
+    opts = meta.get("server") or {}
+    from_name = _config_from_name(run_name)
+    spec = str(opts.get("spec") or best.spec_mode or "none")
+    batch = opts.get("batch_size") or from_name.get("batch", "")
+    ubatch = opts.get("ubatch_size") or from_name.get("ubatch", "")
+    kv_k = opts.get("kv_k") or from_name.get("kv", "")
+    kv_v = opts.get("kv_v") or from_name.get("kv", "")
+    draft = best.mtp_draft_n or from_name.get("spec_n", "")
+    tasks = str(meta.get("type") or best.kind)
+    levels, sessions = meta.get("levels") or ([], [])
+    task_ids = ",".join(str(item) for item in list(levels) + list(sessions))
+    model_path = str(meta.get("model") or best.model)
+    when = best.time_text
+
+    def text(key: str, default: str = "") -> str:
+        value = opts.get(key)
+        return default if value in (None, "") else str(value)
+
+    def number(value) -> str:
+        return f"{value:.4g}" if value else "0"
+
+    return {
+        "timestamp": when,
+        "run_id": _autotune_run_id(run_name, when, best.model),
+        "build_id": best.commit or "",
+        "build_name": build,
+        "build_backend": best.backend,
+        "mode": AUTOTUNE_MODE,
+        "label": run_name,
+        "model": model_path,
+        "is_mtp_model": "1" if spec == "mtp" else "",
+        "tasks": tasks,
+        "task_ids": task_ids,
+        "runs": text("runs", "1"),
+        "ctx": str(best.ctx),
+        "batch": str(batch),
+        "ubatch": str(ubatch),
+        "kv_k": str(kv_k),
+        "kv_v": str(kv_v),
+        "spec_mode": spec,
+        "extra_preset": "",
+        "extra_args": f"--spec-n {draft}" if draft and spec == "mtp" else "",
+        "no_reuse": "",
+        "gpu_layers": text("gpu_layers"),
+        "parallel": text("parallel"),
+        "flash_attn": "on" if opts.get("flash_attn") is True else ("off" if opts.get("flash_attn") is False else ""),
+        "max_tokens": "",
+        "real_context_mode": text("context_source"),
+        "real_context_chars": "",
+        "real_context_safe_fill": "",
+        "no_v2_prime_pass": "",
+        "temperature": text("temperature"),
+        "top_p": text("top_p"),
+        "aggregate_tps": number(best.aggregate_tps),
+        "mean_task_tps": "",
+        "prompt_eval_tps": number(best.prefill_tps),
+        "decode_eval_tps": number(best.decode_tps),
+        "prompt_eval_ms": "",
+        "decode_eval_ms": "",
+        "errors": str(sum(1 for row in rows if not row.ok)),
+        "metric_scope": AUTOTUNE_MODE,
+        "lane_key": _autotune_lane(best.backend, model_path, best.ctx, str(batch), str(ubatch),
+                                   str(kv_k), str(kv_v), spec, tasks, task_ids,
+                                   text("context_source")),
+        "best_config": "",
+        "jsonl_file": f"{run_name}.jsonl" if best.path else "",
+        "csv_file": "",
+        "summary_file": best.path,
+        "server_log_file": "",
+        "is_group_best": "",
+    }
+
+
+def _existing_run_ids(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return {row.get("run_id", "") for row in csv.DictReader(handle) if row.get("run_id")}
+
+
+def sync_autotune_runs(runs_csv: Path, index_csv: Path) -> int:
+    """Carry finished autotune runs into the canonical history CSV.
+
+    bench2 records each finished scenario in its own index; History & Analytics
+    reads BENCH_RUNS.csv. Every finished run is appended as one row, named by
+    its fastest decode exactly as the Autotune history page names it; a run
+    already present (stable run_id per launch) is skipped. Returns the number
+    of rows added. Safe to call while bench2 rewrites the index: a torn read
+    exports nothing rather than a half row.
+    """
+    if not index_csv.is_file():
+        return 0
+    with _SYNC_LOCK:
+        try:
+            rows = read_index(index_csv)
+            existing = _existing_run_ids(runs_csv)
+        except (OSError, ValueError, csv.Error):
+            return 0
+        groups: dict[str, list[Result]] = {}
+        for row in rows:
+            groups.setdefault(row.run_name, []).append(row)
+        added: list[dict[str, str]] = []
+        cache: dict[str, str] = {}
+        for run_name, items in groups.items():
+            meta = _read_run_meta(items)
+            build = build_of_run(items[0], cache) if items else ""
+            row = _autotune_row(run_name, items, meta, build)
+            if row and row["run_id"] not in existing:
+                existing.add(row["run_id"])
+                added.append(row)
+        if not added:
+            return 0
+        runs_csv.parent.mkdir(parents=True, exist_ok=True)
+        new_file = not runs_csv.is_file()
+        with runs_csv.open("a", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=HISTORY_FIELDS,
+                                    extrasaction="ignore")
+            if new_file:
+                writer.writeheader()
+            for row in added:
+                writer.writerow(row)
+        return len(added)

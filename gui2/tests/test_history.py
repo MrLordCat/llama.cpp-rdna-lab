@@ -12,6 +12,7 @@ from gui2.core.history import (
     past_sweeps,
     sort_runs,
     summarize,
+    sync_autotune_runs,
     winning_config,
 )
 
@@ -137,3 +138,108 @@ def test_store_reloads_only_after_the_file_changes(history_csv: Path):
 
     os.utime(history_csv, (0, 0))
     assert len(store.runs()) == 1
+
+
+def _write_bench_index(tmp_path: Path, rows: list[dict], meta: dict | None = None) -> Path:
+    import csv
+    import json
+
+    folder = tmp_path / "build_logs" / "bench"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "index.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        keys = ["run_name", "type", "level", "timestamp", "backend", "model", "commit",
+                "ctx", "prefill_tps", "decode_tps", "aggregate_tps", "mtp_draft_n",
+                "status", "path"]
+        writer = csv.DictWriter(handle, fieldnames=keys)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+    for row in rows:
+        if not row.get("path"):
+            continue
+        run_dir = Path(row["path"])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        meta = meta or {}
+        server = {"batch_size": 1024, "ubatch_size": 128, "kv_k": "f8_e4m3",
+                  "kv_v": "f8_e4m3", "spec": "mtp", "gpu_layers": 64, "parallel": 1,
+                  "context_source": "synthetic", "temperature": 0.2, "top_p": 0.9,
+                  "runs": 1, "flash_attn": True}
+        server.update(meta.get("server", {}))
+        payload = {"model": meta.get("model", "D:/x/models/qwen.gguf"),
+                   "type": meta.get("type", "single"),
+                   "levels": meta.get("levels", ["1", "2"]), "server": server}
+        (run_dir / "run.json").write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_sync_carries_finished_autotune_runs_into_canonical_history(tmp_path: Path):
+    """History & Analytics reads BENCH_RUNS.csv; a finished autotune run lands
+    there as one row named by its fastest decode, and only once."""
+    run_dir = tmp_path / "run-vk"
+    index = _write_bench_index(tmp_path, [
+        dict(run_name="vk-qwen-b1024-u128-f8_e4m3-mtp-n2", type="single", level="1",
+             timestamp="2026-08-29T10:00:00+03:00", backend="vk", model="qwen.gguf",
+             commit="abc1234", ctx="8192", prefill_tps="900", decode_tps="30",
+             aggregate_tps="28", mtp_draft_n="2", status="ok", path=str(run_dir)),
+        dict(run_name="vk-qwen-b1024-u128-f8_e4m3-mtp-n2", type="single", level="2",
+             timestamp="2026-08-29T10:02:00+03:00", backend="vk", model="qwen.gguf",
+             commit="abc1234", ctx="49152", prefill_tps="1000", decode_tps="35",
+             aggregate_tps="32", mtp_draft_n="2", status="ok", path=str(run_dir)),
+    ])
+    runs_csv = tmp_path / "BENCH_RUNS.csv"
+
+    assert sync_autotune_runs(runs_csv, index) == 1
+    runs = load_runs(runs_csv)
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.mode == "autotune" and run.backend == "vk"
+    assert run.label == "vk-qwen-b1024-u128-f8_e4m3-mtp-n2"
+    assert run.batch == "1024" and run.ubatch == "128"
+    assert run.kv_k == "f8_e4m3" and run.spec_mode == "mtp"
+    assert run.decode_eval_tps == 35.0, "named by its fastest decode"
+    assert run.raw["build_id"] == "abc1234"
+    assert run.lane_key.startswith("vk|qwen.gguf|ctx")
+
+    assert sync_autotune_runs(runs_csv, index) == 0, "idempotent"
+    assert len(load_runs(runs_csv)) == 1
+
+
+def test_sync_writes_a_run_that_was_rerun_as_a_new_row(tmp_path: Path):
+    """The same configuration launched again is a new measurement, not a patch.
+
+    bench2 drops the old rows when it re-runs a name, so the rerun is a later
+    index with the same run_name but a new timestamp."""
+    run_dir = tmp_path / "run-vk"
+    index = _write_bench_index(tmp_path, [
+        dict(run_name="vk-qwen-b1024-u128-q8_0-none", type="single", level="1",
+             timestamp="2026-08-29T10:00:00+03:00", backend="vk", model="qwen.gguf",
+             commit="abc1234", ctx="8192", prefill_tps="900", decode_tps="30",
+             aggregate_tps="28", mtp_draft_n="", status="ok", path=str(run_dir)),
+    ])
+    runs_csv = tmp_path / "BENCH_RUNS.csv"
+    assert sync_autotune_runs(runs_csv, index) == 1
+
+    # the rerun replaces the run's rows in the index, with a later timestamp
+    index = _write_bench_index(tmp_path, [
+        dict(run_name="vk-qwen-b1024-u128-q8_0-none", type="single", level="1",
+             timestamp="2026-08-30T10:00:00+03:00", backend="vk", model="qwen.gguf",
+             commit="abc1234", ctx="8192", prefill_tps="950", decode_tps="33",
+             aggregate_tps="30", mtp_draft_n="", status="ok", path=str(run_dir)),
+    ])
+    assert sync_autotune_runs(runs_csv, index) == 1
+    runs = load_runs(runs_csv)
+    assert len(runs) == 2
+    assert {run.decode_eval_tps for run in runs} == {30.0, 33.0}
+
+
+def test_sync_ignores_runs_without_a_single_ok_scenario(tmp_path: Path):
+    index = _write_bench_index(tmp_path, [
+        dict(run_name="vk-dead-b1024-u128-q8_0-none", type="single", level="1",
+             timestamp="2026-08-29T10:00:00+03:00", backend="vk", model="qwen.gguf",
+             commit="", ctx="8192", prefill_tps="0", decode_tps="0",
+             aggregate_tps="0", mtp_draft_n="", status="error", path=""),
+    ])
+    runs_csv = tmp_path / "BENCH_RUNS.csv"
+    assert sync_autotune_runs(runs_csv, index) == 0
+    assert not runs_csv.exists()

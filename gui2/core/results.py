@@ -12,6 +12,7 @@ listing.
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,11 +35,20 @@ class Result:
     decode_slope: float = 0.0
     turns: int = 0
     status: str = ""
+    #: how far ahead the draft head guessed; empty means no speculation
+    mtp_draft_n: str = ""
+    #: where bench2 wrote the run folder, for reaching its run.json
+    path: str = ""
 
     @property
     def scenario(self) -> str:
         """How bench2's own tables name it: L2 is a level, SL2 a session."""
         return f"{'SL' if self.kind == 'session' else 'L'}{self.level}"
+
+    @property
+    def spec_mode(self) -> str:
+        """The mode bench2 ran under, spelled as the sweep axes spell it."""
+        return "mtp" if self.mtp_draft_n else "none"
 
     @property
     def time_text(self) -> str:
@@ -80,6 +90,8 @@ def read_index(path: Path) -> list[Result]:
             decode_slope=_number(row, "decode_slope"),
             turns=int(_number(row, "session_turns")),
             status=row.get("status", ""),
+            mtp_draft_n=row.get("mtp_draft_n", ""),
+            path=row.get("path", ""),
         )
         for row in rows
     ]
@@ -104,3 +116,71 @@ def taken_names(results_dir: Path) -> frozenset[str]:
         return frozenset(entry.name for entry in results_dir.iterdir() if entry.is_dir())
     except OSError:
         return frozenset()
+
+
+def server_opts(path: str) -> dict:
+    """The `server` block of a run's run.json: what that run was told to be."""
+    try:
+        data = json.loads((Path(path) / "run.json").read_text(encoding="utf-8"))
+        opts = data.get("server")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return opts if isinstance(opts, dict) else {}
+
+
+@dataclass(frozen=True, slots=True)
+class Setup:
+    """The axes a finished run was measured with, spelled as Autotune spells them."""
+
+    batch: int = 0
+    ubatch: int = 0
+    kv: str = ""
+    spec: str = ""
+    spec_n: int = 0
+
+    @property
+    def known(self) -> bool:
+        """False when the run folder is gone, or older than what bench2 records."""
+        return bool(self.batch and self.ubatch and self.kv and self.spec)
+
+
+def _whole(value: object) -> int:
+    try:
+        return int(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def setup_of(result: Result, cache: dict[str, Setup]) -> Setup:
+    """What a past run was set to, from the run.json bench2 wrote beside it.
+
+    The index records what a run measured and never what it was measured with;
+    only the run folder knows that. Without it a table of earlier results can
+    be read but not reused.
+    """
+    if result.path not in cache:
+        opts = server_opts(result.path) if result.path else {}
+        cache[result.path] = Setup(
+            batch=_whole(opts.get("batch")),
+            ubatch=_whole(opts.get("ubatch")),
+            kv=str(opts.get("kv_k") or ""),
+            spec=str(opts.get("spec") or ""),
+            spec_n=_whole(opts.get("spec_n")),
+        )
+    return cache[result.path]
+
+
+def build_of_run(result: Result, cache: dict[str, str]) -> str:
+    """The build directory the run's server binary came from, if it said so.
+
+    The index does not name the binary; each run's run.json does. The cache
+    keeps one page of history from re-reading the same folders per row.
+    """
+    if not result.path:
+        return ""
+    if result.path in cache:
+        return cache[result.path]
+    server_bin = server_opts(result.path).get("server_bin")
+    build = Path(str(server_bin)).parent.parent.name if server_bin else ""
+    cache[result.path] = build
+    return build

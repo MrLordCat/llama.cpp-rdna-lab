@@ -26,6 +26,7 @@ from fasthtml.common import (
     Label,
     Option,
     Pre,
+    Script,
     Select,
     Span,
     Summary,
@@ -71,6 +72,7 @@ from gui2.core.runspec import (
 )
 from gui2.proc import Busy, Supervisor
 from gui2.web.controls import toggle
+from gui2.web import layout
 from gui2.web.layout import PROBLEM_STYLE, command_lines, problem_lines, shell
 
 #: Never echoed into the address bar, browser history or the access log.
@@ -382,7 +384,8 @@ def split_line(spec: RunSpec, facts: ModelFacts | None,
     shares = [value for value in re.split(r"[,;\s]+", spec.tensor_split.strip()) if value]
     if not shares:
         return Span("Empty means llama.cpp decides — with layer mode it gives each device a "
-                    "share of the model in proportion to the memory it has free.",
+                    "share of the model in proportion to the memory it has free. Drag the "
+                    "sliders above for a deliberate one.",
                     cls="hint block")
     try:
         weights = [float(value) for value in shares]
@@ -404,6 +407,78 @@ def split_line(spec: RunSpec, facts: ModelFacts | None,
         size = f" ≈ {gib(report.total_mib * fraction)}" if report.terms else ""
         parts.append(f"{name} {fraction:.0%}{size}")
     return Span(" · ".join(parts), cls="hint block")
+
+
+def split_balancer(spec: RunSpec, devices: tuple[Device, ...]) -> Div:
+    """The share per device as one slider per card, not a list of numbers.
+
+    The sliders always sum to the scale (ten), so dragging one rebalances the
+    rest instead of drifting: 1,1 is two fives, 0.8,1 is 4.4 and 5.6. Each
+    slider writes the `-ts` list it stands for into the hidden box, which is
+    what the form submits; the visible box is only a face.
+    """
+    if not devices:
+        # no cards to balance yet; the hidden box still round-trips the form
+        return Div(Input(type="hidden", name="tensor_split", value=spec.tensor_split))
+    shares = [value for value in re.split(r"[,;\s]+", spec.tensor_split.strip()) if value]
+    try:
+        weights = [max(0.0, float(value)) for value in shares]
+    except ValueError:
+        weights = []
+    weights += [0.0] * (len(devices) - len(weights))
+    total = sum(weights)
+    if total <= 0 or len(weights) != len(devices):
+        # no ratio yet, or a ratio for other cards: start even, and the slider
+        # drag is what tells llama.cpp a deliberate split is wanted
+        weights = [1.0] * len(devices)
+        total = len(devices)
+    scale = 10  # steps of one-tenth, matching how shares are usually written
+    values = [round(weight / total * scale) for weight in weights]
+    drawn = sum(values)
+    if drawn != scale and values:
+        # rounding did not land on the scale: hand the remainder to the first
+        values[0] = max(0, min(scale, values[0] + scale - drawn))
+    bars = []
+    for device, weight, value in zip(devices, weights, values):
+        bars.append(Div(
+            Span(f"{device.name} · {device.memory_text}"),
+            Input(type="range", name=f"split_{device.name}", min="0", max="10",
+                  step="1", value=str(value)),
+            Span(f"{weight / total:.0%}", cls="share"),
+            cls="splitbar",
+        ))
+    return Div(
+        Div(*bars, cls="splitbars"),
+        Div(
+            Button("Automatic", type="button", cls="small", onclick="splitAuto(this)"),
+            Span("clears the shares and lets llama.cpp fill each device by its free "
+                 "memory", cls="hint"),
+            cls="splitactions",
+        ),
+        Input(type="hidden", name="tensor_split", value=spec.tensor_split),
+        Script(layout.BALANCER_JS),
+        id=f"split-{devices[0].name}",
+        cls="splitbalance",
+    )
+
+
+def balancer_field(spec: RunSpec, scan: Scan, backend: str) -> Div:
+    """The balancer, waiting for the device scan like the picker does.
+
+    Until the scan answers there are no cards to draw bars for, so the field
+    fills itself in once it does — the same load hook as the device list.
+    """
+    if not scan.ready:
+        return Div(
+            Div(Span("looking for devices…", cls="hint"),
+                hx_get=f"/server/splitbalancer?{spec_link(spec)}",
+                hx_trigger="load delay:500ms",
+                hx_target="#splitbalancer",
+                hx_swap="outerHTML"),
+            id="splitbalancer",
+        )
+    return Div(split_balancer(spec, run_devices(scan, spec, backend)),
+               id="splitbalancer")
 
 
 def _hint(param: Param, spec: RunSpec, facts: ModelFacts | None) -> str:
@@ -795,7 +870,9 @@ def _section(section: Section, config: AppConfig, spec: RunSpec, options: dict,
         body.append(Div(*[_field(BY_NAME[name], spec, options, facts) for name in switches],
                         cls="switches"))
     if "tensor_split" in named:
-        body.append(split_line(spec, facts, run_devices(scan, spec, backend)))
+        devices = run_devices(scan, spec, backend)
+        body.append(balancer_field(spec, scan, backend))
+        body.append(split_line(spec, facts, devices))
     if "rpc_endpoints" in named:
         body.append(rpc_status(spec))
     if "devices" in section.names:

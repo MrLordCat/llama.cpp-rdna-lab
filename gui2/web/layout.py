@@ -53,6 +53,63 @@ def command_lines(argv: list[str]) -> str:
     return "\n".join(lines)
 
 
+BALANCER_JS = """
+function splitBars(box) {
+    return Array.from(box.querySelectorAll(".splitbar"));
+}
+function splitShow(box) {
+    // the percent label is the visible truth; the hidden box is what submits
+    splitBars(box).forEach((bar) => {
+        const slider = bar.querySelector("input[type=range]");
+        const label = bar.querySelector(".share");
+        if (label) label.textContent = Math.round((Number(slider.value) || 0) * 10) + "%";
+    });
+}
+function splitWrite(box) {
+    const field = box.querySelector("input[name=tensor_split]");
+    if (field) field.value = splitBars(box)
+        .map((bar) => bar.querySelector("input[type=range]").value).join(",");
+}
+function splitAuto(btn) {
+    // back to llama.cpp deciding: equal bars, and an empty -ts list
+    const box = btn.closest(".splitbalance");
+    if (!box) return;
+    const bars = splitBars(box);
+    const each = Math.floor(10 / bars.length);
+    bars.forEach((bar, i) => {
+        bar.querySelector("input[type=range]").value =
+            i === bars.length - 1 ? 10 - each * (bars.length - 1) : each;
+    });
+    const field = box.querySelector("input[name=tensor_split]");
+    if (field) field.value = "";
+    splitShow(box);
+}
+document.addEventListener("input", (event) => {
+    const slider = event.target;
+    if (!(slider instanceof HTMLInputElement) || slider.type !== "range") return;
+    const box = slider.closest(".splitbalance");
+    if (!box) return;
+    const bars = splitBars(box);
+    const i = bars.indexOf(slider.closest(".splitbar"));
+    if (i < 0) return;
+    const value = Math.max(0, Math.min(10, Number(slider.value) || 0));
+    slider.value = String(value);
+    let others = 0;
+    bars.forEach((bar, j) => { if (j !== i) others += Number(bar.querySelector("input[type=range]").value) || 0; });
+    const rest = 10 - value;
+    bars.forEach((bar, j) => {
+        if (j === i) return;
+        const other = bar.querySelector("input[type=range]");
+        const next = others > 0 ? Math.round((Number(other.value) || 0) * rest / others)
+                                : Math.round(rest / (bars.length - 1));
+        other.value = String(Math.max(0, Math.min(10, next)));
+    });
+    splitShow(box);
+    splitWrite(box);
+});
+"""
+
+
 def shell(title: str, active: str, config: AppConfig, *content,
           nav: dict[str, str] | None = None):
     """`nav` keeps the page the link comes from: Server's "Autotune" opens the

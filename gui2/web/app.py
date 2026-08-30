@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import secrets
+from datetime import datetime
 from pathlib import Path
 
 from fasthtml.common import Div, HtmxResponseHeaders, Link, RedirectResponse, Script, fast_app
 
 from gui2.config import AppConfig
 from gui2.core.devices import DeviceService
-from gui2.core.history import HistoryStore
+from gui2.core.history import HistoryStore, sync_autotune_runs
 from gui2.core.memstore import MemoryStore
 from gui2.core.runspec import parse_rpc_endpoints
 from gui2.proc import Supervisor
 from gui2.proc.hidden import suppress_error_dialogs
-from gui2.web import autotune_page, history_page, models_page, server_page
+from gui2.web import autotune_page, bench_history, history_page, models_page, server_page
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -25,13 +26,20 @@ def create_app(config: AppConfig | None = None):
     memory = MemoryStore(config.memory_json)
 
     def learn(job) -> None:
-        """Keep what a finished server run said its memory was.
+        """Keep what a finished run left behind, in the store it belongs to.
 
-        Only server runs: a benchmark's command line is the script's, and its
-        allocations belong to a llama-server this GUI did not compose.
+        A server run feeds the memory notes; an autotune run is carried into
+        the canonical history CSV, because bench2 records it in its own index
+        and History & Analytics reads BENCH_RUNS.csv.
         """
         if job.spec.kind == "server":
             memory.remember(job.spec.argv, job.measurement())
+        elif job.spec.kind == "autotune":
+            try:
+                sync_autotune_runs(config.history_csv,
+                                   config.bench_results / "index.csv")
+            except OSError:
+                pass  # a generated artifact, not a reason to fail the job
 
     # One supervisor per app: the GPU slot is a process-wide resource.
     supervisor = Supervisor(on_finish=learn)
@@ -49,7 +57,11 @@ def create_app(config: AppConfig | None = None):
         default_hdrs=True,
         static_path=str(STATIC_DIR),
         secret_key=secrets.token_hex(32),
-        hdrs=(Script(src="/htmx.min.js"), Link(rel="stylesheet", href="/app.css")),
+        # the stylesheet is served without cache headers, and a stale cache is
+        # how a theme fix looks broken: version it by file mtime instead
+        hdrs=(Script(src="/htmx.min.js"),
+              Link(rel="stylesheet",
+                   href=f"/app.css?v={(STATIC_DIR / 'app.css').stat().st_mtime_ns}")),
     )
 
     @rt("/", methods=["GET"])
@@ -58,6 +70,9 @@ def create_app(config: AppConfig | None = None):
 
     @rt("/history", methods=["GET"])
     def history(req):
+        # catch up: runs finished while the queue was not being watched (or
+        # before this GUI started) end up in the canonical CSV the page reads
+        sync_autotune_runs(config.history_csv, config.bench_results / "index.csv")
         return history_page.page(history_page.read_state(req.query_params), store.runs(), config)
 
     @rt("/history/rows", methods=["GET"])
@@ -144,10 +159,19 @@ def create_app(config: AppConfig | None = None):
         devices.start(parse_rpc_endpoints(spec.rpc_endpoints), backend)
         return server_page.devices_field(spec, devices.state(), backend)
 
+    @rt("/server/splitbalancer", methods=["GET"])
+    def server_splitbalancer(req):
+        spec = server_page.spec_from_params(req.query_params)
+        scan, backend = scanned(spec)
+        return server_page.balancer_field(spec, scan, backend)
+
     @rt("/server/modelfield", methods=["GET"])
     def server_modelfield(req):
         spec = server_page.spec_from_params(req.query_params)
         scan, backend = scanned(spec)
+        if "autotune" in req.query_params:
+            return autotune_page.model_field(config, spec, scan, backend,
+                                             server_page._options(config, spec))
         return server_page.model_field(config, spec, scan, backend)
 
     @rt("/server/devices", methods=["POST"])
@@ -191,7 +215,8 @@ def create_app(config: AppConfig | None = None):
         return autotune_page.page(config, spec,
                                   autotune_page.autotune_from_params(req.query_params, spec),
                                   supervisor, scan, backend,
-                                  autotune_page.measured(config, spec))
+                                  autotune_page.measured(config, spec),
+                                  app.state.live_board, app.state.live_started)
 
     @rt("/autotune/preview", methods=["POST"])
     async def autotune_preview(req):
@@ -203,7 +228,27 @@ def create_app(config: AppConfig | None = None):
             autotune_page.preview(config, spec, bench, scan, backend),
             # the model can change under this form, and what has been measured
             # of the old one says nothing about the new one
-            autotune_page.earlier_panel(autotune_page.measured(config, spec), oob=True),
+            autotune_page.earlier_panel(autotune_page.measured(config, spec), spec, bench,
+                                        oob=True),
+            HtmxResponseHeaders(push_url="/autotune?" + autotune_page.state_query(params)),
+        )
+
+    @rt("/autotune/form", methods=["POST"])
+    async def autotune_form(req):
+        """The form re-rendered around a model or build change.
+
+        Those two decide the level chips, the fit verdict and the device
+        list, which the preview alone cannot refresh.
+        """
+        params = await req.form()
+        spec = server_page.spec_from_params(params)
+        bench = autotune_page.autotune_from_params(params, spec)
+        scan, backend = scanned(spec)
+        results = autotune_page.measured(config, spec)
+        return (
+            autotune_page.form(config, spec, bench, results, scan, backend),
+            autotune_page.preview(config, spec, bench, scan, backend, oob=True),
+            autotune_page.earlier_panel(results, spec, bench, oob=True),
             HtmxResponseHeaders(push_url="/autotune?" + autotune_page.state_query(params)),
         )
 
@@ -211,8 +256,32 @@ def create_app(config: AppConfig | None = None):
     async def autotune_start(req):
         params = await req.form()
         spec = server_page.spec_from_params(params)
-        return autotune_page.start(config, supervisor, spec,
-                                   autotune_page.autotune_from_params(params, spec))
+        bench = autotune_page.autotune_from_params(params, spec)
+        # the queue the Results panel will follow; replaced by the next start
+        app.state.live_board = autotune_page.board_for(config, spec, bench)
+        # and when the queue began: rows before this belong to the previous
+        # search of the same parameters, which reuses the same folder names
+        app.state.live_started = datetime.now().astimezone().isoformat(timespec="seconds")
+        return autotune_page.start(config, supervisor, spec, bench, app.state.live_board)
+
+    @rt("/autotune/results", methods=["GET"])
+    def autotune_results():
+        board = app.state.live_board
+        return autotune_page.results_panel(
+            board, autotune_page.board_results(config, board, app.state.live_started),
+            supervisor)
+
+    @rt("/autotune/history", methods=["GET"])
+    def autotune_history(req):
+        return bench_history.page(config, req.query_params)
+
+    @rt("/autotune/history/run", methods=["GET"])
+    def autotune_history_run(req):
+        return bench_history.run_detail(config, req.query_params.get("run_name", ""))
+
+    @rt("/autotune/history/hide", methods=["GET"])
+    def autotune_history_hide(req):
+        return bench_history.hidden_detail(req.query_params.get("run_name", ""))
 
     @rt("/models", methods=["GET"])
     def models(req):
@@ -235,4 +304,6 @@ def create_app(config: AppConfig | None = None):
     app.state.supervisor = supervisor
     app.state.devices = devices
     app.state.memory = memory
+    app.state.live_board = []
+    app.state.live_started = ""
     return app

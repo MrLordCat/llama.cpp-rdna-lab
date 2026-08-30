@@ -8,9 +8,10 @@ KV type and speculation are fixed for a whole run, so a second value on any of
 them is a second run, and the page queues them rather than pretending
 otherwise.
 
-The run itself is not described twice. The model, the build, the devices, the
-layer split and the RPC workers come from the Server page and travel here in
-the query string; this page chooses the workload and the settings under test.
+The server under test is the run's own settings, and it is edited in place on
+this page: the model, the build, the devices, the layer split and the RPC
+workers sit in the first panel instead of behind a detour through the Server
+page. This page then chooses the workload and the settings to try.
 """
 
 from __future__ import annotations
@@ -22,11 +23,8 @@ from urllib.parse import urlencode
 from fasthtml.common import (
     A,
     Button,
-    Dd,
     Details,
     Div,
-    Dl,
-    Dt,
     Form,
     H3,
     Input,
@@ -56,6 +54,7 @@ from gui2.core.bench import (
     B_SWEEP,
     B_WORK,
     BenchSpec,
+    Configuration,
     LEVELS,
     MULTI_NAMES,
     Plan,
@@ -77,9 +76,9 @@ from gui2.core.bench import (
 from gui2.core.devices import Scan, pool
 from gui2.core.gguf import ModelFacts, context_text
 from gui2.core.memory import gib
-from gui2.core.params import Param, bounds
-from gui2.core.results import Result, for_model, read_index, taken_names
-from gui2.core.runspec import Problem, RunSpec, mask_api_key, parse_rpc_endpoints
+from gui2.core.params import BY_NAME, Param, bounds
+from gui2.core.results import Result, Setup, for_model, read_index, setup_of, taken_names
+from gui2.core.runspec import Problem, RunSpec, mask_api_key
 from gui2.proc import Busy, Supervisor
 from gui2.proc.hidden import console_python
 from gui2.web import server_page
@@ -148,11 +147,12 @@ def state_query(params) -> str:
     return server_page.state_query(params, multi=server_page.MULTI_PARAMS | MULTI_NAMES)
 
 
-def page_link(spec: RunSpec, bench: BenchSpec, **overrides: str) -> str:
+def page_link(spec: RunSpec, bench: BenchSpec, /, **overrides: str) -> str:
     """This page as a link, with a few lines rewritten.
 
     The mirror of `server_page.spec_link`: written the way the form writes it,
-    marker and all, so reading it back gives what it says.
+    marker and all, so reading it back gives what it says. The two arguments
+    are positional-only because `spec` is also the name of an axis.
     """
     pairs: list[tuple[str, str]] = []
     for field in fields(bench):
@@ -164,7 +164,7 @@ def page_link(spec: RunSpec, bench: BenchSpec, **overrides: str) -> str:
         else:
             pairs.append((field.name, str(value)))
     pairs.append((AUTOTUNE_MARKER, "1"))
-    return server_page.spec_link(spec) + "&" + urlencode(pairs)
+    return "/autotune?" + server_page.spec_link(spec) + "&" + urlencode(pairs)
 
 
 # -- fields ----------------------------------------------------------------
@@ -303,7 +303,7 @@ def _hint(param: Param, bench: BenchSpec) -> str:
 #: wrap: a column of a grid is not wide enough for either, and an axis that
 #: wraps stops reading as one row of values to choose between
 WIDE = frozenset({"context_source", "context_file", "run_name",
-                  "levels", "session_levels", "batch", "ubatch", "kv", "spec"})
+                  "levels", "session_levels", "batch", "ubatch", "kv", "spec", "spec_n"})
 
 
 def _field(param: Param, bench: BenchSpec, facts: ModelFacts | None = None):
@@ -434,8 +434,9 @@ def memory_panel(spec: RunSpec, bench: BenchSpec, scan: Scan, backend: str) -> D
 
 #: name, and whether the column holds a number that should line up with the one above
 EARLIER_COLUMNS: tuple[tuple[str, bool], ...] = (
-    ("When", False), ("Run", False), ("Backend", False), ("Build", False),
-    ("Scenario", False), ("Prefill", True), ("Decode", True), ("Slope", True),
+    ("When", False), ("Backend", False), ("Build", False), ("Scenario", False),
+    ("batch", True), ("ubatch", True), ("KV", False), ("spec", False),
+    ("Prefill", True), ("Decode", True), ("Slope", True), ("", False),
 )
 
 
@@ -443,41 +444,73 @@ def _number(value: float | None, digits: int = 1) -> str:
     return f"{value:.{digits}f}" if value else "—"
 
 
-def _earlier_row(result: Result) -> Tr:
+def _reuse_link(result: Result, setup: Setup, spec: RunSpec, bench: BenchSpec) -> A | str:
+    """Put one earlier row back on the rows below, leaving everything else alone.
+
+    A row is one scenario of one run, so the level travels with the settings:
+    the two together are what was measured. The other axis is cleared, because
+    a level and a session are different workloads rather than two of a kind.
+    """
+    if not setup.known:
+        return "—"
+    session = result.kind == "session"
+    return A("use", href=page_link(
+        spec, bench,
+        levels="" if session else result.level,
+        session_levels=result.level if session else "",
+        batch=str(setup.batch), ubatch=str(setup.ubatch),
+        kv=setup.kv, spec=setup.spec, spec_n=str(setup.spec_n or 2)),
+        title=f"measure {result.scenario} again with this run's batch, ubatch, "
+              f"KV and speculation")
+
+
+def _earlier_row(result: Result, setup: Setup, spec: RunSpec, bench: BenchSpec) -> Tr:
     return Tr(
-        Td(result.time_text, cls="when"),
-        Td(result.run_name),
+        # the year is always this one, and the seconds only matter as a tie-break
+        Td(result.time_text[5:16], cls="when", title=result.time_text),
         Td(result.backend),
-        Td(result.commit, title="the commit bench2 recorded for that build"),
+        Td(result.commit[:7], title=f"commit {result.commit}, as bench2 recorded it"),
         Td(result.scenario, title=f"{result.turns} turns" if result.turns else
            context_text(result.ctx)),
+        Td(str(setup.batch) if setup.batch else "—", cls="num"),
+        Td(str(setup.ubatch) if setup.ubatch else "—", cls="num"),
+        Td(setup.kv or "—"),
+        Td(f"{setup.spec} ×{setup.spec_n}" if setup.spec_n and setup.spec != "none"
+           else (setup.spec or "—")),
         Td(_number(result.prefill_tps, 0), cls="num"),
         Td(_number(result.decode_tps, 2), cls="num"),
         Td(_number(result.decode_slope, 3) if result.turns else "—", cls="num",
            title="how much decode speed drops per turn as the context grows"),
+        Td(_reuse_link(result, setup, spec, bench)),
+        title=result.run_name,
     )
 
 
-def earlier_panel(results: list[Result], oob: bool = False) -> Div:
-    """What bench2 has already measured of this model.
+def earlier_panel(results: list[Result], spec: RunSpec, bench: BenchSpec,
+                  oob: bool = False) -> Div:
+    """What bench2 has already measured of this model, and how to try it again.
 
-    Not a list of settings to reuse -- bench2 records the numbers, not the
-    configuration that produced them, which lives in that run's own run.json.
-    It is here to answer "has this been measured already" before it is measured
-    again.
+    The numbers come from bench2's index; the settings behind each of them come
+    from that run's own run.json, which is the only place they are written down.
+    A row whose folder has been deleted keeps its numbers and loses its link.
     """
     if not results:
         return Div(id="earlier", hx_swap_oob="true" if oob else None)
+    cache: dict[str, Setup] = {}
+    rows = [_earlier_row(result, setup_of(result, cache), spec, bench)
+            for result in results]
     return Div(
         Details(
             Summary(f"What {len(results)} earlier measurement"
                     f"{'s' if len(results) != 1 else ''} of this model found"),
-            Span("From bench2's own index. A session's slope is how much decode speed "
-                 "drops per turn as the conversation grows.", cls="hint block"),
+            Span("Every row is something someone already tried. \"use\" puts one back on "
+                 "the rows below -- its level and its four settings, nothing else -- so "
+                 "the next attempt can differ from it by a single thing. A session's "
+                 "slope is how much decode speed drops per turn.", cls="hint block"),
             Div(Table(
                 Thead(Tr(*[Th(name, cls="num" if numeric else None)
                            for name, numeric in EARLIER_COLUMNS])),
-                Tbody(*[_earlier_row(result) for result in results]),
+                Tbody(*rows),
             ), cls="table-wrap earlier"),
             cls="panel",
         ),
@@ -503,49 +536,127 @@ def _busy_problems() -> list[Problem]:
 # -- the run being measured ------------------------------------------------
 
 
-def inherited(config: AppConfig, spec: RunSpec) -> Details:
-    """The server settings this page does not choose, and where to change them.
+#: The run's own settings, edited in place here because they are what the
+#: runs above are measured on: bench2 loads this exact server once per
+#: configuration. A hidden twin of any of these would arrive twice in one
+#: submission and whichever won would be whichever the browser felt like.
+EDITABLE_SERVER: frozenset[str] = frozenset({
+    "model", "build_dir", "devices", "rpc_endpoints", "split_mode", "tensor_split",
+    "gpu_layers", "gpu_layers_all", "parallel", "flash_attn",
+})
 
-    Context is deliberately absent: bench2 sizes the server from the levels it
-    is given, so the Server page's context is not what any of this measures.
+
+def model_field(config: AppConfig, spec: RunSpec, scan: Scan, backend: str,
+                options: dict):
+    """The Model select as a field of this page's form.
+
+    Changing the model re-reads everything it decides — the level chips, the
+    fit verdict, the layer count — so it posts the whole form back rather than
+    the preview alone. The verdict under the select waits for the device scan
+    exactly the way the Server page's does.
     """
-    build = server_page.build_of(config, spec)
     facts = server_page.model_facts(spec)
-    workers = parse_rpc_endpoints(spec.rpc_endpoints)
-    rows = [
-        ("Model", Path(spec.model).name if spec.model else "— none selected —"),
-        # when it was linked, because a benchmark of a stale binary measures the wrong thing
-        ("Build", f"{build.name} ({build.backend}) · built {build.built_text}" if build
-         else "— none selected —"),
-        ("Devices", spec.devices or "all of them"),
-        ("Workers", ", ".join(workers) if workers else "none — this machine only"),
-        ("Layer split", f"-sm {spec.split_mode or 'default'}"
-                        + (f" -ts {spec.tensor_split}" if spec.tensor_split else "")),
-        ("GPU layers", "all of them" if spec.gpu_layers_all else str(spec.gpu_layers)),
-        ("Parallel slots", str(spec.parallel)),
-        ("Flash attention", "auto — sent as on" if spec.flash_attn == "auto"
-         else spec.flash_attn),
-    ]
+    hooks = {}
+    if scan is not None and not scan.ready:
+        hooks = {"id": "modelfield",
+                 "hx_get": f"/server/modelfield?autotune=1&{server_page.spec_link(spec)}",
+                 "hx_trigger": "load delay:700ms",
+                 "hx_target": "#modelfield",
+                 "hx_swap": "outerHTML"}
+    verdict = server_page._model_verdict(spec, facts, scan, backend)
+    return Label(
+        Span("Model"),
+        Select(*[Option(label, value=item, selected=item == spec.model)
+                 for label, item in options["model"]],
+               name="model",
+               hx_post="/autotune/form", hx_trigger="change consume",
+               hx_target="#autotuneform", hx_swap="outerHTML"),
+        Span(verdict, cls="problem err" if verdict.startswith("⚠") else "hint")
+        if verdict else None,
+        Span(BY_NAME["model"].help, cls="hint") if BY_NAME["model"].help else None,
+        cls="field",
+        **hooks,
+    )
+
+
+def build_field(spec: RunSpec, config: AppConfig, options: dict):
+    """The Build select, with the same whole-form refresh: the build decides
+    the backend, which decides which devices exist to tick below."""
+    chosen = server_page.build_of(config, spec)
+    when = (f"built {chosen.built_on} — {chosen.built_text}" if chosen and chosen.usable
+            else "newest first, so the top one is the last thing built")
+    return Label(
+        Span("Build"),
+        Select(*[Option(label, value=item, selected=item == spec.build_dir)
+                 for label, item in options["build_dir"]],
+               name="build_dir",
+               hx_post="/autotune/form", hx_trigger="change consume",
+               hx_target="#autotuneform", hx_swap="outerHTML"),
+        Span(f"supplies llama-server; capabilities are read from CMakeCache. {when}",
+             cls="hint"),
+        cls="field",
+    )
+
+
+def server_panel(config: AppConfig, spec: RunSpec, scan: Scan, backend: str) -> Details:
+    """The server under test, edited in place rather than by a detour.
+
+    These are the settings bench2 builds its server from: the model, the
+    binary, the devices it is spread over and how. Everything else the Server
+    page knows — threads, cache policy, metrics, mmproj — still reaches the
+    benchmark through --server-extra, unchanged, and the link carries the spec
+    so nothing is lost on the way there.
+    """
+    options = server_page._options(config, spec)
+    facts = server_page.model_facts(spec)
+    devices = server_page.run_devices(scan, spec, backend)
     return Details(
         Summary("The server being measured"),
-        Span("Everything here belongs to the server, so it is changed in one place and "
-             "read in both. The device list and the workers are passed to bench2 rather "
-             "than left to its hardware profile, which names cards of its own.",
+        Span("The runs are measurements of this exact server: the model, the build and "
+             "the split decide what is being timed. The device list and the workers are "
+             "passed to bench2 rather than left to its hardware profile, which names "
+             "cards of its own. The rest — threads, cache policy, metrics, mmproj — "
+             "stays on the Server page and still reaches bench2 through the command.",
              cls="hint block"),
-        Div(Dl(*[item for name, value in rows for item in (Dt(name), Dd(str(value)))]),
-            cls="detail"),
+        Div(
+            model_field(config, spec, scan, backend, options),
+            build_field(spec, config, options),
+            cls="grid",
+        ),
+        server_page.devices_field(spec, scan, backend),
+        Div(
+            server_page._field(BY_NAME["rpc_endpoints"], spec, options, facts),
+            server_page._field(BY_NAME["split_mode"], spec, options, facts),
+            cls="grid",
+        ),
+        server_page.balancer_field(spec, scan, backend),
+        server_page.split_line(spec, facts, devices),
+        Div(
+            server_page._field(BY_NAME["gpu_layers"], spec, options, facts),
+            server_page._field(BY_NAME["parallel"], spec, options, facts),
+            server_page._field(BY_NAME["flash_attn"], spec, options, facts),
+            cls="grid",
+        ),
+        Div(server_page._field(BY_NAME["gpu_layers_all"], spec, options, facts),
+            cls="switches"),
         Div(facts.summary, cls="hint block muted") if facts and facts.summary else None,
-        A("Change these on the Server page →", href=f"/server?{server_page.spec_link(spec)}",
-          cls="button"),
+        A("Everything else on the Server page →",
+          href=f"/server?{server_page.spec_link(spec)}", cls="button"),
         cls="panel",
         open=True,
     )
 
 
-def spec_inputs(spec: RunSpec):
-    """The whole run as hidden fields, so posting this form round-trips it."""
+def spec_inputs(spec: RunSpec, exclude: frozenset[str] = frozenset()):
+    """The whole run as hidden fields, so posting this form round-trips it.
+
+    `exclude` names the fields this form edits visibly; a hidden twin would
+    arrive twice in one submission.
+    """
     inputs = []
     for field in fields(spec):
+        if field.name in exclude:
+            continue
         value = getattr(spec, field.name)
         if isinstance(value, bool):
             if not value:
@@ -592,20 +703,30 @@ def commands(config: AppConfig, spec: RunSpec, bench: BenchSpec,
 def preview(config: AppConfig, spec: RunSpec, bench: BenchSpec, scan: Scan, backend: str,
             oob: bool = False) -> Div:
     runs = commands(config, spec, bench)
-    varying = varied(bench)
-    blocks: list = []
-    for (name, argv), config_row in zip(runs, configurations(bench)):
-        blocks.append(Div(Span(f"{name} — {config_row.describe(varying)}", cls="hint block")
-                          if len(runs) > 1 else None,
-                          Pre(command_lines(mask_api_key(argv)))))
+    if runs:
+        # one command and a whole search both fold: the command is identical for
+        # every run except batch, ubatch, KV and speculation, which the Results
+        # table names anyway -- the right column is for reading the size of the
+        # run, not a dozen copies of the same line
+        blocks = [Details(
+            Summary("Show the command" if len(runs) == 1 else f"Show the {len(runs)} commands"),
+            Div(*[Div(Span(name, cls="hint block"),
+                      Pre(command_lines(mask_api_key(argv))))
+                  for name, argv in runs]),
+            cls="inline-details",
+        )]
+    else:
+        blocks = []
 
     return Div(
         Div(
-            H3("Command" if len(runs) == 1 else f"{len(runs)} commands, in this order"),
+            H3("Command" if len(runs) <= 1 else f"{len(runs)} runs"),
             *problem_lines(problems_for(config, spec, bench)),
             *blocks,
             Span("bench2 starts and stops llama-server itself; nothing here needs a "
-                 "server running first, and it refuses to run while one is.",
+                 "server running first, and it refuses to run while one is. Every run "
+                 "is the same command with the batch, ubatch, KV and speculation "
+                 "varied; the Results panel names each one.",
                  cls="hint block"),
             cls="panel",
         ),
@@ -632,9 +753,11 @@ def _section(title: str, hint: str, bench: BenchSpec, facts: ModelFacts | None) 
     )
 
 
-def form(config: AppConfig, spec: RunSpec, bench: BenchSpec, results: list[Result]) -> Form:
+def form(config: AppConfig, spec: RunSpec, bench: BenchSpec, results: list[Result],
+         scan: Scan, backend: str) -> Form:
     facts = server_page.model_facts(spec)
-    panels = [inherited(config, spec), earlier_panel(results)]
+    panels = [server_panel(config, spec, scan, backend),
+              earlier_panel(results, spec, bench)]
     panels += [_section(title, hint, bench, facts) for title, hint in SECTIONS]
     count = config_count(bench)
     panels.append(Div(
@@ -647,10 +770,11 @@ def form(config: AppConfig, spec: RunSpec, bench: BenchSpec, results: list[Resul
     ))
     return Form(
         *panels,
-        *spec_inputs(spec),
+        *spec_inputs(spec, exclude=EDITABLE_SERVER),
         Input(type="hidden", name=server_page.FORM_MARKER, value="1"),
         Input(type="hidden", name=AUTOTUNE_MARKER, value="1"),
         cls="paramform",
+        id="autotuneform",
         novalidate=True,
         hx_post="/autotune/preview",
         hx_target="#autotunepreview",
@@ -659,7 +783,8 @@ def form(config: AppConfig, spec: RunSpec, bench: BenchSpec, results: list[Resul
     )
 
 
-def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, bench: BenchSpec):
+def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, bench: BenchSpec,
+          board: list[tuple[str, Configuration]]):
     """Validate, then hand the runs to the same GPU slot the server uses."""
     blocking = [problem.message for problem in problems_for(config, spec, bench)
                 if problem.level == "error"]
@@ -674,16 +799,21 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, bench: Bench
                              cwd=config.bench_script.parent.parent)
     except Busy as busy:
         return server_page.run_panel(supervisor, f"{busy.current.label} is still running", "error")
-    return server_page.run_panel(supervisor), server_page.log_panel(supervisor, oob=True)
+    return (server_page.run_panel(supervisor),
+            server_page.log_panel(supervisor, oob=True),
+            results_panel(board, {}, supervisor, oob=True))
 
 
 def page(config: AppConfig, spec: RunSpec, bench: BenchSpec, supervisor: Supervisor,
-         scan: Scan, backend: str, results: list[Result]):
+         scan: Scan, backend: str, results: list[Result],
+         board: list[tuple[str, Configuration]], started: str = ""):
     return shell(
         "Autotune", "/autotune", config,
         Div(
-            form(config, spec, bench, results),
-            Div(preview(config, spec, bench, scan, backend),
+            form(config, spec, bench, results, scan, backend),
+            Div(A("Autotune history →", href="/autotune/history", cls="button"),
+                results_panel(board, board_results(config, board, started), supervisor),
+                preview(config, spec, bench, scan, backend),
                 server_page.run_panel(supervisor),
                 server_page.log_panel(supervisor), cls="stack"),
             cls="split",
@@ -695,3 +825,101 @@ def page(config: AppConfig, spec: RunSpec, bench: BenchSpec, supervisor: Supervi
 def measured(config: AppConfig, spec: RunSpec) -> list[Result]:
     """Earlier bench2 measurements of the model this page is about."""
     return for_model(read_index(config.bench_results / "index.csv"), spec.model)
+
+
+# -- the run as it happens -------------------------------------------------
+
+
+def board_for(config: AppConfig, spec: RunSpec, bench: BenchSpec
+              ) -> list[tuple[str, Configuration]]:
+    """The queue handed to the supervisor: one row per run, in its order."""
+    build = server_page.build_of(config, spec)
+    backend = BACKEND_FLAG.get(build.backend if build else "", "")
+    return list(zip(run_names(spec, bench, backend), configurations(bench)))
+
+
+def board_results(config: AppConfig, board: list[tuple[str, Configuration]],
+                  started: str = "") -> dict[str, Result]:
+    """The latest index row bench2 has recorded for each run of the queue.
+
+    `started` is when the queue began: a run folder name is reused by every
+    search of the same parameters, so rows written before that belong to the
+    previous search and would read as this one's results while bench2 is still
+    measuring — the table must stay empty until bench2 itself records first.
+    """
+    wanted = {name for name, _config in board}
+    found: dict[str, Result] = {}
+    for result in read_index(config.bench_results / "index.csv"):
+        if result.run_name in wanted and (not started or result.when >= started):
+            # one row per finished scenario, newest last: the last one wins
+            found[result.run_name] = result
+    return found
+
+
+#: one row per run: what told it apart, what it measured, and where the queue is
+RESULTS_COLUMNS = ("Run", "batch", "ubatch", "KV", "spec", "Prefill", "Decode", "Status")
+
+
+def results_panel(board: list[tuple[str, Configuration]], found: dict[str, Result],
+                  supervisor: Supervisor, oob: bool = False) -> Div:
+    """The queue as one table, filling in as bench2 records each run.
+
+    bench2's index gains a row per finished scenario, so the table reads the
+    index rather than scraping the log: the numbers are the ones bench2 wrote,
+    not a guess from its output. A run that died before recording anything
+    stays empty and says so.
+    """
+    if not board:
+        return Div(id="results", hx_swap_oob="true" if oob else None)
+    snapshot = supervisor.snapshot()
+    alive = bool(snapshot and snapshot.alive)
+    current = snapshot.label.removeprefix("bench2 · ") if alive else ""
+    with_draft = any(config.spec != "none" for _name, config in board)
+    columns = RESULTS_COLUMNS[:5] + (("draft",) if with_draft else ()) + RESULTS_COLUMNS[5:]
+
+    rows: list = []
+    reached = False
+    for name, config in board:
+        result = found.get(name)
+        if result is not None:
+            prefill, decode = _number(result.prefill_tps, 0), _number(result.decode_tps, 2)
+            status = f"{result.scenario} ok" if result.ok else f"{result.scenario} failed"
+            reached = reached or name == current
+        elif alive and name == current:
+            prefill, decode, status = "…", "…", "measuring"
+            reached = True
+        elif reached:
+            prefill, decode, status = "—", "—", "queued"
+        else:
+            prefill, decode, status = "—", "—", "no result"
+        cells = [Td(config.suffix, title=name, cls="runname"),
+                 Td(str(config.batch), cls="num"),
+                 Td(str(config.ubatch), cls="num"),
+                 Td(config.kv),
+                 Td(config.spec)]
+        if with_draft:
+            cells.append(Td(str(config.spec_n) if config.spec != "none" else "—", cls="num"))
+        cells += [Td(prefill, cls="num"),
+                  Td(decode, cls="num"),
+                  Td(status, cls="status")]
+        rows.append(Tr(*cells))
+
+    return Div(
+        H3(f"Results — {len(board)} runs"),
+        Span("Fills in as bench2 records each finished scenario in its index. The "
+             "numbers are that run's last recorded scenario; a finished run keeps "
+             "them, a run that died before recording anything stays empty.",
+             cls="hint block"),
+        Div(Table(
+            Thead(Tr(*[Th(name, cls="num"
+                          if name in {"batch", "ubatch", "draft", "Prefill", "Decode"} else None)
+                       for name in columns])),
+            Tbody(*rows),
+        ), cls="table-wrap results"),
+        id="results",
+        cls="panel",
+        hx_get="/autotune/results" if alive else None,
+        hx_trigger="every 2s" if alive else None,
+        hx_swap="outerHTML" if alive else None,
+        hx_swap_oob="true" if oob else None,
+    )
