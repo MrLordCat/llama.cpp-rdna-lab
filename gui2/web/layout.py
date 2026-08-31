@@ -58,11 +58,19 @@ function splitBars(box) {
     return Array.from(box.querySelectorAll(".splitbar"));
 }
 function splitShow(box) {
-    // the percent label is the visible truth; the hidden box is what submits
-    splitBars(box).forEach((bar) => {
+    // the share label is the visible truth; the hidden box is what submits.
+    // Values are relative weights (100,100,100 is a perfect third each), so
+    // the label reads weight over the sum rather than the raw number.
+    const bars = splitBars(box);
+    const total = bars.reduce((sum, bar) =>
+        sum + (Number(bar.querySelector("input[type=range]").value) || 0), 0);
+    bars.forEach((bar) => {
         const slider = bar.querySelector("input[type=range]");
         const label = bar.querySelector(".share");
-        if (label) label.textContent = Math.round((Number(slider.value) || 0) * 10) + "%";
+        if (label) {
+            const v = Number(slider.value) || 0;
+            label.textContent = total > 0 ? Math.round(v / total * 100) + "%" : "0%";
+        }
     });
 }
 function splitWrite(box) {
@@ -70,16 +78,21 @@ function splitWrite(box) {
     if (field) field.value = splitBars(box)
         .map((bar) => bar.querySelector("input[type=range]").value).join(",");
 }
-function splitAuto(btn) {
-    // back to llama.cpp deciding: equal bars, and an empty -ts list
+function splitEqual(btn) {
+    // one share per card, however many there are: 100,100,100 divides evenly
     const box = btn.closest(".splitbalance");
     if (!box) return;
-    const bars = splitBars(box);
-    const each = Math.floor(10 / bars.length);
-    bars.forEach((bar, i) => {
-        bar.querySelector("input[type=range]").value =
-            i === bars.length - 1 ? 10 - each * (bars.length - 1) : each;
-    });
+    splitBars(box).forEach((bar) => { bar.querySelector("input[type=range]").value = "100"; });
+    const field = box.querySelector("input[name=tensor_split]");
+    if (field) field.value = splitBars(box)
+        .map((bar) => bar.querySelector("input[type=range]").value).join(",");
+    splitShow(box);
+}
+function splitAuto(btn) {
+    // back to llama.cpp deciding: equal-looking bars, and an empty -ts list
+    const box = btn.closest(".splitbalance");
+    if (!box) return;
+    splitBars(box).forEach((bar) => { bar.querySelector("input[type=range]").value = "100"; });
     const field = box.querySelector("input[name=tensor_split]");
     if (field) field.value = "";
     splitShow(box);
@@ -92,21 +105,79 @@ document.addEventListener("input", (event) => {
     const bars = splitBars(box);
     const i = bars.indexOf(slider.closest(".splitbar"));
     if (i < 0) return;
-    const value = Math.max(0, Math.min(10, Number(slider.value) || 0));
+    const value = Math.max(0, Math.min(100, Number(slider.value) || 0));
     slider.value = String(value);
     let others = 0;
     bars.forEach((bar, j) => { if (j !== i) others += Number(bar.querySelector("input[type=range]").value) || 0; });
-    const rest = 10 - value;
+    const rest = 100 - value;
     bars.forEach((bar, j) => {
         if (j === i) return;
         const other = bar.querySelector("input[type=range]");
         const next = others > 0 ? Math.round((Number(other.value) || 0) * rest / others)
                                 : Math.round(rest / (bars.length - 1));
-        other.value = String(Math.max(0, Math.min(10, next)));
+        other.value = String(Math.max(0, Math.min(100, next)));
     });
     splitShow(box);
     splitWrite(box);
 });
+"""
+
+#: dragging a card to the top makes it first in -dev (and its split bar follows)
+DEVICE_ORDER_JS = """
+function deviceOrderSync(devlist) {
+    // the split bars pair with the device rows by name; drag one and the other
+    // follows, so -ts never points at the wrong card
+    const names = Array.from(devlist.querySelectorAll(".devrow"))
+        .map((row) => row.querySelector(".devname")?.textContent?.trim() || "");
+    document.querySelectorAll(".splitbalance").forEach((box) => {
+        const place = box.querySelector(".splitbars");
+        if (!place) return;
+        const byName = new Map(Array.from(box.querySelectorAll(".splitbar")).map((bar) => {
+            const input = bar.querySelector("input[name^=split_]");
+            return [input ? input.name.slice("split_".length) : "", bar];
+        }));
+        names.forEach((name) => { const bar = byName.get(name); if (bar) place.appendChild(bar); });
+        splitWrite(box);
+        splitShow(box);
+    });
+    // the "-dev a,b,c" line under the list follows the rows, not the alphabet
+    const hint = devlist.nextElementSibling;
+    const chosen = Array.from(devlist.querySelectorAll("input[name=devices]:checked"))
+        .map((input) => input.value);
+    if (hint && hint.classList.contains("hint") && chosen.length) {
+        hint.textContent = "-dev " + chosen.join(",");
+    }
+}
+function deviceDrag(root) {
+    let dragged = null;
+    root.addEventListener("dragstart", (event) => {
+        const row = event.target.closest(".devrow");
+        if (!row) return;
+        dragged = row;
+        row.classList.add("grabbing");
+        event.dataTransfer.effectAllowed = "move";
+    });
+    root.addEventListener("dragover", (event) => {
+        const row = event.target.closest(".devrow");
+        if (!row || row === dragged) return;
+        event.preventDefault();
+        const rect = row.getBoundingClientRect();
+        const after = event.clientY > rect.top + rect.height / 2;
+        root.insertBefore(dragged, after ? row.nextSibling : row);
+    });
+    root.addEventListener("drop", (event) => { event.preventDefault(); });
+    root.addEventListener("dragend", () => {
+        if (!dragged) return;
+        dragged.classList.remove("grabbing");
+        dragged = null;
+        deviceOrderSync(root);
+    });
+    root.addEventListener("change", (event) => {
+        if (event.target.name === "devices") deviceOrderSync(root);
+    });
+}
+const __devlist = document.getElementById("devicefield")?.querySelector(".devlist");
+if (__devlist) deviceDrag(__devlist);
 """
 
 

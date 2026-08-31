@@ -216,6 +216,22 @@ def selected_devices(spec: RunSpec) -> set[str]:
     return {name for name in re.split(r"[,\s]+", spec.devices) if name}
 
 
+def ordered_devices(found: tuple[Device, ...], spec: RunSpec) -> tuple[Device, ...]:
+    """The cards in the order the user chose, then the rest as the scan lists them.
+
+    A checkbox list is the one place order is not decoration: `-dev` names the
+    cards left to right and `-ts` pairs with that list by position. Rendering
+    in scan order would silently undo a drag the moment the form re-renders.
+    Nothing checked means no order was ever given, and every card stays.
+    """
+    ordered = [name for name in re.split(r"[,\s]+", spec.devices) if name]
+    if not ordered:
+        return found
+    by_name = {device.name: device for device in found}
+    chosen = [by_name[name] for name in ordered if name in by_name]
+    return tuple(chosen + [device for device in found if device.name not in by_name])
+
+
 def model_facts(spec: RunSpec) -> ModelFacts | None:
     return read_facts(spec.model) if spec.model and Path(spec.model).is_file() else None
 
@@ -432,17 +448,21 @@ def split_balancer(spec: RunSpec, devices: tuple[Device, ...]) -> Div:
         # drag is what tells llama.cpp a deliberate split is wanted
         weights = [1.0] * len(devices)
         total = len(devices)
-    scale = 10  # steps of one-tenth, matching how shares are usually written
-    values = [round(weight / total * scale) for weight in weights]
-    drawn = sum(values)
-    if drawn != scale and values:
-        # rounding did not land on the scale: hand the remainder to the first
-        values[0] = max(0, min(scale, values[0] + scale - drawn))
+    scale = 100  # one hundredths of a share; 100,100,100 is one third each
+    if len({round(weight / total, 6) for weight in weights}) == 1:
+        # equal weights stay equal through the round trip: 100 each reads 33%
+        values = [scale] * len(devices)
+    else:
+        values = [round(weight / total * scale) for weight in weights]
+        drawn = sum(values)
+        if values and drawn != scale:
+            # rounding did not land on the scale: hand the remainder to the first
+            values[0] = max(0, min(scale, values[0] + scale - drawn))
     bars = []
     for device, weight, value in zip(devices, weights, values):
         bars.append(Div(
             Span(f"{device.name} · {device.memory_text}"),
-            Input(type="range", name=f"split_{device.name}", min="0", max="10",
+            Input(type="range", name=f"split_{device.name}", min="0", max="100",
                   step="1", value=str(value)),
             Span(f"{weight / total:.0%}", cls="share"),
             cls="splitbar",
@@ -453,6 +473,12 @@ def split_balancer(spec: RunSpec, devices: tuple[Device, ...]) -> Div:
             Button("Automatic", type="button", cls="small", onclick="splitAuto(this)"),
             Span("clears the shares and lets llama.cpp fill each device by its free "
                  "memory", cls="hint"),
+            cls="splitactions",
+        ),
+        Div(
+            Button("Equal", type="button", cls="small", onclick="splitEqual(this)"),
+            Span("one share per card: 100,100,100 splits a model evenly however "
+                 "many cards there are", cls="hint"),
             cls="splitactions",
         ),
         Input(type="hidden", name="tensor_split", value=spec.tensor_split),
@@ -627,9 +653,11 @@ def bounded_fields(spec: RunSpec, facts: ModelFacts | None):
 
 
 def _device_query(spec: RunSpec, backend: str) -> str:
+    """The refresh URL, with the chosen cards in the order the user made."""
+    ordered = [name for name in re.split(r"[,\s]+", spec.devices) if name]
     return urlencode(
         [("backend", backend), ("rpc_endpoints", spec.rpc_endpoints)]
-        + [("devices", name) for name in sorted(selected_devices(spec))]
+        + [("devices", name) for name in ordered]
     )
 
 
@@ -646,7 +674,7 @@ def devices_field(spec: RunSpec, scan: Scan, backend: str, oob: bool = False):
             hx_swap="outerHTML",
         ))
     else:
-        found = scan.for_backend(backend)
+        found = ordered_devices(scan.for_backend(backend), spec)
         if found:
             body.append(Div(*[
                 Label(
@@ -657,12 +685,15 @@ def devices_field(spec: RunSpec, scan: Scan, backend: str, oob: bool = False):
                     Span(device.memory_text, cls="devmem"),
                     cls="devrow" if device.confirmed else "devrow unconfirmed",
                     title=f"{device.source}" + ("" if device.confirmed else " · not confirmed by a run"),
+                    draggable="true",
                 )
                 for device in found
             ], cls="devlist"))
+            ordered_chosen = [device.name for device in found if device.name in chosen]
             body.append(Span(
                 "Nothing checked means llama-server uses every device it finds."
-                if not chosen else f"-dev {','.join(name for name in sorted(chosen))}",
+                " Drag the cards to choose the order they are named in -dev."
+                if not chosen else f"-dev {','.join(ordered_chosen)}",
                 cls="hint",
             ))
         else:
@@ -681,6 +712,7 @@ def devices_field(spec: RunSpec, scan: Scan, backend: str, oob: bool = False):
             cls="fieldhead",
         ),
         *body,
+        Script(layout.DEVICE_ORDER_JS),
         id="devicefield",
         cls="field wide",
         hx_swap_oob="true" if oob else None,
@@ -984,7 +1016,7 @@ def form(config: AppConfig, spec: RunSpec, scan: Scan, backend: str, params=None
 
 def run_devices(scan: Scan, spec: RunSpec, backend: str) -> tuple[Device, ...]:
     """The devices this run will use: the checked ones, or all of them."""
-    found = scan.for_backend(backend) if scan.ready else ()
+    found = ordered_devices(scan.for_backend(backend) if scan.ready else (), spec)
     chosen = selected_devices(spec)
     return tuple(device for device in found if device.name in chosen) or found
 

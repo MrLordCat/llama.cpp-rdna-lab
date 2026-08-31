@@ -761,10 +761,43 @@ def test_the_share_balancer_draws_one_slider_per_device():
     assert 'name="split_Vulkan0"' in html and 'name="split_Vulkan2"' in html
     assert 'name="tensor_split"' in html, "the face writes what the form submits"
     assert 'onclick="splitAuto(this)"' in html, "Automatic returns to llama.cpp's own split"
-    # a written share like 3,2 scales onto the bars: 6 and 4 of 10
+    assert 'onclick="splitEqual(this)"' in html, "Equal is one click away"
+    # a written share like 3,2 scales onto the bars: 60 and 40 of 100
     ratio = to_xml(server_page.split_balancer(
         replace(DEFAULTS, tensor_split="3,2"), devices[:2]))
-    assert 'value="6"' in ratio and 'value="4"' in ratio
+    assert 'value="60"' in ratio and 'value="40"' in ratio
+    # and equal weights stay equal through the round trip: 100 each, not 34,33,33
+    equal = re.findall(r'<input type="range"[^>]*value="(\d+)"', html)
+    assert equal == ["100", "100", "100"]
+
+
+def test_the_device_picker_renders_cards_in_the_order_they_are_chosen(client):
+    """-dev names cards left to right and -ts pairs by position; drag order
+    has to survive a re-render, not just the moment of dragging."""
+    import time
+
+    from gui2.tests.test_rpc import FakeWorker, GIB
+
+    fake = FakeWorker(devices=((8 * GIB, 16 * GIB),))
+    fake.start()
+    try:
+        client.post("/server/rpc/check", data={
+            "rpc_endpoints": fake.endpoint, "_form": "1"})
+        query = urlencode([("backend", "vulkan"), ("rpc_endpoints", fake.endpoint),
+                           ("devices", "RPC0"), ("devices", "Vulkan0")])
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            field = client.get(f"/server/devices?{query}").text
+            if "looking for devices" not in field:
+                break
+            time.sleep(0.1)
+        rows = re.findall(r'<span class="devname">([^<]+)</span>', field)
+        assert rows[0] == "RPC0", f"the chosen order comes first: {rows}"
+        assert "-dev RPC0,Vulkan0" in field
+        assert 'draggable="true"' in field, "cards are draggable to reorder"
+        assert "deviceDrag" in field, "the drag script rides with the picker"
+    finally:
+        fake.close()
 
 
 def _write_bench_rows(root: Path, rows: list[dict]) -> Path:
