@@ -259,6 +259,22 @@ def test_an_unchecked_box_makes_the_worker_private_again(client):
     html = client.post("/server/rpc/command", data={"rpc_port": "50052"}).text
     assert "-H 127.0.0.1" in html
 
+def test_the_top_tabs_carry_the_current_state_between_server_and_autotune(client):
+    """A worker typed after the page loaded has updated the URL but not the
+    baked href of the tab links; the links re-read the address bar instead,
+    so the round trip Server → Autotune → Server keeps the worker."""
+    html = client.get("/server").text
+    tab = re.search(r'<a[^>]*data-path="/autotune"[^>]*>', html)
+    assert tab, "the Autotune tab is on the Server page"
+    assert "location.search" in tab.group(0)
+
+    back = client.get("/autotune").text
+    tab = re.search(r'<a[^>]*data-path="/server"[^>]*>', back)
+    assert tab, "the Server tab is on the Autotune page"
+
+    # and the History/Models tabs are still plain links
+    assert 'data-path' not in re.search(r'<a[^>]*href="/history"[^>]*>', html).group(0)
+
 def test_worker_check_keeps_the_address_in_the_url(client):
     """The links to the Autotune page come from the address bar; a worker that
     was typed and checked must survive that trip."""
