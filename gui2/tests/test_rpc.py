@@ -138,10 +138,11 @@ def test_something_that_is_not_a_worker_is_not_mistaken_for_one():
 
 def test_the_worker_command_binds_where_the_other_machine_can_reach_it():
     plan = WorkerPlan(devices=("Vulkan0",))
-    assert plan.text() == f"rpc-server -H 0.0.0.0 -p {DEFAULT_PORT} -d Vulkan0"
+    assert plan.text() == f"rpc-server -H 0.0.0.0 -p {DEFAULT_PORT} -d Vulkan0 -c"
 
     # 127.0.0.1 would only be reachable from the worker itself
     assert "-H 127.0.0.1" in WorkerPlan(open_to_network=False).text()
+    assert WorkerPlan(port=50055, cache=False, threads=4).text().endswith("-t 4")
     assert WorkerPlan(port=50055, cache=True, threads=4).text().endswith("-t 4 -c")
     assert "-d" not in WorkerPlan().command(), "no -d means every device it has"
 

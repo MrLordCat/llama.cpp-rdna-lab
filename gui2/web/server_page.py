@@ -779,7 +779,9 @@ def worker_panel(params, oob: bool = False) -> Div:
         Div(Div(toggle("rpc_open", "Reachable from this machine", plan.open_to_network),
                 cls="field switch"),
             Div(toggle("rpc_cache", "Cache tensors on the worker's disk", plan.cache),
-                cls="field switch"),
+                cls="field switch",
+                title="on by default: the first run copies the model across,"
+                      " each next run reads it from the worker machine's own disk"),
             cls="switches"),
         Div(
             A(f"Download rpc-worker-{plan.port}.bat",

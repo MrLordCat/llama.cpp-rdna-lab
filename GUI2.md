@@ -161,7 +161,7 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 9 198 lines of Python plus 3 155 of tests, against the old GUI's
+`gui2/` is 9 205 lines of Python plus 3 156 of tests, against the old GUI's
 15 458 with none. The suite is 224 tests and runs in about 20 seconds without
 touching a GPU.
 

@@ -111,7 +111,9 @@ class WorkerPlan:
     #: empty means "everything the machine has", which is rpc-server's default
     devices: tuple[str, ...] = ()
     open_to_network: bool = True
-    cache: bool = False
+    #: on by default: the first run copies the model over the network, the
+    #: next runs read it from the worker's own disk (%LOCALAPPDATA%\llama.cpp\rpc)
+    cache: bool = True
     threads: int = 0
     #: the other machine's address as this machine reaches it; fills the boxes
     host: str = ""
@@ -182,6 +184,9 @@ def worker_bat(plan: WorkerPlan) -> str:
         "echo The port is open. This window must stay open while the GUI uses this machine -",
         "echo press Ctrl+C to stop the worker.",
         "echo.",
+        *(["echo Cache is ON: the first model load copies the weights here,",
+           "echo later loads read them from this machine\\'s disk - much faster."]
+          if plan.cache else []),
         " ".join(argv),
         "pause",
     ]
