@@ -365,6 +365,7 @@ def start_server(cmd: list[str], log_path: Path, out_stream: Any) -> subprocess.
         creationflags=creationflags,
         env=env,
     )
+    _windows_job_kill_on_close(proc)
     return proc
 
 
@@ -386,27 +387,121 @@ def wait_health(host: str, port: int, timeout: float = 180.0, poll: float = 1.0,
     return False
 
 
-def stop_server(proc: subprocess.Popen[str], timeout: float = 180.0) -> None:
+def stop_server(proc: subprocess.Popen[str], timeout: float = 15.0) -> None:
+    """Ask the server to leave, then make sure it does.
+
+    llama-server with an RPC worker can hang in its final cleanup: the RPC
+    teardown barrier waits on the worker machine and nothing times the socket
+    out. The short graceful window is a courtesy, and the kill below is the
+    contract - a bench that ends must not leave its GPUs (or the worker's)
+    busy. A Ctrl+C during the wait is not an excuse either.
+    """
     if proc.poll() is not None:
         return
-    if os.name == "nt":
-        try:
-            proc.send_signal(signal.CTRL_BREAK_EVENT)
-        except (OSError, ValueError):
+    try:
+        if os.name == "nt":
+            try:
+                proc.send_signal(signal.CTRL_BREAK_EVENT)
+            except (OSError, ValueError):
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+        else:
             try:
                 proc.terminate()
             except OSError:
                 pass
-    else:
         try:
-            proc.terminate()
-        except OSError:
+            proc.wait(timeout=timeout)
+            return
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
             pass
+    finally:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=10)
+            except (subprocess.TimeoutExpired, KeyboardInterrupt):
+                # TerminateProcess should be enough; a whole tree is the last resort
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                                   capture_output=True, check=False)
+                else:
+                    try:
+                        os.kill(proc.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+
+def _windows_job_kill_on_close(proc: subprocess.Popen) -> None:
+    """Put the child in a job the OS terminates when this process dies.
+
+    A bench that crashes or is closed mid-run would otherwise leave the
+    server behind, holding the local cards and the worker's - exactly what
+    happens today when the server hangs in RPC cleanup and the console is
+    closed over it. No pywin32 needed; best-effort: if the parent is already
+    in a restrictive job, the assignment fails and the old behaviour stands.
+    """
+    if os.name != "nt":
+        return
     try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=60)
+        import ctypes
+        from ctypes import wintypes
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        info.BasicLimitInformation.LimitFlags = 0x2000
+        if not kernel32.SetInformationJobObject(
+                job, 9, ctypes.byref(info), ctypes.sizeof(info)):
+            kernel32.CloseHandle(job)
+            return
+        if not kernel32.AssignProcessToJobObject(job, proc._handle):
+            kernel32.CloseHandle(job)
+            return
+        # keep the handle alive on the proc; closing it is what kills the child
+        proc._bench2_job_handle = job
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------- #

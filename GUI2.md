@@ -246,6 +246,10 @@ column in its index but never fills it, so the page reads the mode and the
 lookahead from the run name, which is named after the configuration — that
 is what makes a row legible as `mtp n2` rather than silently `none`.
 
+bench2 spawns the server inside a Windows job with kill-on-close and stops
+it hard after a short grace period, so no interrupted or RPC-hung bench
+can leave its GPUs — or the worker machine's — busy longer than a minute.
+
 The layer split is edited with one slider per device (however many cards the
 build has) instead of a text list: the bars always sum to the scale and write
 the `-ts` list the form submits.
