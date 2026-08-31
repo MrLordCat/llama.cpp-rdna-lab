@@ -275,6 +275,12 @@ def test_one_file_does_the_other_machines_whole_setup(client):
     assert "Fill the Worker addresses box" in panel
     assert "192.168.1.60:50052" in panel, "the address the local box wants"
 
+    # the bat prints host:port; pasting the whole thing works too
+    panel = client.post("/server/rpc/command", data={
+        "rpc_port": "50052",
+        "rpc_host": "192.168.1.60:50052", "rpc_open": "on"}).text
+    assert "192.168.1.60:50052" in panel
+
 
 def test_workers_are_only_asked_who_they_are_when_someone_asks(client):
     page = client.get("/server?rpc_endpoints=192.168.1.9:50052").text

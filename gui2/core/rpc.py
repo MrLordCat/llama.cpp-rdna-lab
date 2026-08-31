@@ -167,6 +167,17 @@ def worker_bat(plan: WorkerPlan) -> str:
         "if not exist \"%~dp0rpc-server.exe\" (echo rpc-server.exe is missing - put this file next to it. & pause & exit /b 1)",
         f"netsh advfirewall firewall delete rule name=\"GUI 2.0 rpc-server {plan.port}\" >nul 2>&1",
         f"netsh advfirewall firewall add rule name=\"GUI 2.0 rpc-server {plan.port}\" dir=in action=allow protocol=TCP localport={plan.port} >nul",
+        f"set \"PORT={plan.port}\"",
+        "set \"ADDR=\"",
+        "powershell -NoProfile -Command \"Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -ne '127.0.0.1' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1 -ExpandProperty IPAddress | Set-Content -NoNewline -Encoding ascii '%~dp0rpc-addr.txt'\" >nul 2>&1",
+        "set /p \"ADDR=\" < \"%~dp0rpc-addr.txt\" >nul 2>&1",
+        "del \"%~dp0rpc-addr.txt\" >nul 2>&1",
+        "if not defined ADDR echo Could not find this machine's IPv4 address - run ipconfig and type it into the GUI manually.",
+        "echo.",
+        "echo Your address for the GUI is:",
+        "echo   %ADDR%:%PORT%",
+        "if defined ADDR echo(%ADDR%:%PORT%|clip",
+        "if defined ADDR echo It is already on your clipboard: go to the GUI, open More than one machine and press Ctrl+V into the address box.",
         "echo.",
         "echo The port is open. This window must stay open while the GUI uses this machine -",
         "echo press Ctrl+C to stop the worker.",
@@ -288,11 +299,13 @@ def guide(plan: WorkerPlan, this_machine: str = "") -> Guide:
     return Guide(
         steps=(
             f"Run the generated rpc-worker-{plan.port}.bat on the other machine as "
-            f"Administrator. It opens the firewall for port {plan.port} and starts "
-            "the worker.",
-            "Back here, put that machine's address into the Worker addresses box "
-            "(the panel fills it for you), then press Check: it confirms whether the "
-            "worker answered and how much memory it is offering.",
+            f"Administrator. It opens the firewall, starts the worker, prints the "
+            "machine's own address and copies it to the clipboard.",
+            "Back here: press Ctrl+V into the address box (or press the button that "
+            "puts it there), then press Check — it confirms whether the worker "
+            "answered and how much memory it is offering.",
+            "Tick the RPC0 row in the Devices list below, then start the server — or "
+            "run the same search on the Autotune page.",
         ),
         warnings=(
             "The RPC backend has no authentication and no encryption: anyone who can "

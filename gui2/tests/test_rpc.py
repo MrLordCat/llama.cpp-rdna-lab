@@ -181,6 +181,10 @@ def test_a_worker_bat_opens_the_port_and_starts_the_worker():
     assert f"localport=50052" in bat, "the firewall rule is part of the file"
     assert "rpc-server.exe\" -H 0.0.0.0 -p 50052 -d Vulkan0 -c" in bat
     assert "Run this file as Administrator" in bat or "Administrator" in bat
+    # the bat prints and copies the address so the user never types it
+    assert "Your address for the GUI is" in bat
+    assert "clip" in bat, "the address goes to the clipboard"
+    assert "%ADDR%:%PORT%" in bat
     # a closed worker still leaves the firewall alone: 127.0.0.1 only binds
     assert "-H 127.0.0.1" in worker_bat(WorkerPlan(open_to_network=False))
 

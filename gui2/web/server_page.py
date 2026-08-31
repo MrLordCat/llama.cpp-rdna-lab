@@ -691,7 +691,7 @@ def devices_field(spec: RunSpec, scan: Scan, backend: str, oob: bool = False):
 
 #: names for the worker-setup boxes. They configure the *other* machine, so
 #: they are not RunSpec fields and never reach a llama-server command line.
-WORKER_FIELDS = ("rpc_port", "rpc_devices", "rpc_open", "rpc_cache")
+WORKER_FIELDS = ("rpc_host", "rpc_port", "rpc_devices", "rpc_open", "rpc_cache")
 
 
 def worker_plan(params) -> WorkerPlan:
@@ -704,7 +704,13 @@ def worker_plan(params) -> WorkerPlan:
         port = int(text("rpc_port"))
     except ValueError:
         port = DEFAULT_PORT
+    # the bat prints (and copies) host:port; the whole thing pastes fine here
     host = text("rpc_host")
+    pair = re.fullmatch(r"([A-Za-z0-9_.\-]+):(\d{1,5})", host)
+    if pair:
+        pasted_port = int(pair.group(2))
+        if 1 <= pasted_port <= 65535:
+            host, port = pair.group(1), pasted_port
     if not re.fullmatch(r"[A-Za-z0-9_.\-]+", host):
         host = ""
     return WorkerPlan(
@@ -751,10 +757,11 @@ def worker_panel(params, oob: bool = False) -> Div:
                          | ({"rpc_open": "on"} if plan.open_to_network else {}))
     return Div(
         Div(
-            Label(Span("This machine sees it as"),
+            Label(Span("Address of the other machine"),
                   Input(type="text", name="rpc_host", value=plan.host,
-                        placeholder="192.168.1.60"),
-                  Span("the other machine's IP or name, used to fill the box below",
+                        placeholder="192.168.1.60:50052",
+                        onchange=_fill_address(plan.address)),
+                  Span("what the bat printed on that machine — paste it, Ctrl+V works",
                        cls="hint"),
                   cls="field wide"),
             Label(Span("Worker port"),
@@ -782,10 +789,16 @@ def worker_panel(params, oob: bool = False) -> Div:
                    onclick=_fill_address(plan.address),
                    title=f"puts {plan.address or 'host:port'} above; the machine is "
                          "whatever the bat was run on"),
+            *([Span(f"→ the Worker addresses box gets: {plan.address}", cls="hint")]
+              if plan.address else []),
             cls="actions",
         ),
         Span("Run this on the other machine (or the bat above):", cls="hint block"),
         _copyable(plan.text()),
+        # runs after every render of this panel, including the first one: the
+        # Worker addresses box is filled without a click, and again when the
+        # user changes the address
+        Script(_fill_address(plan.address)) if plan.address else None,
         id="rpcworker",
         cls="rpcworker",
         hx_post="/server/rpc/command",
@@ -836,6 +849,11 @@ def rpc_status(spec: RunSpec, fleet: Fleet | None = None, oob: bool = False) -> 
             body.append(Span(f"{gib(total / MIB)} free on the workers, on top of this "
                              "machine's own cards. These names are what the device list "
                              "and the tensor split refer to.", cls="hint"))
+        if fleet.workers and all(worker.ok for worker in fleet.workers):
+            body.append(Span("All answered. Next: tick the RPC row(s) in the Devices "
+                             "> list below (names show as " + ", ".join(fleet.names) +
+                             "), then start the server or run the Autotune search.",
+                             cls="hint"))
     return Div(
         Div(
             Span("Workers"),
@@ -910,7 +928,11 @@ def _section(section: Section, config: AppConfig, spec: RunSpec, options: dict,
     if "devices" in section.names:
         body.append(devices_field(spec, scan, backend))
 
-    return Details(Summary(section.title), *body, cls="panel", open=True if section.open else None)
+    # an RPC page that is being set up should not hide the very section it runs in
+    rpc_active = bool(spec.rpc_endpoints) or bool(params and any(
+        name in params for name in WORKER_FIELDS))
+    return Details(Summary(section.title), *body, cls="panel",
+                   open=True if section.open or rpc_active else None)
 
 
 def form(config: AppConfig, spec: RunSpec, scan: Scan, backend: str, params=None) -> Form:
