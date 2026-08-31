@@ -96,7 +96,7 @@ def test_the_cards_are_named_rather_than_left_to_the_hardware_profile():
 def test_bench2_index_records_gpu_order_and_proportions():
     from scripts.bench2 import METRICS_COLUMNS, _placement_fields
 
-    assert "devices" in METRICS_COLUMNS and "tensor_split" in METRICS_COLUMNS
+    assert {"series_id", "devices", "tensor_split"}.issubset(METRICS_COLUMNS)
     assert _placement_fields({"dev": "Vulkan1,Vulkan0", "ts": "100,60"}) == {
         "devices": "Vulkan1,Vulkan0", "tensor_split": "100,60"}
     assert _placement_fields({"dev": "", "ts": ""}) == {
@@ -189,11 +189,14 @@ def test_a_second_value_on_a_row_is_a_second_run_with_its_own_name():
     bench = BENCH_DEFAULTS.with_values({"batch": "2048,8192", "kv": "q8_0,f16"})
     assert config_count(bench) == 4
 
-    runs = bench_commands(DEFAULTS, bench, "scripts/bench2.py", "llama-server", backend="vk")
+    runs = bench_commands(DEFAULTS, bench, "scripts/bench2.py", "llama-server",
+                          series_id="series-one", backend="vk")
     assert len(runs) == 4
     names = [name for name, _argv in runs]
     assert len(set(names)) == 4
     assert all(name.startswith("vk-") for name in names)
+    assert all(value_after(argv, "--series-id") == "series-one" for _name, argv in runs), \
+        "one press of Start owns every configuration it queued"
     # each command carries only its own configuration
     first, argv = runs[0]
     assert "b2048-u1024-q8_0-none" in first

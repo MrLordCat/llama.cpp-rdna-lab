@@ -31,6 +31,8 @@ class Result:
     """One measurement: a level or a whole session, of one run."""
 
     run_name: str = ""
+    #: all configurations queued by one press of Autotune Start
+    series_id: str = ""
     kind: str = ""
     level: str = ""
     when: str = ""
@@ -106,6 +108,7 @@ def read_index(path: Path) -> list[Result]:
     return [
         Result(
             run_name=row.get("run_name", ""),
+            series_id=row.get("series_id", ""),
             kind=row.get("type", ""),
             level=row.get("level", ""),
             when=row.get("timestamp", ""),

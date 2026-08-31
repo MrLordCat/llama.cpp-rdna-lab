@@ -48,7 +48,7 @@ DEFAULT_RESULTS = Path(os.environ.get("BENCH2_RESULTS_DIR", ROOT / "build_logs" 
 LOAD_GGUF_FALLBACK = [ROOT / "models" / "Qwen3.8-27B-Q4_K_M.gguf"]
 
 METRICS_COLUMNS = [
-    "run_name", "type", "level", "run_idx", "timestamp", "backend", "profile",
+    "run_name", "series_id", "type", "level", "run_idx", "timestamp", "backend", "profile",
     "model", "commit", "devices", "tensor_split", "ctx", "prompt_tokens",
     "decoded_tokens", "prefill_tps",
     "decode_tps", "ttft_ms", "total_ms", "aggregate_tps", "mtp_draft_n",
@@ -900,6 +900,7 @@ def run_single_level(cfg: Config, writer: RunWriter, backend: str, host: str,
           flush=True)
     row = {
         "run_name": writer.run_name,
+        "series_id": cfg.args.series_id or writer.run_name,
         "type": "single",
         "level": level_idx,
         "run_idx": shot,
@@ -1008,6 +1009,7 @@ def run_session(cfg: Config, writer: RunWriter, backend: str, host: str,
                         t["decode_tps"], t["ttft_ms"], t["wall_s"]])
     row = {
         "run_name": writer.run_name,
+        "series_id": cfg.args.series_id or writer.run_name,
         "type": "session",
         "level": session_level,
         "run_idx": shot,
@@ -1120,6 +1122,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         writer.run_json_meta = {
             "run_name": run_name,
+            "series_id": args.series_id or run_name,
             "timestamp": now_iso(),
             "type": "mixed" if levels and session_levels else ("single" if levels else "session"),
             "backend": backend,
@@ -1245,6 +1248,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="run benchmark scenario(s)")
     run.add_argument("--run-name", default=None, help="unique run name (auto-generated if omitted)")
+    run.add_argument("--series-id", default="", help="group runs launched as one Autotune series")
     run.add_argument("--level", default="", help="single levels: '2', '0,2', '1-3' (default: 1)")
     run.add_argument("--session-level", default="", help="session levels: '1', '2', '3'")
     run.add_argument("--runs", type=int, default=1, help="repeat each scenario N times")

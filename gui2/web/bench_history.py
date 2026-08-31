@@ -1,9 +1,9 @@
-"""The Autotune history: every bench2 measurement, filterable and expandable.
+"""The Autotune history: every bench2 launch series, filterable and expandable.
 
-bench2's index holds one row per scenario; a run is a whole folder of them.
-This page shows one row per run — the best scenario's numbers — and expands a
-row into the scenarios it is made of, because "best decode 61 t/s" hides the
-three other configurations the same search measured.
+bench2's index holds one row per scenario; a run is a whole folder of them and
+one press of Start may queue several runs. This page shows one row per launch
+series — the best scenario's numbers — and expands it into every run and
+scenario the search measured.
 
 Everything here reads bench2's own index.csv and run.json files; nothing
 starts a server or asks a driver.
@@ -37,7 +37,7 @@ from gui2.web.layout import shell
 #: (query key, header, numeric) — numeric columns sort and right-align
 COLUMNS: tuple[tuple[str, str, bool], ...] = (
     ("time", "When", False),
-    ("run", "Run", False),
+    ("run", "Series", False),
     ("backend", "Backend", False),
     ("build", "Build", False),
     ("model", "Model", False),
@@ -47,13 +47,13 @@ COLUMNS: tuple[tuple[str, str, bool], ...] = (
     ("prefill", "Prefill t/s", True),
     ("decode", "Decode t/s", True),
     ("total", "Total t/s", True),
-    ("scenarios", "Scenarios", True),
+    ("scenarios", "Runs / scenarios", True),
 )
 COLSPAN = len(COLUMNS)
 
 SORT_KEYS = {
     "time": lambda row: row[0].when,
-    "run": lambda row: row[0].run_name,
+    "run": lambda row: series_key(row[0]),
     "backend": lambda row: row[0].backend,
     "build": lambda row: row[1],
     "model": lambda row: row[0].model,
@@ -63,7 +63,7 @@ SORT_KEYS = {
     "prefill": lambda row: row[0].prefill_tps,
     "decode": lambda row: row[0].decode_tps,
     "total": lambda row: row[0].aggregate_tps,
-    "scenarios": lambda row: len(row[3]),
+    "scenarios": lambda row: (len({item.run_name for item in row[3]}), len(row[3])),
 }
 
 
@@ -71,17 +71,23 @@ def _text(params, key: str) -> str:
     return str(params.get(key, "") or "").strip()
 
 
-def grouped(rows: list[Result], lane: str) -> dict[str, list[Result]]:
-    """One run name -> its scenarios, after the lane filter has its say.
+def series_key(row: Result) -> str:
+    """The launch that owns a row; old indexes used one launch per run."""
+    return row.series_id or row.run_name
 
-    The lane filter picks which scenario of a run the row stands for: a search
-    that measured L1-L4 still appears when L2 is asked, as its L2 numbers.
+
+def grouped(rows: list[Result], lane: str) -> dict[str, list[Result]]:
+    """One launch series -> its rows, after the lane filter has its say.
+
+    The lane filter picks which scenario of a series the row stands for: a
+    search that measured L1-L4 still appears when L2 is asked, as its L2
+    numbers. Legacy rows without a series id keep their old one-run grouping.
     """
     groups: dict[str, list[Result]] = {}
     for row in rows:
         if lane and row.scenario != lane:
             continue
-        groups.setdefault(row.run_name, []).append(row)
+        groups.setdefault(series_key(row), []).append(row)
     return groups
 
 
@@ -200,18 +206,21 @@ def table(config: AppConfig, params) -> Div:
         ]
         run_rows = []
         for representative_row, run_build, placement, scenarios in chosen:
+            series_id = series_key(representative_row)
+            run_count = len({row.run_name for row in scenarios})
             when = representative_row.time_text
             draft = "none"
             if representative_row.spec_mode == "mtp":
                 draft = (f"mtp n{representative_row.draft_n}"
                          if representative_row.draft_n else "mtp")
             run_rows += [
-                Tr(Td(A("▸", hx_get=f"/autotune/history/run?run_name={quote(representative_row.run_name)}",
-                       hx_target=f"#detail-{representative_row.run_name}",
+                  Tr(Td(A("▸", hx_get=f"/autotune/history/run?series_id={quote(series_id)}",
+                      hx_target=f"#detail-{series_id}",
                        hx_swap="outerHTML")),
                    Td(when),
-                   Td(Path(representative_row.run_name).name, title=representative_row.run_name,
-                      cls="label"),
+                         Td((f"Series · {run_count} runs" if representative_row.series_id
+                              else Path(representative_row.run_name).name),
+                             title=series_id, cls="label"),
                    Td(representative_row.backend),
                    Td(run_build or "—"),
                    Td(Path(representative_row.model).name, title=representative_row.model,
@@ -223,9 +232,9 @@ def table(config: AppConfig, params) -> Div:
                    Td(f"{representative_row.prefill_tps:.0f}", cls="num"),
                    Td(f"{representative_row.decode_tps:.1f}", cls="num"),
                    Td(f"{representative_row.aggregate_tps:.1f}", cls="num"),
-                   Td(str(len(scenarios)), cls="num"),
+                         Td(f"{run_count} / {len(scenarios)}", cls="num"),
                    cls="run-row"),
-                Tr(id=f"detail-{representative_row.run_name}"),
+                     Tr(id=f"detail-{series_id}"),
             ]
         body = Div(
             Div(Table(Thead(Tr(*header)), Tbody(*run_rows)),
@@ -234,21 +243,22 @@ def table(config: AppConfig, params) -> Div:
         )
 
     return Div(
-        H3("Autotune runs"),
-        Span("One row per run: the numbers are its fastest decode, and ▸ lists every "
-             "scenario that run measured. Filtering keeps the run's other scenarios "
-             "visible when expanded.", cls="hint block"),
+           H3("Autotune series"),
+           Span("One row per press of Start: the numbers are the series' fastest decode, "
+               "and ▸ lists every queued run and scenario. Older measurements without "
+               "series metadata remain one row per run.", cls="hint block"),
         filters_row(params, rows, cache, sort, desc),
         body,
         id="history",
     )
 
 
-def run_detail(config: AppConfig, run_name: str) -> Tr:
-    """Every scenario of one run, as the row the main table expands into."""
+def run_detail(config: AppConfig, series_id: str) -> Tr:
+    """Every run and scenario of one launch series."""
     scenarios = [row for row in read_index(config.bench_results / "index.csv")
-                 if row.run_name == run_name]
-    scenarios.sort(key=lambda row: (row.when, row.level))
+                 if series_key(row) == series_id]
+    scenarios.sort(key=lambda row: (row.run_name, row.when, row.level))
+    run_count = len({row.run_name for row in scenarios})
     scenario_rows = []
     for row in scenarios:
         row_spec = row.spec_mode
@@ -256,6 +266,7 @@ def run_detail(config: AppConfig, run_name: str) -> Tr:
             row_spec += f" · draft {row.draft_n}" if row.draft_n else " · draft ?"
         scenario_rows.append(Tr(
             Td(row.time_text),
+            Td(Path(row.run_name).name, title=row.run_name, cls="label"),
             Td(row.scenario, cls="num"),
             Td(f"{row.prefill_tps:.0f}", cls="num"),
             Td(f"{row.decode_tps:.1f}", cls="num"),
@@ -266,24 +277,25 @@ def run_detail(config: AppConfig, run_name: str) -> Tr:
         ))
     return Tr(
         Td(Div(
-            H3(f"{Path(run_name).name} — every scenario"),
+            H3(f"{run_count} runs — every scenario"),
             Div(Table(
-                Thead(Tr(*[Th(name, cls="num" if name != "When" and name != "Status" else None)
-                           for name in ("When", "Lane", "Prefill t/s", "Decode t/s",
+                Thead(Tr(*[Th(name, cls="num" if name not in {"When", "Run", "Status"}
+                           else None)
+                           for name in ("When", "Run", "Lane", "Prefill t/s", "Decode t/s",
                                         "Total t/s", "Context", "Status", "Spec")])),
                 Tbody(*scenario_rows),
             ), cls="table-wrap"),
-            A("hide", hx_get=f"/autotune/history/hide?run_name={run_name}",
-              hx_target=f"#detail-{run_name}", hx_swap="outerHTML", cls="hint"),
+                        A("hide", hx_get=f"/autotune/history/hide?series_id={quote(series_id)}",
+                            hx_target=f"#detail-{series_id}", hx_swap="outerHTML", cls="hint"),
             cls="run-detail",
         ), colspan=COLSPAN + 1),
-        id=f"detail-{run_name}",
+        id=f"detail-{series_id}",
     )
 
 
-def hidden_detail(run_name: str) -> Tr:
+def hidden_detail(series_id: str) -> Tr:
     """The collapsed stub the expand link fills in."""
-    return Tr(id=f"detail-{run_name}")
+    return Tr(id=f"detail-{series_id}")
 
 
 def page(config: AppConfig, params) -> str:

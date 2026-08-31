@@ -77,6 +77,10 @@ class AppConfig:
     def memory_json(self) -> Path:
         return self.state_dir / "memory.json"
 
+    @property
+    def autotune_state_json(self) -> Path:
+        return self.state_dir / "autotune-state.json"
+
     @classmethod
     def load(cls, config_file: Path | None = None) -> "AppConfig":
         path = config_file or Path(os.environ.get(ENV_CONFIG, "") or DEFAULT_CONFIG_FILE)

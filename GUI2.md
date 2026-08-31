@@ -161,8 +161,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 9 418 lines of Python plus 3 243 of tests, against the old GUI's
-15 458 with none. The suite is 229 tests and runs in about 20 seconds without
+`gui2/` is 9 538 lines of Python plus 3 325 of tests, against the old GUI's
+15 458 with none. The suite is 232 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -248,15 +248,22 @@ from the search with a warning instead of blocking it. Draft tokens are an
 axis of their own: ticking 2 and 3 queues one run per count, and only where
 speculation is on. Once a run starts, the Results panel follows it: one row
 per run, filled in from bench2's own index as each scenario is recorded. The
-Autotune history page lists every finished run the same way, filtered by
-lane, backend, speculation and build, sorted by any column, with ▸ expanding
-a run into the scenarios it is made of. Each index row keeps the ordered
+Autotune history page groups every configuration queued by one press of Start
+into a single series, filtered by lane, backend, speculation and build, sorted
+by any column, with ▸ expanding the series into its runs and scenarios. Old
+index rows without a series id remain one row per run. Each index row keeps the ordered
 `devices` list and `tensor_split`; the history shows both in `GPU order / split`
 and older rows fall back to the same values in `run.json`. Automatic placement
 is written as `auto`, not as an ambiguous missing value. bench2 declares an
 `mtp_draft_n` column in its index but never fills it, so the page reads the mode and the
 lookahead from the run name, which is named after the configuration — that
 is what makes a row legible as `mtp n2` rather than silently `none`.
+
+Every Autotune form submission also stores the same secret-free query string
+used by the address bar in `build_logs/gui2/autotune-state.json`. Opening a
+plain `/autotune` page restores the last levels, sweep axes, repeats and server
+settings. A link from Server replaces its model, build and devices while the
+remembered workload and sweep choices stay selected.
 
 bench2 spawns the server inside a Windows job with kill-on-close and stops
 it hard after a short grace period, so no interrupted or RPC-hung bench

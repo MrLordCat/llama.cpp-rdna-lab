@@ -715,13 +715,30 @@ def problems_for(config: AppConfig, spec: RunSpec, bench: BenchSpec) -> list[Pro
 BACKEND_FLAG = {"rocm": "rocm", "hip": "rocm", "vulkan": "vk", "cpu": "cpu"}
 
 
+def bench2_supports_series(script: Path) -> bool:
+    """Whether the bench2 copy about to run knows --series-id.
+
+    The GUI measures with whichever bench2 belongs to its build root; an older
+    copy (or one being changed in another worktree) sees an unknown option as
+    a fatal error. A missing flag then means one row per run in history, the
+    same grouping such a bench always had.
+    """
+    try:
+        text = script.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return 'add_argument("--series-id"' in text
+
+
 def commands(config: AppConfig, spec: RunSpec, bench: BenchSpec,
-             python: str = "python") -> list[tuple[str, list[str]]]:
+             python: str = "python", series_id: str = "") -> list[tuple[str, list[str]]]:
     build = server_page.build_of(config, spec)
     binary = build.server_bin if build and build.server_bin else Path("llama-server")
     backend = BACKEND_FLAG.get(build.backend if build else "", "")
+    if series_id and not bench2_supports_series(config.bench_script):
+        series_id = ""
     return bench_commands(spec, bench, config.bench_script, binary,
-                          backend=backend, python=python)
+                          series_id=series_id, backend=backend, python=python)
 
 
 def preview(config: AppConfig, spec: RunSpec, bench: BenchSpec, scan: Scan, backend: str,
@@ -808,7 +825,7 @@ def form(config: AppConfig, spec: RunSpec, bench: BenchSpec, results: list[Resul
 
 
 def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, bench: BenchSpec,
-          board: list[tuple[str, Configuration]]):
+          board: list[tuple[str, Configuration]], series_id: str):
     """Validate, then hand the runs to the same GPU slot the server uses."""
     blocking = [problem.message for problem in problems_for(config, spec, bench)
                 if problem.level == "error"]
@@ -817,7 +834,7 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, bench: Bench
 
     # console_python(): the GUI may itself be running under pythonw.exe, which
     # would hand the benchmark a child that cannot be signalled
-    runs = commands(config, spec, bench, python=console_python())
+    runs = commands(config, spec, bench, python=console_python(), series_id=series_id)
     try:
         supervisor.start_all("autotune", [(f"bench2 · {name}", argv) for name, argv in runs],
                              cwd=config.bench_script.parent.parent)

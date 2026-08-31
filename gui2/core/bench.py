@@ -511,6 +511,7 @@ def to_bench_argv(
     script: str | Path,
     server_bin: str | Path,
     run_name: str = "",
+    series_id: str = "",
     backend: str = "",
     python: str = "python",
 ) -> list[str]:
@@ -522,6 +523,8 @@ def to_bench_argv(
     argv = [python, str(script), "run"]
     if run_name:
         argv += ["--run-name", run_name]
+    if series_id:
+        argv += ["--series-id", series_id]
     if levels := [key for key in items(bench.levels) if key in LEVELS]:
         argv += ["--level", ",".join(levels)]
     if sessions := [key for key in items(bench.session_levels) if key in SESSIONS]:
@@ -582,6 +585,7 @@ def bench_commands(
     bench: BenchSpec,
     script: str | Path,
     server_bin: str | Path,
+    series_id: str = "",
     backend: str = "",
     python: str = "python",
 ) -> list[tuple[str, list[str]]]:
@@ -592,7 +596,8 @@ def bench_commands(
     """
     return [
         (name, to_bench_argv(spec, bench, config, script, server_bin,
-                             run_name=name, backend=backend, python=python))
+                             run_name=name, series_id=series_id,
+                             backend=backend, python=python))
         for name, config in zip(run_names(spec, bench, backend), configurations(bench))
     ]
 

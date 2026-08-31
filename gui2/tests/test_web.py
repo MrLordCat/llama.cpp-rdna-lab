@@ -591,6 +591,29 @@ def test_a_ubatch_above_one_batch_is_skipped_rather_than_blocking(client, models
     assert "Show the 10 commands" in html
 
 
+def test_a_bench2_without_series_id_gets_no_such_flag(tmp_path):
+    """An older bench2 must not be killed by an argument it does not know."""
+    from gui2.core.bench import BENCH_DEFAULTS
+    from gui2.core.runspec import DEFAULTS
+    from gui2.web.autotune_page import bench2_supports_series, commands
+
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    older = scripts / "bench2.py"
+    older.write_text('add_argument("--run-name")\n', encoding="utf-8")
+    config = AppConfig(data_root=tmp_path, builds_root=tmp_path)
+    assert not bench2_supports_series(older)
+
+    argv = commands(config, DEFAULTS, BENCH_DEFAULTS, series_id="series-test")[0][1]
+    assert "--series-id" not in argv, "the older script would reject the option"
+    newer = scripts / "bench2.py"
+    newer.write_text('add_argument("--series-id")\nadd_argument("--run-name")\n',
+                     encoding="utf-8")
+    assert bench2_supports_series(newer)
+    argv = commands(config, DEFAULTS, BENCH_DEFAULTS, series_id="series-test")[0][1]
+    assert "--series-id" in argv
+
+
 def test_the_results_table_follows_the_queue_bench2_is_measuring(client):
     """One row per run, filling in as bench2 records; no scraping of its log."""
     from gui2.core.bench import Configuration
@@ -658,6 +681,31 @@ def test_the_address_bar_keeps_every_ticked_value_not_just_the_last(client, mode
     reloaded = bench_commands_shown(client.get(pushed).text)
     assert len(reloaded) == 2
     assert "--kv-k q8_0" in reloaded[0] and "--kv-k q4_0" in reloaded[1]
+
+
+def test_a_new_autotune_page_restores_the_last_form(tmp_path, models):
+    """The safe URL state survives both a new tab and a GUI restart."""
+    config = AppConfig(data_root=tmp_path)
+    data = autotune_form(models["long"], levels=["2", "3"],
+                         batch=["4096", "8192"], ubatch="256", runs="3")
+    with TestClient(create_app(config)) as owner:
+        owner.post("/autotune/preview", data=data)
+
+    with TestClient(create_app(config)) as reopened:
+        restored = reopened.get("/autotune", follow_redirects=False)
+        assert restored.status_code == 303
+        location = unquote(restored.headers["location"])
+        for value in ("levels=2", "levels=3", "batch=4096", "batch=8192",
+                      "ubatch=256", "runs=3"):
+            assert value in location
+
+        # An explicit link from Server owns the new model but keeps the sweep.
+        explicit = reopened.get("/autotune", params={
+            "model": models["short"], "_form": "1"}, follow_redirects=False)
+        assert explicit.status_code == 303
+        merged = unquote(explicit.headers["location"])
+        assert f"model={models['short']}" in merged
+        assert "levels=2" in merged and "batch=4096" in merged and "runs=3" in merged
 
 
 def test_unticking_every_value_on_a_row_is_reported_rather_than_ignored(client, models):
@@ -828,7 +876,7 @@ def _write_bench_rows(root: Path, rows: list[dict]) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / "index.csv"
     with path.open("w", encoding="utf-8", newline="") as handle:
-        keys = ["run_name", "type", "level", "timestamp", "backend", "model",
+        keys = ["run_name", "series_id", "type", "level", "timestamp", "backend", "model",
                 "ctx", "prefill_tps", "decode_tps", "aggregate_tps",
             "mtp_draft_n", "devices", "tensor_split", "status", "path",
             "session_turns"]
@@ -894,8 +942,39 @@ def test_the_autotune_history_filters_and_expands(tmp_path):
         assert build.count('class="run-row"') == 1 and "vk-model" in build
 
         detail = owner.get("/autotune/history/run",
-                           params={"run_name": "vk-model-b1024-u128-q8_0-none"}).text
+                           params={"series_id": "vk-model-b1024-u128-q8_0-none"}).text
         assert "every scenario" in detail and "35.0" in detail and "30.0" in detail
+
+
+def test_one_autotune_start_is_one_history_series(tmp_path):
+    """Different configurations queued together collapse into one history row."""
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "bench2.py").write_text("", encoding="utf-8")
+    folder = _write_bench_rows(tmp_path, [
+        dict(run_name="vk-search-b4096-u256-q8_0-none", series_id="series-aug31",
+             type="single", level="2", timestamp="2026-08-31T10:00:00+03:00",
+             backend="vk", model="long.gguf", ctx="49152", prefill_tps="900",
+             decode_tps="31", aggregate_tps="29", status="ok",
+             path=str(tmp_path / "run-a")),
+        dict(run_name="vk-search-b8192-u512-q8_0-none", series_id="series-aug31",
+             type="single", level="2", timestamp="2026-08-31T10:04:00+03:00",
+             backend="vk", model="long.gguf", ctx="49152", prefill_tps="1100",
+             decode_tps="35", aggregate_tps="32", status="ok",
+             path=str(tmp_path / "run-b")),
+    ])
+    assert folder.is_dir()
+
+    with TestClient(create_app(AppConfig(data_root=tmp_path))) as owner:
+        html = owner.get("/autotune/history").text
+        assert html.count('class="run-row"') == 1
+        assert "Series · 2 runs" in html and "2 / 2" in html
+        assert "35.0" in html, "the series row keeps its fastest representative"
+
+        detail = owner.get("/autotune/history/run",
+                           params={"series_id": "series-aug31"}).text
+        assert "vk-search-b4096-u256-q8_0-none" in detail
+        assert "vk-search-b8192-u512-q8_0-none" in detail
+        assert "31.0" in detail and "35.0" in detail
 
 
 def test_gpu_placement_falls_back_to_an_older_run_json(tmp_path):

@@ -5,12 +5,14 @@ from __future__ import annotations
 import secrets
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode
 
 from fasthtml.common import Div, HtmxResponseHeaders, Link, RedirectResponse, Script, fast_app
 from starlette.responses import Response
 
 from gui2.config import AppConfig
 from gui2.core import rpc
+from gui2.core.autotune_state import AutotuneStateStore
 from gui2.core.devices import DeviceService
 from gui2.core.history import HistoryStore, sync_autotune_runs
 from gui2.core.memstore import MemoryStore
@@ -26,6 +28,7 @@ def create_app(config: AppConfig | None = None):
     config = config or AppConfig.load()
     store = HistoryStore(config.history_csv)
     memory = MemoryStore(config.memory_json)
+    autotune_state = AutotuneStateStore(config.autotune_state_json)
 
     def learn(job) -> None:
         """Keep what a finished run left behind, in the store it belongs to.
@@ -98,6 +101,26 @@ def create_app(config: AppConfig | None = None):
         build = server_page.build_of(config, spec)
         backend = build.backend if build else ""
         return server_page.rescan(devices, spec, backend), backend
+
+    def restored_autotune_query(params) -> str:
+        """Saved sweep choices merged onto an explicit run from Server.
+
+        A full Autotune URL already says everything and is left alone. A
+        Server link owns the model, build and devices, while the remembered
+        form supplies only Autotune's workload and sweep fields.
+        """
+        saved = autotune_state.query()
+        if not saved or autotune_page.AUTOTUNE_MARKER in params:
+            return ""
+        if not params:
+            return saved
+        current = list(params.multi_items())
+        named = {key for key, _value in current}
+        bench_names = set(autotune_page.BENCH_BY_NAME)
+        remembered = [(key, value) for key, value in parse_qsl(
+            saved, keep_blank_values=True) if key in bench_names and key not in named]
+        return urlencode([*current, *remembered,
+                          (autotune_page.AUTOTUNE_MARKER, "1")])
 
     @rt("/server", methods=["GET"])
     def server(req):
@@ -227,6 +250,8 @@ def create_app(config: AppConfig | None = None):
 
     @rt("/autotune", methods=["GET"])
     def autotune(req):
+        if restored := restored_autotune_query(req.query_params):
+            return RedirectResponse("/autotune?" + restored, status_code=303)
         # the server under test arrives in the query string from the Server page;
         # a link without bench values is read as a measurement of that one run
         spec = server_page.spec_from_params(req.query_params)
@@ -240,6 +265,8 @@ def create_app(config: AppConfig | None = None):
     @rt("/autotune/preview", methods=["POST"])
     async def autotune_preview(req):
         params = await req.form()
+        query = autotune_page.state_query(params)
+        autotune_state.remember(query)
         spec = server_page.spec_from_params(params)
         scan, backend = scanned(spec)
         bench = autotune_page.autotune_from_params(params, spec)
@@ -249,7 +276,7 @@ def create_app(config: AppConfig | None = None):
             # of the old one says nothing about the new one
             autotune_page.earlier_panel(autotune_page.measured(config, spec), spec, bench,
                                         oob=True),
-            HtmxResponseHeaders(push_url="/autotune?" + autotune_page.state_query(params)),
+            HtmxResponseHeaders(push_url="/autotune?" + query),
         )
 
     @rt("/autotune/form", methods=["POST"])
@@ -260,6 +287,8 @@ def create_app(config: AppConfig | None = None):
         list, which the preview alone cannot refresh.
         """
         params = await req.form()
+        query = autotune_page.state_query(params)
+        autotune_state.remember(query)
         spec = server_page.spec_from_params(params)
         bench = autotune_page.autotune_from_params(params, spec)
         scan, backend = scanned(spec)
@@ -268,12 +297,13 @@ def create_app(config: AppConfig | None = None):
             autotune_page.form(config, spec, bench, results, scan, backend),
             autotune_page.preview(config, spec, bench, scan, backend, oob=True),
             autotune_page.earlier_panel(results, spec, bench, oob=True),
-            HtmxResponseHeaders(push_url="/autotune?" + autotune_page.state_query(params)),
+            HtmxResponseHeaders(push_url="/autotune?" + query),
         )
 
     @rt("/autotune/start", methods=["POST"])
     async def autotune_start(req):
         params = await req.form()
+        autotune_state.remember(autotune_page.state_query(params))
         spec = server_page.spec_from_params(params)
         bench = autotune_page.autotune_from_params(params, spec)
         # the queue the Results panel will follow; replaced by the next start
@@ -281,7 +311,10 @@ def create_app(config: AppConfig | None = None):
         # and when the queue began: rows before this belong to the previous
         # search of the same parameters, which reuses the same folder names
         app.state.live_started = datetime.now().astimezone().isoformat(timespec="seconds")
-        return autotune_page.start(config, supervisor, spec, bench, app.state.live_board)
+        app.state.live_series_id = (
+            f"series-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}")
+        return autotune_page.start(config, supervisor, spec, bench, app.state.live_board,
+                                   app.state.live_series_id)
 
     @rt("/autotune/results", methods=["GET"])
     def autotune_results():
@@ -296,11 +329,11 @@ def create_app(config: AppConfig | None = None):
 
     @rt("/autotune/history/run", methods=["GET"])
     def autotune_history_run(req):
-        return bench_history.run_detail(config, req.query_params.get("run_name", ""))
+        return bench_history.run_detail(config, req.query_params.get("series_id", ""))
 
     @rt("/autotune/history/hide", methods=["GET"])
     def autotune_history_hide(req):
-        return bench_history.hidden_detail(req.query_params.get("run_name", ""))
+        return bench_history.hidden_detail(req.query_params.get("series_id", ""))
 
     @rt("/models", methods=["GET"])
     def models(req):
@@ -323,6 +356,8 @@ def create_app(config: AppConfig | None = None):
     app.state.supervisor = supervisor
     app.state.devices = devices
     app.state.memory = memory
+    app.state.autotune_state = autotune_state
     app.state.live_board = []
     app.state.live_started = ""
+    app.state.live_series_id = ""
     return app
