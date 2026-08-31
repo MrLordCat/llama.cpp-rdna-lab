@@ -11,9 +11,9 @@ Run:
     python scripts/bench2.py find --name "l2"
     python scripts/bench2.py list --recent 10
 
-Output layout per run (default build_logs/bench/<RUN_NAME>/):
+Output layout per run (default build_logs/bench/<RUN_NAME>--<RUN_ID>/):
     run.json            effective config + metadata
-    <RUN_NAME>.jsonl    event log (server, per-request, summary)
+    <RUN_ID>.jsonl      event log (server, per-request, summary)
     metrics.csv         one row per measurement (single level or session)
     summary.md          human-readable report
     server.log          raw server output
@@ -38,6 +38,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -48,9 +49,9 @@ DEFAULT_RESULTS = Path(os.environ.get("BENCH2_RESULTS_DIR", ROOT / "build_logs" 
 LOAD_GGUF_FALLBACK = [ROOT / "models" / "Qwen3.8-27B-Q4_K_M.gguf"]
 
 METRICS_COLUMNS = [
-    "run_name", "series_id", "type", "level", "run_idx", "timestamp", "backend", "profile",
-    "model", "commit", "devices", "tensor_split", "ctx", "prompt_tokens",
-    "decoded_tokens", "prefill_tps",
+    "run_name", "run_id", "series_id", "type", "level", "run_idx",
+    "timestamp", "backend", "profile", "model", "commit", "devices",
+    "tensor_split", "ctx", "prompt_tokens", "decoded_tokens", "prefill_tps",
     "decode_tps", "ttft_ms", "total_ms", "aggregate_tps", "mtp_draft_n",
     "mtp_accepted", "eff_decode_tps", "session_turns", "decode_slope",
     "status", "path",
@@ -159,6 +160,12 @@ class Config:
 # --------------------------------------------------------------------------- #
 def now_iso() -> str:
     return dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def new_run_id() -> str:
+    """Return a sortable, process-independent ID for one bench invocation."""
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"{stamp}-{uuid.uuid4().hex}"
 
 
 def parse_levels(spec: str | None) -> list[int]:
@@ -614,16 +621,31 @@ def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def reserve_run_dir(results_dir: Path, run_name: str) -> tuple[str, Path]:
+    """Atomically reserve a unique directory without replacing an older run."""
+    ensure_dir(results_dir)
+    for _ in range(16):
+        run_id = new_run_id()
+        run_dir = results_dir / f"{run_name}--{run_id}"
+        ensure_dir(run_dir.parent)
+        try:
+            run_dir.mkdir(exist_ok=False)
+        except FileExistsError:
+            continue
+        return run_id, run_dir
+    raise RuntimeError(f"bench2: could not reserve a unique run directory for {run_name!r}")
+
+
 class RunWriter:
-    def __init__(self, run_dir: Path, run_name: str) -> None:
-        ensure_dir(run_dir)
+    def __init__(self, run_dir: Path, run_name: str, run_id: str) -> None:
         self.run_dir = run_dir
         self.run_name = run_name
+        self.run_id = run_id
         self.events: list[dict[str, Any]] = []
         self.rows: list[dict[str, Any]] = []
 
     def event(self, kind: str, **kw: Any) -> None:
-        ev = {"ts": now_iso(), "event": kind}
+        ev = {"ts": now_iso(), "run_id": self.run_id, "event": kind}
         ev.update(kw)
         self.events.append(ev)
         print(f"[bench2] {kind}: {kw}", file=sys.stderr)
@@ -632,7 +654,7 @@ class RunWriter:
         self.rows.append(row)
 
     def write_jsonl(self) -> None:
-        with open(self.run_dir / f"{self.run_name}.jsonl", "w", encoding="utf-8") as fh:
+        with open(self.run_dir / f"{self.run_id}.jsonl", "w", encoding="utf-8") as fh:
             for ev in self.events:
                 fh.write(json.dumps(ev, ensure_ascii=False) + "\n")
 
@@ -649,7 +671,10 @@ class RunWriter:
                 w.writerow({k: r.get(k, "") for k in METRICS_COLUMNS})
 
     def write_summary(self, title: str, sections: list[tuple[str, str]]) -> None:
-        lines = [f"# {title}", "", f"Run: `{self.run_name}` — {now_iso()}", ""]
+        lines = [
+            f"# {title}", "", f"Run: `{self.run_name}` — {now_iso()}",
+            f"Run ID: `{self.run_id}`", "",
+        ]
         for heading, body in sections:
             lines += [f"## {heading}", "", body, ""]
         with open(self.run_dir / "summary.md", "w", encoding="utf-8") as fh:
@@ -657,13 +682,26 @@ class RunWriter:
 
 
 def update_index(results_dir: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
     ensure_dir(results_dir)
     path = results_dir / "index.csv"
     existing: list[dict[str, Any]] = []
     if path.exists():
         with open(path, "r", encoding="utf-8", newline="") as fh:
             existing = list(csv.DictReader(fh))
-    existing = [r for r in existing if r.get("run_name") != rows[0]["run_name"]]
+    new_keys = {
+        (str(r.get("run_id", "")), str(r.get("type", "")),
+         str(r.get("level", "")), str(r.get("run_idx", "")))
+        for r in rows if r.get("run_id")
+    }
+    existing = [
+        r for r in existing
+        if not r.get("run_id") or (
+            str(r.get("run_id", "")), str(r.get("type", "")),
+            str(r.get("level", "")), str(r.get("run_idx", "")),
+        ) not in new_keys
+    ]
     existing.extend(rows)
     with open(path, "w", encoding="utf-8", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=METRICS_COLUMNS)
@@ -671,10 +709,10 @@ def update_index(results_dir: Path, rows: list[dict[str, Any]]) -> None:
         for r in existing:
             w.writerow({k: r.get(k, "") for k in METRICS_COLUMNS})
     # index.md
-    md_lines = ["# Bench2 index", "", "| run_name | type | level | timestamp | backend | model | prefill_tps | decode_tps | total_ms | status |", "|---|---|---|---|---|---|---|---|---|---|"]
+    md_lines = ["# Bench2 index", "", "| run_name | run_id | type | level | timestamp | backend | model | prefill_tps | decode_tps | total_ms | status |", "|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in existing:
         md_lines.append(
-            f"| {r.get('run_name','')} | {r.get('type','')} | {r.get('level','')} | "
+            f"| {r.get('run_name','')} | {r.get('run_id','')} | {r.get('type','')} | {r.get('level','')} | "
             f"{r.get('timestamp','')} | {r.get('backend','')} | {r.get('model','')} | "
             f"{r.get('prefill_tps','')} | {r.get('decode_tps','')} | "
             f"{r.get('total_ms','')} | {r.get('status','')} |"
@@ -913,6 +951,7 @@ def run_single_level(cfg: Config, writer: RunWriter, backend: str, host: str,
           flush=True)
     row = {
         "run_name": writer.run_name,
+        "run_id": writer.run_id,
         "series_id": cfg.args.series_id or writer.run_name,
         "type": "single",
         "level": level_idx,
@@ -1022,6 +1061,7 @@ def run_session(cfg: Config, writer: RunWriter, backend: str, host: str,
                         t["decode_tps"], t["ttft_ms"], t["wall_s"]])
     row = {
         "run_name": writer.run_name,
+        "run_id": writer.run_id,
         "series_id": cfg.args.series_id or writer.run_name,
         "type": "session",
         "level": session_level,
@@ -1075,7 +1115,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     run_name = args.run_name
     results_dir = cfg.results_dir()
-    writer = RunWriter(results_dir / run_name, run_name)
+    run_id, run_dir = reserve_run_dir(results_dir, run_name)
+    writer = RunWriter(run_dir, run_name, run_id)
 
     host = args.host
     port = args.port or 0
@@ -1122,7 +1163,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             stop_server(proc)
             return 3
         print(f"[bench2] server ready: {server_cmd[0]} (pid {proc.pid}, port {port})", flush=True)
-    print(f"[bench2] run {run_name} | backend={backend} | model={model.name} | "
+    print(f"[bench2] run {run_name} | id={run_id} | backend={backend} | model={model.name} | "
           f"levels={levels or '-'} | sessions={session_levels or '-'} | runs={args.runs}", flush=True)
 
     warmup_info: dict[str, Any] | None = None
@@ -1135,6 +1176,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         writer.run_json_meta = {
             "run_name": run_name,
+            "run_id": run_id,
             "series_id": args.series_id or run_name,
             "timestamp": now_iso(),
             "type": "mixed" if levels and session_levels else ("single" if levels else "session"),
@@ -1185,7 +1227,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             stop_server(proc)
             writer.event("server_stopped")
 
-    print(f"bench2: DONE {run_name} -> {writer.run_dir}", file=sys.stderr)
+    print(f"bench2: DONE {run_name} [{run_id}] -> {writer.run_dir}", file=sys.stderr)
     return 0
 
 
@@ -1227,9 +1269,9 @@ def cmd_find(args: argparse.Namespace) -> int:
                 continue
             k, v = pair.split("=", 1)
             filt = [r for r in filt if str(r.get(k, "")).lower() == v.lower()]
-    print(table_md(["run_name", "type", "level", "timestamp", "backend", "model",
+    print(table_md(["run_name", "run_id", "type", "level", "timestamp", "backend", "model",
                     "prefill_tps", "decode_tps", "agg_tps", "status"],
-                   [[r.get(c, "") for c in ["run_name", "type", "level", "timestamp",
+                   [[r.get(c, "") for c in ["run_name", "run_id", "type", "level", "timestamp",
                                             "backend", "model", "prefill_tps",
                                             "decode_tps", "aggregate_tps", "status"]] for r in filt]))
     return 0
@@ -1244,9 +1286,9 @@ def cmd_list(args: argparse.Namespace) -> int:
     with open(path, "r", encoding="utf-8", newline="") as fh:
         rows = list(csv.DictReader(fh))
     rows = rows[-args.recent:]
-    print(table_md(["run_name", "type", "level", "timestamp", "backend",
+    print(table_md(["run_name", "run_id", "type", "level", "timestamp", "backend",
                     "prefill_tps", "decode_tps", "agg_tps"],
-                   [[r.get(c, "") for c in ["run_name", "type", "level", "timestamp",
+                   [[r.get(c, "") for c in ["run_name", "run_id", "type", "level", "timestamp",
                                             "backend", "prefill_tps", "decode_tps",
                                             "aggregate_tps"]] for r in rows]))
     return 0
@@ -1260,7 +1302,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run", help="run benchmark scenario(s)")
-    run.add_argument("--run-name", default=None, help="unique run name (auto-generated if omitted)")
+    run.add_argument("--run-name", default=None, help="readable run label (auto-generated if omitted)")
     run.add_argument("--series-id", default="", help="group runs launched as one Autotune series")
     run.add_argument("--level", default="", help="single levels: '2', '0,2', '1-3' (default: 1)")
     run.add_argument("--session-level", default="", help="session levels: '1', '2', '3'")

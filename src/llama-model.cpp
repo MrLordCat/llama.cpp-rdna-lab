@@ -1271,8 +1271,19 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     };
 
     // assign the input layer
-    // there is very little benefit to offloading the input layer, so always keep it on the CPU
-    pimpl->dev_input = { cpu_dev, &pimpl->cpu_buft_list };
+    // upstream keeps the input layer on the CPU because the embedding lookup is
+    // cheap; this fork puts it on the first GPU device by default so a fully
+    // VRAM-resident model (e.g. qwen35 248320-vocab token_embd, ~682 MiB) does
+    // not hold host RAM. LLAMA_NO_INPUT_OFFLOAD=1 restores the upstream behavior.
+    const bool no_input_offload = getenv("LLAMA_NO_INPUT_OFFLOAD") != nullptr;
+    if (!no_input_offload && !devices.empty()) {
+        ggml_backend_dev_t dev = devices.front().dev;
+        pimpl->dev_input = { dev, &pimpl->gpu_buft_list.at(dev) };
+        LLAMA_LOG_INFO("%s: offloading input layer to device %s (LLAMA_NO_INPUT_OFFLOAD=1 to disable)\n",
+                __func__, ggml_backend_dev_name(dev));
+    } else {
+        pimpl->dev_input = { cpu_dev, &pimpl->cpu_buft_list };
+    }
 
     // assign the repeating layers to the devices according to the splits
     pimpl->dev_layer.resize(n_layer);
