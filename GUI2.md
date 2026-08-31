@@ -161,8 +161,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 9 032 lines of Python plus 3 068 of tests, against the old GUI's
-15 458 with none. The suite is 218 tests and runs in about 20 seconds without
+`gui2/` is 9 116 lines of Python plus 3 100 of tests, against the old GUI's
+15 458 with none. The suite is 221 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -249,6 +249,15 @@ is what makes a row legible as `mtp n2` rather than silently `none`.
 The layer split is edited with one slider per device (however many cards the
 build has) instead of a text list: the bars always sum to the scale and write
 the `-ts` list the form submits.
+
+The second machine is reduced to one decision and one file. The form asks
+for the machine's address, writes a `rpc-worker-<port>.bat` that opens the
+firewall and starts the worker, and a button puts `address:port` into the
+Worker addresses box — so the recipe is: run the file there as Administrator,
+press Check here, tick `RPC0`. Nothing is executed remotely and no
+credentials are held, because the worker machine belongs to whoever is
+sitting in front of it, and reaching over would need a password the GUI has
+no business keeping.
 
 Nothing on it is typed that can be ticked or dragged instead. Each axis is a
 row of values to tick rather than a comma-separated line to spell: one ticked

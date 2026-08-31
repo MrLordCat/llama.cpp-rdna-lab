@@ -25,6 +25,7 @@ from gui2.core.rpc import (
     WorkerPlan,
     guide,
     probe,
+    worker_bat,
 )
 
 GIB = 1024 ** 3
@@ -172,6 +173,21 @@ def test_the_guide_says_the_dangerous_part_out_loud():
     said = " ".join(guide(WorkerPlan()).warnings).lower()
     assert "no authentication" in said
     assert "network" in said
+
+
+def test_a_worker_bat_opens_the_port_and_starts_the_worker():
+    bat = worker_bat(WorkerPlan(port=50052, devices=("Vulkan0",), cache=True))
+    assert "@echo off" in bat and "\r\n" in bat
+    assert f"localport=50052" in bat, "the firewall rule is part of the file"
+    assert "rpc-server.exe\" -H 0.0.0.0 -p 50052 -d Vulkan0 -c" in bat
+    assert "Run this file as Administrator" in bat or "Administrator" in bat
+    # a closed worker still leaves the firewall alone: 127.0.0.1 only binds
+    assert "-H 127.0.0.1" in worker_bat(WorkerPlan(open_to_network=False))
+
+
+def test_a_plan_knows_the_address_the_local_box_wants():
+    assert WorkerPlan(host="192.168.1.60", port=50052).address == "192.168.1.60:50052"
+    assert WorkerPlan().address == ""
 
 
 def test_a_worker_with_two_gpus_takes_two_of_the_names():

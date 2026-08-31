@@ -259,6 +259,22 @@ def test_an_unchecked_box_makes_the_worker_private_again(client):
     html = client.post("/server/rpc/command", data={"rpc_port": "50052"}).text
     assert "-H 127.0.0.1" in html
 
+def test_one_file_does_the_other_machines_whole_setup(client):
+    """The .bat is what a user runs there: firewall rule and rpc-server."""
+    bat = client.get("/server/rpc/worker.bat",
+                     params={"rpc_port": "50052", "rpc_devices": "Vulkan0",
+                             "rpc_open": "on"}).text
+    assert "localport=50052" in bat
+    assert '"%~dp0rpc-server.exe" -H 0.0.0.0 -p 50052 -d Vulkan0' in bat
+    assert "Administrator" in bat, "the firewall rule needs an elevated shell"
+
+    panel = client.post("/server/rpc/command", data={
+        "rpc_port": "50052", "rpc_devices": "Vulkan0",
+        "rpc_host": "192.168.1.60", "rpc_open": "on"}).text
+    assert "Download rpc-worker-50052.bat" in panel
+    assert "Fill the Worker addresses box" in panel
+    assert "192.168.1.60:50052" in panel, "the address the local box wants"
+
 
 def test_workers_are_only_asked_who_they_are_when_someone_asks(client):
     page = client.get("/server?rpc_endpoints=192.168.1.9:50052").text

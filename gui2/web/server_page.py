@@ -704,11 +704,16 @@ def worker_plan(params) -> WorkerPlan:
         port = int(text("rpc_port"))
     except ValueError:
         port = DEFAULT_PORT
+    host = text("rpc_host")
+    if not re.fullmatch(r"[A-Za-z0-9_.\-]+", host):
+        host = ""
     return WorkerPlan(
         port=port if 1 <= port <= 65535 else DEFAULT_PORT,
-        devices=tuple(name for name in re.split(r"[,\s]+", text("rpc_devices")) if name),
+        devices=tuple(name for name in re.split(r"[,\s]+", text("rpc_devices"))
+                      if name and re.fullmatch(r"[A-Za-z0-9_.\-]+", name)),
         open_to_network="rpc_open" in params,
         cache="rpc_cache" in params,
+        host=host,
     )
 
 
@@ -730,11 +735,28 @@ def _copyable(command: str) -> Div:
     )
 
 
+def _fill_address(address: str) -> str:
+    """Put `host:port` into the form's Worker addresses box and refresh the page."""
+    return (f"const el=document.querySelector('input[name=\"rpc_endpoints\"]');"
+            f"if(el){{el.value='{address}';"
+            f"el.dispatchEvent(new Event('change',{{bubbles:true}}));}}")
+
+
 def worker_panel(params, oob: bool = False) -> Div:
     """The command to run on the other machine, built from its own boxes."""
     plan = worker_plan(params)
+    download = urlencode({"rpc_port": plan.port}
+                         | ({"rpc_devices": ",".join(plan.devices)} if plan.devices else {})
+                         | ({"rpc_cache": "on"} if plan.cache else {})
+                         | ({"rpc_open": "on"} if plan.open_to_network else {}))
     return Div(
         Div(
+            Label(Span("This machine sees it as"),
+                  Input(type="text", name="rpc_host", value=plan.host,
+                        placeholder="192.168.1.60"),
+                  Span("the other machine's IP or name, used to fill the box below",
+                       cls="hint"),
+                  cls="field wide"),
             Label(Span("Worker port"),
                   Input(type="number", name="rpc_port", value=str(plan.port),
                         min=1, max=65535),
@@ -752,7 +774,17 @@ def worker_panel(params, oob: bool = False) -> Div:
             Div(toggle("rpc_cache", "Cache tensors on the worker's disk", plan.cache),
                 cls="field switch"),
             cls="switches"),
-        Span("Run this on the other machine:", cls="hint block"),
+        Div(
+            A(f"Download rpc-worker-{plan.port}.bat",
+              href=f"/server/rpc/worker.bat?{download}", cls="small",
+              title="run this one file on the other machine as Administrator"),
+            Button("Fill the Worker addresses box", type="button", cls="small",
+                   onclick=_fill_address(plan.address),
+                   title=f"puts {plan.address or 'host:port'} above; the machine is "
+                         "whatever the bat was run on"),
+            cls="actions",
+        ),
+        Span("Run this on the other machine (or the bat above):", cls="hint block"),
         _copyable(plan.text()),
         id="rpcworker",
         cls="rpcworker",
@@ -862,7 +894,7 @@ def _section(section: Section, config: AppConfig, spec: RunSpec, options: dict,
         fields = [field for name, field in zip(named, fields) if name not in BOUNDED]
     if "rpc_endpoints" in named:
         # the guide and the worker command come before the boxes they fill in
-        body.append(rpc_guide(WorkerPlan()))
+        body.append(rpc_guide(worker_plan(params)))
         body.append(worker_panel(params))
     if fields:
         body.append(Div(*fields, cls="grid"))

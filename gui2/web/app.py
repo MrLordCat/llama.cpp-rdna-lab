@@ -7,8 +7,10 @@ from datetime import datetime
 from pathlib import Path
 
 from fasthtml.common import Div, HtmxResponseHeaders, Link, RedirectResponse, Script, fast_app
+from starlette.responses import Response
 
 from gui2.config import AppConfig
+from gui2.core import rpc
 from gui2.core.devices import DeviceService
 from gui2.core.history import HistoryStore, sync_autotune_runs
 from gui2.core.memstore import MemoryStore
@@ -138,6 +140,17 @@ def create_app(config: AppConfig | None = None):
     async def server_rpc_command(req):
         # pure text generation: the command is for the other machine to run
         return server_page.worker_panel(await req.form())
+
+    @rt("/server/rpc/worker.bat")
+    async def server_rpc_worker_bat(req):
+        """The one file to run on the other machine: firewall + worker, done."""
+        plan = server_page.worker_plan(req.query_params)
+        return Response(
+            rpc.worker_bat(plan),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition":
+                     f'attachment; filename="rpc-worker-{plan.port}.bat"'},
+        )
 
     @rt("/server/rpc/check", methods=["POST"])
     async def server_rpc_check(req):

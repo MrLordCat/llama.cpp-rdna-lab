@@ -115,6 +115,10 @@ class Config:
         s["top_p"] = a.top_p if a.top_p is not None else s.get("top_p", 0.9)
         s["fit"] = a.fit if a.fit is not None else s.get("fit", "off")
         s["spec"] = a.spec or s.get("spec", "none")
+        # the lookahead bench2 passes on the server command; run.json and the
+        # index both record it, because the index declares the column but
+        # never fills it
+        s["spec_n"] = a.spec_n if a.spec_n is not None else (s.get("spec_n") or 0)
         s["dev"] = a.dev if a.dev is not None else bd.get("dev", "")
         s["sm"] = a.sm if a.sm is not None else bd.get("sm", "layer")
         s["ts"] = a.ts if a.ts is not None else bd.get("ts", "")
@@ -803,6 +807,8 @@ def run_single_level(cfg: Config, writer: RunWriter, backend: str, host: str,
         "ttft_ms": tim["ttft_ms"],
         "total_ms": tim["total_ms"],
         "aggregate_tps": tim["aggregate_tps"],
+        # what the server was told to guess: only when MTP was on at all
+        "mtp_draft_n": str(s["spec_n"] or 2) if s["spec"] != "none" else "",
         "status": "ok",
         "path": str(writer.run_dir),
     }
@@ -908,6 +914,7 @@ def run_session(cfg: Config, writer: RunWriter, backend: str, host: str,
         "ttft_ms": round(mean_ttft, 2),
         "total_ms": round(wall_total * 1000.0, 2),
         "aggregate_tps": round(session_tps, 4),
+        "mtp_draft_n": str(s["spec_n"] or 2) if s["spec"] != "none" else "",
         "session_turns": turns,
         "decode_slope": round(slope, 5),
         "status": "ok",
