@@ -186,7 +186,7 @@ def test_sync_carries_finished_autotune_runs_into_canonical_history(tmp_path: Pa
              timestamp="2026-08-29T10:02:00+03:00", backend="vk", model="qwen.gguf",
              commit="abc1234", ctx="49152", prefill_tps="1000", decode_tps="35",
              aggregate_tps="32", mtp_draft_n="2", status="ok", path=str(run_dir)),
-    ])
+    ], meta={"server": {"dev": "Vulkan1,Vulkan0", "ts": "100,60"}})
     runs_csv = tmp_path / "BENCH_RUNS.csv"
 
     assert sync_autotune_runs(runs_csv, index) == 1
@@ -200,6 +200,9 @@ def test_sync_carries_finished_autotune_runs_into_canonical_history(tmp_path: Pa
     assert run.decode_eval_tps == 35.0, "named by its fastest decode"
     assert run.raw["build_id"] == "abc1234"
     assert run.lane_key.startswith("vk|qwen.gguf|ctx")
+    assert "|dev=Vulkan1,Vulkan0|ts=100,60" in run.lane_key
+    assert "--dev Vulkan1,Vulkan0" in run.extra_args
+    assert "--ts 100,60" in run.extra_args
 
     assert sync_autotune_runs(runs_csv, index) == 0, "idempotent"
     assert len(load_runs(runs_csv)) == 1

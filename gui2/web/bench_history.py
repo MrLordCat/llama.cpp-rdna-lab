@@ -31,10 +31,8 @@ from fasthtml.common import (
 )
 
 from gui2.config import AppConfig
-from gui2.core.results import Result, build_of_run, read_index
+from gui2.core.results import Placement, Result, build_of_run, placement_of, read_index
 from gui2.web.layout import shell
-
-COLSPAN = 11
 
 #: (query key, header, numeric) — numeric columns sort and right-align
 COLUMNS: tuple[tuple[str, str, bool], ...] = (
@@ -43,6 +41,7 @@ COLUMNS: tuple[tuple[str, str, bool], ...] = (
     ("backend", "Backend", False),
     ("build", "Build", False),
     ("model", "Model", False),
+    ("placement", "GPU order / split", False),
     ("lane", "Lane", False),
     ("spec", "Spec", False),
     ("prefill", "Prefill t/s", True),
@@ -50,6 +49,7 @@ COLUMNS: tuple[tuple[str, str, bool], ...] = (
     ("total", "Total t/s", True),
     ("scenarios", "Scenarios", True),
 )
+COLSPAN = len(COLUMNS)
 
 SORT_KEYS = {
     "time": lambda row: row[0].when,
@@ -57,12 +57,13 @@ SORT_KEYS = {
     "backend": lambda row: row[0].backend,
     "build": lambda row: row[1],
     "model": lambda row: row[0].model,
+    "placement": lambda row: row[2].sort_key,
     "lane": lambda row: row[0].scenario,
     "spec": lambda row: row[0].spec_mode,
     "prefill": lambda row: row[0].prefill_tps,
     "decode": lambda row: row[0].decode_tps,
     "total": lambda row: row[0].aggregate_tps,
-    "scenarios": lambda row: len(row[2]),
+    "scenarios": lambda row: len(row[3]),
 }
 
 
@@ -89,15 +90,19 @@ def representative(run: list[Result]) -> Result:
     return max(run, key=lambda row: (row.decode_tps, row.aggregate_tps))
 
 
-def sorted_runs(groups: dict[str, list[Result]], cache: dict[str, str],
-                sort: str, descending: bool) -> list[tuple[Result, str, list[Result]]]:
-    """(representative, build, scenarios) in the requested order.
+def sorted_runs(groups: dict[str, list[Result]], build_cache: dict[str, str],
+                placement_cache: dict[str, Placement], sort: str,
+                descending: bool) -> list[tuple[Result, str, Placement, list[Result]]]:
+    """(representative, build, placement, scenarios) in the requested order.
 
     A non-numeric column sorts as text; a numeric one as its number. Reversed
     only flips the order, never the meaning.
     """
-    rows = [(representative(run), build_of_run(representative(run), cache), run)
-            for run in groups.values()]
+    rows = [
+        (representative(run), build_of_run(representative(run), build_cache),
+         placement_of(representative(run), placement_cache), run)
+        for run in groups.values()
+    ]
     key = SORT_KEYS.get(sort, SORT_KEYS["time"])
     return sorted(rows, key=key, reverse=descending)
 
@@ -159,6 +164,7 @@ def table(config: AppConfig, params) -> Div:
     """The run rows, with the filters above and an empty stub under each."""
     rows = read_index(config.bench_results / "index.csv")
     cache: dict[str, str] = {}
+    placement_cache: dict[str, Placement] = {}
     lane = _text(params, "lane")
     backend = _text(params, "backend")
     mtp = _text(params, "mtp")
@@ -173,7 +179,7 @@ def table(config: AppConfig, params) -> Div:
     if build:
         groups = {name: run for name, run in groups.items()
                   if build_of_run(representative(run), cache) == build}
-    chosen = sorted_runs(groups, cache, sort, desc)
+    chosen = sorted_runs(groups, cache, placement_cache, sort, desc)
     limit = 100
     chosen = chosen[:limit]
 
@@ -193,7 +199,7 @@ def table(config: AppConfig, params) -> Div:
             for key, name, numeric in COLUMNS
         ]
         run_rows = []
-        for representative_row, run_build, scenarios in chosen:
+        for representative_row, run_build, placement, scenarios in chosen:
             when = representative_row.time_text
             draft = "none"
             if representative_row.spec_mode == "mtp":
@@ -210,6 +216,8 @@ def table(config: AppConfig, params) -> Div:
                    Td(run_build or "—"),
                    Td(Path(representative_row.model).name, title=representative_row.model,
                       cls="label"),
+                         Td(placement.text, title="GPU order · tensor split proportions",
+                             cls="label"),
                    Td(representative_row.scenario, cls="num"),
                    Td(draft),
                    Td(f"{representative_row.prefill_tps:.0f}", cls="num"),

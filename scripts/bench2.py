@@ -49,11 +49,20 @@ LOAD_GGUF_FALLBACK = [ROOT / "models" / "Qwen3.8-27B-Q4_K_M.gguf"]
 
 METRICS_COLUMNS = [
     "run_name", "type", "level", "run_idx", "timestamp", "backend", "profile",
-    "model", "commit", "ctx", "prompt_tokens", "decoded_tokens", "prefill_tps",
+    "model", "commit", "devices", "tensor_split", "ctx", "prompt_tokens",
+    "decoded_tokens", "prefill_tps",
     "decode_tps", "ttft_ms", "total_ms", "aggregate_tps", "mtp_draft_n",
     "mtp_accepted", "eff_decode_tps", "session_turns", "decode_slope",
     "status", "path",
 ]
+
+
+def _placement_fields(server: dict[str, Any]) -> dict[str, str]:
+    """Stable index values for the GPU order and its relative proportions."""
+    return {
+        "devices": str(server.get("dev") or "auto"),
+        "tensor_split": str(server.get("ts") or "auto"),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -899,6 +908,7 @@ def run_single_level(cfg: Config, writer: RunWriter, backend: str, host: str,
         "profile": cfg.profile_name,
         "model": model_name,
         "commit": cfg.git_commit(),
+        **_placement_fields(s),
         "ctx": ctx,
         "prompt_tokens": tim["prompt_n"],
         "decoded_tokens": tim["predicted_n"],
@@ -1006,6 +1016,7 @@ def run_session(cfg: Config, writer: RunWriter, backend: str, host: str,
         "profile": cfg.profile_name,
         "model": model_name,
         "commit": cfg.git_commit(),
+        **_placement_fields(s),
         "ctx": ctx,
         "prompt_tokens": sum(int(t["prompt_n"]) for t in turn_rows),
         "decoded_tokens": total_tokens,

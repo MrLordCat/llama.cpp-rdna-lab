@@ -93,6 +93,16 @@ def test_the_cards_are_named_rather_than_left_to_the_hardware_profile():
     assert value_after(everywhere, "--sm") == ""
 
 
+def test_bench2_index_records_gpu_order_and_proportions():
+    from scripts.bench2 import METRICS_COLUMNS, _placement_fields
+
+    assert "devices" in METRICS_COLUMNS and "tensor_split" in METRICS_COLUMNS
+    assert _placement_fields({"dev": "Vulkan1,Vulkan0", "ts": "100,60"}) == {
+        "devices": "Vulkan1,Vulkan0", "tensor_split": "100,60"}
+    assert _placement_fields({"dev": "", "ts": ""}) == {
+        "devices": "auto", "tensor_split": "auto"}
+
+
 def test_the_backend_is_named_because_bench2_would_otherwise_guess_rocm():
     argv = command(backend="vk")
     assert value_after(argv, "--backend") == "vk"

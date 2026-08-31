@@ -46,6 +46,9 @@ class Result:
     status: str = ""
     #: how far ahead the draft head guessed; empty means no speculation
     mtp_draft_n: str = ""
+    #: explicit GPU order and tensor proportions recorded by bench2
+    devices: str = ""
+    tensor_split: str = ""
     #: where bench2 wrote the run folder, for reaching its run.json
     path: str = ""
 
@@ -117,6 +120,8 @@ def read_index(path: Path) -> list[Result]:
             turns=int(_number(row, "session_turns")),
             status=row.get("status", ""),
             mtp_draft_n=row.get("mtp_draft_n", ""),
+            devices=row.get("devices", ""),
+            tensor_split=row.get("tensor_split", ""),
             path=row.get("path", ""),
         )
         for row in rows
@@ -152,6 +157,48 @@ def server_opts(path: str) -> dict:
     except (OSError, ValueError, AttributeError):
         return {}
     return opts if isinstance(opts, dict) else {}
+
+
+@dataclass(frozen=True, slots=True)
+class Placement:
+    """The order and relative share assigned to the GPUs of one run."""
+
+    devices: str = ""
+    tensor_split: str = ""
+
+    @property
+    def known(self) -> bool:
+        return bool(self.devices or self.tensor_split)
+
+    @property
+    def text(self) -> str:
+        if not self.known:
+            return "—"
+        devices = "all (detected order)" if self.devices in {"", "auto"} else self.devices
+        split = "automatic" if self.tensor_split in {"", "auto"} else self.tensor_split
+        return f"{devices} · {split}"
+
+    @property
+    def sort_key(self) -> str:
+        return f"{self.devices}|{self.tensor_split}"
+
+
+def placement_of(result: Result, cache: dict[str, Placement]) -> Placement:
+    """Read placement from the index, falling back to an older run.json.
+
+    New bench2 indexes keep these fields themselves, so history survives a
+    cleaned run folder. Runs made before those columns existed still have the
+    effective values in the server block beside their measurements.
+    """
+    key = result.path or f"index:{result.run_name}"
+    if key not in cache:
+        opts = server_opts(result.path) if result.path else {}
+        has_placement = "dev" in opts or "ts" in opts
+        devices = result.devices or (str(opts.get("dev") or "auto") if has_placement else "")
+        tensor_split = result.tensor_split or (
+            str(opts.get("ts") or "auto") if has_placement else "")
+        cache[key] = Placement(devices, tensor_split)
+    return cache[key]
 
 
 @dataclass(frozen=True, slots=True)

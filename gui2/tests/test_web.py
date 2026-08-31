@@ -19,7 +19,7 @@ from fasthtml.common import to_xml
 from starlette.testclient import TestClient
 
 from gui2.config import AppConfig
-from gui2.core.results import Result
+from gui2.core.results import Result, placement_of
 from gui2.tests.fixtures import QWEN35_27B, write_gguf
 from gui2.web.app import create_app
 
@@ -830,7 +830,8 @@ def _write_bench_rows(root: Path, rows: list[dict]) -> Path:
     with path.open("w", encoding="utf-8", newline="") as handle:
         keys = ["run_name", "type", "level", "timestamp", "backend", "model",
                 "ctx", "prefill_tps", "decode_tps", "aggregate_tps",
-                "mtp_draft_n", "status", "path", "session_turns"]
+            "mtp_draft_n", "devices", "tensor_split", "status", "path",
+            "session_turns"]
         writer = csv.DictWriter(handle, fieldnames=keys)
         writer.writeheader()
         for row in rows:
@@ -849,17 +850,20 @@ def test_the_autotune_history_filters_and_expands(tmp_path):
         dict(run_name="vk-model-b1024-u128-q8_0-none", type="single", level="1",
              timestamp="2026-08-29T10:00:00+03:00", backend="vk", model="long.gguf",
              ctx="8192", prefill_tps="900", decode_tps="30", aggregate_tps="28",
-             mtp_draft_n="", status="ok", path=str(folder / "run-vk-none"),
+             mtp_draft_n="", devices="Vulkan1,Vulkan0", tensor_split="100,60",
+             status="ok", path=str(folder / "run-vk-none"),
              session_turns="0"),
         dict(run_name="vk-model-b1024-u128-q8_0-none", type="single", level="2",
              timestamp="2026-08-29T10:02:00+03:00", backend="vk", model="long.gguf",
              ctx="49152", prefill_tps="1000", decode_tps="35", aggregate_tps="32",
-             mtp_draft_n="", status="ok", path=str(folder / "run-vk-none"),
+             mtp_draft_n="", devices="Vulkan1,Vulkan0", tensor_split="100,60",
+             status="ok", path=str(folder / "run-vk-none"),
              session_turns="0"),
         dict(run_name="rocm-model-b1024-u128-q8_0-mtp-n2", type="single", level="1",
              timestamp="2026-08-29T11:00:00+03:00", backend="rocm", model="long.gguf",
              ctx="8192", prefill_tps="800", decode_tps="40", aggregate_tps="36",
-             mtp_draft_n="2", status="ok", path=str(folder / "run-rocm-mtp"),
+             mtp_draft_n="2", devices="auto", tensor_split="auto", status="ok",
+             path=str(folder / "run-rocm-mtp"),
              session_turns="0"),
     ])
     run_dir = folder / "run-vk-none"
@@ -873,6 +877,8 @@ def test_the_autotune_history_filters_and_expands(tmp_path):
         html = owner.get("/autotune/history").text
         assert html.count('class="run-row"') == 2, "one row per run, not per scenario"
         assert "35.0" in html, "the row shows the run's best decode"
+        assert "Vulkan1,Vulkan0" in html and "100,60" in html, \
+            "GPU order and tensor proportions stay beside the result"
 
         backend = owner.get("/autotune/history", params={"backend": "rocm"}).text
         assert backend.count('class="run-row"') == 1 and "vk-model" not in backend
@@ -890,6 +896,19 @@ def test_the_autotune_history_filters_and_expands(tmp_path):
         detail = owner.get("/autotune/history/run",
                            params={"run_name": "vk-model-b1024-u128-q8_0-none"}).text
         assert "every scenario" in detail and "35.0" in detail and "30.0" in detail
+
+
+def test_gpu_placement_falls_back_to_an_older_run_json(tmp_path):
+    run_dir = tmp_path / "old-run"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(
+        '{"server": {"dev": "RPC0,Vulkan1,Vulkan0", "ts": "100,80,80"}}',
+        encoding="utf-8")
+
+    placement = placement_of(Result(run_name="old", path=str(run_dir)), {})
+    assert placement.devices == "RPC0,Vulkan1,Vulkan0"
+    assert placement.tensor_split == "100,80,80"
+    assert placement.text == "RPC0,Vulkan1,Vulkan0 · 100,80,80"
 
 
 def test_a_result_reads_its_speculation_from_the_name_when_the_index_is_silent():

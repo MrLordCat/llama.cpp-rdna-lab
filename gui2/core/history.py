@@ -535,14 +535,15 @@ def _config_from_name(run_name: str) -> dict[str, str]:
 
 def _autotune_lane(backend: str, model_path: str, ctx: int, batch: str, ubatch: str,
                    kv_k: str, kv_v: str, spec: str, tasks: str, task_ids: str,
-                   context_source: str) -> str:
+                   context_source: str, devices: str, tensor_split: str) -> str:
     """The same lane shape as the legacy script, so both feeds stay comparable."""
     model = Path(model_path).name or "-"
     kv = f"{kv_k or '-'}/{kv_v or '-'}"
     task_part = f"{tasks}:{task_ids}" if task_ids else (tasks or "-")
     return (f"{backend or '-'}|{model}|ctx{ctx or '-'}|b{batch or '-'}/ub{ubatch or '-'}"
             f"|kv{kv}|spec={spec or '-'}|reuse|tasks={task_part}"
-            f"|max=-|ctxsrc={context_source or '-'}")
+            f"|max=-|ctxsrc={context_source or '-'}"
+            f"|dev={devices or 'auto'}|ts={tensor_split or 'auto'}")
 
 
 def _read_run_meta(items: list[Result]) -> dict:
@@ -584,6 +585,16 @@ def _autotune_row(run_name: str, rows: list[Result], meta: dict,
     def number(value) -> str:
         return f"{value:.4g}" if value else "0"
 
+    devices = text("dev")
+    tensor_split = text("ts")
+    extra_parts: list[str] = []
+    if devices:
+        extra_parts += ["--dev", devices]
+    if tensor_split:
+        extra_parts += ["--ts", tensor_split]
+    if draft and spec == "mtp":
+        extra_parts += ["--spec-n", str(draft)]
+
     return {
         "timestamp": when,
         "run_id": _autotune_run_id(run_name, when, best.model),
@@ -604,7 +615,7 @@ def _autotune_row(run_name: str, rows: list[Result], meta: dict,
         "kv_v": str(kv_v),
         "spec_mode": spec,
         "extra_preset": "",
-        "extra_args": f"--spec-n {draft}" if draft and spec == "mtp" else "",
+        "extra_args": " ".join(extra_parts),
         "no_reuse": "",
         "gpu_layers": text("gpu_layers"),
         "parallel": text("parallel"),
@@ -626,7 +637,7 @@ def _autotune_row(run_name: str, rows: list[Result], meta: dict,
         "metric_scope": AUTOTUNE_MODE,
         "lane_key": _autotune_lane(best.backend, model_path, best.ctx, str(batch), str(ubatch),
                                    str(kv_k), str(kv_v), spec, tasks, task_ids,
-                                   text("context_source")),
+                                   text("context_source"), devices, tensor_split),
         "best_config": "",
         "jsonl_file": f"{run_name}.jsonl" if best.path else "",
         "csv_file": "",
