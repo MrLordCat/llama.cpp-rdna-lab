@@ -346,7 +346,20 @@ def runtime_path_prepend(server_bin: str | Path) -> list[str]:
     low = str(server_bin).lower()
     out: list[str] = []
     if "rocm" in low or "hip" in low:
-        out.append(r"C:\Program Files\AMD\ROCm\7.1\bin")
+        # Keep the runtime paired with the compiler that produced the build.
+        # This matters for adjacent SDK A/B runs (for example build-rocm vs
+        # build-rocm72); a hard-coded 7.1 path silently invalidates the test.
+        build_dir = Path(server_bin).resolve().parent.parent
+        cache = build_dir / "CMakeCache.txt"
+        compiler_bin: str | None = None
+        try:
+            for line in cache.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("CMAKE_CXX_COMPILER:") and "=" in line:
+                    compiler_bin = str(Path(line.split("=", 1)[1].strip()).parent)
+                    break
+        except OSError:
+            pass
+        out.append(compiler_bin or r"C:\Program Files\AMD\ROCm\7.1\bin")
     if "vulkan" in low:
         out.append(r"C:\Strawberry\c\bin")
     return out

@@ -567,6 +567,13 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
     }
 
     ggml_tensor * kq_mask = inp->get_kq_mask();
+    const enum ggml_type kq_mask_type = kq_mask->type;
+
+    // Flash attention may store its input mask as f16, while ggml_fill and the
+    // sparse QSA mask construction below require f32.
+    if (kq_mask->type != GGML_TYPE_F32) {
+        kq_mask = ggml_cast(ctx0, kq_mask, GGML_TYPE_F32);
+    }
 
     // prepare new kq mask - starts filled with -INFINITY
     ggml_tensor * kq_mask_all = ggml_fill(ctx0, kq_mask, -INFINITY);
@@ -593,6 +600,11 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
 
     // combine with the original kq mask
     kq_mask_top_k = ggml_add(ctx0, kq_mask_top_k, kq_mask);
+
+    // Preserve the mask type expected by the selected attention backend.
+    if (kq_mask_top_k->type != kq_mask_type) {
+        kq_mask_top_k = ggml_cast(ctx0, kq_mask_top_k, kq_mask_type);
+    }
 
     ggml_tensor * q = q_cur;
     ggml_tensor * k = mctx_cur->get_k(ctx0, il);

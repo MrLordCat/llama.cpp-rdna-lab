@@ -5,6 +5,15 @@
 void ggml_cuda_mul_mat_vec_f(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst,
     const ggml_cuda_mm_fusion_args_host * fusion = nullptr);
 
+// G10: fused pair of narrow f32 MMVF matvecs with a shared input vector
+// (GDN ssm_alpha + ssm_beta, 5120 -> 48, n=1). Writes both outputs from a
+// single launch; identical inner-loop and reduce order to the separate
+// mul_mat_vec_f_cuda<float> calls so the results stay bit-for-bit equal.
+void ggml_cuda_mul_mat_vec_f_pair(
+        ggml_backend_cuda_context & ctx,
+        const ggml_tensor * src0_a, const ggml_tensor * src1, ggml_tensor * dst_a,
+        const ggml_tensor * src0_b, ggml_tensor * dst_b, cudaStream_t stream);
+
 void ggml_cuda_op_mul_mat_vec_f(
     ggml_backend_cuda_context & ctx,
     const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const char * src0_dd_i, const float * src1_ddf_i,

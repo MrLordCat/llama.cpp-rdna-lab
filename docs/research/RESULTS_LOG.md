@@ -1,5 +1,124 @@
 # Results Log
 
+## 2026-08-30 - G06/G07 ROCm 7.2 Q6_K hipBLASLt wall gate
+
+- Exact `gfx1201` Q6_K prefill forms passed standalone offline tuning:
+  `5120x1024x17408` improved `1.1359 -> 0.9820 ms` and
+  `10240x1024x5120` improved `0.7667 -> 0.5825 ms` versus rocBLAS default.
+- A temporary default-off runtime proxy activated the tuned solutions 93 and
+  72 times respectively. Long-prompt greedy output was byte-identical to the
+  control (SHA-256 `33859FFC4CD7AF5D4C5869753061A776BCB14CAF0B2919957B5E7D7929D81D2C`).
+- The no-trace L0 candidate measured `1420.81/24.71` prompt/decode tok/s
+  versus neighboring controls `1439.28/24.99` and `1427.83/24.54`:
+  `-0.89%` prompt, `-0.24%` decode and `-0.58%` aggregate versus the control
+  mean. The optimistic serialized point ceiling was below 1% of TTFT.
+- Reject runtime hipBLASLt integration for these buckets. The proxy and CMake
+  dependency were removed and the normal hipBLAS server rebuilt. Keep only
+  `scripts/research/g06_hipblaslt_single_probe.cpp`; forced Q6_K MMQ also
+  regressed prefill by `13.6%`, so the existing selector remains unchanged.
+- Evidence: `docs/research/rocm72/05_GGML_GAP_MAP.md`,
+  `build_logs/bench/g07-blaslt-compiled-*`, and
+  `build_logs/g07-blaslt-{coherence,parity}-*`.
+
+## 2026-08-30 - G07 continuation: cached raw hipBLASLt and rocBLAS solution-index
+
+- Setup isolation: per-call extension setup (`setProblem` +
+  `isAlgoSupported` + `initialize`) adds `0.092-0.142 ms`; one-time-descriptor
+  raw `hipblasLtMatmul` reduces this to `0.040-0.055 ms` but the N=1024 point
+  win is only `0.09-0.10 ms`, leaving no useful margin.
+- Full rocBLAS `solution_index` scan across the nine hot Q6_K shapes:
+  `−16.3%` to `−41.2%` versus rocBLAS default; device-1 re-check confirmed
+  the winners remain faster on the second GPU.
+- A default-off runtime gate (`GGML_EXPERIMENTAL_ROCBLAS_Q6_SOLUTIONS=1`)
+  dispatched all nine ids (315 calls, `status=0`, trace
+  `g07-rocblas-sol-trace-l0-r1`), greedy output byte-identical (SHA-256
+  `D1506E2C4B603C1C7DD5CF45F274CF5AF08F313790FB839D1A58358A3AB53075`).
+- r3 ladder vs three-control mean: prompt `−0.42%`, decode `+0.50%`,
+  aggregate `+0.02%`, TTFT `+0.42%`. Optimistic serialized ceiling is
+  `26.1 ms` (`0.95%` of TTFT), below the r1-r3 noise band.
+- Revert: no library solution selection survives as a production route. The
+  runtime source probe was removed and the normal `hipblasGemmEx` server
+  rebuilt; both standalone scouts remain as offline diagnostics. Next Q6_K
+  direction is a fused/dequant-free compute body, not library tuning.
+
+## 2026-08-30 - G08: Q4_K prefill MMQ -> dequant+hipBLAS route (promoted)
+
+- Route census: 1430 `mul_mat_q_direct|q4_K` prefill calls and 1310
+  `mul_mat_vec_q_direct|q4_K` decode calls on the locked L0.
+- MMQ resource trace: Q4_K prefill runs `1` block/SM (`LDS 57856/65536` =
+  `88%`, `regs 236`, occupancy `12.50%`, 8 waves); MMVQ decode is already
+  `100%` occupancy (`LDS 7168`, `regs 61-76`).
+- Standalone hipBLASLt: `17408x1024x5120` `1.038 ms` vs MMQ `2.031 ms`;
+  `6144x1024x5120` `0.354 ms` vs `1.659 ms`; `10240x1024x5120` `0.597 ms`
+  vs `1.278 ms` (f16 inputs, GEMM volume equivalent).
+- Env A/B (`GGML_MMQ_RDNA4_Q4K_MAX_NE11=256`) moves prefill to
+  `cublas_backend|q4_K`; decode stays MMVQ; greedy byte-identical (SHA-256
+  `D1506E2C4B603C1C7DD5CF45F274CF5AF08F313790FB839D1A58358A3AB53075`).
+- r3 neighbor ladder vs three-control mean: prompt `+3.29%`, decode
+  `+0.35%`, aggregate `+1.83%`, TTFT `−3.18%` (every candidate run faster
+  than every control). Qwen3.6-27B Q4_K_M cross-check `+2.23%`.
+- Promoted: `ggml_rdna4_q4k_mmq_max_ne11()` default `1024 -> 256`
+  (mmq.cu, env preserved). Rebuilt server `g08-q4k-promote-l0-r1`
+  `1476.52 / 24.99` stays in the candidate band.
+
+## 2026-08-30 - G09: RDNA4 f32 cublas GEMM -> f16 inputs + f32 acc (promoted)
+
+- Route trace: 832 `cublas_backend|f32` calls, ~628 ms device time
+  (GDN 48x5120 ~258 ms, rotation K/V 64x64/256x256 ~200 ms, both devices).
+  All on the pure f32 path (`path=f32`); RDNA4 has no f32 MFMA
+  (measured ~0.4-0.85 TF/s).
+- Standalone probe: f16-input `48x1024x5120` = 0.0265 ms vs 0.59 ms f32
+  (order-of-magnitude gap).
+- Prototype: route f32 GEMMs through to_fp16 (src0+src1) + cublasGemmEx
+  f16 inputs with `CUBLAS_COMPUTE_32F`/f32 out (`path=fp16 compute=32f`).
+- r3 neighbor ladder vs three-control mean: prompt `+5.35%`, decode
+  `+0.04%`, aggregate `+2.71%`, TTFT `−5.08%`; byte-identical greedy
+  (SHA `D1506E...`). Qwen3.6-27B cross-check `+4.75%`.
+- Promoted: RDNA4 default ON in `runtime_compute.inc`
+  (`GGML_ROCM_F32_GEMM_F16=0` rollback; verified off = 1482.31 in control
+  band, promoted default = 1568.72 without env).
+- Remaining f32 decode lane `mul_mat_vec_f_direct|f32` (`5120x48 n=1`) is
+  a specialized f32 MMVF kernel and is not covered; conversion+half MMVF
+  is the next decode candidate.
+
+## 2026-08-30 - G10: fused two-output GDN MMVF pair (rejected, opt-in)
+
+- Fused the paired narrow f32 GDN matvecs `ssm_alpha` + `ssm_beta`
+  (`5120 -> 48`, shared `attn_norm` input, 48 GDN layers, n=1) into one
+  two-output launch: `ggml_cuda_mul_mat_vec_f_pair()` (new kernel in
+  `mmvf.cu`) + graph-level pair detection in `runtime_graph.inc` with
+  concurrent-event bookkeeping for the skipped beta node.
+- Isolated HIP probe (`scripts/research/g10_gdn_pair_probe.cpp`): fused vs
+  two separate launches is **bit-exact 48/48**; per-pair time
+  `0.0038 ms` vs `0.0042 ms` (only ~9% saved, launch-bound geometry).
+- Wall A/B (greedy byte-identical `D1506E...`): ON vs OFF means: prompt
+  `1566.80` vs `1562.79` (+0.26%, prefill noise - the fusion only touches
+  decode), decode `24.84` vs `24.94` (-0.40%), aggregate `12.48` vs
+  `12.49`. No measurable gain: in the CUDA-graph capture path the per-node
+  launch overhead is already minimized, and the kernel is latency-bound.
+- Kept as opt-in (`GGML_ROCM_GDN_PAIR=1`, default OFF) with the standalone
+  probe; not promoted.
+
+## 2026-08-31 - G11: Q5_K/Q6_K N=1 MMVQ decode body (rejected, source removed)
+
+- Locked UD/f8 PRE_SYNC census: Q5_K 9520 N=1 calls / `1238.00 ms`
+  robust median-sum; Q6_K 1884 calls / `311.38 ms`. Both are already
+  100% occupancy (Q5 regs 29/42, Q6 regs 26/36; no LDS limiter).
+- Q6 output head `5120x248320` is `1.782 ms` for 994.63 MiB of Q6_K
+  payload: `585.3 GB/s` effective, ~91.4% of physical bandwidth.
+- Rejected exact candidates: shared-q8 pair streaming (~0.4% weighted
+  regression); Q5 `ds.y` reuse (not exact, 27.80 vs 28.28 tok/s); Q6
+  non-saturating packed subtract (byte-identical, 27.89 vs 28.24);
+  exact Q5 subgroup-sum sidecar (byte-identical, weighted kernel
+  `1238.00 -> 1290.78 ms`, +4.26%); compact Q5 pair-dot (byte-identical,
+  regs 42 -> 39 but fused weighted `546.31 -> 551.46 ms`, +0.94%, short
+  wall 27.23 vs 28.09).
+- ROCm `sdot8` is int4 x int4; Q5 x Q8 would need nibble-splitting Q8
+  and cannot reduce the instruction count.
+- No runtime code retained. Keep current MMVQ bodies/geometry. Reopen Q6
+  only with fewer weight bytes; reopen Q5 only with a byte-neutral
+  load-time/prepacked layout, not another launch/occupancy/q8-sum tweak.
+
 ## 2026-08-28 - D136 short-context Vulkan decode isolation
 
 - Same-toolchain GCC 16 controls reduced the stock-vs-fork decode gap to
