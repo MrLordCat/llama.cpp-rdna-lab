@@ -229,7 +229,7 @@ def ordered_devices(found: tuple[Device, ...], spec: RunSpec) -> tuple[Device, .
         return found
     by_name = {device.name: device for device in found}
     chosen = [by_name[name] for name in ordered if name in by_name]
-    return tuple(chosen + [device for device in found if device.name not in by_name])
+    return tuple(chosen + [device for device in found if device.name not in ordered])
 
 
 def model_facts(spec: RunSpec) -> ModelFacts | None:
@@ -680,12 +680,14 @@ def devices_field(spec: RunSpec, scan: Scan, backend: str, oob: bool = False):
                 Label(
                     Input(type="checkbox", name="devices", value=device.name,
                           checked=device.name in chosen),
+                    Span("⋮⋮", cls="draghandle", draggable="true",
+                         title="Drag to change this device's position in -dev",
+                         aria_label=f"Drag {device.name} to reorder"),
                     Span(device.name, cls="devname"),
                     Span(device.description, cls="devdesc"),
                     Span(device.memory_text, cls="devmem"),
                     cls="devrow" if device.confirmed else "devrow unconfirmed",
                     title=f"{device.source}" + ("" if device.confirmed else " · not confirmed by a run"),
-                    draggable="true",
                 )
                 for device in found
             ], cls="devlist"))

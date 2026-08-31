@@ -161,8 +161,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 9 205 lines of Python plus 3 156 of tests, against the old GUI's
-15 458 with none. The suite is 224 tests and runs in about 20 seconds without
+`gui2/` is 9 350 lines of Python plus 3 202 of tests, against the old GUI's
+15 458 with none. The suite is 226 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -202,6 +202,13 @@ the automatic value spelled out. The Model field answers its own question
 before the eye reaches the right column: "fits — 18.8 GiB of 30.1 GiB free"
 or "2.7 GiB over the 15.9 GiB installed", and it asks for itself once the
 device scan lands, exactly as the device picker does.
+
+The device picker keeps selection and order separate. Checking one card does
+not hide the others; it moves the chosen cards to the front and leaves every
+unchosen card available. Reordering uses the dedicated `⋮⋮` drag handle rather
+than the checkbox label, because browsers treat native form controls as a
+forbidden drag source. A completed drag updates the repeated `devices` fields,
+the `-dev` preview and the matching tensor-split bars together.
 
 The header links carry the page they come from: Server's "Autotune" opens the
 sweep of what is on screen, Autotune's "Server" opens the same run again.

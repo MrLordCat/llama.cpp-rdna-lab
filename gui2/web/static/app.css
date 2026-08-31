@@ -307,7 +307,7 @@ button.small { padding: 2px 8px; font-size: 11px; }
 .devrow {
     position: relative;
     display: grid;
-    grid-template-columns: 84px 1fr auto;
+    grid-template-columns: 22px 84px 1fr auto;
     align-items: center;
     gap: 8px;
     padding: 4px 8px;
@@ -315,6 +315,20 @@ button.small { padding: 2px 8px; font-size: 11px; }
     border-radius: 4px;
     cursor: pointer;
 }
+.devrow .draghandle {
+    display: grid;
+    place-items: center;
+    min-height: 24px;
+    color: var(--muted);
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+    font-size: 15px;
+    letter-spacing: -3px;
+}
+.devrow .draghandle:hover { color: var(--accent); }
+.devrow.grabbing { opacity: .55; border-color: var(--accent); }
+.devrow.grabbing .draghandle { cursor: grabbing; }
 .devrow:hover { background: var(--panel-2); border-color: var(--accent); }
 /* the row is the button; a box in front of it would say "selected" twice */
 .devrow:has(input:checked) {

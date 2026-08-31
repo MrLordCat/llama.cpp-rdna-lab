@@ -148,29 +148,69 @@ function deviceOrderSync(devlist) {
         hint.textContent = "-dev " + chosen.join(",");
     }
 }
+function deviceOrderSubmit(devlist) {
+    // An empty device list means "all" but carries no order. The first drag
+    // makes that implicit choice explicit, otherwise a form submission could
+    // not preserve the order the user just made.
+    let chosen = Array.from(devlist.querySelectorAll("input[name=devices]:checked"));
+    if (!chosen.length) {
+        devlist.querySelectorAll("input[name=devices]").forEach((input) => { input.checked = true; });
+        chosen = Array.from(devlist.querySelectorAll("input[name=devices]:checked"));
+    }
+    deviceOrderSync(devlist);
+    // Both Server and Autotune forms listen for change. Submitting the current
+    // DOM order updates their preview and URL, so the order survives navigation.
+    if (chosen[0]) chosen[0].dispatchEvent(new Event("change", { bubbles: true }));
+}
 function deviceDrag(root) {
+    if (root.dataset.dragReady === "true") return;
+    root.dataset.dragReady = "true";
     let dragged = null;
+    let moved = false;
+    root.addEventListener("click", (event) => {
+        if (event.target.closest(".draghandle")) {
+            // A handle lives inside a label; do not let a click on it toggle
+            // the checkbox. It changes order only.
+            event.preventDefault();
+            event.stopPropagation();
+        }
+    });
     root.addEventListener("dragstart", (event) => {
-        const row = event.target.closest(".devrow");
-        if (!row) return;
+        const handle = event.target.closest(".draghandle");
+        const row = handle?.closest(".devrow");
+        if (!row) {
+            event.preventDefault();
+            return;
+        }
         dragged = row;
+        moved = false;
         row.classList.add("grabbing");
-        event.dataTransfer.effectAllowed = "move";
+        if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", row.querySelector(".devname")?.textContent || "device");
+        }
     });
     root.addEventListener("dragover", (event) => {
         const row = event.target.closest(".devrow");
-        if (!row || row === dragged) return;
+        if (!dragged || !row || row === dragged) return;
         event.preventDefault();
         const rect = row.getBoundingClientRect();
         const after = event.clientY > rect.top + rect.height / 2;
-        root.insertBefore(dragged, after ? row.nextSibling : row);
+        const before = after ? row.nextSibling : row;
+        if (before !== dragged && dragged.nextSibling !== before) {
+            root.insertBefore(dragged, before);
+            moved = true;
+        }
     });
-    root.addEventListener("drop", (event) => { event.preventDefault(); });
+    root.addEventListener("drop", (event) => {
+        if (dragged) event.preventDefault();
+    });
     root.addEventListener("dragend", () => {
         if (!dragged) return;
         dragged.classList.remove("grabbing");
         dragged = null;
-        deviceOrderSync(root);
+        if (moved) deviceOrderSubmit(root);
+        moved = false;
     });
     root.addEventListener("change", (event) => {
         if (event.target.name === "devices") deviceOrderSync(root);

@@ -794,10 +794,23 @@ def test_the_device_picker_renders_cards_in_the_order_they_are_chosen(client):
         rows = re.findall(r'<span class="devname">([^<]+)</span>', field)
         assert rows[0] == "RPC0", f"the chosen order comes first: {rows}"
         assert "-dev RPC0,Vulkan0" in field
-        assert 'draggable="true"' in field, "cards are draggable to reorder"
+        handle = re.search(r'<span[^>]*class="draghandle"[^>]*>', field)
+        assert handle and 'draggable="true"' in handle.group(0), \
+            "a dedicated handle is draggable; the checkbox row is not"
         assert "deviceDrag" in field, "the drag script rides with the picker"
     finally:
         fake.close()
+
+
+def test_selecting_one_device_keeps_the_other_cards_available():
+    """Chosen cards move to the front; unchosen cards must not be filtered out."""
+    from gui2.core.devices import Device
+    from gui2.core.runspec import DEFAULTS
+    from gui2.web.server_page import ordered_devices
+
+    found = (Device(name="Vulkan0"), Device(name="Vulkan1"), Device(name="RPC0"))
+    ordered = ordered_devices(found, replace(DEFAULTS, devices="Vulkan1"))
+    assert [device.name for device in ordered] == ["Vulkan1", "Vulkan0", "RPC0"]
 
 
 def _write_bench_rows(root: Path, rows: list[dict]) -> Path:
