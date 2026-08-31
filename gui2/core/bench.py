@@ -87,7 +87,7 @@ BENCH_OWNED: frozenset[str] = frozenset().union(*(
     aliases_of(flag) for flag in (
         "-m", "--host", "--port", "-c", "--batch-size", "--ubatch-size",
         "-ngl", "--parallel", "--cache-type-k", "--cache-type-v", "--flash-attn",
-        "-dev", "-sm", "-ts", "-fit",
+        "-dev", "-sm", "-ts", "-fit", "--rpc",
     )
 )) | {"--no-warmup", "--seed"}
 
@@ -546,6 +546,11 @@ def to_bench_argv(
     argv += _flag(spec.flash_attn != "off", "--flash-attn", "--no-flash-attn")
     # the device list belongs to bench2 rather than to --server-extra: left out,
     # it falls back to the hardware profile, which names cards of its own
+    if spec.rpc_endpoints:
+        # bench2 owns the flag too, and puts it before -dev, which is where
+        # llama-server needs it: -dev validates names as parsed, and RPC
+        # devices exist only after --rpc has registered them
+        argv += ["--rpc", spec.rpc_endpoints]
     argv += ["--dev", spec.devices, "--sm", spec.split_mode, "--ts", spec.tensor_split]
     argv += ["--context-source", bench.context_source]
     if bench.context_source == "file" and bench.context_file:

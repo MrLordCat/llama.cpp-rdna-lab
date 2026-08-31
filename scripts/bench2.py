@@ -120,6 +120,7 @@ class Config:
         # never fills it
         s["spec_n"] = a.spec_n if a.spec_n is not None else (s.get("spec_n") or 0)
         s["dev"] = a.dev if a.dev is not None else bd.get("dev", "")
+        s["rpc"] = a.rpc or s.get("rpc", "")
         s["sm"] = a.sm if a.sm is not None else bd.get("sm", "layer")
         s["ts"] = a.ts if a.ts is not None else bd.get("ts", "")
         s["batch"] = a.batch_size if a.batch_size is not None else self.profile.get("default_batch", 8192)
@@ -311,6 +312,10 @@ def build_server_cmd(cfg: Config, host: str, port: int, ctx: int, model: Path,
         cmd.extend(["--spec-draft-n-max", str(n)])
     else:
         cmd.extend(["--spec-type", "none"])
+    if s.get("rpc"):
+        # -dev validates each name the moment it is parsed, and RPC devices
+        # only exist after --rpc registers them; this must come first
+        cmd.extend(["--rpc", s["rpc"]])
     if s["dev"]:
         cmd.extend(["-dev", s["dev"]])
     if s["sm"]:
@@ -1156,6 +1161,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--gpu-layers", type=int, default=None)
     run.add_argument("--parallel", type=int, default=None)
     run.add_argument("--dev", default=None, help="override -dev list")
+    run.add_argument("--rpc", default=None, help="comma separated RPC servers (host:port)")
     run.add_argument("--sm", default=None, help="override -sm")
     run.add_argument("--ts", default=None, help="override -ts")
     run.add_argument("--fit", default=None)

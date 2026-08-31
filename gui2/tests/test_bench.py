@@ -98,12 +98,16 @@ def test_the_backend_is_named_because_bench2_would_otherwise_guess_rocm():
     assert value_after(argv, "--backend") == "vk"
 
 
-def test_rpc_workers_reach_the_server_through_the_extra_arguments():
-    """bench2 has no --rpc of its own, and -dev is how RPC cards are chosen."""
+def test_rpc_workers_are_bench2s_own_flag_and_come_before_the_devices():
+    """-dev validates names as it parses, and an RPC device exists only after
+    --rpc has registered it; the old route through --server-extra put --rpc
+    after -dev and llama-server rejected RPC0."""
     spec = replace(DEFAULTS, rpc_endpoints="192.168.1.60:50052", devices="RPC0,Vulkan0")
     argv = command(spec)
+    assert value_after(argv, "--rpc") == "192.168.1.60:50052"
+    assert argv.index("--rpc") < argv.index("--dev"), "rpc first, then the device list"
     extra = next(token for token in argv if token.startswith("--server-extra="))
-    assert "--rpc 192.168.1.60:50052" in extra
+    assert "--rpc" not in extra
     assert value_after(argv, "--dev") == "RPC0,Vulkan0"
 
 
