@@ -161,8 +161,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 9 538 lines of Python plus 3 325 of tests, against the old GUI's
-15 458 with none. The suite is 232 tests and runs in about 20 seconds without
+`gui2/` is 9 558 lines of Python plus 3 367 of tests, against the old GUI's
+15 458 with none. The suite is 234 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -271,7 +271,9 @@ can leave its GPUs — or the worker machine's — busy longer than a minute.
 
 The layer split is edited with one slider per device (however many cards the
 build has) instead of a text list: the bars always sum to the scale and write
-the `-ts` list the form submits.
+the `-ts` list the form submits. Every response that redraws the device picker
+also carries the balancer out of band, so a third card draws a third bar in
+the same answer and the face never needs a reload to catch up.
 
 The second machine is reduced to one decision and one file. The form asks
 for the machine's address, writes a `rpc-worker-<port>.bat` that opens the

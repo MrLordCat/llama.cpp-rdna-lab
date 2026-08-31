@@ -142,6 +142,9 @@ def create_app(config: AppConfig | None = None):
             # the context slider carries the price of the context: it has to
             # follow the same change that moved it
             server_page.kv_line(spec, server_page.model_facts(spec), oob=True),
+            # the split bars follow the device count, which this change may have
+            # moved: a third card must draw a third bar without a reload
+            server_page.balancer_field(spec, scan, backend, oob=True),
             HtmxResponseHeaders(push_url="/server?" + server_page.state_query(params)),
         )
 
@@ -187,6 +190,8 @@ def create_app(config: AppConfig | None = None):
         return (
             server_page.rpc_status(spec, fleet),
             server_page.devices_field(spec, scan, backend, oob=True),
+            # a worker's answer can add cards; the balancer must draw them too
+            server_page.balancer_field(spec, scan, backend, oob=True),
             # keep the address bar in step: the links to the Autotune page are
             # built from the URL, and a worker typed but never submitted would
             # otherwise silently not follow the user there
@@ -199,7 +204,10 @@ def create_app(config: AppConfig | None = None):
         build = server_page.build_of(config, spec)
         backend = req.query_params.get("backend", "") or (build.backend if build else "")
         devices.start(parse_rpc_endpoints(spec.rpc_endpoints), backend)
-        return server_page.devices_field(spec, devices.state(), backend)
+        return (
+            server_page.devices_field(spec, devices.state(), backend),
+            server_page.balancer_field(spec, devices.state(), backend, oob=True),
+        )
 
     @rt("/server/splitbalancer", methods=["GET"])
     def server_splitbalancer(req):
@@ -222,7 +230,10 @@ def create_app(config: AppConfig | None = None):
         build = server_page.build_of(config, spec)
         backend = build.backend if build else ""
         devices.refresh(parse_rpc_endpoints(spec.rpc_endpoints), backend)
-        return server_page.devices_field(spec, devices.state(), backend)
+        return (
+            server_page.devices_field(spec, devices.state(), backend),
+            server_page.balancer_field(spec, devices.state(), backend, oob=True),
+        )
 
     @rt("/server/start", methods=["POST"])
     async def server_start(req):
@@ -276,6 +287,9 @@ def create_app(config: AppConfig | None = None):
             # of the old one says nothing about the new one
             autotune_page.earlier_panel(autotune_page.measured(config, spec), spec, bench,
                                         oob=True),
+            # the device and split bars live on the form itself: a changed
+            # card count must redraw them without a reload here too
+            server_page.balancer_field(spec, scan, backend, oob=True),
             HtmxResponseHeaders(push_url="/autotune?" + query),
         )
 

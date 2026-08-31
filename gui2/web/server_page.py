@@ -488,7 +488,7 @@ def split_balancer(spec: RunSpec, devices: tuple[Device, ...]) -> Div:
     )
 
 
-def balancer_field(spec: RunSpec, scan: Scan, backend: str) -> Div:
+def balancer_field(spec: RunSpec, scan: Scan, backend: str, oob: bool = False) -> Div:
     """The balancer, waiting for the device scan like the picker does.
 
     Until the scan answers there are no cards to draw bars for, so the field
@@ -502,9 +502,11 @@ def balancer_field(spec: RunSpec, scan: Scan, backend: str) -> Div:
                 hx_target="#splitbalancer",
                 hx_swap="outerHTML"),
             id="splitbalancer",
+            hx_swap_oob="true" if oob else None,
         )
     return Div(split_balancer(spec, run_devices(scan, spec, backend)),
-               id="splitbalancer")
+               id="splitbalancer",
+               hx_swap_oob="true" if oob else None)
 
 
 def _hint(param: Param, spec: RunSpec, facts: ModelFacts | None) -> str:

@@ -869,6 +869,48 @@ def test_device_drag_script_can_run_after_every_htmx_swap():
     script = DEVICE_ORDER_JS.strip()
     assert script.startswith("(() => {") and script.endswith("})();")
 
+def test_balancer_input_listener_registers_once():
+    """OOB swaps repeat the script; a doubled document listener would rebalance
+    a single drag several times over."""
+    from gui2.web.layout import BALANCER_JS
+
+    assert "__gui2BalancerInputWired" in BALANCER_JS
+
+def test_split_bars_follow_a_device_count_change_without_a_reload(client):
+    """The picker refresh and the preview must carry the balancer along: a
+    third card draws a third bar in the same response that adds the card."""
+    import time
+
+    from gui2.tests.test_rpc import FakeWorker, GIB
+
+    fake = FakeWorker(devices=((8 * GIB, 16 * GIB),))
+    fake.start()
+    try:
+        client.post("/server/rpc/check", data={
+            "rpc_endpoints": fake.endpoint, "_form": "1"})
+        three = urlencode([("backend", "vulkan"), ("rpc_endpoints", fake.endpoint),
+                           ("devices", "RPC0"), ("devices", "Vulkan0"),
+                           ("devices", "Vulkan1")])
+        deadline = time.monotonic() + 10
+        text = ""
+        while time.monotonic() < deadline:
+            text = client.get(f"/server/devices?{three}").text
+            if "looking for devices" not in text:
+                break
+            time.sleep(0.1)
+        rows = re.findall(r'<span class="devname">([^<]+)</span>', text)
+        assert rows, "the picker found cards"
+        assert text.count('type="range"') == len(rows), \
+            "one split bar per card, in the same answer that drew the cards"
+        assert 'hx-swap-oob="true"' in text, "the balancer rides along out of band"
+
+        one = urlencode([("backend", "vulkan"), ("rpc_endpoints", fake.endpoint),
+                         ("devices", "RPC0")])
+        narrowed = client.get(f"/server/devices?{one}").text
+        assert narrowed.count('type="range"') == 1, "one card, one bar, no reload"
+    finally:
+        fake.close()
+
 
 def _write_bench_rows(root: Path, rows: list[dict]) -> Path:
     """bench2's index.csv, with the columns this page reads."""

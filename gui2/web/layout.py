@@ -97,6 +97,9 @@ function splitAuto(btn) {
     if (field) field.value = "";
     splitShow(box);
 }
+// the one document listener registers once; an OOB swap re-runs this script
+if (!window.__gui2BalancerInputWired) {
+window.__gui2BalancerInputWired = true;
 document.addEventListener("input", (event) => {
     const slider = event.target;
     if (!(slider instanceof HTMLInputElement) || slider.type !== "range") return;
@@ -120,6 +123,7 @@ document.addEventListener("input", (event) => {
     splitShow(box);
     splitWrite(box);
 });
+}
 """
 
 #: dragging a card to the top makes it first in -dev (and its split bar follows)
