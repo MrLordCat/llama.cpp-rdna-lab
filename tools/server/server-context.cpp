@@ -3005,6 +3005,18 @@ private:
                                     break;
                                 }
                             }
+                            // Do not split the MTP/NextN recent window. A checkpoint
+                            // boundary inside it leaves the drafter only the final few
+                            // tokens (measured acceptance 56.7% vs 95.4% on L2 30.6k),
+                            // while the checkpoint at the window edge still covers the
+                            // tail for rollback purposes.
+                            if (should_break && spec && common_speculative_need_embd_nextn(spec.get())) {
+                                const int32_t spec_window = server_spec_prefill_window();
+                                if (spec_window > 0 &&
+                                    slot.prompt.n_tokens() >= std::max(0, slot.task->n_tokens() - spec_window)) {
+                                    should_break = false;
+                                }
+                            }
                             if (should_break) {
                                 break;
                             }
