@@ -340,9 +340,10 @@ def build_server_cmd(cfg: Config, host: str, port: int, ctx: int, model: Path,
         cmd.extend(["-ts", s["ts"]])
     if s["fit"]:
         cmd.extend(["-fit", s["fit"]])
-    if s.get("cache_ram"):
+    if s.get("cache_ram") is not None:
+        # zero is a real setting (prompt cache off); a falsy check would drop it
         cmd.extend(["--cache-ram", str(s["cache_ram"])])
-    if s.get("ctx_checkpoints"):
+    if s.get("ctx_checkpoints") is not None:
         cmd.extend(["--ctx-checkpoints", str(s["ctx_checkpoints"])])
     cmd.extend(extra)
     return cmd
