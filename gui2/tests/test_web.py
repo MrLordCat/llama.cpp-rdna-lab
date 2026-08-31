@@ -12,7 +12,7 @@ import re
 import sys
 from dataclasses import replace
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode
 
 import pytest
 from fasthtml.common import to_xml
@@ -258,6 +258,31 @@ def test_the_worker_command_is_generated_from_its_own_boxes(client):
 def test_an_unchecked_box_makes_the_worker_private_again(client):
     html = client.post("/server/rpc/command", data={"rpc_port": "50052"}).text
     assert "-H 127.0.0.1" in html
+
+def test_worker_check_keeps_the_address_in_the_url(client):
+    """The links to the Autotune page come from the address bar; a worker that
+    was typed and checked must survive that trip."""
+    from gui2.tests.test_rpc import FakeWorker
+
+    fake = FakeWorker()
+    fake.start()
+    try:
+        response = client.post("/server/rpc/check", data={
+            "rpc_endpoints": fake.endpoint, "_form": "1"})
+    finally:
+        fake.close()
+    pushed = response.headers.get("hx-push-url", "")
+    assert pushed.startswith("/server?")
+    assert fake.endpoint in unquote(pushed)
+
+def test_the_autotune_address_box_refreshes_the_device_list(client, models):
+    """A worker pasted into Autotune appears as an RPC card without a trip
+    back to the Server page first."""
+    html = client.get("/autotune", params={"model": models["long"], "_form": "1"}).text
+    field = re.search(r'<input[^>]*name="rpc_endpoints"[^>]*>', html)
+    assert field, "the worker addresses box is on the Autotune page too"
+    assert 'hx-get="/server/devices"' in field.group(0)
+    assert 'hx-target="#devicefield"' in field.group(0)
 
 def test_one_file_does_the_other_machines_whole_setup(client):
     """The .bat is what a user runs there: firewall rule and rpc-server."""

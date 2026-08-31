@@ -161,8 +161,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 9 116 lines of Python plus 3 100 of tests, against the old GUI's
-15 458 with none. The suite is 221 tests and runs in about 20 seconds without
+`gui2/` is 9 181 lines of Python plus 3 135 of tests, against the old GUI's
+15 458 with none. The suite is 223 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -257,7 +257,10 @@ Worker addresses box — so the recipe is: run the file there as Administrator,
 press Check here, tick `RPC0`. Nothing is executed remotely and no
 credentials are held, because the worker machine belongs to whoever is
 sitting in front of it, and reaching over would need a password the GUI has
-no business keeping.
+no business keeping. A Check also keeps the address in the URL, so the link
+to the Autotune page carries the worker along, and on that page pasting an
+address refreshes the device list in place instead of asking for the Server
+page first.
 
 Nothing on it is typed that can be ticked or dragged instead. Each axis is a
 row of values to tick rather than a comma-separated line to spell: one ticked

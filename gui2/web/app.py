@@ -154,7 +154,8 @@ def create_app(config: AppConfig | None = None):
 
     @rt("/server/rpc/check", methods=["POST"])
     async def server_rpc_check(req):
-        spec = server_page.spec_from_params(await req.form())
+        params = await req.form()
+        spec = server_page.spec_from_params(params)
         fleet = server_page.check_workers(spec)
         # only the probe knows a worker has two GPUs, and that renames every
         # RPC device after it — so the picker is redrawn from the same answer
@@ -163,12 +164,17 @@ def create_app(config: AppConfig | None = None):
         return (
             server_page.rpc_status(spec, fleet),
             server_page.devices_field(spec, scan, backend, oob=True),
+            # keep the address bar in step: the links to the Autotune page are
+            # built from the URL, and a worker typed but never submitted would
+            # otherwise silently not follow the user there
+            HtmxResponseHeaders(push_url="/server?" + server_page.state_query(params, spec)),
         )
 
     @rt("/server/devices", methods=["GET"])
     def server_devices(req):
         spec = server_page.spec_from_params(req.query_params)
-        backend = req.query_params.get("backend", "")
+        build = server_page.build_of(config, spec)
+        backend = req.query_params.get("backend", "") or (build.backend if build else "")
         devices.start(parse_rpc_endpoints(spec.rpc_endpoints), backend)
         return server_page.devices_field(spec, devices.state(), backend)
 

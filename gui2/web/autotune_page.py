@@ -598,6 +598,30 @@ def build_field(spec: RunSpec, config: AppConfig, options: dict):
     )
 
 
+def rpc_address_field(spec: RunSpec, options: dict, facts) -> Label:
+    """The Worker addresses box as the Autotune page needs it.
+
+    It is the same field the Server page has, plus one behaviour: a change
+    re-reads the device list, so a worker pasted in here shows up as an RPC
+    card without visiting the Server page first.
+    """
+    param = BY_NAME["rpc_endpoints"]
+    hint = server_page._hint(param, spec, facts)
+    return Label(
+        Span(param.label),
+        Input(type="text", name=param.name, value=spec.rpc_endpoints,
+              placeholder="192.168.1.60:50052",
+              hx_get="/server/devices",
+              hx_include=".paramform",
+              hx_trigger="change consume",
+              hx_target="#devicefield",
+              hx_swap="outerHTML"),
+        Span(hint, cls="hint") if hint else None,
+        cls="field",
+        title=hint,
+    )
+
+
 def server_panel(config: AppConfig, spec: RunSpec, scan: Scan, backend: str) -> Details:
     """The server under test, edited in place rather than by a detour.
 
@@ -625,7 +649,7 @@ def server_panel(config: AppConfig, spec: RunSpec, scan: Scan, backend: str) -> 
         ),
         server_page.devices_field(spec, scan, backend),
         Div(
-            server_page._field(BY_NAME["rpc_endpoints"], spec, options, facts),
+            rpc_address_field(spec, options, facts),
             server_page._field(BY_NAME["split_mode"], spec, options, facts),
             cls="grid",
         ),
