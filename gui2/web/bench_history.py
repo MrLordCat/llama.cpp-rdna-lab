@@ -195,8 +195,10 @@ def table(config: AppConfig, params) -> Div:
         run_rows = []
         for representative_row, run_build, scenarios in chosen:
             when = representative_row.time_text
-            draft = (f"mtp n{representative_row.mtp_draft_n}"
-                     if representative_row.spec_mode == "mtp" else "none")
+            draft = "none"
+            if representative_row.spec_mode == "mtp":
+                draft = (f"mtp n{representative_row.draft_n}"
+                         if representative_row.draft_n else "mtp")
             run_rows += [
                 Tr(Td(A("▸", hx_get=f"/autotune/history/run?run_name={quote(representative_row.run_name)}",
                        hx_target=f"#detail-{representative_row.run_name}",
@@ -241,7 +243,9 @@ def run_detail(config: AppConfig, run_name: str) -> Tr:
     scenarios.sort(key=lambda row: (row.when, row.level))
     scenario_rows = []
     for row in scenarios:
-        draft = f" · draft {row.mtp_draft_n}" if row.spec_mode == "mtp" else ""
+        row_spec = row.spec_mode
+        if row_spec == "mtp":
+            row_spec += f" · draft {row.draft_n}" if row.draft_n else " · draft ?"
         scenario_rows.append(Tr(
             Td(row.time_text),
             Td(row.scenario, cls="num"),
@@ -250,7 +254,7 @@ def run_detail(config: AppConfig, run_name: str) -> Tr:
             Td(f"{row.aggregate_tps:.1f}", cls="num"),
             Td(str(row.ctx), cls="num"),
             Td(row.status or "ok"),
-            Td(f"{row.spec_mode}{draft}"),
+            Td(row_spec),
         ))
     return Tr(
         Td(Div(

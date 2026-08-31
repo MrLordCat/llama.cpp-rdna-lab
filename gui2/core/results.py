@@ -13,8 +13,17 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
+
+#: bench2 names a run after the configuration it measures, so the speculation
+#: token is in the name either at the end (-mtp, -mtp-n2) or followed by the
+#: workload and run tokens (-mtp-n2-l0-l4-r3). The index column is declared but
+#: never filled, and run.json keeps the mode but not the lookahead -- the name
+#: is the one place the lookahead is written down.
+_NAME_MTP = re.compile(r"-mtp(?:-n\d+)?(?:-|$)")
+_NAME_DRAFT_N = re.compile(r"-mtp-n(\d+)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,8 +56,25 @@ class Result:
 
     @property
     def spec_mode(self) -> str:
-        """The mode bench2 ran under, spelled as the sweep axes spell it."""
-        return "mtp" if self.mtp_draft_n else "none"
+        """The mode bench2 ran under, spelled as the sweep axes spell it.
+
+        bench2 declares `mtp_draft_n` in the index but does not write it, so an
+        empty cell is not proof of none: the run name carries the mode too, and
+        is checked before concluding.
+        """
+        return "mtp" if (self.mtp_draft_n or _NAME_MTP.search(self.run_name)) else "none"
+
+    @property
+    def draft_n(self) -> str:
+        """How far ahead the draft head guessed; empty means run.json did not say.
+
+        The lookahead lives only in the run name (run.json has the mode but not
+        the number), so it is read from there when the index cell is empty.
+        """
+        if self.mtp_draft_n:
+            return self.mtp_draft_n
+        match = _NAME_DRAFT_N.search(self.run_name)
+        return match.group(1) if match else ""
 
     @property
     def time_text(self) -> str:

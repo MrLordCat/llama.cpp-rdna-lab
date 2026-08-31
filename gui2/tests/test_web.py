@@ -19,6 +19,7 @@ from fasthtml.common import to_xml
 from starlette.testclient import TestClient
 
 from gui2.config import AppConfig
+from gui2.core.results import Result
 from gui2.tests.fixtures import QWEN35_27B, write_gguf
 from gui2.web.app import create_app
 
@@ -771,6 +772,52 @@ def test_the_autotune_history_filters_and_expands(tmp_path):
         detail = owner.get("/autotune/history/run",
                            params={"run_name": "vk-model-b1024-u128-q8_0-none"}).text
         assert "every scenario" in detail and "35.0" in detail and "30.0" in detail
+
+
+def test_a_result_reads_its_speculation_from_the_name_when_the_index_is_silent():
+    """bench2 declares mtp_draft_n but never fills it; the name is the record,
+    whether the token ends the name or is followed by workload tokens."""
+    assert Result(run_name="vk-b8192-u1024-q8_0-none").spec_mode == "none"
+    assert Result(run_name="vk-b8192-u1024-q8_0-mtp").spec_mode == "mtp"
+    assert Result(run_name="vk-b8192-u1024-q8_0-mtp-n2").spec_mode == "mtp"
+    assert Result(run_name="x-mtp-n2-l0-l4-r3").spec_mode == "mtp"
+    assert Result(run_name="x-mtp-n2-l0-l4-r3").draft_n == "2"
+    assert Result(run_name="x-mtp").draft_n == ""
+    # an explicit index cell still wins over the name
+    assert Result(run_name="x-mtp-n2", mtp_draft_n="3").draft_n == "3"
+
+
+def test_the_history_shows_mtp_even_when_the_index_column_is_empty(tmp_path):
+    """The real index never records the lookahead; a run whose folder says it
+    was mtp must not read as none in the history table."""
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts" / "bench2.py").write_text("", encoding="utf-8")
+    _write_bench_rows(tmp_path, [
+        dict(run_name="vk-model-b8192-u1024-q8_0-none", type="single", level="1",
+             timestamp="2026-08-29T10:00:00+03:00", backend="vk", model="long.gguf",
+             ctx="8192", prefill_tps="900", decode_tps="30", aggregate_tps="28",
+             mtp_draft_n="", status="ok", path="", session_turns="0"),
+        dict(run_name="vk-model-b8192-u1024-q8_0-mtp-n2", type="single", level="1",
+             timestamp="2026-08-29T11:00:00+03:00", backend="vk", model="long.gguf",
+             ctx="8192", prefill_tps="800", decode_tps="40", aggregate_tps="36",
+             mtp_draft_n="", status="ok", path="", session_turns="0"),
+        dict(run_name="subProject_q4-mtp-n2-l0-l4-r3", type="single", level="1",
+             timestamp="2026-08-29T12:00:00+03:00", backend="vk", model="long.gguf",
+             ctx="8192", prefill_tps="700", decode_tps="45", aggregate_tps="40",
+             mtp_draft_n="", status="ok", path="", session_turns="0"),
+    ])
+
+    app = create_app(AppConfig(data_root=tmp_path, builds_root=tmp_path))
+    with TestClient(app) as owner:
+        html = owner.get("/autotune/history").text
+        mtp_only = owner.get("/autotune/history", params={"mtp": "mtp"}).text
+        none_only = owner.get("/autotune/history", params={"mtp": "none"}).text
+
+    assert html.count('class="run-row"') == 3
+    assert "mtp n2" in html, "the lookahead is read from the run name"
+    assert mtp_only.count('class="run-row"') == 2, \
+        "the token counts however far it sits from the end of the name"
+    assert none_only.count('class="run-row"') == 1 and "subProject_q4" not in none_only
 
 
 def test_rows_written_before_this_run_are_not_shown_as_its_results(tmp_path):

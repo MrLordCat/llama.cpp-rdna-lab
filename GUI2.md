@@ -161,8 +161,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 9 002 lines of Python plus 3 021 of tests, against the old GUI's
-15 458 with none. The suite is 216 tests and runs in about 20 seconds without
+`gui2/` is 9 032 lines of Python plus 3 068 of tests, against the old GUI's
+15 458 with none. The suite is 218 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -241,7 +241,10 @@ speculation is on. Once a run starts, the Results panel follows it: one row
 per run, filled in from bench2's own index as each scenario is recorded. The
 Autotune history page lists every finished run the same way, filtered by
 lane, backend, speculation and build, sorted by any column, with ▸ expanding
-a run into the scenarios it is made of.
+a run into the scenarios it is made of. bench2 declares an `mtp_draft_n`
+column in its index but never fills it, so the page reads the mode and the
+lookahead from the run name, which is named after the configuration — that
+is what makes a row legible as `mtp n2` rather than silently `none`.
 
 The layer split is edited with one slider per device (however many cards the
 build has) instead of a text list: the bars always sum to the scale and write
