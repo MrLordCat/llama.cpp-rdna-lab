@@ -3,6 +3,7 @@
 #include "unary.cuh"
 #include "mmvf.cuh"
 #include "convert.cuh"
+#include <chrono>
 
 template <typename T, typename type_acc, int ncols_dst, int block_size, bool has_fusion = false, bool is_multi_token_id = false>
 static __global__ void mul_mat_vec_f(
@@ -619,6 +620,105 @@ static void mul_mat_vec_f_cuda(
         stride_channel_dst, nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, stream);
 }
 
+// G10 fused pair kernel. One warp-size-reduce pipeline per output row, and
+// the same per-column order as the separate mul_mat_vec_f<float> launches
+// (two ggml_cuda_mad per float2, warp reduce, shared cross-warp reduce) so
+// both outputs are bit-identical to the unfused path.
+template<int block_size>
+static __global__ void mul_mat_vec_f_pair_kernel(
+        const float * __restrict__ xa, const float * __restrict__ xb, const float * __restrict__ y,
+        float * __restrict__ dst_a, float * __restrict__ dst_b,
+        const int ncols2, const int nrows, const int stride_a, const int stride_b) {
+    const int row = blockIdx.x;
+    if (row >= nrows) {
+        return;
+    }
+    const int tid = threadIdx.x;
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+
+    const float2 * a2 = (const float2 *) (xa + (size_t) row*stride_a);
+    const float2 * b2 = (const float2 *) (xb + (size_t) row*stride_b);
+    const float2 * y2 = (const float2 *) y;
+
+    float sum_a = 0.0f;
+    float sum_b = 0.0f;
+    for (int col2 = tid; col2 < ncols2; col2 += block_size) {
+        const float2 tmpy = y2[col2];
+        const float2 tmpa = a2[col2];
+        const float2 tmpb = b2[col2];
+        ggml_cuda_mad(sum_a, tmpa.x, tmpy.x);
+        ggml_cuda_mad(sum_a, tmpa.y, tmpy.y);
+        ggml_cuda_mad(sum_b, tmpb.x, tmpy.x);
+        ggml_cuda_mad(sum_b, tmpb.y, tmpy.y);
+    }
+
+    extern __shared__ char data_mmv[];
+    float * buf_a = (float *) data_mmv;
+    float * buf_b = buf_a + warp_size;
+
+    sum_a = warp_reduce_sum<warp_size>(sum_a);
+    sum_b = warp_reduce_sum<warp_size>(sum_b);
+
+    if (block_size > warp_size) {
+        if (tid < warp_size) {
+            buf_a[tid] = 0.0f;
+            buf_b[tid] = 0.0f;
+        }
+        __syncthreads();
+        buf_a[tid/warp_size] = sum_a;
+        buf_b[tid/warp_size] = sum_b;
+        __syncthreads();
+        if (tid < warp_size) {
+            sum_a = warp_reduce_sum<warp_size>(buf_a[tid]);
+            sum_b = warp_reduce_sum<warp_size>(buf_b[tid]);
+        }
+    }
+
+    if (tid != 0) {
+        return;
+    }
+    dst_a[row] = sum_a;
+    dst_b[row] = sum_b;
+}
+
+void ggml_cuda_mul_mat_vec_f_pair(
+        ggml_backend_cuda_context & ctx,
+        const ggml_tensor * src0_a, const ggml_tensor * src1, ggml_tensor * dst_a,
+        const ggml_tensor * src0_b, ggml_tensor * dst_b, cudaStream_t stream) {
+    GGML_ASSERT(src0_a->type == GGML_TYPE_F32);
+    GGML_ASSERT(src0_b->type == GGML_TYPE_F32);
+    GGML_ASSERT(src1->type == GGML_TYPE_F32);
+    GGML_ASSERT(dst_a->type == GGML_TYPE_F32);
+    GGML_ASSERT(dst_b->type == GGML_TYPE_F32);
+    GGML_ASSERT(src1->ne[1] == 1);
+    GGML_ASSERT(ggml_are_same_shape(src0_a, src0_b));
+    GGML_ASSERT(src0_a->ne[0] % 2 == 0);
+
+    const int nrows = (int) src0_a->ne[1];
+    const int ncols2 = (int) (src0_a->ne[0] / 2);
+    const int stride_a = (int) src0_a->nb[1] / (int) ggml_type_size(src0_a->type);
+    const int stride_b = (int) src0_b->nb[1] / (int) ggml_type_size(src0_b->type);
+
+    const float * xa = (const float *) src0_a->data;
+    const float * xb = (const float *) src0_b->data;
+    const float * y = (const float *) src1->data;
+    float * out_a = (float *) dst_a->data;
+    float * out_b = (float *) dst_b->data;
+
+    // Same block-size selection as launch_mul_mat_vec_f_cuda (ncols = 5120 -> 256).
+    const int block_size = 256;
+    const int nbytes_shared = 2*WARP_SIZE*sizeof(float);
+    switch (block_size) {
+        case  32: mul_mat_vec_f_pair_kernel< 32><<<nrows,  32, nbytes_shared, stream>>>(xa, xb, y, out_a, out_b, ncols2, nrows, stride_a, stride_b); break;
+        case  64: mul_mat_vec_f_pair_kernel< 64><<<nrows,  64, nbytes_shared, stream>>>(xa, xb, y, out_a, out_b, ncols2, nrows, stride_a, stride_b); break;
+        case 128: mul_mat_vec_f_pair_kernel<128><<<nrows, 128, nbytes_shared, stream>>>(xa, xb, y, out_a, out_b, ncols2, nrows, stride_a, stride_b); break;
+        case 256: mul_mat_vec_f_pair_kernel<256><<<nrows, 256, nbytes_shared, stream>>>(xa, xb, y, out_a, out_b, ncols2, nrows, stride_a, stride_b); break;
+        default:
+            GGML_ABORT("fatal error");
+    }
+    GGML_UNUSED(ctx);
+}
+
 void ggml_cuda_mul_mat_vec_f(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst,
     const ggml_cuda_mm_fusion_args_host * fusion) {
     GGML_ASSERT(        src1->type == GGML_TYPE_F32);
@@ -691,6 +791,13 @@ void ggml_cuda_mul_mat_vec_f(ggml_backend_cuda_context & ctx, const ggml_tensor 
 
     const int64_t ids_stride = ids ? ids->nb[1] / ggml_type_size(ids->type) : 0;
 
+    const bool trace_mmvf_timing = std::getenv("GGML_TRACE_MMVF_TIMING") != nullptr;
+    auto mmvf_trace_start = std::chrono::high_resolution_clock::now();
+    if (trace_mmvf_timing) {
+        CUDA_CHECK(cudaStreamSynchronize(ctx.stream()));
+        mmvf_trace_start = std::chrono::high_resolution_clock::now();
+    }
+
     switch (src0->type) {
         case GGML_TYPE_F32: {
             const float * src0_d = (const float *) src0->data;
@@ -712,6 +819,18 @@ void ggml_cuda_mul_mat_vec_f(ggml_backend_cuda_context & ctx, const ggml_tensor 
         } break;
         default:
             GGML_ABORT("unsupported type: %s", ggml_type_name(src0->type));
+    }
+
+    if (trace_mmvf_timing) {
+        CUDA_CHECK(cudaStreamSynchronize(ctx.stream()));
+        const double mmvf_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - mmvf_trace_start).count();
+        GGML_LOG_INFO(
+            "GGML_TRACE_MMVF_TIMING: dst=%s src0_type=%s ne00=%lld ne01=%lld ncols_dst=%lld fusion=%d mmvf_ms=%.4f\n",
+            dst->name, ggml_type_name(src0->type),
+            (long long) ne00, (long long) ne01, (long long) ncols_dst,
+            fusion ? (fusion->gate != nullptr || fusion->x_bias != nullptr || fusion->gate_bias != nullptr) : 0,
+            mmvf_ms);
     }
 }
 

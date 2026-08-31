@@ -627,9 +627,26 @@ static void ggml_cuda_op_mul_mat_cublas(
     const bool supports_bf16 = GGML_CUDA_CC_IS_NVIDIA(cc) || GGML_CUDA_CC_IS_AMD(cc) ||
         (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_QY2);
 
+    // G09 (2026-08-30): RDNA4 has no f32 MFMA, so the pure f32 GEMM path
+    // (GDN projections and rotation K/V in this lane) runs an order of
+    // magnitude slower than the f16-input route (measured 0.59 ms vs
+    // 0.058 ms at 48x1024x5120 on gfx1201). Send f32 GEMMs through the
+    // f16 conversion + f32 accumulate path, which is byte-identical on the
+    // locked lane and gives prompt +5.35% (r3). Default ON for RDNA4;
+    // GGML_ROCM_F32_GEMM_F16=0 restores the pure f32 path.
+    const bool f32_gemm_f16 = [&]() {
+        if (src0->type != GGML_TYPE_F32 || !GGML_CUDA_CC_IS_RDNA4(cc)) {
+            return false;
+        }
+        if (const char * env = std::getenv("GGML_ROCM_F32_GEMM_F16")) {
+            return std::atoi(env) != 0;
+        }
+        return true;
+    }();
+
     const bool use_fp16 =
         src0->type != GGML_TYPE_NVFP4 &&
-        (src0->type == GGML_TYPE_F16 || ggml_is_quantized(src0->type)) &&
+        (src0->type == GGML_TYPE_F16 || (src0->type == GGML_TYPE_F32 && f32_gemm_f16) || ggml_is_quantized(src0->type)) &&
         ggml_is_contiguous(src0) &&
         row_diff == src0->ne[1] &&
         dst->op_params[0] == GGML_PREC_DEFAULT;

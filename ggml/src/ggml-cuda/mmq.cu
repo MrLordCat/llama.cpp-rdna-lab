@@ -18,8 +18,12 @@ static int ggml_rdna4_stream_k_min_ne11() {
     return min_ne11;
 }
 
+// G08 (2026-08-30): on HIP 7.2 with Qwen3.8-27B Q4_K_M, q4_K prefill
+// ne11 549/919/1024 is 2.8-3.7% faster on dequant+hipBLAS than MMQ
+// (r3 dual L0, byte-identical greedy). MMQ stays for ne11 <= 256;
+// E070's Q4_K_S small-batch path still applies. Env always overrides.
 static int ggml_rdna4_q4k_mmq_max_ne11() {
-    int max_ne11 = 1024;
+    int max_ne11 = 256;
     if (const char * env = std::getenv("GGML_MMQ_RDNA4_Q4K_MAX_NE11")) {
         const int parsed = std::atoi(env);
         if (parsed > 0) {

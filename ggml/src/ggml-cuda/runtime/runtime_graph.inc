@@ -723,6 +723,19 @@ static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
 }
 
 // try and fuse nodes and return the number of nodes to skip
+static std::unordered_set<const void *> ggml_cuda_gdn_pair_skip_set;
+static bool ggml_cuda_gdn_pair_consume(const ggml_tensor * node) {
+    if (!node->data) {
+        return false;
+    }
+    const auto it = ggml_cuda_gdn_pair_skip_set.find(node->data);
+    if (it == ggml_cuda_gdn_pair_skip_set.end()) {
+        return false;
+    }
+    ggml_cuda_gdn_pair_skip_set.erase(it);
+    return true;
+}
+
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
 
     static bool disable_fusion = getenv("GGML_CUDA_DISABLE_FUSION") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_FUSION"));
@@ -731,6 +744,42 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     }
 
     ggml_tensor * node = cgraph->nodes[i];
+
+    // G10: paired GDN narrow f32 matvecs (ssm_alpha + ssm_beta share the
+    // same input vector and shape, n=1). Opt-in for now: one two-output
+    // launch replaces two separate MMVF calls and is bit-exact, but wall
+    // A/B showed no measurable decode gain (graph-capture launch overhead
+    // dominates), so the route stays OFF unless GGML_ROCM_GDN_PAIR=1.
+    static bool gdn_pair_enabled = std::getenv("GGML_ROCM_GDN_PAIR") != nullptr &&
+        std::atoi(std::getenv("GGML_ROCM_GDN_PAIR")) == 1;
+    if (gdn_pair_enabled && node->op == GGML_OP_MUL_MAT &&
+            node->src[0]->type == GGML_TYPE_F32 && node->src[1]->type == GGML_TYPE_F32 &&
+            node->type == GGML_TYPE_F32 && node->src[1]->ne[1] == 1 &&
+            node->src[0]->name && std::strstr(node->src[0]->name, "ssm_alpha")) {
+        for (int j = i + 1; j < cgraph->n_nodes; ++j) {
+            ggml_tensor * other = cgraph->nodes[j];
+            if (other->op != GGML_OP_MUL_MAT || other->src[1] != node->src[1] ||
+                other->src[0]->type != GGML_TYPE_F32 || other->src[1]->ne[1] != 1) {
+                continue;
+            }
+            if (!other->src[0]->name || !std::strstr(other->src[0]->name, "ssm_beta")) {
+                continue;
+            }
+            if (!ggml_are_same_shape(other->src[0], node->src[0])) {
+                continue;
+            }
+            ggml_cuda_mul_mat_vec_f_pair(*cuda_ctx, node->src[0], node->src[1], node,
+                                         other->src[0], other, cuda_ctx->stream());
+            static bool trace_gdn_pair = std::getenv("GGML_TRACE_GDN_PAIR") != nullptr;
+            if (trace_gdn_pair) {
+                GGML_LOG_INFO("GGML_TRACE_GDN_PAIR: fused alpha=%s beta=%s i=%d j=%d\n",
+                              node->name, other->name, i, j);
+            }
+            ggml_cuda_gdn_pair_skip_set.insert(node->data);
+            ggml_cuda_gdn_pair_skip_set.insert(other->data);
+            return 0;
+        }
+    }
 
     //topk-moe
     if (cgraph->nodes[i]->op == GGML_OP_UNARY || cgraph->nodes[i]->op == GGML_OP_SOFT_MAX ||
@@ -1254,6 +1303,16 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 }
 #endif
                 prev_i = i;
+
+                // G10: second node of a fused GDN pair was already computed
+                // by the first (alpha) node. Its output is ready on the alpha
+                // stream, but we still need the concurrent-event bookkeeping
+                // for the subsequent nodes (same as the built-in fusion path
+                // does for its last skipped node).
+                if (ggml_cuda_gdn_pair_consume(node)) {
+                    try_launch_concurrent_event(node);
+                    continue;
+                }
 
                 if (ggml_is_empty(node) || node->op == GGML_OP_RESHAPE || node->op == GGML_OP_TRANSPOSE || node->op == GGML_OP_VIEW || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_NONE) {
                     continue;
