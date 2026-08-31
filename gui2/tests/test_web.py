@@ -813,6 +813,15 @@ def test_selecting_one_device_keeps_the_other_cards_available():
     assert [device.name for device in ordered] == ["Vulkan1", "Vulkan0", "RPC0"]
 
 
+def test_device_drag_script_can_run_after_every_htmx_swap():
+    """Each replacement executes the inline script again; lexical declarations
+    must therefore live in a fresh scope rather than collide in window."""
+    from gui2.web.layout import DEVICE_ORDER_JS
+
+    script = DEVICE_ORDER_JS.strip()
+    assert script.startswith("(() => {") and script.endswith("})();")
+
+
 def _write_bench_rows(root: Path, rows: list[dict]) -> Path:
     """bench2's index.csv, with the columns this page reads."""
     folder = root / "build_logs" / "bench"

@@ -124,6 +124,7 @@ document.addEventListener("input", (event) => {
 
 #: dragging a card to the top makes it first in -dev (and its split bar follows)
 DEVICE_ORDER_JS = """
+(() => {
 function deviceOrderSync(devlist) {
     // the split bars pair with the device rows by name; drag one and the other
     // follows, so -ts never points at the wrong card
@@ -218,6 +219,7 @@ function deviceDrag(root) {
 }
 const __devlist = document.getElementById("devicefield")?.querySelector(".devlist");
 if (__devlist) deviceDrag(__devlist);
+})();
 """
 
 

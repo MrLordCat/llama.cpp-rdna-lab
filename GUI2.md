@@ -161,8 +161,8 @@ stack and the code-size claim before anything risky is written. **Done.**
 
 ## What exists now
 
-`gui2/` is 9 350 lines of Python plus 3 202 of tests, against the old GUI's
-15 458 with none. The suite is 226 tests and runs in about 20 seconds without
+`gui2/` is 9 352 lines of Python plus 3 211 of tests, against the old GUI's
+15 458 with none. The suite is 227 tests and runs in about 20 seconds without
 touching a GPU.
 
 | Module | What it answers |
@@ -208,7 +208,9 @@ not hide the others; it moves the chosen cards to the front and leaves every
 unchosen card available. Reordering uses the dedicated `⋮⋮` drag handle rather
 than the checkbox label, because browsers treat native form controls as a
 forbidden drag source. A completed drag updates the repeated `devices` fields,
-the `-dev` preview and the matching tensor-split bars together.
+the `-dev` preview and the matching tensor-split bars together. Its inline
+initializer has a private scope because HTMX executes it again after every
+device-field swap.
 
 The header links carry the page they come from: Server's "Autotune" opens the
 sweep of what is on screen, Autotune's "Server" opens the same run again.
