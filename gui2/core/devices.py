@@ -56,6 +56,7 @@ class Device:
     total_mib: int | None = None
     source: str = ""
     confirmed: bool = False
+    is_display: bool = False
 
     @property
     def memory_text(self) -> str:
@@ -325,8 +326,9 @@ def scan(log_roots: Iterable[Path], endpoints: Iterable[str] = (),
 class DeviceService:
     """Runs the scan off the request thread and caches the result."""
 
-    def __init__(self, log_roots: Iterable[Path]) -> None:
+    def __init__(self, log_roots: Iterable[Path], display_devices: Iterable[str] = ()) -> None:
         self._log_roots = tuple(log_roots)
+        self._display_devices = frozenset(display_devices)
         self._lock = threading.Lock()
         self._scan = Scan(status="idle")
         self._thread: threading.Thread | None = None
@@ -373,5 +375,10 @@ class DeviceService:
     def _run(self, endpoints: tuple[str, ...], backend_hint: str,
              fleet: "Fleet | None" = None) -> None:
         result = scan(self._log_roots, endpoints, backend_hint, fleet)
+        if self._display_devices:
+            result = replace(result, devices=tuple(
+                replace(device, is_display=device.name in self._display_devices)
+                for device in result.devices
+            ))
         with self._lock:
             self._scan = result

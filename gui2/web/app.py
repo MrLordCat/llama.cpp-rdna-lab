@@ -52,7 +52,10 @@ def create_app(config: AppConfig | None = None):
 
     # Device discovery reads logs and the registry only, so it is safe to run
     # at startup even while the GPUs are busy.
-    devices = DeviceService([config.artifacts_dir, config.builds / "build_logs" / "agent-workload"])
+    devices = DeviceService(
+        [config.artifacts_dir, config.builds / "build_logs" / "agent-workload"],
+        config.display_devices,
+    )
     devices.start()
 
     app, rt = fast_app(

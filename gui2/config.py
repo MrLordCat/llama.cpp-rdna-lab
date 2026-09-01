@@ -24,6 +24,7 @@ ENV_MODELS_DIR = "GUI2_MODELS_DIR"
 ENV_BUILDS_ROOT = "GUI2_BUILDS_ROOT"
 ENV_HOST = "GUI2_HOST"
 ENV_PORT = "GUI2_PORT"
+ENV_DISPLAY_DEVICES = "GUI2_DISPLAY_DEVICES"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +36,7 @@ class AppConfig:
     builds_root: Path | None = None
     host: str = "127.0.0.1"
     port: int = 8770
+    display_devices: tuple[str, ...] = ()
 
     @property
     def artifacts_dir(self) -> Path:
@@ -105,10 +107,20 @@ class AppConfig:
         except ValueError:
             port = 8770
 
+        display_value = os.environ.get(ENV_DISPLAY_DEVICES) or data.get("display_devices")
+        if isinstance(display_value, (list, tuple)):
+            display_devices = tuple(str(value).strip() for value in display_value
+                                    if str(value).strip())
+        elif display_value:
+            display_devices = tuple(str(display_value).replace(",", " ").split())
+        else:
+            display_devices = ()
+
         return cls(
             data_root=data_root,
             models_dir=directory(ENV_MODELS_DIR, "models_dir"),
             builds_root=directory(ENV_BUILDS_ROOT, "builds_root"),
             host=host,
             port=port,
+            display_devices=display_devices,
         )

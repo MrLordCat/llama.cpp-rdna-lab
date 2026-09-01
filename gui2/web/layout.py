@@ -129,6 +129,28 @@ document.addEventListener("input", (event) => {
 #: dragging a card to the top makes it first in -dev (and its split bar follows)
 DEVICE_ORDER_JS = """
 (() => {
+const displayKeyPrefix = "gui2.display-device.";
+function deviceDisplaySync(root) {
+    const backend = root.dataset.backend || "";
+    let saved = "";
+    try { saved = localStorage.getItem(displayKeyPrefix + backend) || ""; } catch (_) {}
+    if (!saved) {
+        saved = root.querySelector(".displaymark.active")?.dataset.device || "";
+    }
+    root.querySelectorAll(".displaymark").forEach((mark) => {
+        const active = mark.dataset.device === saved;
+        mark.classList.toggle("active", active);
+        mark.setAttribute("aria-pressed", String(active));
+        mark.title = active
+            ? mark.dataset.device + " is the display-attached GPU"
+            : "Mark " + mark.dataset.device + " as the display-attached GPU";
+    });
+}
+function deviceDisplaySet(root, mark) {
+    const backend = root.dataset.backend || "";
+    try { localStorage.setItem(displayKeyPrefix + backend, mark.dataset.device || ""); } catch (_) {}
+    deviceDisplaySync(root);
+}
 function deviceOrderSync(devlist) {
     // the split bars pair with the device rows by name; drag one and the other
     // follows, so -ts never points at the wrong card
@@ -173,11 +195,26 @@ function deviceDrag(root) {
     let dragged = null;
     let moved = false;
     root.addEventListener("click", (event) => {
+        const display = event.target.closest(".displaymark");
+        if (display) {
+            event.preventDefault();
+            event.stopPropagation();
+            deviceDisplaySet(root, display);
+            return;
+        }
         if (event.target.closest(".draghandle")) {
             // A handle lives inside a label; do not let a click on it toggle
             // the checkbox. It changes order only.
             event.preventDefault();
             event.stopPropagation();
+        }
+    });
+    root.addEventListener("keydown", (event) => {
+        const display = event.target.closest(".displaymark");
+        if (display && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault();
+            event.stopPropagation();
+            deviceDisplaySet(root, display);
         }
     });
     root.addEventListener("dragstart", (event) => {
@@ -220,6 +257,7 @@ function deviceDrag(root) {
     root.addEventListener("change", (event) => {
         if (event.target.name === "devices") deviceOrderSync(root);
     });
+    deviceDisplaySync(root);
 }
 const __devlist = document.getElementById("devicefield")?.querySelector(".devlist");
 if (__devlist) deviceDrag(__devlist);

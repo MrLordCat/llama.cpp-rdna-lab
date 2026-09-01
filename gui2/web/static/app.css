@@ -307,7 +307,7 @@ button.small { padding: 2px 8px; font-size: 11px; }
 .devrow {
     position: relative;
     display: grid;
-    grid-template-columns: 22px 84px 1fr auto;
+    grid-template-columns: 22px 24px 84px 1fr auto;
     align-items: center;
     gap: 8px;
     padding: 4px 8px;
@@ -327,6 +327,25 @@ button.small { padding: 2px 8px; font-size: 11px; }
     letter-spacing: -3px;
 }
 .devrow .draghandle:hover { color: var(--accent); }
+.devrow .displaymark {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    user-select: none;
+}
+.devrow .displaymark:hover { color: var(--text); border-color: var(--accent); }
+.devrow .displaymark.active {
+    color: var(--bg);
+    border-color: var(--accent);
+    background: var(--accent);
+}
 .devrow.grabbing { opacity: .55; border-color: var(--accent); }
 .devrow.grabbing .draghandle { cursor: grabbing; }
 .devrow:hover { background: var(--panel-2); border-color: var(--accent); }

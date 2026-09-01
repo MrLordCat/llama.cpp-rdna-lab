@@ -685,6 +685,13 @@ def devices_field(spec: RunSpec, scan: Scan, backend: str, oob: bool = False):
                     Span("⋮⋮", cls="draghandle", draggable="true",
                          title="Drag to change this device's position in -dev",
                          aria_label=f"Drag {device.name} to reorder"),
+                    Span("D", cls="displaymark active" if device.is_display else "displaymark",
+                        role="button", tabindex="0", data_device=device.name,
+                        aria_pressed="true" if device.is_display else "false",
+                        title=(f"{device.name} is the display-attached GPU"
+                              if device.is_display else
+                              f"Mark {device.name} as the display-attached GPU"))
+                    if device.backend in {"vulkan", "rocm"} else None,
                     Span(device.name, cls="devname"),
                     Span(device.description, cls="devdesc"),
                     Span(device.memory_text, cls="devmem"),
@@ -692,7 +699,7 @@ def devices_field(spec: RunSpec, scan: Scan, backend: str, oob: bool = False):
                     title=f"{device.source}" + ("" if device.confirmed else " · not confirmed by a run"),
                 )
                 for device in found
-            ], cls="devlist"))
+            ], cls="devlist", data_backend=backend))
             ordered_chosen = [device.name for device in found if device.name in chosen]
             body.append(Span(
                 "Nothing checked means llama-server uses every device it finds."
@@ -700,6 +707,12 @@ def devices_field(spec: RunSpec, scan: Scan, backend: str, oob: bool = False):
                 if not chosen else f"-dev {','.join(ordered_chosen)}",
                 cls="hint",
             ))
+            if any(device.backend in {"vulkan", "rocm"} for device in found):
+                body.append(Span(
+                    "D marks the display-attached GPU. Click it once per backend; "
+                    "Vulkan and ROCm numbering are stored separately in this browser.",
+                    cls="hint",
+                ))
         else:
             body.append(Input(type="text", name="devices", value=spec.devices,
                               placeholder="Vulkan0,RPC0"))

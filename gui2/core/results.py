@@ -48,11 +48,26 @@ class Result:
     status: str = ""
     #: how far ahead the draft head guessed; empty means no speculation
     mtp_draft_n: str = ""
+    #: real draft counts recorded by bench2, 'accepted/draft_n' (e.g. '149/212')
+    mtp_accepted: str = ""
+    #: effective decode t/s under speculation (== decode_tps when MTP is on)
+    eff_decode_tps: float = 0.0
     #: explicit GPU order and tensor proportions recorded by bench2
     devices: str = ""
     tensor_split: str = ""
     #: where bench2 wrote the run folder, for reaching its run.json
     path: str = ""
+
+    @property
+    def mtp_acc_pct(self) -> float:
+        """Acceptance percentage from 'accepted/draft_n'; 0.0 when unknown."""
+        if not self.mtp_accepted or not self.spec_mode == "mtp":
+            return 0.0
+        try:
+            accepted, total = self.mtp_accepted.split("/", 1)
+            return 100.0 * float(accepted) / float(total)
+        except (ValueError, ZeroDivisionError):
+            return 0.0
 
     @property
     def scenario(self) -> str:
@@ -123,6 +138,8 @@ def read_index(path: Path) -> list[Result]:
             turns=int(_number(row, "session_turns")),
             status=row.get("status", ""),
             mtp_draft_n=row.get("mtp_draft_n", ""),
+            mtp_accepted=row.get("mtp_accepted", ""),
+            eff_decode_tps=_number(row, "eff_decode_tps"),
             devices=row.get("devices", ""),
             tensor_split=row.get("tensor_split", ""),
             path=row.get("path", ""),

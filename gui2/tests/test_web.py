@@ -850,6 +850,28 @@ def test_the_device_picker_renders_cards_in_the_order_they_are_chosen(client):
         fake.close()
 
 
+def test_the_device_picker_marks_the_display_gpu_per_backend():
+    """The marker is visual state, not another llama-server form field."""
+    from gui2.core.devices import Device, Scan
+    from gui2.core.runspec import DEFAULTS
+    from gui2.web import server_page
+
+    found = Scan(status="ready", devices=(
+        Device(name="Vulkan0", backend="vulkan", is_display=True, confirmed=True),
+        Device(name="Vulkan1", backend="vulkan", confirmed=True),
+        Device(name="RPC0", backend="rpc", confirmed=True),
+    ))
+    html = to_xml(server_page.devices_field(DEFAULTS, found, "vulkan"))
+
+    assert html.count('class="displaymark') == 2, "RPC cards are not local display GPUs"
+    assert 'class="displaymark active"' in html
+    assert 'data-device="Vulkan0"' in html
+    assert 'data-backend="vulkan"' in html
+    assert "gui2.display-device." in html, "the choice persists separately per backend"
+    assert "event.preventDefault()" in html, "clicking D must not toggle the device checkbox"
+    assert "Vulkan and ROCm numbering are stored separately" in html
+
+
 def test_selecting_one_device_keeps_the_other_cards_available():
     """Chosen cards move to the front; unchosen cards must not be filtered out."""
     from gui2.core.devices import Device

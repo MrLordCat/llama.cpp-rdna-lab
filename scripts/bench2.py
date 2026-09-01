@@ -599,7 +599,16 @@ def extract_timings(resp: dict[str, Any]) -> dict[str, Any]:
         "total_ms": round(total_ms, 4),
         "aggregate_tps": round(aggregate_tps, 4),
         "ttft_ms": round(prompt_ms, 4),
+        "draft_n": int(t.get("draft_n") or 0),
+        "draft_n_accepted": int(t.get("draft_n_accepted") or 0),
     }
+
+
+def mtp_counts_str(tim: dict[str, Any]) -> str:
+    """Real draft counts as 'accepted/draft_n'; empty when no draft happened."""
+    d = int(tim.get("draft_n") or 0)
+    a = int(tim.get("draft_n_accepted") or 0)
+    return f"{a}/{d}" if d > 0 else ""
 
 
 def parse_mtp_counts(server_log_text: str) -> tuple[int, int]:
@@ -973,6 +982,8 @@ def run_single_level(cfg: Config, writer: RunWriter, backend: str, host: str,
         "aggregate_tps": tim["aggregate_tps"],
         # what the server was told to guess: only when MTP was on at all
         "mtp_draft_n": str(s["spec_n"] or 2) if s["spec"] != "none" else "",
+        "mtp_accepted": mtp_counts_str(tim) if s["spec"] != "none" else "",
+        "eff_decode_tps": tim["decode_tps"] if s["spec"] != "none" else "",
         "status": "ok",
         "path": str(writer.run_dir),
     }
@@ -1045,6 +1056,8 @@ def run_session(cfg: Config, writer: RunWriter, backend: str, host: str,
         slope = (sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, decode_tps_list)) / denom) if denom else 0.0
     total_tokens = sum(int(t["predicted_n"]) for t in turn_rows)
     session_tps = (total_tokens / wall_total) if wall_total > 0 else 0.0
+    draft_total = sum(int(t.get("draft_n") or 0) for t in turn_rows)
+    accepted_total = sum(int(t.get("draft_n_accepted") or 0) for t in turn_rows)
     writer.event(
         "session_done", session_level=session_level, shot=shot,
         mean_decode_tps=round(mean_decode, 4), mean_ttft_ms=round(mean_ttft, 2),
@@ -1082,6 +1095,8 @@ def run_session(cfg: Config, writer: RunWriter, backend: str, host: str,
         "total_ms": round(wall_total * 1000.0, 2),
         "aggregate_tps": round(session_tps, 4),
         "mtp_draft_n": str(s["spec_n"] or 2) if s["spec"] != "none" else "",
+        "mtp_accepted": f"{accepted_total}/{draft_total}" if s["spec"] != "none" and draft_total > 0 else "",
+        "eff_decode_tps": round(mean_decode, 4) if s["spec"] != "none" else "",
         "session_turns": turns,
         "decode_slope": round(slope, 5),
         "status": "ok",
