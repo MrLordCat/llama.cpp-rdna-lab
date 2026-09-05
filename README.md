@@ -1,5 +1,11 @@
 # llama.cpp-rdna-lab
 
+
+> **Project status:** Active development will be limited for the near future, and significant updates are unlikely in the short term. The cost of the AI models used for development—particularly DeepSeek—has increased, while my subscription-based model access is currently being prioritized for other projects. Maintaining several AI-heavy projects in parallel is therefore not financially practical at the moment.
+>
+> The repository is not abandoned. I will continue to maintain it when necessary and may still make smaller fixes or improvements, but larger optimization and research work will resume when resources allow.
+
+
 `llama.cpp-rdna-lab` is a hardware-focused fork of
 [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp) for local AI on
 Windows with two AMD RDNA4 GPUs. It combines a maintained subset of the
