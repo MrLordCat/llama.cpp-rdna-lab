@@ -1,5 +1,25 @@
 # Results Log
 
+## 2026-09-06 - Linux Vulkan (RADV 26.2.2) build and L1-L3 comparison
+
+- Installed the missing `vulkan-headers` and `spirv-headers` (CachyOS extra)
+  and built `build-vulkan-linux` with `-DGGML_VULKAN=ON`, CMake 4.4.3, Ninja,
+  GCC/G++ 16.2.1. `vulkaninfo` sees both RX 9070 XT natively as
+  RADV GFX1201, Mesa 26.2.2-arch3.2, instance 1.4.357, API 1.4.354.
+- Identical lane to the ROCm rows: Qwen3.8-27B-Q4_K_M, `Vulkan1,Vulkan0`,
+  `-sm layer -ts 1,1`, `b8192/ub1024`, q8_0 KV, spec none, flash-attn on,
+  cold/no-reuse/no-warmup. r1 per level.
+- L1 (7901 prompt / 128 decode): `1457.69/26.47` prompt/decode tok/s,
+  10.256 s total. L2 (30609/256): `1453.23/24.61`, 31.464 s total.
+  L3 (64287/256): `1268.87/22.96`, 61.812 s total. All levels produced the
+  configured decode count.
+- Versus the same-source ROCm 10 rows posted earlier in this log: prefill
+  `-20.48%` L1, `-11.11%` L2, `-4.24%` L3; decode `+10.38%` L1, `+11.29%`
+  L2, `+17.71%` L3. This is r1 and driver/Mesa-specific, not a headline
+  speed claim; the short-prompt prefill gap at L1 needs r3 before ranking.
+- Artifacts: `/tmp/bench-vulkan/vk-{l1,l1-l2,l3}-p2p-lane-r1`; server binary
+  in `build-vulkan-linux/bin/llama-server`.
+
 ## 2026-09-06 - Linux P2P gate: direct ROCm peer copies validated on 49K lane
 
 - Platform change relative to E295 (Windows ROCm 7.1 rejected): Linux ROCm
