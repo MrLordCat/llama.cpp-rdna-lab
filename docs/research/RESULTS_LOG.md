@@ -32,8 +32,26 @@
   P2P capability/validation ladder; the safety contract (directional
   capability checks, fail-closed host staging, no bypass of
   `can_access=0`) stays in force.
+- Layer-split copy budget (host-stage trace, same L2 run): 41 cross-device
+  copies / 491.1 MiB / 81.4 ms in prefill and 261 copies / 122.8 MiB /
+  46.5 ms in decode; the only crossing tensor is `l_out`. Against 19.05 s
+  prefill and 13.46 s decode that is 0.43% and 0.35% of wall time. The
+  remaining P2P gain in prefill is bounded by an almost-empty copy pipeline:
+  the 1.85% measured delta is already within few copies of the ceiling. Our
+  P2P copies run at ~5-6 GiB/s; further gain would need fewer bytes, not
+  faster transfers.
+- Tensor-split probe with P2P (`-sm tensor`, f16 KV, L1 8K, r1): prefill
+  `1189.17` tok/s and decode `36.57` tok/s vs layer split `1833.11/23.98`.
+  Forced host-stage made tensor split `633.73/25.02`, so P2P is 1.88x on
+  tensor prefill and 1.46x on tensor decode - far larger percentage gains
+  than layer split, but the tensor topology itself is still slower than
+  layer split on this machine and f16 KV is not part of the q8 production
+  lane. It only confirms the P2P ceiling explanation: copy-bound topologies
+  profit, compute-bound `-sm layer` prefill does not.
 - Artifacts: `/tmp/bench-rocm-version/rocm10-l2-{p2p-r3,hoststage-r3,
-  p2p-adjacent-r1,hoststage-r1}`, probe binary in `build-rocm-linux/bin/`.
+  p2p-adjacent-r1,hoststage-r1,hoststage-trace-r1}` and
+  `rocm10-l1-tensor-f16kv-{p2p,hoststage}-r1`; probe binary in
+  `build-rocm-linux/bin/`.
 
 ## 2026-09-06 - Linux ROCm 7.14.1/10.0 A/B and bench2 EOG correction
 
