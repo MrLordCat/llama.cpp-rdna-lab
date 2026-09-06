@@ -181,6 +181,17 @@ def create_app(config: AppConfig | None = None):
                      f'attachment; filename="rpc-worker-{plan.port}.bat"'},
         )
 
+    @rt("/server/rpc/worker.sh")
+    async def server_rpc_worker_sh(req):
+        """The same one file for a Linux or macOS worker."""
+        plan = server_page.worker_plan(req.query_params)
+        return Response(
+            rpc.worker_sh(plan),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition":
+                     f'attachment; filename="rpc-worker-{plan.port}.sh"'},
+        )
+
     @rt("/server/rpc/check", methods=["POST"])
     async def server_rpc_check(req):
         params = await req.form()

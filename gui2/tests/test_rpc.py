@@ -26,6 +26,7 @@ from gui2.core.rpc import (
     guide,
     probe,
     worker_bat,
+    worker_sh,
 )
 
 GIB = 1024 ** 3
@@ -188,6 +189,17 @@ def test_a_worker_bat_opens_the_port_and_starts_the_worker():
     assert "%ADDR%:%PORT%" in bat
     # a closed worker still leaves the firewall alone: 127.0.0.1 only binds
     assert "-H 127.0.0.1" in worker_bat(WorkerPlan(open_to_network=False))
+
+
+def test_a_worker_sh_opens_the_port_and_starts_the_worker():
+    sh = worker_sh(WorkerPlan(port=50052, devices=("Vulkan0",), cache=True))
+    assert sh.startswith("#!/usr/bin/env bash")
+    assert "PORT=50052" in sh, "the firewall rule is part of the file"
+    assert '"$(dirname "$0")/rpc-server" -H 0.0.0.0 -p 50052 -d Vulkan0 -c' in sh
+    # the script prints the address so the user never types it
+    assert "Your address for the GUI is" in sh
+    # a closed worker still leaves the firewall alone: 127.0.0.1 only binds
+    assert "-H 127.0.0.1" in worker_sh(WorkerPlan(open_to_network=False))
 
 
 def test_a_plan_knows_the_address_the_local_box_wants():

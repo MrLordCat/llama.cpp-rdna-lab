@@ -810,7 +810,8 @@ def worker_panel(params, oob: bool = False) -> Div:
                   Input(type="text", name="rpc_host", value=plan.host,
                         placeholder="192.168.1.60:50052",
                         onchange=_fill_address(plan.address)),
-                  Span("what the bat printed on that machine — paste it, Ctrl+V works",
+                  Span("what the worker script printed on that machine — paste it, "
+                       "Ctrl+V works",
                        cls="hint"),
                   cls="field wide"),
             Label(Span("Worker port"),
@@ -836,15 +837,19 @@ def worker_panel(params, oob: bool = False) -> Div:
             A(f"Download rpc-worker-{plan.port}.bat",
               href=f"/server/rpc/worker.bat?{download}", cls="small",
               title="run this one file on the other machine as Administrator"),
+            A(f"Download rpc-worker-{plan.port}.sh",
+              href=f"/server/rpc/worker.sh?{download}", cls="small",
+              title="run this one file on a Linux or macOS worker"),
             Button("Fill the Worker addresses box", type="button", cls="small",
                    onclick=_fill_address(plan.address),
                    title=f"puts {plan.address or 'host:port'} above; the machine is "
-                         "whatever the bat was run on"),
+                         "whatever the worker script was run on"),
             *([Span(f"→ the Worker addresses box gets: {plan.address}", cls="hint")]
               if plan.address else []),
             cls="actions",
         ),
-        Span("Run this on the other machine (or the bat above):", cls="hint block"),
+        Span("Run this on the other machine (or download the script above):",
+             cls="hint block"),
         _copyable(plan.text()),
         # runs after every render of this panel, including the first one: the
         # Worker addresses box is filled without a click, and again when the

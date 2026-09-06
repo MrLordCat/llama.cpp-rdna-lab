@@ -10,6 +10,7 @@ import csv
 import json
 import re
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import unquote, urlencode
@@ -30,6 +31,13 @@ GREETER = [sys.executable, "-c", "print('hello from the child')"]
 def client(tmp_path):
     app = create_app(AppConfig(data_root=tmp_path))
     with TestClient(app) as test_client:
+        # device discovery runs off the request thread; wait until it is done
+        # so pages that render the picker and the split balancer see the real
+        # device list instead of the "looking for devices" placeholder
+        for _ in range(100):
+            if "looking for devices" not in test_client.get("/server/devices").text:
+                break
+            time.sleep(0.05)
         yield test_client
 
 
@@ -309,10 +317,19 @@ def test_one_file_does_the_other_machines_whole_setup(client):
     assert '"%~dp0rpc-server.exe" -H 0.0.0.0 -p 50052 -d Vulkan0' in bat
     assert "Administrator" in bat, "the firewall rule needs an elevated shell"
 
+    # the same one file for a Linux or macOS worker
+    sh = client.get("/server/rpc/worker.sh",
+                    params={"rpc_port": "50052", "rpc_devices": "Vulkan0",
+                            "rpc_open": "on"}).text
+    assert sh.startswith("#!/usr/bin/env bash")
+    assert '"$(dirname "$0")/rpc-server" -H 0.0.0.0 -p 50052 -d Vulkan0' in sh
+    assert "Your address for the GUI is" in sh
+
     panel = client.post("/server/rpc/command", data={
         "rpc_port": "50052", "rpc_devices": "Vulkan0",
         "rpc_host": "192.168.1.60", "rpc_open": "on"}).text
     assert "Download rpc-worker-50052.bat" in panel
+    assert "Download rpc-worker-50052.sh" in panel
     assert "Fill the Worker addresses box" in panel
     assert "192.168.1.60:50052" in panel, "the address the local box wants"
 

@@ -6,8 +6,8 @@ evidence that already exists:
 
 * the device lines llama-server printed in earlier runs. These are
   authoritative: real llama.cpp names, real order, real free VRAM.
-* the display adapters in the Windows registry, which is a plain registry read
-  and never calls into the driver.
+* the display adapters of the OS (Windows registry; Linux sysfs + pci.ids),
+  which are plain reads and never call into the driver.
 * the RPC endpoints the user configured, whose names are positional by
   definition (RPC0, RPC1, ... in --rpc order).
 
@@ -16,11 +16,13 @@ No llama.cpp binary is executed here, ever.
 
 from __future__ import annotations
 
+import os
 import re
 import socket
 import threading
 import time
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Literal
 
@@ -190,6 +192,17 @@ def _from_logs(roots: Iterable[Path]) -> tuple[dict[str, Device], str]:
 
 
 def display_adapters() -> list[tuple[str, int | None]]:
+    """GPU names and VRAM, found without a driver call or a subprocess.
+
+    Windows: the display adapter registry keys, a plain registry read.
+    Linux: the amdgpu cards in /sys/class/drm plus their names in pci.ids.
+    """
+    if os.name == "nt":
+        return _windows_adapters()
+    return _linux_adapters()
+
+
+def _windows_adapters() -> list[tuple[str, int | None]]:
     """GPU names from the Windows registry: no driver call, no subprocess."""
     try:
         import winreg
@@ -220,6 +233,78 @@ def display_adapters() -> list[tuple[str, int | None]]:
                 adapters.append((str(description), memory))
     except OSError:
         return []
+    return adapters
+
+
+@lru_cache(maxsize=1)
+def _pci_ids() -> dict[str, str]:
+    """`vendor:device` -> name, the AMD vendor section of pci.ids.
+
+    One plain text file read; nothing is executed and the driver is never
+    asked. The bracketed marketing name is kept when present, so
+    "Navi 48 [Radeon RX 9070 XT]" comes back as "Radeon RX 9070 XT".
+    Device lines are indented one level (tabs in the classic format, spaces
+    in hwdata's), subsystem lines one level deeper; both layouts parse.
+    """
+    names: dict[str, str] = {}
+    for path in (Path("/usr/share/hwdata/pci.ids"), Path("/usr/share/misc/pci.ids")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        in_amd = False
+        device_indent: int | None = None
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue  # blank lines and comments carry no data
+            if not in_amd:
+                if line.startswith("1002"):  # vendor header at the left edge
+                    in_amd = True
+                continue
+            depth = len(line) - len(line.lstrip(" \t"))
+            if depth == 0:
+                break  # the next vendor header
+            if device_indent is None:
+                device_indent = depth
+            elif depth > device_indent:
+                continue  # subsystem line
+            match = re.match(r"^([0-9a-f]{4})\s\s+(.+)$", stripped)
+            if match:
+                device_id, name = match.group(1), match.group(2)
+                if "[" in name and name.endswith("]"):
+                    name = name[name.rindex("[") + 1:-1]
+                names[f"1002:{device_id.strip()}"] = name.strip()
+        if names:
+            break
+    return names
+
+
+def _linux_adapters() -> list[tuple[str, int | None]]:
+    """The amdgpu cards in sysfs, named via pci.ids: no driver call, no subprocess."""
+    ids = _pci_ids()
+    adapters: list[tuple[str, int | None]] = []
+    for card in sorted(Path("/sys/class/drm").glob("card*")):
+        device = card / "device"
+        try:
+            vendor = (device / "vendor").read_text(encoding="ascii").strip()
+        except OSError:
+            continue
+        if vendor != "0x1002":  # AMD accelerators only
+            continue
+        description = "AMD GPU"
+        try:
+            pci_id = (device / "device").read_text(encoding="ascii").strip()
+            pci_id = pci_id.removeprefix("0x")  # sysfs keeps the prefix, pci.ids does not
+            description = ids.get(f"1002:{pci_id}", "") or f"AMD device {pci_id}"
+        except OSError:
+            pass
+        memory: int | None = None
+        try:
+            memory = int((device / "mem_info_vram_total").read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            pass
+        adapters.append((description, memory))
     return adapters
 
 
@@ -289,7 +374,7 @@ def scan(log_roots: Iterable[Path], endpoints: Iterable[str] = (),
 
     if not local and adapters and backend_hint in {"vulkan", "rocm"}:
         # No run to learn from: assume llama.cpp enumerates the adapters in the
-        # order Windows lists them. Flagged as unconfirmed, because it is.
+        # order the OS lists them. Flagged as unconfirmed, because it is.
         prefix = "Vulkan" if backend_hint == "vulkan" else "ROCm"
         for index, (description, memory) in enumerate(adapters):
             name = f"{prefix}{index}"

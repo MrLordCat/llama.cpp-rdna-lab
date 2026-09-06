@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +26,31 @@ ENV_BUILDS_ROOT = "GUI2_BUILDS_ROOT"
 ENV_HOST = "GUI2_HOST"
 ENV_PORT = "GUI2_PORT"
 ENV_DISPLAY_DEVICES = "GUI2_DISPLAY_DEVICES"
+
+_WINDOWS_ABS = re.compile(r"^([A-Za-z]):[\\/](.*)$")
+
+
+def _portable_path(value: str) -> Path:
+    """A configured path that works from both Windows and this worktree.
+
+    gui2.config.json is written with Windows paths (D:/GitHub/...) because the
+    lab lives on a Windows machine; on Linux the same paths only differ in
+    where the drive is mounted. An absolute path or one that already exists is
+    used as-is; a Windows-absolute D:/GitHub/... path that is missing here is
+    retried as REPO_ROOT.parent / <the part after GitHub>, which is where the
+    sibling lab checkout sits on this machine.
+    """
+    path = Path(str(value)).expanduser()
+    if path.is_absolute() or path.exists():
+        return path
+    match = _WINDOWS_ABS.match(str(value))
+    if not match:
+        return path
+    rest = Path(match.group(2))
+    if rest.parts[:1] != ("GitHub",):
+        return path
+    sibling = REPO_ROOT.parent.joinpath(*rest.parts[1:])
+    return sibling if sibling.exists() else path
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +123,7 @@ class AppConfig:
 
         def directory(env: str, key: str) -> Path | None:
             value = os.environ.get(env) or data.get(key)
-            return Path(str(value)).expanduser() if value else None
+            return _portable_path(str(value)) if value else None
 
         data_root = directory(ENV_DATA_ROOT, "data_root") or REPO_ROOT
         host = os.environ.get(ENV_HOST) or str(data.get("host") or "127.0.0.1")

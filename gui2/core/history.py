@@ -57,6 +57,16 @@ def _flag(row: dict[str, str], key: str) -> bool:
     return _text(row, key).lower() in {"1", "on", "true", "yes"}
 
 
+def _basename(path: str) -> str:
+    """Last path component, whether it was written on Windows or Linux.
+
+    The canonical history is produced on a Windows machine, so model paths
+    arrive as ``models\\Qwen-Q4.gguf``; Path.name only splits on the local
+    separator, so on Linux the backslash form would come back whole.
+    """
+    return re.split(r"[\\/]+", path.strip())[-1]
+
+
 def split_lane(lane_key: str) -> tuple[str, str]:
     """Split a lane key into (comparison family, tuned config).
 
@@ -140,7 +150,7 @@ def _to_run(index: int, row: dict[str, str]) -> Run:
     family, config = split_lane(lane_key)
     if not family:
         family = "|".join(
-            (_text(row, "build_backend") or "unknown", Path(model_path).name, f"ctx{_text(row, 'ctx')}")
+            (_text(row, "build_backend") or "unknown", _basename(model_path), f"ctx{_text(row, 'ctx')}")
         )
     if not config:
         config = f"b{_text(row, 'batch')}/ub{_text(row, 'ubatch')} · kv {_text(row, 'kv_k')}/{_text(row, 'kv_v')}"
@@ -164,7 +174,7 @@ def _to_run(index: int, row: dict[str, str]) -> Run:
         build_name=_text(row, "build_name"),
         backend=_text(row, "build_backend") or "unknown",
         mode=_text(row, "mode"),
-        model=Path(model_path).name or "-",
+        model=_basename(model_path) or "-",
         model_path=model_path,
         tasks=_text(row, "tasks"),
         task_ids=_text(row, "task_ids"),
@@ -385,12 +395,12 @@ def past_sweeps(runs: list[Run], model_path: str, limit: int = 4) -> list[Run]:
     another directory is still the same model, and the answer it gave still
     applies.
     """
-    wanted = Path(model_path).name.lower()
+    wanted = _basename(model_path).lower()
     if not wanted:
         return []
     found = [run for run in runs
              if run.mode == "autotune" and not run.errors
-             and Path(run.model_path).name.lower() == wanted
+             and _basename(run.model_path).lower() == wanted
              and winning_config(run)]
     found.sort(key=lambda run: run.timestamp or datetime.min, reverse=True)
     return found[:limit]
@@ -537,7 +547,7 @@ def _autotune_lane(backend: str, model_path: str, ctx: int, batch: str, ubatch: 
                    kv_k: str, kv_v: str, spec: str, tasks: str, task_ids: str,
                    context_source: str, devices: str, tensor_split: str) -> str:
     """The same lane shape as the legacy script, so both feeds stay comparable."""
-    model = Path(model_path).name or "-"
+    model = _basename(model_path) or "-"
     kv = f"{kv_k or '-'}/{kv_v or '-'}"
     task_part = f"{tasks}:{task_ids}" if task_ids else (tasks or "-")
     return (f"{backend or '-'}|{model}|ctx{ctx or '-'}|b{batch or '-'}/ub{ubatch or '-'}"

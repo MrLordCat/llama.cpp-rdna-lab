@@ -43,10 +43,35 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+SERVER_EXE = "llama-server.exe" if os.name == "nt" else "llama-server"
 CONFIG_DIR = Path(os.environ.get("BENCH2_CONFIG_DIR", ROOT / "configs" / "bench"))
 DEFAULT_RESULTS = Path(os.environ.get("BENCH2_RESULTS_DIR", ROOT / "build_logs" / "bench"))
 
-LOAD_GGUF_FALLBACK = [ROOT / "models" / "Qwen3.8-27B-Q4_K_M.gguf"]
+
+def _build_roots() -> tuple[Path, ...]:
+    """Roots searched for auto-detected builds: this checkout, then the sibling lab.
+
+    On this machine the GUI worktree and the lab checkout sit next to each
+    other under the same parent, so a run started from either one still finds
+    the builds in the other.
+    """
+    roots = [ROOT]
+    sibling = ROOT.parent / "llama.cpp-with-GUI"
+    if sibling.is_dir() and sibling != ROOT:
+        roots.append(sibling)
+    return tuple(roots)
+
+
+def _load_fallbacks() -> list[Path]:
+    """GGUFs to try when --model is not given: this checkout, then the sibling lab."""
+    candidates = [ROOT / "models" / "Qwen3.8-27B-Q4_K_M.gguf"]
+    sibling = ROOT.parent / "llama.cpp-with-GUI"
+    if sibling.is_dir() and sibling != ROOT:
+        candidates.append(sibling / "models" / "Qwen3.8-27B-Q4_K_M.gguf")
+    return candidates
+
+
+LOAD_GGUF_FALLBACK = _load_fallbacks()
 
 METRICS_COLUMNS = [
     "run_name", "run_id", "series_id", "type", "level", "run_idx",
@@ -367,8 +392,11 @@ def runtime_path_prepend(server_bin: str | Path) -> list[str]:
                     break
         except OSError:
             pass
-        out.append(compiler_bin or r"C:\Program Files\AMD\ROCm\7.1\bin")
-    if "vulkan" in low:
+        if compiler_bin:
+            out.append(compiler_bin)
+        elif os.name == "nt":
+            out.append(r"C:\Program Files\AMD\ROCm\7.1\bin")
+    if "vulkan" in low and os.name == "nt":
         out.append(r"C:\Strawberry\c\bin")
     return out
 
@@ -747,19 +775,14 @@ def resolve_server_bin(cfg: Config) -> Path | None:
         p = Path(cfg.args.server_bin)
         return p if p.exists() else None
     bd = cfg.backend
-    candidates: list[Path] = []
-    if bd == "rocm":
-        candidates = [ROOT / "build-rocm" / "bin" / "llama-server.exe"]
-    elif bd == "vk":
-        candidates = [ROOT / "build-vulkan" / "bin" / "llama-server.exe"]
-    elif bd == "cpu":
-        candidates = [ROOT / "build-cpu" / "bin" / "llama-server.exe"]
-    else:
-        candidates = [
-            ROOT / "build-rocm" / "bin" / "llama-server.exe",
-            ROOT / "build-vulkan" / "bin" / "llama-server.exe",
-            ROOT / "build-cpu" / "bin" / "llama-server.exe",
-        ]
+    by_backend = {
+        "rocm": ("build-rocm", "build-rocm72", "build-rocm-linux"),
+        "vk": ("build-vulkan", "build-vulkan-gcc16"),
+        "cpu": ("build-cpu",),
+    }
+    names = by_backend.get(bd) or tuple(n for group in by_backend.values() for n in group)
+    candidates = [root / name / "bin" / SERVER_EXE
+                  for root in _build_roots() for name in names]
     for cand in candidates:
         if cand.exists():
             return cand
@@ -773,7 +796,7 @@ def preflight(cfg: Config) -> tuple[bool, str]:
     if not resolve_server_bin(cfg):
         problems.append(
             "no matching llama-server build found for backend "
-            f"{cfg.backend!r} (expects build-rocm|build-vulkan|build-cpu/bin/llama-server.exe)"
+            f"{cfg.backend!r} (expects build-rocm|build-vulkan|build-cpu/bin/{SERVER_EXE})"
         )
     if os.name == "nt":
         try:
@@ -781,6 +804,15 @@ def preflight(cfg: Config) -> tuple[bool, str]:
             live = [ln for ln in out.splitlines() if "llama-server" in ln]
             if live:
                 problems.append(f"active llama-server process found: {live[0].strip()}")
+        except Exception:
+            pass
+    else:
+        try:
+            pg = subprocess.run(["pgrep", "-x", "llama-server"],
+                                capture_output=True, timeout=30)
+            if pg.returncode == 0:
+                pid = pg.stdout.decode(errors="replace").strip().splitlines()[0]
+                problems.append(f"active llama-server process found: pid {pid}")
         except Exception:
             pass
     if problems:
@@ -1349,7 +1381,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--seed", type=int, default=None)
     run.add_argument("--temperature", type=float, default=None)
     run.add_argument("--top-p", type=float, default=None)
-    run.add_argument("--no-warmup", dest="no_warmup", action=argparse.BooleanOptionalAction, default=None)
+    run.add_argument("--no-warmup", dest="no_warmup", action="store_true", default=None)
     run.add_argument("--warmup-shot", dest="warmup_shot", action=argparse.BooleanOptionalAction,
                      default=None, help="bench2 warmup request before measuring (default on)")
     run.add_argument("--warmup-tokens", type=int, default=None, help="warmup prompt tokens (default 512)")
