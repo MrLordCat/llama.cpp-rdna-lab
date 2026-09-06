@@ -31,10 +31,18 @@
   `1631.69/21.76` prompt/decode tok/s. Both produced exactly 128/256 decode
   tokens. The r1 delta favors ROCm 10 by about 0.2% prompt and 0.9-1.6% decode,
   which is too small for a speed claim without r3.
+- The requested ROCm 10 L3 r1 (`ctx=98304`, 64287 prompt tokens, 256 decode
+  tokens) measured `1325.09/19.51` prompt/decode tok/s, 48.515 s TTFT and
+  61.637 s total. Against the historical Windows ROCm 7.1 `fork-rocm-l0-l4`
+  row (`1404.91/18.51`, 45.733 s TTFT, 59.560 s total), Linux ROCm 10 is
+  `-5.68%` prompt, `+5.38%` decode, `+6.08%` TTFT and `+3.49%` total. The
+  historical prompt has 36 fewer tokens and also differs in OS, runtime and
+  source state, so this is a cross-platform reference rather than a pure ROCm
+  version A/B.
 - Diagnostic artifacts: `/tmp/bench-rocm-version/` labels
   `rocm-version-rocm{10,714}-l1-r1`, `rocm714-l1-{cache0-only,
   checkpoints0-only,ctx0-no-warmup}-r1`, and
-  `rocm{10,714}-ignore-eos-l12-r1`.
+  `rocm{10,714}-ignore-eos-l12-r1`, plus `rocm10-ignore-eos-l3-r1`.
 
 ## 2026-08-30 - G06/G07 ROCm 7.2 Q6_K hipBLASLt wall gate
 
