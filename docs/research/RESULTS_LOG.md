@@ -1,5 +1,40 @@
 # Results Log
 
+## 2026-09-06 - Linux P2P gate: direct ROCm peer copies validated on 49K lane
+
+- Platform change relative to E295 (Windows ROCm 7.1 rejected): Linux ROCm
+  10.0.0 TheRock on CachyOS. The capability-only probe now reports
+  `can_access=1`, `access_supported=1`, `native_atomic_supported=1` and
+  `array_access_supported=1` in both directions (GPU0 `0000:0b:00.0` ->
+  GPU1 `0000:0e:00.0` and reverse), performance-rank 2. Devices are two RX
+  9070 XT detected natively as gfx1201.
+- Correctness ladder passed with `scripts/research/rocm_peer_copy_probe.cpp`
+  (`build-rocm-linux/bin/rocm-peer-copy-probe`): `--copy-sync` and
+  `--copy-event` both PASS in both directions at 20480 B, 43520 B, 1 MiB,
+  20 MiB and 44 MiB, including guard and hash verification. Stress: 100x at
+  the two decode sizes and 10x at 20 MiB/44 MiB, all PASS. No driver reset,
+  no checksum mismatch. `--copy-event` reproduces the llama.cpp
+  source-event/destination-wait ordering.
+- Model-level greedy parity on the same dual-GPU lane (`ROCm1,ROCm0`,
+  layer split, q8_0 KV, spec none, 64 max tokens, temp 0): direct P2P output
+  is byte-identical to the forced host-stage route
+  (`GGML_CUDA_NO_PEER_COPY_RUNTIME=1`) - same `sha256=b5d4045c3f466fa9`,
+  38 completion tokens, `finish=stop`.
+- Matched r3 A/B, Qwen3.8-27B-Q4_K_M, L2 49K (`ctx=49152`, 30609 prompt
+  tokens, 256 decode tokens, `b8192/ub1024`, q8_0 KV, spec none, layer
+  split): host-stage (mean/sd) `1603.35/1.77` prompt, `18.57/0.02` decode,
+  `32878.2/22.4` ms total; direct P2P `1632.98/1.28` prompt, `22.03/0.00`
+  decode, `30362.2/16.8` ms total. Deltas: `+1.85%` prompt, `+18.6%`
+  decode, `-7.65%` total wall time. The decode and total gains are far
+  outside the run-to-run spread; prompt gain is real but small.
+- Conclusion: Linux/ROCm 10 unlocks the direct cross-device route that was
+  impossible on the installed Windows driver. Keep the guarded probe and the
+  P2P capability/validation ladder; the safety contract (directional
+  capability checks, fail-closed host staging, no bypass of
+  `can_access=0`) stays in force.
+- Artifacts: `/tmp/bench-rocm-version/rocm10-l2-{p2p-r3,hoststage-r3,
+  p2p-adjacent-r1,hoststage-r1}`, probe binary in `build-rocm-linux/bin/`.
+
 ## 2026-09-06 - Linux ROCm 7.14.1/10.0 A/B and bench2 EOG correction
 
 - ROCm 10.0.0 TheRock (`~/rocm`, HIP 7.15.26333) and ROCm 7.14.1 Runfile
