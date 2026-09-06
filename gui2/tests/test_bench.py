@@ -9,6 +9,7 @@ out of its own server.
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -101,6 +102,67 @@ def test_bench2_index_records_gpu_order_and_proportions():
         "devices": "Vulkan1,Vulkan0", "tensor_split": "100,60"}
     assert _placement_fields({"dev": "", "ts": ""}) == {
         "devices": "auto", "tensor_split": "auto"}
+
+
+def test_single_level_throughput_ignores_eos(monkeypatch, tmp_path):
+    """A sampled EOG must not turn a fixed-token decode lane into one token."""
+    from scripts import bench2
+
+    seen = {}
+
+    def completion(*args, **kwargs):
+        seen.update(kwargs)
+        return {
+            "timings": {
+                "prompt_n": 8,
+                "prompt_ms": 4,
+                "predicted_n": 4,
+                "predicted_ms": 2,
+                "total_ms": 6,
+            },
+        }
+
+    class Writer:
+        run_name = "fixed-decode"
+        run_id = "run-1"
+        run_dir = tmp_path
+
+        def event(self, *args, **kwargs):
+            pass
+
+        def add_row(self, row):
+            pass
+
+    class Config:
+        levels = {
+            "default_context_source": "synthetic",
+            "context_sources": {"synthetic": {"chars_per_token": 3.9}},
+            "levels": {"1": {"ctx": 16, "prompt_tokens": 8, "decode_tokens": 4}},
+        }
+        args = SimpleNamespace(context_source=None, context_file=None, series_id=None)
+        profile_name = "test"
+
+        def server(self):
+            return {
+                "temperature": 0.2,
+                "top_p": 0.9,
+                "seed": 42,
+                "spec": "none",
+                "spec_n": 0,
+                "dev": "",
+                "ts": "",
+            }
+
+        def git_commit(self):
+            return "deadbee"
+
+    monkeypatch.setattr(bench2, "post_completion", completion)
+    monkeypatch.setattr(bench2, "watch_progress", lambda *args: None)
+
+    row = bench2.run_single_level(Config(), Writer(), "rocm", "127.0.0.1", 8080, 1, 1, "model")
+
+    assert seen["ignore_eos"] is True
+    assert row["decoded_tokens"] == 4
 
 
 def test_the_backend_is_named_because_bench2_would_otherwise_guess_rocm():

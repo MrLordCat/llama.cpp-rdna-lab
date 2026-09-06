@@ -1,37 +1,40 @@
 # Results Log
 
-## 2026-09-06 - ROCm 10 Linux bring-up: version A/B at 572cdc0f7 + L1-decode EOS regression
+## 2026-09-06 - Linux ROCm 7.14.1/10.0 A/B and bench2 EOG correction
 
-- Setup: ROCm 10.0.0 TheRock dist (`therock-dist-linux-gfx120X-all-10.0.0.tar.gz`,
-  `~/rocm`, HIP 7.15.26333 / AMD clang 23) on CachyOS kernel 7.2.2, no
-  `HSA_OVERRIDE_GFX_VERSION`; both RX 9070 XT probe natively as gfx1201.
-  Lane contract matches the recorded Windows reference
-  (`fork-rocm-l0-l4`, commit 572cdc0f7): Qwen3.8-27B-Q4_K_M, `b8192/ub1024`,
-  q8_0/q8_0 KV, spec none, cold/no-reuse/no-warmup, temp 0.2/top_p 0.9,
-  seed 42+shot, `-dev ROCm1,ROCm0 -sm layer -ts 1,1`. The 32100-char synthetic
-  L1 prompt is byte-identical across bench2 revisions (verified by diff).
-- Same-commit A/B (572cdc0f7, Windows ROCm 7.1 recorded vs Linux ROCm 10
-  measured): L1 `1871.43/24.24` -> `1691.08/23.87`; L2 `1684.07/21.86` ->
-  `1504.18/21.89` (prompt/decode tok/s). Prompt `-9.6%`/`-10.7%`, decode
-  `-1.5%`/`+0.1%`. Confounders: OS+ROCm entangled (WDDM vs amdgpu, clocks),
-  the Windows run used one `-c 131072` server for all levels, possible local
-  Windows worktree state at run time.
-- Source evolution on ROCm 10 Linux (572cdc0f7 -> a9dc4aa3c): L1 prefill
-  `1691.08` -> best `1843.02` (12 shots, mean `~1829`); L2 prefill
-  `1504.18` -> `1656.08`; L2 decode `21.89` -> `22.08`. Versus the recorded
-  Windows rows that is `-1.5%` (L1 best shot) / `-1.7%` (L2) prompt and
-  decode parity - the source updates since the recorded run recovered most of
-  the prompt gap on ROCm 10.
-- New finding: on HEAD the L1 synthetic prompt (7901 tok) stops generation at
-  the first sampled token for every seed tried (1..10); greedy argmax is EOG
-  with a 3.7-nat gap to the next token. On 572cdc0f7 the same byte-identical
-  prompt decodes 128 tokens (`23.87 tok/s`). The cliff is therefore a
-  server-side change between 572cdc0f7 and a9dc4aa3c - not ROCm 10 and not
-  the prompt text. Bisect candidates: 81e53d0de (input-layer offload),
-  291dc69d7 (MTP prefill window), d2cc14107 (upstream merge). OPEN.
-- Artifacts: `build_logs/bench/q38-rocm10-{linux-l12-r1,linux-l1-r2,
-  seed-sweep,seed-sweep2,572c-l12-r1}` in the Windows canonical bench index;
-  detached worktree `/home/chris/lab-572cdc0` kept for the bisect.
+- ROCm 10.0.0 TheRock (`~/rocm`, HIP 7.15.26333) and ROCm 7.14.1 Runfile
+  core SDK (`~/rocm714/rocm/core-7.14`, HIP 7.14.60850) were installed
+  side-by-side on CachyOS. Both runtimes detect the two RX 9070 XT devices
+  natively as gfx1201; no `HSA_OVERRIDE_GFX_VERSION` or driver replacement was
+  used. Both servers were built from the same `linux` source with CMake 4.4.3,
+  Ninja 1.13.2, GCC/G++ 16.2.1 and AMD HIP Clang 23.0.0.
+- Before the harness fix, adjacent L1 runs reproduced the one-token stop on
+  both ROCm 10.0.0 and 7.14.1 (`predicted_n=1`). ROCm 7 therefore excludes the
+  ROCm 10 runtime as the cause. The earlier attribution to a source regression
+  after 572cdc0f7 was also rejected: that binary reproduces the stop when run
+  with the current server arguments, and the synthetic prompt is byte-identical.
+- Argument isolation found the trigger. With neither cache flag, L1 decoded
+  128 tokens; `--cache-ram 0` alone also decoded 128 tokens; only
+  `--ctx-checkpoints 0` produced one token. Removing the warmup did not change
+  the result. Server logs show why outputs can diverge: checkpoints disabled
+  process all 7901 prompt tokens in one logical batch, while the hybrid/recurrent
+  checkpoint path splits the tail as 6873 + 1024 + 4 tokens. That partition
+  changes the synthetic prompt's terminal logits enough to select EOG; it is
+  not a server crash.
+- Fix: single-level throughput requests now send `ignore_eos=true`, guaranteeing
+  the configured L0-L4 decode token count. Warmup and multi-turn session runs
+  keep normal EOG handling. `cache_ram=0` and `ctx_checkpoints=0` remain part of
+  the cache-free throughput lane rather than reintroducing checkpoint-copy cost.
+- Post-fix adjacent r1, Qwen3.8-27B-Q4_K_M, `b8192/ub1024`, q8_0 KV, spec none,
+  `ROCm1,ROCm0`, layer split: ROCm 10 measured L1 `1833.11/23.98` and L2
+  `1634.79/22.11`; ROCm 7.14.1 measured L1 `1829.17/23.76` and L2
+  `1631.69/21.76` prompt/decode tok/s. Both produced exactly 128/256 decode
+  tokens. The r1 delta favors ROCm 10 by about 0.2% prompt and 0.9-1.6% decode,
+  which is too small for a speed claim without r3.
+- Diagnostic artifacts: `/tmp/bench-rocm-version/` labels
+  `rocm-version-rocm{10,714}-l1-r1`, `rocm714-l1-{cache0-only,
+  checkpoints0-only,ctx0-no-warmup}-r1`, and
+  `rocm{10,714}-ignore-eos-l12-r1`.
 
 ## 2026-08-30 - G06/G07 ROCm 7.2 Q6_K hipBLASLt wall gate
 

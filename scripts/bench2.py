@@ -567,7 +567,8 @@ def _windows_job_kill_on_close(proc: subprocess.Popen) -> None:
 # --------------------------------------------------------------------------- #
 def post_completion(host: str, port: int, prompt: str, n_predict: int,
                     temperature: float, top_p: float, seed: int,
-                    cache_prompt: bool, timeout: float) -> dict[str, Any]:
+                    cache_prompt: bool, ignore_eos: bool,
+                    timeout: float) -> dict[str, Any]:
     """Chat-completions request (needed for thinking models: raw /completion
     without chat template makes Qwen3.x emit EOG as the first token)."""
     payload = {
@@ -584,6 +585,7 @@ def post_completion(host: str, port: int, prompt: str, n_predict: int,
         "top_p": top_p,
         "seed": seed,
         "cache_prompt": cache_prompt,
+        "ignore_eos": ignore_eos,
         "stream": False,
     }
     req = urllib.request.Request(
@@ -926,7 +928,7 @@ def run_warmup(cfg: Config, writer: RunWriter, host: str, port: int,
     try:
         resp = post_completion(
             host, port, prompt, n_predict, s["temperature"], s["top_p"],
-            s["seed"], cache_prompt=False, timeout=600,
+            s["seed"], cache_prompt=False, ignore_eos=False, timeout=600,
         )
         wall = time.monotonic() - t0
     except Exception as exc:
@@ -973,7 +975,7 @@ def run_single_level(cfg: Config, writer: RunWriter, backend: str, host: str,
     try:
         resp = post_completion(
             host, port, prompt, decode_tokens, s["temperature"], s["top_p"],
-            s["seed"] + shot, cache_prompt=False,
+            s["seed"] + shot, cache_prompt=False, ignore_eos=True,
             timeout=3600 if ctx >= 98304 else 900,
         )
         wall = time.monotonic() - t0
@@ -1051,7 +1053,7 @@ def run_session(cfg: Config, writer: RunWriter, backend: str, host: str,
         try:
             resp = post_completion(
                 host, port, prompt, decode_tokens, s["temperature"], s["top_p"],
-                s["seed"] + shot + turn, cache_prompt=True,
+                s["seed"] + shot + turn, cache_prompt=True, ignore_eos=False,
                 timeout=1800 if ctx >= 98304 else 600,
             )
         except Exception as exc:
