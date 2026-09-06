@@ -1,5 +1,49 @@
 # Results Log
 
+## 2026-09-06 - ROCm 10 research pass 1: capability audit and A/B
+
+- Installed dist is TheRock ROCm 10.0.0 (`hipconfig --version` = HIP 7.15.26333,
+  `.info/version` = 10.0.0, `libhipblaslt.so.1.4`). Both cards are officially
+  supported gfx1201. Official docs at rocm.docs.amd.com "latest" are still
+  7.14-based; TheRock `RELEASES.md` documents packaging streams, not a feature
+  list, so the audit below is from the installed SDK, headers and runtime
+  behavior.
+- Capability probe (`/tmp/rocm10_cap_probe.cpp`, device attributes only, no
+  `hipMemGetInfo`): both GPUs report `vmm attr=1`, `pools attr=1`,
+  `managed attr=1`, `coop=1`; `prop.managedMemory=1`,
+  `prop.memoryPoolsSupported=1`. So VMM, async pools and managed memory are
+  available on Linux ROCm 10 even though the production build ships
+  `GGML_HIP_NO_VMM=ON` (the Windows/ROCm 7 legacy flag).
+- A/B on the 49K L2 lane (r2 each, adjacent, same binary args as the P2P r3
+  rows): VMM-enabled build (`GGML_HIP_NO_VMM=OFF`,
+  `build-rocm-vmm-linux`) prefill 1633.81 / decode 22.14 vs NO_VMM
+  1649.00 / 22.11. `ROCBLAS_USE_HIPBLASLT=1` (hipBLASLt routing)
+  1634.36 / 22.13. Both within run-to-run noise (-0.9% to +0.1%); neither
+  is a win. VMM capability does not change layer-split throughput here.
+- Unified/managed memory `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` is a fail:
+  warmup 37.7 s, prefill 28.2 tok/s, decode 0.88 tok/s at 49K - managed
+  pages are backing into system RAM, not VRAM. Run aborted after shot 1
+  (soft interrupt, server stopped). Do not enable on this lane.
+- IOMMU/ACS status: kernel journal shows `iommu: Default domain type:
+  Translated` (not passthrough; official AMD multi-GPU guidance recommends
+  `iommu=pt`), but both GPUs are in isolated IOMMU groups (0b:00.0 group 26,
+  0e:00.0 group 30) and P2P copies already pass at ~5.7 GB/s, so
+  translation is not blocking the current route. rocminfo reports
+  `Fabric Support: NO`, `DMAbuf Support: YES`, `VMM Support: YES`,
+  `IOMMU Support: None` per agent, `Accessible by all: FALSE` for the GPU
+  pools - consistent with a switch-based PCIe P2P path, not a fabric.
+- Good-state facts: rocWMMA FATTN already ON in the build
+  (`GGML_HIP_ROCWMMA_FATTN=ON` with ROCm 10 headers), HIP graphs ON
+  (`GGML_HIP_GRAPHS=ON`), MMQ MFMA ON. These are effectively at their
+  defaults and not a "missing" ROCm 10 feature.
+- Conclusion: the visible ROCm 10 capabilities that llama.cpp can route
+  (VMM pool, hipBLASLt, managed memory) are either already in use, neutral
+  on this lane, or catastrophic. No positive result in pass 1; the
+  remaining lever is not a runtime flag but the prefill-bound compute path.
+- Artifacts: `/tmp/bench-rocm10-research/rocm10-l2-{novmm,vmm,hipblaslt}-r2a`,
+  capability probe binary `/tmp/rocm10_cap_probe`, VMM build
+  `build-rocm-vmm-linux/`.
+
 ## 2026-09-06 - Linux Vulkan (RADV 26.2.2) build and L1-L3 comparison
 
 - Installed the missing `vulkan-headers` and `spirv-headers` (CachyOS extra)
