@@ -1,5 +1,31 @@
 # Results Log
 
+## 2026-09-07 - Linux ROCm 10: W16 MMVQ K-stream prefetch REJECTED (-0.64%)
+
+- Candidate: software prefetch of the next K-block weights in
+  `mul_mat_vec_q` (MLP hypothesis for the ~40-45% of peak BW gap at
+  ncols_dst=1). Env-gated `GGML_MMVQ_RDNA4_QWEN_PREFETCH=1` (default off);
+  `__builtin_prefetch` is expressible (LLVM IR `llvm.prefetch.p1` survives;
+  no H80-style drop); deterministic smoke byte-identical.
+- A-B-A on the same L2 49K contract (ctx 49152, b/ub 512/512, f8_e4m3 KV,
+  flash on, spec none, no-warmup, seed 42, ROCm1,ROCm0 -sm layer -ts 1,1,
+  30609 prompt / 256 out):
+  - A (C1b control): decode 22.7642 / prefill 1763.5
+  - B (C1b + prefetch): decode 22.6221 / prefill 1748.5
+  - A' (C1b control): decode 22.7709 / prefill 1751.6
+  - decode delta = **-0.64%** (22.6221 vs 22.7676 interpolation); candidate
+    below both controls; prefill also slightly lower (-0.5% aggregate).
+- Interpretation: the 3-iteration K loop at 2048 threads/SM (100% occupancy)
+  already keeps enough loads in flight; the extra prefetch instructions are
+  dead work. The 40-45% "peak BW" figure is a theoretical DRAM ceiling, not
+  a per-thread MLP wall - this kernel does not approach it at ncols_dst=1
+  for reasons that are not fixed by prefetch.
+- VERDICT: REJECTED; prototype reverted (`mmvq.cu` byte-identical to HEAD,
+  clean rebuild). Artifacts: `build_logs/bench/q38-w16-prefetch/`; W16 note.
+- Lesson: "toolchain can express it" is not a win; only the A-B-A decides.
+  Next MMVQ candidate should change the memory system (L2 residency) or the
+  geometry, not add instructions to an already-latency-covered loop.
+
 ## 2026-09-07 - Linux ROCm 10: C1b staged x/gate reduce fresh A-B-A (+1.10% decode)
 
 - Re-check of W13 C1b (staged x/gate reduce, committed default) against a
