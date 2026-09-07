@@ -1,5 +1,26 @@
 # Results Log
 
+## 2026-09-07 - Linux ROCm 10: MTP + native FP8 KV synergy on the 49K lane
+
+- Same dual-GPU layer-split lane, `-dev ROCm1,ROCm0 -sm layer -ts 1,1`,
+  `b8192/ub1024`, flash-attn on, spec draft-mtp n2, cold/no-reuse/no-warmup,
+  Qwen3.8-27B-Q4_K_M (MTP-native, `qwen35.nextn_predict_layers=27`).
+- L2 49K (30609 prompt / 256 decode):
+  - q8_0/q8_0 + MTP (r1): prefill `1636.36`, decode `37.01`, total `25.62 s`,
+    acceptance `154/201 = 76.6%` (already +67.8% decode vs the spec-none
+    q8 lane `22.06`).
+  - f8_e4m3/f8_e4m3 + MTP (r2): prefill `1731.67`, decode `46.25`, total
+    `23.21 s`, acceptance `168/173 = 97.1%` and `169/171 = 98.8%`.
+  - Deltas: `+5.82%` prefill, `+24.97%` decode, `-9.41%` total wall time.
+- Acceptance rises from 76.6% to 97-99%: the FP8 KQ/V route makes the MTP
+  drafts substantially more accurate on this lane, not merely "no worse".
+- Note the f8 first-shot warmup remains slower (~410-460 vs ~610-780 tok/s at
+  553 tokens) but the measured level starts after that and shows the gain.
+- This is the production combiner: f8 KV + MTP n2 is the best measured ROCm
+  L2 config on Linux so far (46.25 tok/s decode, 23.2 s end-to-end vs 30.3 s
+  spec-none q8 and 25.6 s MTP q8). Artifacts:
+  `/tmp/bench-rocm10-mtp/rocm10-l2-mtp-{q8kv,f8kv}-r*`.
+
 ## 2026-09-07 - Linux ROCm 10: native FP8 KV reproduces D098, bigger on b8192
 
 - Candidate: switch KV cache from q8_0/q8_0 to f8_e4m3/f8_e4m3 on the same
