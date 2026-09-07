@@ -1,5 +1,24 @@
 # Results Log
 
+## 2026-09-07 - Linux ROCm 10: FP8 KV confirmed across L1/L2/L3 (spec none)
+
+- Completes the three-level sweep on the same layer-split lane
+  (`ROCm1,ROCm0`, b8192/ub1024, q8_0 control vs f8_e4m3 candidate):
+  - L1 8K (7901/128): q8 `1838.37/24.04`, 9.62 s; f8 `1902.20/24.81`,
+    9.31 s. Deltas `+3.47%` prefill, `+3.21%` decode, `-3.22%` total.
+  - L2 49K (30609/256): q8 `1321.64...` (see FP8 row), f8 `1814.30/22.61`,
+    28.20 s, `+10.59%` prefill, `+2.48%` decode, `-6.83%` total.
+  - L3 98K (64287/256): q8 `1555.42...` (see FP8 row), f8 `1555.42/19.92`,
+    54.18 s vs q8 `1321.64/19.57`, 61.72 s: `+17.69%` prefill, `+1.77%`
+    decode, `-12.22%` total.
+- The f8 first-shot warmup is slower (476-476 vs 663-834 tok/s at 553
+  tokens, one-time KV quantization plus FP8 path setup) but every measured
+  level starting after that still wins; the warmup cost is not part of the
+  steady runs and is a per-first-request, not per-request, effect.
+- Combined with MTP n2 (previous row), f8 KV is a net win at every context
+  size tested; q8_0 remains the rollback. Artifacts:
+  `/tmp/bench-rocm10-l1f8/rocm10-l1-{q8kv-control,f8kv-native}-r1`.
+
 ## 2026-09-07 - Linux ROCm 10: MTP + native FP8 KV synergy on the 49K lane
 
 - Same dual-GPU layer-split lane, `-dev ROCm1,ROCm0 -sm layer -ts 1,1`,
