@@ -1,5 +1,59 @@
 # Results Log
 
+## 2026-09-07 - Linux ROCm 10: W17 profiler tooling adopted - first device profile
+
+- Adopted the only ROCm-10-specific useful item from W17: `rocprofv3`
+  per-graph/kernel trace. Added
+  `scripts/research/rocprof_summary_top.py` (ranks KERNEL_DISPATCH and
+  HIP_GRAPH rows from `rocprofv3 --summary`; validated on a short run;
+  parse stops at the section boundary - the all-domain table otherwise
+  double-counts every kernel).
+- Invocation validated: `rocprofv3 -d DIR -o NAME --hip-graph-trace
+  --hip-trace --kernel-trace --stats --summary -D -u msec
+  --summary-output-file DIR/summary.txt -- <llama-server ...>`; output is
+  flushed on SIGTERM (server needs a second TERM in practice).
+- First device-level kernel profile (short: ctx 4096, 19 prompt / 11 out,
+  f8_e4m3 KV, flash on, spec none, ROCm1,ROCm0; kernel time 353.42 ms over
+  42 distinct kernels):
+  - MMVQ family = ~72.6% (fused q4_K ncols=1 alone 113.64 ms / 32.15%),
+    confirming weight-stream / decode MUL_MAT (W13/W16) as the correct
+    primary target.
+  - `gated_delta_net_cuda<128>` = 5.35 ms / **1.51%** (432 calls): W12
+    trace 13.5% was sync-inflated; measured real share is below the W14
+    modeled 5-8% - no GDN prototype priority.
+  - `flash_attn_ext_f16` = 2.00 ms / 0.56%: FP8 K/V WMMA not hot under this
+    contract (H80 negative result stands).
+  - `__amd_rocclr_copyBuffer` 716 calls / 1.42% + `hipMemcpyAsync` 1150
+    calls (51.8% HIP_API time): copy/quantize motion is the next "other"
+    cluster after MMVQ.
+- ARTIFACTS: `/tmp/w17-run2/w17_results.json` (70 MB, `--hip-trace`) and
+  `.../summary.txt`; W17 note updated.
+
+## 2026-09-07 - Linux ROCm 10: W17 feature scan - no new compute candidate; profiler tooling candidate
+
+- Per the "candidates must be ROCm-10-specific" rule, scanned what the new
+  stack actually adds (release notes 10.0.0 + local SDK diff 10.0 vs 7.14.1
+  + llvm-mc/hipcc ISA probes):
+  - Vector `th:TH_LOAD_NT` (b64/b128) is expressible on LLVM 23 (`u64` ->
+    `global_load_b64 ... th:TH_LOAD_NT`; native vector -> b128), same in
+    7.14.1; but the only measured use (H80 FP8 KV) regressed -28.2% prefill
+    / -22.8% decode, closed.
+  - No prefetch ISA on gfx1201 (`s_prefetch`/`global_prefetch`/`v_prefetch`
+    all fail llvm-mc); `__builtin_prefetch` lowers to loads (W16 measured
+    negative).
+  - `hipEventDisableTiming`/coalesced events: ggml uses events only in debug
+    trace, not hot path. `hipMemGetDefaultMemPool`: parity API, no perf path.
+  - Cluster launch attrs identical to 7.14 headers; MMVQ blocks read disjoint
+    weight rows - no sharing benefit. HIP DeviceResource/SM partitioning and
+    CK a8w8 (MI355X) not applicable to Radeon decode.
+- Positive finding: `rocprofv3 --hip-graph-trace` (per-node graph attribution)
+  is installed and CLI-verified in 10.0 - useful diagnostic for future
+  decode candidates (weight-stream / GDN device trace), i.e. the only
+  immediately adoptable ROCm-10-specific item (tooling, no runtime change).
+- Verdict: no new compute-kernel candidate from ROCm 10 itself; next compute
+  work (if any) stays a ROCm-10-validated C1-family follow-up. Artifacts:
+  `W17_ROCm10_FEATURE_SCAN.md`, README.
+
 ## 2026-09-07 - Linux ROCm 10: W16 MMVQ K-stream prefetch REJECTED (-0.64%)
 
 - Candidate: software prefetch of the next K-block weights in
