@@ -1,5 +1,33 @@
 # Results Log
 
+## 2026-09-07 - Linux ROCm 10: native FP8 KV reproduces D098, bigger on b8192
+
+- Candidate: switch KV cache from q8_0/q8_0 to f8_e4m3/f8_e4m3 on the same
+  dual-GPU layer-split lane. This activates the fork's native RDNA4 FP8 WMMA
+  KQ/V route in FlashAttention (`ggml_cuda_flash_attn_ext_use_rdna4_f8_native_*`,
+  default ON when K/V are `GGML_TYPE_F8_E4M3`, D=256 guard), it is not a
+  backend code change on this branch - D098/D099 landed on `master`.
+- Adjacent A/B, Qwen3.8-27B-Q4_K_M, `-dev ROCm1,ROCm0 -sm layer -ts 1,1`,
+  `b8192/ub1024`, flash-attn on, spec none, cold/no-reuse/no-warmup:
+  - L3 98K (64287 prompt / 256 decode): q8_0 control (r2) `1321.64/19.57`,
+    61.72 s; f8_e4m3 (r2) `1555.42/19.92`, 54.18 s. Deltas `+17.69%`
+    prefill, `+1.77%` decode, `-12.22%` total wall time.
+  - L2 49K (30609/256): q8_0 control `1640.53/22.06`, 30.26 s; f8_e4m3
+    `1814.30/22.61`, 28.20 s. Deltas `+10.59%` prefill, `+2.48%` decode,
+    `-6.83%` total.
+  - Warmup first-shot is slower on f8 (prefill ~450 vs ~780 tok/s at 553
+    tokens) but the measured run starts after that; the level deltas are on
+    the steady run.
+- Reproduces and beats the `master` D098 numbers (`+4.9% prompt / +5.2%
+  decode / +5.0% aggregate` at 49K b512/ub512 on Windows). Quality gate was
+  already passed in D098 (MTP acceptance no worse than q8, 49K/98K
+  placement); the Linux greedy smoke differs token-for-token from q8 as
+  expected when KV quantization changes (temp 0), both outputs are coherent.
+- Adoptable without code change: `--cache-type-k f8_e4m3 --cache-type-v
+  f8_e4m3` on the ROCm lane is a net win on this hardware; keep q8_0 as the
+  rollback and note the quality trade-off for a full production promotion.
+- Artifacts: `/tmp/bench-rocm10-fp8/rocm10-{l2,l3}-{q8kv-control,f8kv-native}-r*`.
+
 ## 2026-09-06 - ROCm 10 research pass 1: capability audit and A/B
 
 - Installed dist is TheRock ROCm 10.0.0 (`hipconfig --version` = HIP 7.15.26333,
