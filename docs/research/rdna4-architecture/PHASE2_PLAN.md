@@ -40,10 +40,20 @@ Each experiment: focused correctness (test-backend-ops / FLASH_ATTN_EXT lane)
 gate. Rejected candidates are documented and reverted.
 
 - [x] 2.1 H80: cache-policy hints on the KV global loads (streaming/no-retain).
-  BLOCKED by the toolchain: `__builtin_nontemporal_load` is silently dropped
-  by ROCm 7.1 clang (byte-level encoding diff = zero), and llvm-mc (AOMP-18)
-  accepts no glc/slc/nt/cache_policy/th modifier for global_load. Deferred
-  until a toolchain with an expressible TH field (see HYPOTHESES H80).
+  CLOSED-REJECTED 2026-09-07 (ROCm 10 retest): the 2026-08-14 toolchain
+  block is lifted - `llvm-mc` parses `th:TH_LOAD_NT` and
+  `__builtin_nontemporal_load` emits per-element
+  `global_load_d16_u8 ... th:TH_LOAD_NT` in the real kernel - but the
+  measured result is negative: per-element NT regressed L1 fp8 prefill
+  1884.37 -> 1353.35 tok/s (-28.2%) and decode 26.27 -> 20.27 (-22.8%).
+  LLVM cannot vectorize NT loads to `b64` while keeping TH; inline asm
+  `global_load_b64 ... th:TH_LOAD_NT` is inexpressible from HIP (raw probe
+  reads pointer bytes; server faults `HSA_STATUS_ERROR_MEMORY_FAULT`);
+  `hipAccessPolicyWindow` is unsupported (`MaxWindowSize=0`, setter returns
+  `hipErrorInvalidValue`). Prototype reverted; fp8-KV production win
+  (D098/D099 rows) untouched. Evidence: `docs/research/RESULTS_LOG.md`
+  (2026-09-07 H80 entry), `/tmp/h80_prototype_fattn-wmma-f16.cu`,
+  `/tmp/fp8_probe/`, `/tmp/h80_bench/h80-f8-{base,nt}-l1`.
 - [x] 2.2 H79: PV V_a prefetch one chain ahead in `fattn-wmma-f16.cu`
   (original premise corrected in W03: B-fragments were already in registers).
   REJECTED: neutral (-0.5% decode, noise), reverted.

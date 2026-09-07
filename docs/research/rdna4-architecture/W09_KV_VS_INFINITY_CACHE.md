@@ -43,6 +43,28 @@ ISA provides the flags; the effect on L2 retention and TPS is unmeasurable
 without a bench (phase 2). Counter-hypothesis: the L2 is already effectively
 LRU-streaming this 48x-oversized working set, so hints change little.
 
+## Resolution (2026-09-07, ROCm 10 retest)
+
+H80 is CLOSED-REJECTED. The counter-hypothesis held with a measured penalty,
+not merely "no change":
+
+- The toolchain block is lifted: `llvm-mc` parses `th:TH_LOAD_NT`, and
+  `__builtin_nontemporal_load` emits per-element
+  `global_load_d16_u8 ... th:TH_LOAD_NT` (1089 occurrences in the real
+  kernel .s).
+- Per-element NT on the L1 fp8 lane (Qwen3.8-27B-Q4_K_M, dual ROCm layer
+  split): prefill 1884.37 -> 1353.35 tok/s (-28.2%), decode 26.27 -> 20.27
+  (-22.8%). The scalarization destroys the coalesced wmma load pattern.
+- LLVM cannot vectorize the NT loads to `b64` while keeping TH (vectorized
+  form drops the modifier); inline asm `global_load_b64 ... th:TH_LOAD_NT`
+  cannot be expressed from HIP with stable addressing (raw probe reads
+  pointer bytes; fused server run faults `HSA_STATUS_ERROR_MEMORY_FAULT`).
+- `hipAccessPolicyWindow` is not implemented on gfx1201
+  (`AccessPolicyMaxWindowSize=0`, setter -> `hipErrorInvalidValue`), so the
+  "no code change" window route is also closed.
+- Next lever per W12/W13 direction: MMVQ/MMQ weight-stream (C1/C1b measured,
+  C1b pending user call), then GDN audit (C3).
+
 ## Related lever already on the shelf
 
 The KV tail re-read cost is the reason the 49K/98K lanes are dominated by

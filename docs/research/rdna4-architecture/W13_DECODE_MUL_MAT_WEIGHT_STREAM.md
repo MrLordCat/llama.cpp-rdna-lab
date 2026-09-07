@@ -66,25 +66,32 @@ Lane: dual-ROCm 49K, Q4_K_M weights, decode M<=4 tokens, K=5120, N in
    Expected: single-digit % either way; the 8-row layout has the best DRAM
    row locality (8 adjacent 144 B rows = ~1.2 KB contiguous), so C1 may
    confirm the current policy rather than beat it.
-2. **C2 - draft-batch weight reuse for MTP decode (structural, big)**. If the
-   MTP decode drives each draft through its own ncols_dst==1 launch, the
-   weight stream is re-read per draft token. Batching 2-4 draft tokens into
-   ncols_dst 2..4 launches reads the weights once per draft group. But the
-   RDNA4 table gives ncols>1 only 1 warp/32 threads, so a batch path also
-   needs an nwarps retune (today unmeasured for ncols 2..4). Open question
-   to verify in llama-graph: does MTP decode batch drafts or not? This is a
-   graph-level change - discuss with the user before coding.
-3. **C3 - GDN per-token cost audit (next W-item)**. W12: GATED_DELTA_NET =
-   13.5% of a decode token at 49K (48 nodes/token) - the chunk recurrence
-   runs per token, not only prefill. Source audit of the decode-time chunk
-   state update is the next cheapest research step (C05 is a 2026-05 12K
-   record, not a 49K decode audit).
-4. **C4 - cache-policy hints on weight/KV streams (blocked, same as H80)**.
-   The W09/H80 toolchain blocker applies verbatim: ROCm 7.1 clang drops
-   `__builtin_nontemporal_load`, and llvm-mc accepts no cache_policy modifier.
-   A weight-stream `glc`/`slc` hint cannot be expressed today. The useful
-   hint (KV streaming so it does not evict the weight stream) remains
-   unexpressible until a toolchain change.
+2. **C2 - draft-batch weight reuse for MTP decode (CLOSED-REJECTED 2026-09-07,
+   see W15)**. Source audit falsified the premise: the MTP draft context
+   (`ctx_type=MTP` on the same model) executes only ONE transformer block +
+   NextN head, and the full-model verification is already batched
+   (`sampled` + all drafts in one target batch, `ncols 2..4`). Draft steps
+   are one token per step per sequence and are auto-regressively dependent,
+   so within-sequence batching is impossible; across-sequence batching
+   already exists. No code change; verdict is source-definitive.
+3. **C3 - GDN per-token cost audit (DONE 2026-09-07, see W14)**. W12:
+   GATED_DELTA_NET = 13.5% of a decode token at 49K (48 nodes/token) - the
+   chunk recurrence runs per token, not only prefill. The W14 source audit
+   (no GPU runs) resolves the share: S_v=128/H_v=48/49 GDN layers, decode
+   grid (48,1,32)/128 threads, 6 MiB r-m-w per layer per token, ~3.9 MFLOP;
+   launch/latency bound, not bandwidth-bound; the traced 13.5% is
+   sync-inflated, modeled real cost ~5-8%. No GDN prototype before a
+   device-trace run; MMVQ weight-stream remains first.
+4. **C4 - cache-policy hints on weight/KV streams (CLOSED-REJECTED 2026-09-07,
+   same probe as H80)**. The 2026-08-14 toolchain block is lifted on ROCm 10
+   (`llvm-mc` parses `th:TH_LOAD_NT`, `__builtin_nontemporal_load` emits
+   per-element NT), but the measured result is negative: per-element NT
+   regressed L1 fp8 prefill -28.2% and decode -22.8%, LLVM cannot keep TH on
+   vector b64 loads, inline asm `global_load_b64 ... th:TH_LOAD_NT` is
+   inexpressible from HIP, and `hipAccessPolicyWindow` is unsupported on
+   gfx1201. The weight-stream `glc`/`slc` hint remains unimplemented in the
+   compiler; no per-load cache-policy candidate is left. See H80/HYPOTHESES
+   and RESULTS_LOG (2026-09-07).
 5. **Demoted (no expectation)**. FA-side micro-optimizations: FA is 10-20%
    of the token, so even a 20% FA win clears only 2-4% whole-lane, at the
    edge of the gate (W12 finding 3).
@@ -156,6 +163,39 @@ adjacent controls), no K=17408 regression, no register change. It does not
 pass the strict dual-lane >=3% protocol, so either it stays opt-in (strict)
 or is promoted as a default with the documented 49K-only edge (user
 call). If promoted, the legacy dual-buffer branch is removed.
+
+### C1b fresh Linux re-check (2026-09-07, bench2 L2 A-B-A)
+
+The C1b staged-reduce code is the committed default in this worktree
+(`8d7909b33`); a temporary legacy dual-buffer snapshot was built from the
+same commit plus the reverse patch, then measured against the restored C1b
+snapshot. Same contract: ctx 49152, b/ub 512/512, f8_e4m3 KV, flash on,
+spec none, no-warmup, seed 42, ROCm1,ROCm0 -sm layer -ts 1,1, 30609 prompt /
+256 out, LD_LIBRARY_PATH pinned per variant (RPATH otherwise forces the
+build tree).
+
+| round | variant | decode tps | prefill tps | aggregate |
+| --- | --- | --- | --- | --- |
+| A | legacy (14336 B, occ 50%) | 22.5448 | 1764.8 | 8.9201 |
+| B | C1b (7168 B, occ 100%) | 22.7801 | 1752.4 | 8.9184 |
+| A' | legacy | 22.5213 | 1750.7 | 8.8733 |
+
+- Decode control interpolation = (22.5448 + 22.5213) / 2 = 22.5331;
+  C1b = 22.7801 -> **+1.10%** (both base rounds below the candidate).
+- Prefill neutral (-0.3% mean); aggregate within noise (prefill-dominated).
+- vs the 2026-08-15 Windows W13 A-B-A (+5.7%): the absolute Linux baseline
+  is already faster (22.53 vs 20.50 interpolation), so the same shared
+  footprint win buys a smaller relative delta. Direction confirmed, magnitude
+  lane-specific.
+- Resource check is the same as 2026-08-15: fused q4_K K=5120/K=17408
+  `max_blocks_per_sm=8, occupancy=100%` (thread-limit capped: 2048/256) vs
+  legacy `max_blocks=4, occupancy=50%`. No shared/register headroom remains:
+  further reduction is impossible without cross-L2 geometry changes, and the
+  `[row][lane]` shared layout is bank-conflict-optimal (a `[lane][row]`
+  vector store layout would introduce 4-way bank conflicts).
+- Verdict on "is anything left in C1b": no - the occupancy lever is fully
+  exhausted; the residual MMVQ gap is weight-stream bandwidth, which is the
+  next (separate) candidate, not a C1b variant.
 
 ## Measurement plan (when GPUs are free again)
 

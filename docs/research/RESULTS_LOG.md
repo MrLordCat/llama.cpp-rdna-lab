@@ -1,5 +1,94 @@
 # Results Log
 
+## 2026-09-07 - Linux ROCm 10: C1b staged x/gate reduce fresh A-B-A (+1.10% decode)
+
+- Re-check of W13 C1b (staged x/gate reduce, committed default) against a
+  temporary legacy dual-buffer snapshot on the current Linux ROCm 10 build:
+  contract ctx 49152, b/ub 512/512, f8_e4m3 KV, flash on, spec none,
+  no-warmup, seed 42, ROCm1,ROCm0 -sm layer, 30609 prompt / 256 out.
+- Decode: A 22.5448 / B (C1b) 22.7801 / A' 22.5213 -> +1.10% over the
+  control interpolation; prefill neutral; aggregate within noise.
+- Resource trace: fused q4_K (K=5120/17408) shared 14336 -> 7168 B,
+  max_blocks 4 -> 8, occupancy 50% -> 100% - the occupancy lever is fully
+  exhausted (thread-limited 2048/256 = 8 CTAs); `[row][lane]` shared layout
+  is bank-conflict-optimal, so no further C1b-family change is warranted.
+  Residual MMVQ gap is weight-stream bandwidth (separate candidate).
+- Artifacts: `build_logs/bench/q38-c1b-fresh/` (base-a, cand-b, base-a2);
+  W13 "C1b fresh Linux re-check".
+
+## 2026-09-07 - Linux ROCm 10: C2 MTP draft-batch weight reuse falsified (source audit)
+
+- Candidate C2 (W13): batching 2-4 MTP draft tokens into `ncols_dst 2..4`
+  launches would read the weight stream once per draft group instead of per
+  draft token. Source audit (`common/speculative.cpp` +
+  `src/models/qwen35.cpp` + `tools/server/server-context.cpp`) falsified the
+  premise; no GPU runs, verdict source-definitive:
+  - The MTP draft context is a SECOND context on the same target model
+    (`ctx_type=LLAMA_CONTEXT_TYPE_MTP`) and its graph executes ONLY the last
+    transformer block + NextN head (`il = n_layer - nextn_predict_layers`),
+    not the full 65-block model - so per-step re-reads are ~170 MB, not
+    ~17 GB.
+  - Target verification already batches `sampled` + ALL draft tokens into one
+    `llama_decode` (`ncols 2..4`), so the dominant full-model weight stream
+    is read ONCE per draft group.
+  - Draft steps are one token per step per sequence and autoregressively
+    dependent (step i+1 samples step i's logits), so within-sequence
+    batching is impossible; cross-sequence batching already exists.
+- Residual MTP lever is acceptance/tuning, not weight-stream geometry; the
+  MTP n2 production row (`+24.97%` decode, 97-99% acceptance) is unchanged.
+- W15 (C2) closed. Artifacts: `docs/research/rdna4-architecture/W15_MTP_DRAFT_BATCH_WEIGHT_STREAM_AUDIT.md`.
+
+## 2026-09-07 - Linux ROCm 10: H80 FP8 KV "streaming" candidate REJECTED
+
+- Hypothesis (H80): mark only the FP8 K/V cache reads as non-retained
+  (`th:TH_LOAD_NT`) so they no longer evict the Q4_K_M weight stream from
+  L2 during decode, without changing the FP8-to-fp32 value semantics of the
+  native RDNA4 WMMA KQ path.
+- Verification performed on ROCm 10.0.0 / gfx1201, Linux:
+  - `hipAccessPolicyWindow` stream attribute: `hipDeviceAttribute
+    AccessPolicyMaxWindowSize` returns **0** on gfx1201 and
+    `hipStreamSetAttribute(hipLaunchAttributeAccessPolicyWindow, ...)`
+    returns `hipErrorInvalidValue` **invalid argument**. The official
+    CUDA-style access-policy-window path is **not implemented** on this
+    hardware; this closes the "no code change" branch with a runtime probe,
+    not a guess.
+  - rocWMMA fragment coordinate mapping for `matrix_a, 16,16,16, fp8_e4m3,
+    row_major` at the **32-lane** wave size used by gfx12 was derived with
+    a byte-addressable probe (`/tmp/fp8_probe/k_32_probe.cu`): each lane
+    owns 8 elements, `row = lane & 15`, `col = i + ((lane>>4)&1)*8`,
+    address = `row*ldm + col`.
+  - A manual reconstruction with `__builtin_nontemporal_load` is
+    **bit-identical** to `wmma::load_matrix_sync` at the mma level
+    (`mismatches=0`, `/tmp/fp8_probe/k_32_builtin_v.cu`), so the mapping
+    is correct.
+  - **LLVM vectorization conflict**: on the actual `fattn-wmma-f16.cu`
+    kernel the compiler keeps the nontemporal loads **scalar**
+    (`global_load_d16_u8 ... th:TH_LOAD_NT`, 1089 occurrences in the
+    produced .s) and does not vectorize them into a single `b64`.
+    When it does vectorize (`global_load_b64`) it silently **drops the
+    `th:TH_LOAD_NT` modifier**. Inline assembly
+    `global_load_b64 ... th:TH_LOAD_NT` is accepted by the assembler, but
+    cannot be expressed from HIP with the clang register constraints that
+    keep the 64-bit flat address coherent (raw probe reads the pointer
+    bytes, not memory; server run faults with `HSA_STATUS_ERROR_MEMORY_FAULT`).
+- Adjacent L1 fp8 A/B (Qwen3.8-27B-Q4_K_M, dual ROCm layer split, b8192/
+  ub1024, f8_e4m3/f8_e4m3 KV, spec none, cold/no-warmup):
+  - control (no flag): prefill **1884.37** / decode **26.27** tok/s.
+  - scalar NT (`GGML_HIP_F8_KV_STREAMING=1`, per-element builtin):
+    prefill **1353.35** / decode **20.27** tok/s.
+  - Deltas: **-28.2% prefill, -22.8% decode** - the per-element scalar
+    version is a clear regression even though the TH modifier is emitted.
+- Conclusion: H80 as implemented is **not viable** on gfx12. The
+  streaming hint is only emitted when the reads are scalar, and scalar
+  u8 loads destroy the coalesced wmma load pattern; the vector b64 form
+  with TH is not reachable from HIP inline asm on this toolchain. The
+  prototype was reverted; the fp8-KV win (D098/D099 production rows above)
+  remains fully intact. Saved reference:
+  `/tmp/h80_prototype_fattn-wmma-f16.cu`.
+- Artifacts: `/tmp/fp8_probe/` (mapping + equivalence probes),
+  `/tmp/h80_bench/h80-f8-{base,nt}-l1` (A/B), `/tmp/th64.s` (assembler
+  b64+TH proof).
+
 ## 2026-09-07 - Linux ROCm 10: FP8 KV confirmed across L1/L2/L3 (spec none)
 
 - Completes the three-level sweep on the same layer-split lane

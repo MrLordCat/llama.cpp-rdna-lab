@@ -76,22 +76,27 @@ work is evaluated on the whole locked lane.
 | W02 | done | [kernel ISA audit](W02_KERNEL_ISA_AUDIT.md): production kernel is ALU-dense (70% VALU, 17.6% waits) with 45 VOPD pairs in the softmax/merge math; K/V tiles load as scalar per-lane `global_load_u8` (no async copy, no vectorization); barriers already split; reductions via `ds_bpermute_b32` |
 | W03 | done | [phase map + PV cost model](W03_PHASE_MAP_AND_PV_COST.md): PV = 2x KQ per WMMA because its B-fragments (P_f8) arrive from LDS inside the chain; merge fp32 roundtrip is only 2.0%; accumulators are 24 of 156 VGPR, working set dominates; **2 CTAs per CU already achieved, LDS is the binding constraint (3 CTAs need <= 21,845 B)** |
 | W04 | done | [softmax + requant stream](W04_SOFTMAX_AND_REQUANT_STREAM.md): phase already fully optimized at instruction level (VOPD, `v_max3_num_f32`, `v_exp_f32`, packed `v_cvt_pk_fp8_f32`); cvt_pk already in use; only untried requant op = stochastic `V_CVT_SR_FP8_F32` |
-| W09 | done | [KV vs Infinity Cache](W09_KV_VS_INFINITY_CACHE.md): KV = 128 KiB/token (64 layers, 4 KV heads x 256, fp8) -> 3 GiB per GPU at 49K vs 64 MB L2; KV stream is use-once per token; H80 = streaming cache-policy hints |
+| W09 | done | [KV vs Infinity Cache](W09_KV_VS_INFINITY_CACHE.md): KV = 128 KiB/token (64 layers, 4 KV heads x 256, fp8) -> 3 GiB per GPU at 49K vs 64 MB L2; KV stream is use-once per token; H80 = streaming cache-policy hints -> CLOSED-REJECTED 2026-09-07 (toolchain can now express TH, measured per-element NT regression -28.2% prefill / -22.8% decode) |
 | W08 | done | occupancy closed in W03: wave32, 156 VGPR -> 6 waves/SIMD = 24/CU; 2 CTAs per CU already, LDS-bound, 3 CTAs need <= 21,845 B |
 | W10 | done | [MMVQ gemm audit](W10_MMVQ_GEMM_SHAPES.md): decode = MMVQ M<=4/K=5120/N<=17408; prefill = MMQ stream-k; hipBLAS off the hot path; follow-ups: Q3_K batch cap 1, small-K toggle consolidation |
 | W11 | done | [backend debt audit](W11_BACKEND_DEBT_AUDIT.md): dead diagnostics (Vulkan FA P2-P5/NATIVE_DECODE/HALF_CMP, census), live fallbacks (do not remove), removal order for phase 3 |
 | W12 | done | [decode-token census](W12_DECODE_TOKEN_CENSUS.md): MUL_MAT >= 50% of a 49K decode token (weight stream IS the bottleneck), FA ~10-20%, GDN ~13.5%; next candidates = MMVQ/MMQ weight-stream, then GDN; FA-level micro-opts demoted |
-| W13 | C1 measured | [decode MUL_MAT/MMVQ weight-stream audit](W13_DECODE_MUL_MAT_WEIGHT_STREAM.md): Q4_K ncols==1 decode = 8 warps x 8 rows (small_k auto policy), 3 K-iterations, ~40-45% of peak BW. C1 (small_k=0, gate GGML_MMVQ_RDNA4_QWEN_SMALL_K, default-off): 49K stable +2.7-4.1% decode in 3/3 A-B-A pairs, 98K = noise (-2.1%/+1.5%) -> NOT promoted, gate stays opt-in. C1b (staged x/gate reduce, gate GGML_MMVQ_RDNA4_QWEN_STAGED_REDUCE, default 1): fused FFN shared 14336->7168 B, occupancy 50->100%, grid unchanged; 49K +5.7%, 98K +1.8% stable positive - verdict pending user call (strict dual-lane gate not met). Protocol: context-dependent MMVQ wins need both 49K and 98K confirmation |
+| W13 | C1 measured; C1b confirmed, lever exhausted | [decode MUL_MAT/MMVQ weight-stream audit](W13_DECODE_MUL_MAT_WEIGHT_STREAM.md): Q4_K ncols==1 decode = 8 warps x 8 rows (small_k auto policy), 3 K-iterations, ~40-45% of peak BW. C1 (small_k=0, opt-in): 49K +2.7-4.1% vs 98K noise -> not default. C1b (staged x/gate reduce, default): shared 14336->7168 B, occupancy 50->100%; fresh Linux A-B-A 2026-09-07 +1.10% decode (22.53 base vs 22.78 cand, prefill neutral); shared/occupancy lever fully exhausted - residual gap is weight-stream BW (next candidate), no C1b-family variant remains |
+| W14 | C3 audit done | [GATED_DELTA_NET decode cost audit](W14_GATED_DELTA_NET_DECODE_COST_AUDIT.md): S_v=128, H_v=48 (dt_rank), 49 GDN layers (interval 4), state 144 MiB f32 = 3 MiB/layer; decode grid (48,1,32)=1536 blocks x 128 threads, 6 MiB read-modify-write per layer per token, ~3.9 MFLOP - launch/latency bound, NOT bandwidth-bound. The W12 `13.5%` share is sync-inflated; modeled real cost ~5-8%. No GDN prototype before a device-trace run (`GGML_TRACE_GDN_TIMING`); MMVQ weight-stream remains first |
+| W15 | C2 closed-rejected | [MTP draft-batch weight-stream audit](W15_MTP_DRAFT_BATCH_WEIGHT_STREAM_AUDIT.md): the MTP draft context runs ONE block + NextN head (not the full model) and the target verification is already batched (`sampled` + all drafts in one decode); draft steps are per-token and auto-regressively dependent, so within-sequence draft batching is impossible and the weight-stream premise is falsified. No code change |
 
 Track status: ACTIVE 2026-08-14 (resumed after the Qwen3.8 rebaseline and
 f8-KV fix). W13 source audit is done; measurement starts when the GPUs are
 free again - the user reserves the GPUs for now, so no bench/GPU launches
-until the next signal. Resume pointer = W13 "Measurement plan".
+until the next signal. Resume pointer = W13 "Measurement plan"; W14 (C3 GDN
+audit) completed 2026-09-07 with MMVQ weight-stream still first.
 
 ## Phase-2 candidate shelf (exhausted 2026-08-14, see PHASE2_PLAN)
 
-All phase-2 candidates were tested and rejected/blocked (H80 toolchain-blocked,
-H79 neutral, SR-requant worse NMSE, H77 premise falsified + regression). The
+All phase-2 candidates were tested and rejected (H80 closed-rejected
+2026-09-07 after the toolchain block lifted and the ROCm 10 A/B measured a
+-28.2% prefill / -22.8% decode regression; H79 neutral; SR-requant worse
+NMSE; H77 premise falsified + regression). The
 post-W12 shelf lives in W12 "Direction set": decode MUL_MAT/MMVQ
 weight-stream candidates first, GDN audit second, FA shelf leftovers demoted
 (the untried vectorized fp8 tile loads remain documented there).
