@@ -1449,7 +1449,9 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, scan: Scan):
     assert build is not None and build.server_bin is not None
     label = f"llama-server · {Path(spec.model).name} · {build.name}"
     try:
-        supervisor.start("server", label, to_argv(spec, build.server_bin), cwd=build.path)
+        supervisor.start("server", label, to_argv(spec, build.server_bin),
+                         cwd=build.path,
+                         env=config.runtime_env(build.backend))
     except Busy as busy:
         return run_panel(supervisor, f"{busy.current.label} is still running", "error")
     return run_panel(supervisor), log_panel(supervisor, oob=True)

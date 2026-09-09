@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,9 +61,27 @@ class AppConfig:
     data_root: Path = REPO_ROOT
     models_dir: Path | None = None
     builds_root: Path | None = None
+    #: extra shared-library directories for child processes (e.g. ROCm's lib
+    #: directory on Linux, where the HIP runtime is not on the default path)
+    library_paths: tuple[str, ...] = ()
     host: str = "127.0.0.1"
     port: int = 8770
     display_devices: tuple[str, ...] = ()
+
+    def runtime_env(self, backend: str = "") -> dict[str, str]:
+        """Extra environment a child needs on this machine.
+
+        A ROCm build on Linux links against the HIP SDK runtime, which is
+        usually not on the loader path -- bench2 and llama-server both need
+        LD_LIBRARY_PATH pointed at it or every launch dies with
+        ``libamdhip64.so: cannot open shared object file``. Windows resolves
+        the same libraries through PATH, so this returns nothing there.
+        """
+        if sys.platform == "win32" or not self.library_paths or backend not in {"rocm", "hip"}:
+            return {}
+        joined = ":".join(self.library_paths)
+        existing = os.environ.get("LD_LIBRARY_PATH", "")
+        return {"LD_LIBRARY_PATH": f"{joined}:{existing}" if existing else joined}
 
     @property
     def artifacts_dir(self) -> Path:
@@ -142,10 +161,18 @@ class AppConfig:
         else:
             display_devices = ()
 
+        library_value = data.get("library_paths")
+        if isinstance(library_value, (list, tuple)):
+            library_paths = tuple(str(value).strip() for value in library_value
+                                  if str(value).strip())
+        else:
+            library_paths = ()
+
         return cls(
             data_root=data_root,
             models_dir=directory(ENV_MODELS_DIR, "models_dir"),
             builds_root=directory(ENV_BUILDS_ROOT, "builds_root"),
+            library_paths=library_paths,
             host=host,
             port=port,
             display_devices=display_devices,

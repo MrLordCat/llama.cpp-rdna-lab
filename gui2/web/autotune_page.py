@@ -835,9 +835,11 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, bench: Bench
     # console_python(): the GUI may itself be running under pythonw.exe, which
     # would hand the benchmark a child that cannot be signalled
     runs = commands(config, spec, bench, python=console_python(), series_id=series_id)
+    build = server_page.build_of(config, spec)
     try:
         supervisor.start_all("autotune", [(f"bench2 · {name}", argv) for name, argv in runs],
-                             cwd=config.bench_script.parent.parent)
+                             cwd=config.bench_script.parent.parent,
+                             env=config.runtime_env(build.backend if build else ""))
     except Busy as busy:
         return server_page.run_panel(supervisor, f"{busy.current.label} is still running", "error")
     return (server_page.run_panel(supervisor),
