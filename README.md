@@ -1,88 +1,51 @@
 # llama.cpp-rdna-lab
 
-`llama.cpp-rdna-lab` is a hardware-focused fork of
-[`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp) for local AI on
-Windows with two AMD RDNA4 GPUs. It combines a maintained subset of the
-`llama.cpp` runtime with a local web GUI (GUI 2.0, in `gui2/`), reproducible
-benchmark/autotune tooling, long-context work, and AMD-specific Vulkan and
-ROCm/HIP optimizations.
-
-The desktop application is branded **RDNA LLM Studio**. The repository keeps
-upstream `llama-*` executable names and source structure so that runtime
-compatibility and upstream synchronization remain straightforward.
+Hardware-focused fork of [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp)
+for local AI on Windows with two AMD RDNA4 GPUs. It combines the llama.cpp
+runtime with a local web GUI (GUI 2.0, `gui2/`), reproducible benchmark
+tooling, long-context work, and AMD-specific Vulkan and ROCm/HIP
+optimizations. The desktop application is branded **RDNA LLM Studio**.
 
 The primary workload is agentic coding with Qwen3.8-27B: large cold prompts,
 single-user requests, long contexts, tool use, vision, and speculative decode.
 The main performance priority is prompt evaluation. MTP is kept only when its
 decode gain does not impose an unacceptable prefill cost.
 
-> This is a specialized research and production fork, not a drop-in replacement
-> for every upstream platform. Results and defaults are tuned for the reference
-> dual-RX 9070 XT machine described below.
+> Specialized research and production fork, not a drop-in replacement for every
+> upstream platform. Results and defaults are tuned for the reference
+> dual-RX 9070 XT machine. This file is the presentation and headline results;
+> details live in the linked documents below.
 
 ## Documents
 
-- [README](README.md) — this file: overview, quick start, and build guide
-- [Contributing](CONTRIBUTING.md) — contribution rules and workflow
-- [License & Security](LICENSE) — MIT license, with private vulnerability
-  reporting and secure-use guidance in [SECURITY.md](docs/SECURITY.md)
-- [Fork Details](FORK_DETAILS.md) — fork-only features, backend fixes, and
-  recommended runtime profiles
-- [Performance](PERFORMANCE.md) — current benchmark tables and matched lane
-  contracts
+- [Performance](PERFORMANCE.md) — current peer tables, lane contracts, and
+  model quality (PPL)
 - [Benchmarking](BENCHMARKS.md) — canonical benchmark methodology and history
-- [Supported backends](docs/SUPPORTED_BACKENDS.md) — backend policy for this
-  fork
+- [Fork Details](FORK_DETAILS.md) — fork-only features, backend fixes,
+  runtime profiles
+- [MTP](MTP.md) — MTP behavior and practical rules
+- [Backends & Models](docs/BACKENDS_AND_MODELS.md) — supported backends,
+  model/format matrix, vision
+- [RPC Backend](docs/RPC_BACKEND.md) — remote GPU stack and measured results
+- [Active Branches](docs/BRANCHES.md) — branch status and resume points
+- [Build Guide](docs/build.md) — CPU / Vulkan / ROCm requirements and commands
+- [Supported backends](docs/SUPPORTED_BACKENDS.md) — backend policy
+- [Contributing](CONTRIBUTING.md), [Development](AGENTS.md), [Upstream sync](UPSTREAM_SYNC.md)
+- [License & Security](LICENSE) — MIT, with [SECURITY.md](docs/SECURITY.md)
 
 ## At a Glance
 
 | Area | Current focus |
 | --- | --- |
-| Host platform | Windows 11 on AMD AM4 |
+| Host platform | Windows 11 on AMD AM4 (Linux ROCm 10 also used for research lanes) |
 | Accelerators | 2x Radeon RX 9070 XT 16 GB (`gfx1201`) |
-| Backends | ROCm/HIP, Vulkan, and CPU |
-| Primary model | Qwen3.8-27B Q4_K_M with MTP |
-| Experimental model | Ternary Bonsai 27B `PQ2_0` on CPU and ROCm |
+| Backends | ROCm/HIP, Vulkan, and CPU (+ remote GPU via RPC) |
+| Primary model | Qwen3.8-27B Q4_K_M with MTP; MXFP4 for speed lanes |
 | Main objective | Maximum cold prompt evaluation without sacrificing useful decode speed |
 | Serving | OpenAI-compatible `llama-server` plus the local web GUI (GUI 2.0) |
 
-The fork is currently substantially faster than the measured stock upstream
-checkout on the same long-prompt contract. See [PERFORMANCE.md](PERFORMANCE.md)
-for the current benchmark tables (Windows reference and Linux W20-W26 lanes);
-the archived fork-vs-stock A/B lives in the benchmark history below.
-
-## Active Branches
-
-Production and daily work stay on `master`; larger experiments run on named
-branches and are merged back selectively. Snapshot: 2026-08-26.
-
-| Branch | Status | Latest state |
-| --- | --- | --- |
-| `master` | Stable baseline | D131 R9 MTP window audit PASS, multi-stream scale-view fix (`276121b7e`). 2026-08-26: merged RPC stack + qwen4exp port (`1d1aa5a6c`). |
-| `rpc-vulkan` | **Merged, kept for continuation** | RPC backend restored for Vulkan offload; merged into `master` 2026-08-26. Recovers the RPC backend (removed upstream), fixed quantized `alloc_size` OOB crash (q3_K/q6_K), split `ggml-rpc` into a layered file stack, and reached the 3-GPU 12K RPC lane target **1314 ptps / 23.6 t/s** (target ≥1277 ptps; PPL 4.0148 ≈ baseline), up from 839 ptps after alloc-size caching, a 16 MB send buffer, and `-ts 0.9,0.6,1.5`. See [RPC resume playbook](docs/research/rpc-vulkan/RPC_PREFILL_RESUME_PLAYBOOK.md). |
-| `dflash2` | Paused, to be resumed | DFlash2 block-diffusion drafter port for Qwen3.8-27B (local 2-tap depthwise conv + candidate selector, `Qwen3.8-27B-DFlash2-Q4_K_M.gguf` in `models/`), 5 commits ahead of `master`. Paused at a measured ROCm checkpoint (2026-08-21): opt-in multi-scheduler reuse gives 29.59 aggregate / 36.90 decode / 785.58 prompt tok/s on 498+128 vs 29.00/36.33/749.70 for the single-cache control, with the strict n=3 boundary/parity gate bit-exact. Open items include the upstream batched-greedy divergence and the Vulkan long-decode crash. Resume: [ROCm playbook](docs/research/dflash/ROCM_DFLASH2_RESUME_PLAYBOOK.md), [Vulkan playbook](docs/research/dflash/VULKAN_DFLASH2_RESUME_PLAYBOOK.md). |
-| `research/vulkan-decode` | Backlog, to be resumed | D104 (Q6_K prefill dispatch) and D105 (decode bandwidth) closed; Q4_K16 port log reached Vulkan PPL parity with bf16 (6.6124 vs 6.6202 on 256 chunks); MTP n=3 measured decode optimum 1.83x. 15 commits ahead, 10 behind `master` (rebase needed before continuation). |
-| `research/vulkan-fp8-kv` | Backlog, to be resumed | D131 R9: fp8 K per-block scale (`LLAMA_VK_F8_K_SCALE`), K-scale broadcast fix, MTP window audit PASS, multi-stream scale-view fix. C2 closed: f8_direct prefill lost 23.5% to preconvert. 20 commits ahead, 10 behind `master`. |
-
-## Contents
-
-- [Documents](#documents)
-- [At a Glance](#at-a-glance)
-- [Active Branches](#active-branches)
-- [Project Goals](#project-goals)
-- [Supported Backends and Models](#supported-backends-and-models)
-- [Remote GPU (RPC) Backend](#remote-gpu-rpc-backend)
-- [Reference System](#reference-system)
-- [Performance Summary](#performance-summary)
-- [Fork Highlights](#fork-highlights)
-- [Quick Start](#quick-start)
-- [Build Requirements](#build-requirements)
-- [MTP Behavior](#mtp-behavior)
-- [Vision](#vision)
-- [Benchmarking](#benchmarking)
-- [Repository Layout](#repository-layout)
-- [Development](#development)
-- [License and Security](#license-and-security)
+Supported backends, model/format matrix and vision:
+[docs/BACKENDS_AND_MODELS.md](docs/BACKENDS_AND_MODELS.md).
 
 ## Project Goals
 
@@ -91,165 +54,83 @@ branches and are merged back selectively. Snapshot: 2026-08-26.
 - Make MTP improve decode while keeping long-prompt prefill close to baseline.
 - Provide a practical GUI for building, launching, monitoring, and autotuning.
 - Keep performance claims reproducible through cold, lane-locked benchmarks.
-- Keep the fork maintainable by carrying only the backends and upstream changes
-  that are useful on this machine.
-
-Current non-goals include broad accelerator portability and native support for
-NVIDIA CUDA, Metal, SYCL, OpenCL, CANN, or other removed upstream backends.
-
-## Supported Backends and Models
-
-| Backend | Role | Status |
-| --- | --- | --- |
-| ROCm/HIP | Primary prompt-eval, long-context MTP, and RDNA4 runtime | Supported and preferred for prompt-heavy MTP work |
-| Vulkan | General AMD runtime and backend comparison | Supported; competitive for decode-heavy work; q8/MTP path fixed (D094) |
-| CPU | Fallback, conversion, sanity checks, and tests | Supported |
-
-ROCm still builds HIP-compatible kernels from `ggml/src/ggml-cuda`. That is an
-internal HIP implementation detail and does not mean that this fork supports
-NVIDIA hardware. See [Supported Backends](docs/SUPPORTED_BACKENDS.md).
-
-### Model and Format Matrix
-
-| Model / feature | CPU | ROCm/HIP | Vulkan | Notes |
-| --- | --- | --- | --- | --- |
-| Qwen3.8 GGUF (Q4_K_M primary; Qwen3.6 family also supported) | Yes | Yes | Yes | Primary supported family |
-| Qwen3.8 NextN MTP | Yes | Yes | Yes | Requires an MTP-enabled GGUF |
-| Ternary Bonsai 27B `PQ2_0` | Yes | Yes | Not yet | Native loader, CPU kernels, and HIP MMQ/MMVQ path |
-| Qwen3.5/3.6/3.8 vision projector | Yes | Yes | Yes | Use a matching `mmproj-*.gguf` |
-| DFlash | Research | Research | Research | Not a recommended production profile |
-
-D094 (2026-08-07, `Qwen3.6-27B-Q4_K_M.gguf` and
-`Qwen3.6-27B-Q3_K_S_mtp.gguf`, 2x RX 9070 XT): the Vulkan q8_0 vec/mmq
-numerical divergence vs ROCm was root-caused and fixed (CUDA-style dp4a
-accumulation, round-half-away q8_1 quantize, mmq variant-B math). MTP
-acceptance recovered from 0.33 to 0.80+ on 52k-token drafts (target 0.53).
-Benchmark numbers are archived in [BENCHMARKS.md](BENCHMARKS.md) and
-[Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md); Windows re-runs are planned.
-
-Qwen3.8-27B-Q4_K_M is the primary practical Qwen model on this 2x16 GB
-machine (rebased 2026-08-14; it shares the qwen35 architecture family with
-Qwen3.6 and runs the same MTP/vision paths). The one-copy ROCm scheduler and
-bounded Q8 Flash Attention route make its measured 49K and 98K lanes viable.
-Q3_K_S (Qwen3.6) remains the secondary choice for maximum
-context/VRAM headroom, vision, and Q3-specific kernel research. `PQ2_0` is an
-experimental Prism format and should not be confused with conventional `Q2_0`
-quantization.
-
-## Remote GPU (RPC) Backend
-
-The fork restores the upstream-removed RPC backend to offload a slice of the
-model to a remote Vulkan GPU over TCP. The lab setup uses a local RTX 3080
-(10 GB) as the third device alongside the two RX 9070 XT cards.
-
-- **Code layout** — the RPC stack lives in `ggml/src/ggml-rpc/`
-  (`rpc_types.h` protocol, `rpc_common.cpp` transport/queue/hash,
-  `rpc_client.cpp`, `rpc_server.cpp`, `transport.*`); the standalone server
-  binary is `tools/rpc/rpc-server`.
-- **Protocol** — version `5.0.1` with a fail-closed check against old servers.
-  The client and server must be built from the same tree.
-- **Key optimizations** — alloc-size caching (removes hundreds of round-trips
-  per ubatch), F16 activation staging at the boundary, async outbound queue and
-  run-ahead, opt-in block-Q8_0 activation wire (`GGML_RPC_ACT_Q8_0`), and the
-  MTP `graph_recompute` hash fix.
-- **Run** — `llama-server --rpc <host>:<port> -dev Vulkan1,Vulkan0,RPC0
-  -sm layer -ts <f1>,<f2>,<f3>` with `RPC0` naming the remote device.
-
-### RPC results on the primary model (Qwen3.8-27B Q4_K_M)
-
-- **12K 3-GPU lane (target reached 2026-08-23)** — **1314 ptps / 23.6 t/s**,
-  PPL 4.0148 ≈ baseline, up from 839 ptps after alloc-size caching, a 16 MB
-  send buffer, and `-ts 0.9,0.6,1.5` (layers 20/13/32; the 3080 holds
-  8.9/10 GB). The target was ≥1277 ptps, i.e. 80% of the solo 1596.8 ptps.
-- **MTP through RPC (fixed)** — `graph_recompute` hash mismatch made the
-  verify graph read another context's weights (acceptance 1.4%). After the
-  fix: acceptance **59.7%** (89/149), decode **37.0 t/s** (12K, n=4,
-  loopback; local control 40.15 t/s).
-- **94K lane** — `1328.65/25.12` on RPC vs local `1351.18/25.05`
-  (−0.3% over the wire).
-- **Opt-in Q8_0 activation wire** — 94K `1063.87/39.47`, **+4.63% prefill**
-  vs F16 control `1016.82/37.59`, wire traffic 10.49 → 5.57 MiB per ubatch
-  (−46.9%). Still gated behind the quality/PPL check.
-- **Caveat** — the 27B numbers above were captured before the causal-mask
-  (non-causal contour) fix on the RPC path; a re-measure is pending before
-  they are treated as final.
-
-The stack was first validated on a small 9B model as a development harness:
-F16 activation staging gave +20% prefill, loopback overhead is about
-−10% prompt / −12% decode, and over 1 GbE LAN the 3080 loses −38% / −61% —
-the network, not the GPU, is the bottleneck at this scale.
-
-- **Practice** — run the server from SYSTEM (`schtasks`) so it survives
-  WinRM sessions, keep the NV shader cache warm, stop gracefully (`/exit`,
-  never hard-kill a server with a loaded model), and use live logs (`tee`).
-
-Detailed design and iteration notes:
-[docs/research/rpc-vulkan/RPC_ARCHITECTURE.md](docs/research/rpc-vulkan/RPC_ARCHITECTURE.md),
-[RPC_CHANGES.md](docs/research/rpc-vulkan/RPC_CHANGES.md),
-[RPC_BASELINE_TABLE.md](docs/research/rpc-vulkan/RPC_BASELINE_TABLE.md), and
-[RPC_PREFILL_RESUME_PLAYBOOK.md](docs/research/rpc-vulkan/RPC_PREFILL_RESUME_PLAYBOOK.md).
+- Keep the fork maintainable by carrying only useful backends and upstream
+  changes.
 
 ## Reference System
 
-- Windows 11
-- AMD Ryzen 7 5800X3D, 8 cores / 16 threads
-- 64 GB system RAM
+- Windows 11, AMD Ryzen 7 5800X3D, 64 GB RAM
 - 2x AMD Radeon RX 9070 XT, 16 GB VRAM each, RDNA4 `gfx1201`
-- AMD ROCm/HIP SDK 7.1 for Windows
-- AMD proprietary Vulkan driver
-- Main model: `Qwen3.8-27B-Q4_K_M.gguf`
-- Vision projector: `mmproj-F16.gguf`
+- AMD ROCm/HIP SDK 7.1 for Windows; AMD proprietary Vulkan driver
+- Main model: `Qwen3.8-27B-Q4_K_M.gguf`; Vision projector: `mmproj-F16.gguf`
 
 The two GPUs are normally used with layer split, not tensor split. GPU1 is the
 preferred output device because GPU0 also drives the desktop. Device order is
-backend- and workload-sensitive even with two identical cards, and the best
-Vulkan order is not identical for every lane. Exact routes are recorded with
-each benchmark instead of being presented as a universal default. PCIe
-topology, driver version, background GPU load, KV type, and model residency can
-materially change the numbers below.
+backend- and workload-sensitive; exact routes are recorded with each benchmark.
+See [Active Branches](docs/BRANCHES.md) for branch status.
 
 ## Performance Summary
 
-Full tables, lane contracts, and evidence links live in
-[PERFORMANCE.md](PERFORMANCE.md). Headline (2026-09-09; FlashAttention, cold
-prompts, no reuse; **Windows** = last verified reference, **Linux** =
-W20-W26 ROCm 10 lanes):
+Full tables, lane contracts and evidence links live in
+[PERFORMANCE.md](PERFORMANCE.md).
+
+### Benchmark levels L1-L3
+
+All rows use one server slot, FlashAttention, cold prompt processing, no
+prompt-cache reuse, no prime pass, `batch 8192 / ubatch 1024`, KV
+`f8_e4m3 / f8_e4m3`, device route `ROCm1,ROCm0 -sm layer -ts 1,1`, `-ngl 999`,
+`seed 42`, temperature 0.2, top-p 0.9, `--no-warmup`. Three-tier agent
+workload: L1/L2 use a repository snapshot, L3 uses a deterministic synthetic
+context (repo-snapshot is capped at ~53K tokens).
+
+| Lane | Context | Actual prompt | Output | Context source |
+| --- | ---: | ---: | ---: | --- |
+| L1 | 16,384 | ~8.4K | 128 | repo-snapshot |
+| L2 | 49,152 | ~33.9K | 256 | repo-snapshot |
+| L3 | 98,304 | ~64.3K | 256 | synthetic |
 
 
-### Windows (Qwen3.8-27B-Q4_K_M)
+### Windows results (pending re-run)
 
-| Backend | Lane | Mode | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
+The same L1-L3 lanes will be re-measured from Windows 11 (ROCm/HIP 7.1 and
+Vulkan). The table is intentionally empty until those runs complete.
+
+| Backend | Lane | Spec | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| Vulkan | 49,152 | q8_0 none | 1532.79 | 26.05 | 5.1016 | - |
-| Vulkan | 49,152 | q8_0 MTP n2 | 1637.44 | **48.56** | 5.9465 | **81.8%** |
-| ROCm | 49,152 | **f8_e4m3 native** none | **1713.67** | 22.20 | **8.6528** | - |
-| ROCm | 49,152 | f8_e4m3 native MTP n2 | **1716.79** | 39.96 | 6.0332 | **78.2%** |
+| ROCm | L1 | none / MTP n3 | — | — | — | — |
+| ROCm | L2 | none / MTP n3 | — | — | — | — |
+| ROCm | L3 | none / MTP n3 | — | — | — | — |
+| Vulkan | L1 | none / MTP n3 | — | — | — | — |
+| Vulkan | L2 | none / MTP n3 | — | — | — | — |
+| Vulkan | L3 | none / MTP n3 | — | — | — | — |
 
-Vulkan FP8 vs q8 on Qwen3.8 is roughly parity (prompt `+1.8/-0.5/+0.8%`,
-decode `-1.0/-4.9/-7.1%` at 12K/49K/98K); ROCm native FP8 keeps `+4.0%`
-prompt, `+3.1%` decode, `+3.7%` aggregate at 49K. 98K Vulkan last-12-f16 MTP
-(60.8% acceptance vs q8 71.5%) is context-research, not default.
+### Linux results (2026-09-09, ROCm 10, current binary)
 
-### Linux (2026-09-09, ROCm 10, L1/L2)
+| Format | Lane | Spec | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| MXFP4-requant (dense) | L1 | none | **2253.06** | 29.38 | **15.787** | - |
+| Q4_K_M (UD) | L1 | MTP n3 | 1836.97 | 50.13 | 18.674 | 78.1% |
+| MXFP4-requant (UD) | L1 | MTP n3 | 1825.13 | 50.99 | 18.716 | 57.6% |
+| Q4_K_M (UD) | L2 | none | 1765.82 | 23.53 | 8.517 | - |
+| MXFP4-requant (UD) | L2 | none | **2076.46** | 25.92 | **9.777** | - |
+| Q4_K_M (UD) | L2 | MTP n3 | 1712.48 | 39.94 | 10.542 | 62.9% |
+| MXFP4-requant (UD) | L2 | MTP n3 | 1666.09 | **49.195** | 10.028 | 66.0% |
+| MXFP4-hybrid-attnQ6 | L2 | none | 1769.91 | 24.26 | 8.623 | - |
+| NVFP4-native | L2 | none | 488.95 | 24.86 | 3.218 | - |
+| Q4_K_M (UD) | L3 | none | 1539.60 | 20.80 | 4.735 | - |
+| MXFP4-requant (UD) | L3 | none | **1765.49** | 22.60 | **5.362** | - |
+| Q4_K_M (UD) | L3 | MTP n3 | 1329.83 | 33.27 | 4.568 | 64.5% |
+| MXFP4-requant (UD) | L3 | MTP n3 | 1502.55 | 33.68 | 5.081 | 52.4% |
+| MXFP4-hybrid-attnQ6 | L3 | none | 1718.59 | 21.63 | 5.199 | - |
+| NVFP4-native | L3 | none | 473.85 | 21.75 | 1.736 | - |
 
-| Format | Lane | Spec | Prompt TPS | Decode TPS | Aggregate TPS | Notes |
-| --- | --- | --- | ---: | ---: | ---: | --- |
-| Q4_K_M (UD) | L2 | none | 1765.82 | 23.53 | 8.517 | Q4 reference |
-| MXFP4-requant | L1 | none | **2253.06** | 29.38 | **15.787** | W26 MMQ + W24 nw8 |
-| MXFP4-requant | L2 | none | **2076.46** | 25.92 | **9.777** | W26 MMQ + W24 nw8 |
-| MXFP4-requant | L2 | MTP n3 | 1666.09 | **49.195** | 10.028 | acceptance 66.0% |
-| MXFP4-hybrid-attnQ6 | L2 | none | 1769.91 | 24.26 | 8.623 | Q6 attn/output + MXFP4 |
-| NVFP4-native | L2 | none | 488.95 | 24.86 | 3.218 | prefill -4x; best FP4 quality |
-| Q4_K_M (UD) | L3 | none | 1539.60 | 20.80 | 4.735 | Q4 reference 98K |
-| MXFP4-requant (UD) | L3 | none | 1765.49 | 22.60 | 5.362 | +14.7% prefill vs Q4 |
-| MXFP4-requant (UD) | L3 | MTP n3 | 1502.55 | 33.68 | 5.081 | acceptance 52.4% |
-| MXFP4-hybrid-attnQ6 | L3 | none | 1718.59 | 21.63 | 5.199 | close to MXFP4 |
-| NVFP4-native | L3 | none | 473.85 | 21.75 | 1.736 | prefill-unusable |
-
-W24 `nwarps=8` for MXFP4 + W26 prefill MMQ routing give MXFP4 prefill
-`+17-21%` and decode `+3-5%`; MTP n3 stays the decode optimum (acceptance
-profile `0.800/0.600/0.432`, all knob attempts negative). At L3 (98K) MTP
-acceptance drops to 52-64% and NVFP4 remains unusable - see
+Current binary includes W24 (`nwarps=8` for MXFP4 decode) and W26 (MXFP4
+prefill routed to MMQ): MXFP4 prefill +17-21% and decode +3-5% vs before.
+MTP n3 is the decode optimum; acceptance profile `0.800/0.600/0.432` (L2),
+and all `p_min`/`n_max`/draft-up-quantization attempts are negative. MTP
+acceptance falls at L3 (52-64%) and NVFP4-native is not usable for
+prompt-heavy lanes; hybrid is quality-first. L1/L2 MTP rows were recorded on
+the W20/W24 binary (pre-W26 prefill routing); details and exact artifacts in
 [PERFORMANCE.md](PERFORMANCE.md).
 
 ### Model quality (PPL, 512 chunks; Linux ROCm 10)
@@ -266,241 +147,54 @@ Q4_K_M stays the production quality baseline. MXFP4/NVFP4 trade quality for
 speed — compare speed only together with this table. imatrix for FP4 formats
 is not implemented (`quantize_mxfp4` ignores `quant_weights`).
 
-## Fork Highlights
-
-The fork's main differences from stock, beyond benchmark tooling and the GUI:
-
-- **Dual-GPU control** — explicit device order, layer split, and
-  `LLAMA_OUTPUT_DEVICE` placement instead of relying on automatic defaults.
-- **Qwen MTP on both backends** — backend-resident NextN handoff, ROCm KV-only
-  sparse history, warm Vulkan verification topology.
-- **AMD kernel work** — RDNA4 Q3_K/PQ2_0 HIP kernels, rocWMMA FlashAttention,
-  native E4M3 FP8 KV routes, Vulkan q8/mmq correctness fixes.
-- **Reproducible benchmarking** — `scripts/agent_workload_bench.py` with
-  canonical history files and lane contracts.
-
-See [Fork Details](FORK_DETAILS.md) for the complete feature list, diagnostics
-and rollback controls.
-
 ## Quick Start
 
-Install Python GUI dependencies and launch the application from the repository
-root:
+Install GUI dependencies and launch from the repository root:
 
 ```powershell
 python -m pip install -r gui/requirements-gui.txt
 python run.py
 ```
 
-`run.bat` and `start-gui.bat` are also available. In the GUI:
-
-1. Open **Build & Setup** and configure Vulkan, ROCm/HIP, or CPU.
-2. Build `llama-server` or select an existing compatible build.
-3. Open **Launch Server** and select a local GGUF model.
-4. Start with `Spec: None` to establish a baseline.
-5. For an MTP-enabled GGUF, select MTP and use depth 3 as the current general
-   Vulkan/ROCm starting point.
-6. For vision, enable the projector and select `models/mmproj-F16.gguf`.
-7. In **Benchmark / Autotune**, use the recommended explicit device order for
-   reproducible dual-GPU tests. `Auto` remains useful for discovery, but it is
-   not a stable benchmark contract.
-8. Validate batch, ubatch, KV, split, and spec settings at the intended context
-   length. Short-prompt winners do not automatically remain best at 49K.
-
-Model files are not part of the source tree history. Put local GGUF files in
-`models/` or select them from another local directory.
-
-## Build Requirements
-
-The reference builds are Windows x64 builds. A clean machine needs:
-
-- Git and 64-bit Python 3.11 or newer with `pip`;
-- CMake 3.14 or newer and Ninja (tested with CMake 3.29 and Ninja 1.12);
-- Visual Studio Build Tools 2022 with **Desktop development with C++**, the
-  MSVC v143 toolset, and a Windows 10 or 11 SDK;
-- the current AMD display driver, including the Vulkan runtime;
-- full LunarG Vulkan SDK with `glslc`, `spirv-as`, `spirv-dis`, and
-  `spirv-val` for Vulkan/FP8 shader builds;
-- AMD ROCm/HIP SDK 7.1 for Windows for ROCm builds;
-- Strawberry Perl for Windows ROCm configuration and the reference MinGW
-  Vulkan toolchain;
-- OpenSSL development files. HTTPS is enabled by default; use
-  `-DLLAMA_OPENSSL=OFF` only when HTTPS/model downloads are not required.
-
-The tested Vulkan build uses the GCC 13.2 MinGW-w64 toolchain bundled with
-Strawberry Perl. A MinGW executable also needs `libgcc_s_seh-1.dll`,
-`libstdc++-6.dll`, and `libwinpthread-1.dll` either beside the executable or on
-`PATH`. The GUI launch environment handles the configured toolchain; for a
-manual launch, put `C:\Strawberry\c\bin` before other MinGW installations on
-`PATH` to avoid loading incompatible runtime DLLs.
-
-The tested ROCm build uses `clang.exe` and `clang++.exe` from HIP SDK 7.1, not
-MSVC as the compiler, but still links against MSVC v143 and Windows SDK host
-libraries. Strawberry Perl is also required. A full HIP compilation is memory
-intensive; 64 GB RAM and `-j 4` are recommended for this fork. Allow roughly
-30 GB of free disk space for source, two build trees, and one local model.
-
-Install the Python side and verify the native tools before opening the GUI:
-
-```powershell
-python -m pip install --upgrade pip
-python -m pip install -r gui/requirements-gui.txt
-cmake --version
-ninja --version
-glslc --version
-spirv-as --version
-spirv-dis --version
-spirv-val --version
-```
-
-The GUI's **Build & Setup** tab checks the configured dependencies and creates
-backend-specific build directories. Manual equivalents are shown below.
-
-### CPU
-
-```powershell
-cmake -S . -B build-cpu -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build-cpu -j 4 --target llama-server
-```
-
-### Vulkan
-
-```powershell
-$env:VULKAN_SDK = "C:\VulkanSDK\<version>"
-$env:PATH = "$env:VULKAN_SDK\Bin;C:\Strawberry\c\bin;$env:PATH"
-
-cmake -S . -B build-vulkan -G Ninja `
-  -DGGML_VULKAN=ON `
-  -DCMAKE_C_COMPILER=C:\Strawberry\c\bin\gcc.exe `
-  -DCMAKE_CXX_COMPILER=C:\Strawberry\c\bin\g++.exe `
-  -DCMAKE_BUILD_TYPE=Release
-cmake --build build-vulkan -j 4 --target llama-server
-```
-
-### ROCm/HIP on Windows RDNA4
-
-```powershell
-$env:HIP_PATH = "C:\Program Files\AMD\ROCm\7.1"
-$env:ROCM_PATH = $env:HIP_PATH
-$env:CMAKE_PREFIX_PATH = "$env:HIP_PATH\lib\cmake"
-$env:PATH = "$env:HIP_PATH\bin;C:\Strawberry\perl\bin;C:\Strawberry\c\bin;$env:PATH"
-
-cmake -S . -B build-rocm -G Ninja `
-  -DGGML_HIP=ON `
-  -DAMDGPU_TARGETS=gfx1201 `
-  -DGGML_HIP_MMQ_MFMA=ON `
-  -DGGML_HIP_ROCWMMA_FATTN=ON `
-  -DGGML_HIP_NO_VMM=ON `
-  -DGGML_OPENMP=OFF `
-  -DCMAKE_C_COMPILER="$env:HIP_PATH\bin\clang.exe" `
-  -DCMAKE_CXX_COMPILER="$env:HIP_PATH\bin\clang++.exe" `
-  -DCMAKE_BUILD_TYPE=Release
-cmake --build build-rocm -j 4 --target llama-server
-```
-
-ROCm uses clang from the HIP SDK but still needs the Windows SDK and MSVC host
-libraries. Missing `kernel32.lib`, `msvcrtd.lib`, or similar files indicates an
-incomplete Build Tools environment. See the full [Build Guide](docs/build.md).
-The fork includes rocWMMA 7.1 headers under `third_party/rocwmma`; no separate
-rocWMMA SDK install is required for the command above.
-
-## MTP Behavior
-
-MTP accelerates token generation; it does not make the target model's prompt
-prefill free. ROCm uses selected long-range KV blocks plus the recent prompt
-tail and keeps NextN hidden states on their backend, avoiding a complete draft
-prefill and the previous GPU-to-RAM-to-GPU round trip. Vulkan uses a host
-handoff by default because keeping unmasked NextN output resident over the
-whole Vulkan prompt was substantially slower.
-
-Practical rules:
-
-- Use at least 128 output tokens when benchmarking MTP. Very short runs are
-  dominated by the first target-verification graph.
-- Compare MTP and `none` with the same model, prompt, output length, KV type,
-  batch/ubatch, device split, and background load.
-- Depth 3 is the current robust starting point. Higher depth is not
-  automatically faster because acceptance falls and verification batches grow.
-- For prompt-dominated requests with short answers, `none` can still win wall
-  time even when MTP decode is much faster.
-- Non-zero Windows Shared memory is not by itself proof that MTP is reading KV
-  from RAM. Check for a throughput cliff and compare process Dedicated/Shared;
-  the current 72K lane adds only about 62 MiB Shared during MTP prefill.
-- Set `LLAMA_MTP_DEVICE_HANDOFF=0` only as a diagnostic rollback to the old host
-  hidden-state path.
-
-## Vision
-
-Qwen3.6 vision requires a projector that matches the text model architecture
-and embedding dimension. In the GUI, enable Vision and select
-`models/mmproj-F16.gguf`. The equivalent server argument is:
-
-```text
---mmproj models/mmproj-F16.gguf
-```
-
-Use `Spec: None` for the first image request so vision-pipeline issues can be
-separated from speculative decoding.
+In the GUI: open **Build & Setup** and configure a backend, build or select
+`llama-server`, open **Launch Server** and pick a GGUF model. Start with
+`Spec: None` for the baseline; for an MTP-enabled GGUF use depth 3 as the
+starting point. Use the recommended explicit device order in
+**Benchmark / Autotune** — `Auto` is discovery only, not a benchmark
+contract. Full build commands and requirements: [docs/build.md](docs/build.md).
 
 ## Benchmarking
 
-The canonical runner starts an isolated OpenAI-compatible server, injects a
-real repository snapshot, records prompt/decode timings, and updates the live
-history files:
-
-```powershell
-python scripts/agent_workload_bench.py --help
-```
-
-Important history files:
-
-- `build_logs/agent-workload/BENCH_RUNS.csv`
-- `build_logs/agent-workload/BENCH_RECENT.md`
-- `build_logs/agent-workload/BENCH_LANES.md`
-- `docs/research/RESULTS_LOG.md`
-
-Performance work should use neighboring controls. Background GPU applications,
-driver power state, warm shader caches, prompt-cache reuse, or a different
-output length can otherwise create a false improvement. Record an explicit
-`-dev` route for every dual-GPU result; the GUI now defaults new ROCm and Vulkan
-benchmark configurations to the measured recommended order instead of `Auto`.
+Canonical methodology, lane contracts and history:
+[BENCHMARKS.md](BENCHMARKS.md), `build_logs/agent-workload/BENCH_RUNS.csv`,
+`BENCH_RECENT.md`, `BENCH_LANES.md`, `docs/research/RESULTS_LOG.md`,
+and the per-experiment notes in [docs/research/](docs/research/). Always
+compare neighboring controls (same model, backend, device order, split,
+context, prompt/output length, batch/ubatch, KV, spec, cache policy and
+background load); record an explicit `-dev` route for every dual-GPU result.
 
 ## Repository Layout
 
 | Path | Purpose |
 | --- | --- |
-| `gui2/` | GUI 2.0: the local web UI (FastHTML + HTMX) |
+| `gui2/` | GUI 2.0: local web UI (FastHTML + HTMX) |
 | `src/`, `common/`, `include/` | llama runtime and speculative pipeline |
-| `ggml/src/ggml-vulkan/` | Vulkan backend and generated shaders |
-| `ggml/src/ggml-hip/` | ROCm/HIP build integration |
-| `ggml/src/ggml-cuda/` | Shared HIP-compatible kernel implementation |
-| `ggml/src/ggml-cpu/` | CPU backend |
-| `scripts/agent_workload_bench.py` | Benchmark and autotune runner |
+| `ggml/src/ggml-vulkan/`, `ggml/src/ggml-hip/`, `ggml/src/ggml-cuda/`, `ggml/src/ggml-cpu/` | Backends (CUDA layer is the HIP-compatible kernel source) |
+| `scripts/` | Benchmark and autotune runners (`bench2.py`, agent workload) |
 | `PERFORMANCE.md` | Current benchmark tables and lane contracts |
-| `FORK_DETAILS.md` | Fork-only features, fixes, and runtime profiles |
-| `docs/research/` | Accepted, rejected, and diagnostic performance work |
-| `docs/vulkan/` | Vulkan architecture and validation rules |
+| `docs/` | Backends, build, RPC, research notes (accepted/rejected experiments) |
 
 ## Development
 
-Read [AGENTS.md](AGENTS.md) before changing the fork. Upstream changes are
-ported selectively according to [UPSTREAM_SYNC.md](UPSTREAM_SYNC.md); removed
-backends are not restored automatically during synchronization.
-
-When reporting performance, include the model, backend, device order, split,
-context, actual prompt tokens, output tokens, batch/ubatch, KV types, speculative
-mode, cache policy, and background load. A faster isolated number is useful only
-when its lane and tradeoffs are visible.
+Read [AGENTS.md](AGENTS.md), [CONTRIBUTING.md](CONTRIBUTING.md) and
+[UPSTREAM_SYNC.md](UPSTREAM_SYNC.md) before changing the fork. When reporting
+performance, include the model, backend, device order, split, context, actual
+prompt/output tokens, batch/ubatch, KV types, speculative mode, cache policy
+and background load.
 
 ## License and Security
 
-The runtime is derived from [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp).
-Upstream changes are reviewed and ported selectively so they do not silently
-restore removed backends or invalidate AMD-specific behavior. This repository
-is distributed under the [MIT License](LICENSE); bundled third-party components
-retain their own notices and licenses.
-
-Security issues are handled privately. See [SECURITY.md](docs/SECURITY.md) for the
-reporting policy, covered topics (runtime, ggml, and GGUF tooling), and
-secure-use guidance for untrusted models, inputs, and networks. Do not report
-vulnerabilities as public issues before the disclosure window closes.
+Derived from [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp),
+MIT [LICENSE](LICENSE); bundled third-party components retain their own
+notices. Security issues are handled privately per
+[SECURITY.md](docs/SECURITY.md).

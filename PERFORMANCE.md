@@ -127,12 +127,19 @@ KV `f8_e4m3 / f8_e4m3`, FlashAttention, `ROCm1,ROCm0 -sm layer -ts 1,1`,
 
 | Model / format | Lane | Spec | Prompt TPS | Decode TPS | Aggregate TPS | Notes |
 | --- | --- | --- | ---: | ---: | ---: | --- |
+| MXFP4-requant (dense) | L1 | none | **2253.06** | 29.38 | **15.787** | W26 MMQ default; W24 nwarps=8 |
+| Qwen3.8-27B-Q4_K_M (UD) | L1 | MTP n3 | 1836.97 | 50.13 | 18.674 | acceptance 89/114 (78.1%) |
+| Qwen3.8-27B-MXFP4-requant (UD) | L1 | MTP n3 | 1825.13 | 50.99 | 18.716 | acceptance 80/139 (57.6%) |
 | Qwen3.8-27B-Q4_K_M (UD) | L2 | none | 1765.82 | 23.53 | 8.517 | Q4 reference (UD file, 16.46 GiB) |
-| Qwen3.8-27B-MXFP4-requant | L1 | none | **2253.06** | 29.38 | **15.787** | W26 MMQ default; W24 nwarps=8 |
 | Qwen3.8-27B-MXFP4-requant | L2 | none | **2076.46** | 25.92 | **9.777** | W26 MMQ default; W24 nwarps=8 |
+| Qwen3.8-27B-Q4_K_M (UD) | L2 | MTP n3 | 1712.48 | 39.94 | 10.542 | acceptance 166/264 (62.9%) |
 | Qwen3.8-27B-MXFP4-requant | L2 | MTP n3 | 1666.09 | **49.195** | 10.028 | acceptance 169/256 (66.0%) |
 | Qwen3.8-27B-MXFP4-hybrid-attnQ6 | L2 | none | 1769.91 | 24.26 | 8.623 | attn/output/tokembd Q6_K + rest MXFP4 |
 | Qwen3.8-27B-NVFP4-native | L2 | none | 488.95 | 24.86 | 3.218 | prefill -4x; quality best of FP4 |
+
+L1/L2 MTP rows: L1 on the W20 binary, L2 MXFP4 MTP on the W24 binary
+(pre-W26 prefill routing; decode numbers remain the reference until the
+Windows re-run).
 
 ### Linux L3 (2026-09-09, ROCm 10, 98K synthetic)
 
