@@ -258,9 +258,16 @@ def _options(config: AppConfig, spec: RunSpec) -> dict[str, list[tuple[str, str]
     builds = [(f"{build.name} · {build.backend} · "
                + (build.built_text if build.usable else "no llama-server"), build.name)
               for build in discover_builds(config.builds)]
+
+    mmproj = [(f"{model.name}  ({model.size_text})", str(model.path))
+              for model in discover_models(config.models) if model.is_mmproj]
+    if spec.mmproj and spec.mmproj not in {value for _label, value in mmproj}:
+        mmproj.insert(0, (f"{Path(spec.mmproj).name}  (not in models dir)", spec.mmproj))
+
     return {
         "model": [("— select —", "")] + models,
         "build_dir": [("— select —", "")] + builds,
+        "mmproj": [("— none —", "")] + mmproj,
     }
 
 
@@ -1443,6 +1450,36 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, scan: Scan):
         blocking.append("Select a build")
     elif not build.usable:
         blocking.append(f"{build.name} has no llama-server binary")
+
+    # With Auto fit on, llama-server refuses to start when the estimated
+    # footprint cannot keep 1 GiB free on every device. It can legitimately
+    # disagree with our estimate, but the failure mode is confusing (the fit
+    # abort happens after a minute of loading), so say it before starting.
+    if build is not None and scan.ready and spec.fit != "off":
+        facts = model_facts(spec)
+        if facts is not None and not facts.error:
+            devices = run_devices(scan, spec, build.backend)
+            report = estimate(spec, facts, devices=max(1, len(devices)),
+                              mmproj_bytes=_file_size(spec.mmproj))
+            if report.terms:
+                budget, parts, measured = _budget(devices)
+                if budget > 0 and report.total_mib > budget:
+                    blocking.append(
+                        f"model needs {gib(report.total_mib)} but the device budget is "
+                        f"{gib(budget)} ({' + '.join(parts)}) — disable Auto fit or lower "
+                        f"the context, or the server will abort after loading")
+
+    # A shorter -ts list than the device list puts the whole model on the
+    # first card and leaves the rest empty; llama-server's Auto fit then
+    # aborts. Catch the mismatch before anything starts.
+    if build is not None and scan.ready:
+        devices = run_devices(scan, spec, build.backend)
+        shares = [value for value in re.split(r"[,;\s]+", spec.tensor_split.strip()) if value]
+        if shares and len(devices) > 1 and len(shares) != len(devices):
+            blocking.append(
+                f"{len(shares)} share(s) for {len(devices)} device(s) — give one share per "
+                f"device (e.g. 100,100) or leave the share box empty")
+
     if blocking:
         return run_panel(supervisor, "; ".join(dict.fromkeys(blocking)), "error")
 
