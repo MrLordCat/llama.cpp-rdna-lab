@@ -1,5 +1,27 @@
 # Results Log
 
+## 2026-09-09 - Linux ROCm 10: W28 L3 (98K) format sweep - MXFP4 wins hold; MTP acceptance drops
+
+- Contract: `ctx=98304`, synthetic context, 64,287 prompt / 256 output,
+  batch 8192 / ubatch 1024, f8_e4m3 KV, `ROCm1,ROCm0 -sm layer -ts 1,1`,
+  `-ngl 999`, one slot, seed 42, temp 0.2, top-p 0.9, no-warmup. Clean `r1`
+  runs (first pass was contaminated by a background Minecraft process and is
+  archived as `*-r0-mc`; prompt TPS difference was -8% to -38%).
+- Results (Linux L3):
+  - Q4_K_M (UD) none: 1539.60 / 20.80 / 4.735
+  - Q4_K_M (UD) MTP n3: 1329.83 / 33.27 / 4.568, acceptance 64.5% (167/259)
+  - MXFP4-requant (UD) none: 1765.49 / 22.60 / 5.362
+  - MXFP4-requant (UD) MTP n3: 1502.55 / 33.68 / 5.081, acceptance 52.4% (155/296)
+  - MXFP4-requant (dense) none: 1769.05 / 22.90 / 5.387
+  - MXFP4-hybrid-attnQ6 none: 1718.59 / 21.63 / 5.199
+  - NVFP4-native none: 473.85 / 21.75 / 1.736
+- Findings: MXFP4 prefill +14.7% and aggregate +13.3% vs Q4_K_M (W24/W26
+  hold at 98K); MTP acceptance falls to 52-64% (vs 66-78% at L2) so MTP
+  aggregate is slightly below spec-none; NVFP4-native not usable; hybrid
+  neutral (extra Q6 bytes).
+- Artifacts: `build_logs/bench/mxfp4-ab/w28l3-*-r1--*` (7) + 4x `-r0-mc`;
+  `index.csv`/`index.md` updated; docs `W28_L3_98K_SWEEP.md`.
+
 ## 2026-09-09 - Linux ROCm 10: W26 MXFP4 prefill MMQ routing ACCEPTED (+17-21% prefill, decode neutral)
 
 - Code: `ggml/src/ggml-cuda/mmq.cu` - `ggml_rdna4_mxfp4_mmq_max_ne11()` default 4096

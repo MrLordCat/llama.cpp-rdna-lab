@@ -114,15 +114,16 @@ match two scheduler lifecycles for each of the two tasks; they are not model
 reloads initiated by the benchmark harness. Artifacts use
 `d098-vk35b-32k-{q8,f8}-{none,mtp2}-r1`.
 
-## Linux reference (2026-09-09) — L1 / L2, ROCm 10
+## Linux reference (2026-09-09) — L1 / L2 / L3, ROCm 10
 
 Measured on Linux with ROCm 10 on the same 2x RX 9070 XT hardware; Windows
 re-runs are planned. Contract (bench2 `rdna-lab`): `batch 8192 / ubatch 1024`,
 KV `f8_e4m3 / f8_e4m3`, FlashAttention, `ROCm1,ROCm0 -sm layer -ts 1,1`,
 `-ngl 999`, one slot, cold prompt, `seed 42`, temp 0.2, top-p 0.9,
-`--no-warmup`, repo-snapshot prompts:
+`--no-warmup`, repo-snapshot prompts for L1/L2:
 - L1: 8,450 prompt / 128 output (ctx 49152)
 - L2: 33,865 prompt / 256 output (ctx 49152)
+- L3: 64,287 prompt / 256 output (ctx 98304, synthetic - see below)
 
 | Model / format | Lane | Spec | Prompt TPS | Decode TPS | Aggregate TPS | Notes |
 | --- | --- | --- | ---: | ---: | ---: | --- |
@@ -132,6 +133,35 @@ KV `f8_e4m3 / f8_e4m3`, FlashAttention, `ROCm1,ROCm0 -sm layer -ts 1,1`,
 | Qwen3.8-27B-MXFP4-requant | L2 | MTP n3 | 1666.09 | **49.195** | 10.028 | acceptance 169/256 (66.0%) |
 | Qwen3.8-27B-MXFP4-hybrid-attnQ6 | L2 | none | 1769.91 | 24.26 | 8.623 | attn/output/tokembd Q6_K + rest MXFP4 |
 | Qwen3.8-27B-NVFP4-native | L2 | none | 488.95 | 24.86 | 3.218 | prefill -4x; quality best of FP4 |
+
+### Linux L3 (2026-09-09, ROCm 10, 98K synthetic)
+
+W28 sweep: `ctx=98304`, deterministic **synthetic** context
+(`repo-snapshot` is capped at ~53K tokens - only usable to L2), 64,287 prompt /
+256 output, same `batch 8192 / ubatch 1024`, KV `f8_e4m3`, `ROCm1,ROCm0 -sm
+layer -ts 1,1`, `-ngl 999`, one slot, `seed 42`, temp 0.2, top-p 0.9,
+`--no-warmup`. All rows are the clean `r1` runs (an earlier pass ran while a
+Minecraft process was on the GPU; those records are kept as `*-r0-mc` and are
+not the reference).
+
+| Model / format | Spec | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Qwen3.8-27B-Q4_K_M (UD) | none | 1539.60 | 20.80 | 4.735 | - |
+| Qwen3.8-27B-Q4_K_M (UD) | MTP n3 | 1329.83 | 33.27 | 4.568 | 64.5% (167/259) |
+| Qwen3.8-27B-MXFP4-requant (UD) | none | 1765.49 | 22.60 | 5.362 | - |
+| Qwen3.8-27B-MXFP4-requant (UD) | MTP n3 | 1502.55 | 33.68 | 5.081 | 52.4% (155/296) |
+| Qwen3.8-27B-MXFP4-requant | none | 1769.05 | 22.90 | 5.387 | - |
+| Qwen3.8-27B-MXFP4-hybrid-attnQ6 | none | 1718.59 | 21.63 | 5.199 | - |
+| Qwen3.8-27B-NVFP4-native | none | 473.85 | 21.75 | 1.736 | - |
+
+Read at 98K (56K prompt + decode dominated by prefill):
+- MXFP4-requant prefill is **+14.7%** vs Q4_K_M (1765.5 vs 1539.6) and
+  aggregate **+13.3%** (5.362 vs 4.735) - the W24/W26 wins hold at L3.
+- MTP acceptance drops at 98K: **52.4%** (MXUD) / **64.5%** (Q4) vs ~66%/78%
+  at L2; aggregate MTP is slightly below spec-none (5.081 vs 5.362) - the
+  98K draft state is worse, MTP only pays on longer outputs.
+- NVFP4-native remains unusable for prefill-heavy lanes (473.9 t/s,
+  aggregate 1.736); hybrid is close to MXFP4 but not faster (extra Q6 bytes).
 
 Results summary (same binary A-B-A):
 - **W24** `calc_nwarps` RDNA4 ncols=1: MXFP4 -> `nwarps=8`
@@ -177,6 +207,10 @@ Reading the trade-off:
 - 2026-09-09 (W20-W26): MXFP4 decode geometry (`nwarps=8`), MXFP4 prefill MMQ
   routing (+17-21%), MTP acceptance profile (negative for p_min/n_max/Q6
   draft), native BF16->MXFP4/NVFP4 quality (PPL table above).
+- 2026-09-09 (W28): Linux L3 (98K) format sweep - MXFP4-requant keeps
+  +14.7% prefill / +13.3% aggregate vs Q4_K_M; MTP acceptance drops to
+  52-64% at 98K; NVFP4-native not usable; hybrid neutral. Clean `r1`
+  records; Minecraft-loaded `*-r0-mc` archived separately.
 - Older benchmarks were removed 2026-09-09 pending Windows re-runs. History:
   [BENCHMARKS.md](BENCHMARKS.md), [Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md),
   [docs/research/RESULTS_LOG.md](docs/research/RESULTS_LOG.md),

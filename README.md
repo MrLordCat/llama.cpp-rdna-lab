@@ -240,10 +240,17 @@ prompt, `+3.1%` decode, `+3.7%` aggregate at 49K. 98K Vulkan last-12-f16 MTP
 | MXFP4-requant | L2 | MTP n3 | 1666.09 | **49.195** | 10.028 | acceptance 66.0% |
 | MXFP4-hybrid-attnQ6 | L2 | none | 1769.91 | 24.26 | 8.623 | Q6 attn/output + MXFP4 |
 | NVFP4-native | L2 | none | 488.95 | 24.86 | 3.218 | prefill -4x; best FP4 quality |
+| Q4_K_M (UD) | L3 | none | 1539.60 | 20.80 | 4.735 | Q4 reference 98K |
+| MXFP4-requant (UD) | L3 | none | 1765.49 | 22.60 | 5.362 | +14.7% prefill vs Q4 |
+| MXFP4-requant (UD) | L3 | MTP n3 | 1502.55 | 33.68 | 5.081 | acceptance 52.4% |
+| MXFP4-hybrid-attnQ6 | L3 | none | 1718.59 | 21.63 | 5.199 | close to MXFP4 |
+| NVFP4-native | L3 | none | 473.85 | 21.75 | 1.736 | prefill-unusable |
 
 W24 `nwarps=8` for MXFP4 + W26 prefill MMQ routing give MXFP4 prefill
 `+17-21%` and decode `+3-5%`; MTP n3 stays the decode optimum (acceptance
-profile `0.800/0.600/0.432`, all knob attempts negative).
+profile `0.800/0.600/0.432`, all knob attempts negative). At L3 (98K) MTP
+acceptance drops to 52-64% and NVFP4 remains unusable - see
+[PERFORMANCE.md](PERFORMANCE.md).
 
 ### Model quality (PPL, 512 chunks; Linux ROCm 10)
 
