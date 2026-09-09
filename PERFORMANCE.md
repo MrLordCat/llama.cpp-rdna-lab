@@ -157,6 +157,7 @@ not the reference).
 | Qwen3.8-27B-Q4_K_M (UD) | MTP n3 | 1329.83 | 33.27 | 4.568 | 64.5% (167/259) |
 | Qwen3.8-27B-MXFP4-requant (UD) | none | 1765.49 | 22.60 | 5.362 | - |
 | Qwen3.8-27B-MXFP4-requant (UD) | MTP n3 | 1502.55 | 33.68 | 5.081 | 52.4% (155/296) |
+| Qwen3.8-27B-MXFP4-requant (UD) | MTP n3 + KV16 | 1415.4 | **38.40** | 4.912 | **67.9% (W30; 171/252, deterministic)** |
 | Qwen3.8-27B-MXFP4-requant | none | 1769.05 | 22.90 | 5.387 | - |
 | Qwen3.8-27B-MXFP4-hybrid-attnQ6 | none | 1718.59 | 21.63 | 5.199 | - |
 | Qwen3.8-27B-NVFP4-native | none | 473.85 | 21.75 | 1.736 | - |
@@ -164,6 +165,12 @@ not the reference).
 Read at 98K (56K prompt + decode dominated by prefill):
 - MXFP4-requant prefill is **+14.7%** vs Q4_K_M (1765.5 vs 1539.6) and
   aggregate **+13.3%** (5.362 vs 4.735) - the W24/W26 wins hold at L3.
+- MTP acceptance at 98K is precision-limited: the W30 KV16 policy
+  (`LLAMA_VK_MTP_KV_LAST_F16=16`) raises MXFP4 acceptance **52.4% -> 67.9%**
+  deterministically and decode **33.68 -> 38.40 tok/s (+14.0%)**, at a -5.8%
+  prefill cost and slightly lower aggregate on 256 outputs (wins on longer
+  outputs). L2 keeps the auto 8-layer tail (KV16 is wrong there); Q4_K_M L3
+  remains flaky with KV16/KV32 (open, see W30).
 - MTP acceptance drops at 98K: **52.4%** (MXUD) / **64.5%** (Q4) vs ~66%/78%
   at L2; aggregate MTP is slightly below spec-none (5.081 vs 5.362) - the
   98K draft state is worse, MTP only pays on longer outputs.
