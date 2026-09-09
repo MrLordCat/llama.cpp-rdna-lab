@@ -1,23 +1,21 @@
 # Results Log
 
-## 2026-09-09 - Linux ROCm 10: W30 MTP acceptance long prompts - KV16 precision tail ACCEPTED (MXFP4 L3)
+## 2026-09-09 - Linux ROCm 10: W30 MTP acceptance long prompts - KV16 REJECTED (prompt eval cost)
 
 - Goal: raise MTP acceptance at L3 (98K ctx, 64.3K synthetic prompt).
-- Candidate (MXFP4-requant UD L3, 5 identical runs): `LLAMA_VK_MTP_KV_LAST_F16=16`
-  -> acceptance **52.3% -> 67.9%** (171/252, deterministic), decode
-  **33.8 -> 38.4 tok/s (+13.6%)**, prefill 1505 -> 1415 (−6%), aggregate
-  5.09 -> 4.92 at 256 out (better for longer outputs).
-- KV32/KV64 identical to KV16 (67.9%); KV12 flaky (68.7/55.6%); KV8 57.3% -
-  threshold is 16 tail layers at 98K.
-- Rejected levers (all flaky or no gain): draft window expansion
-  (WIN 2048..32768, some 87-90% one-offs), host handoff, DEFER=0, full-context
-  prefill (window=0 ~54-58%).
+- Found: `LLAMA_VK_MTP_KV_LAST_F16=16` raises MXFP4 acceptance **52.3% -> 67.9%**
+  (171/252, 5 identical runs, deterministic) and decode 33.8 -> 38.4 (+13.6%)
+  - **but prefill drops 1505 -> 1415 (-6%)**, aggregate 5.09 -> 4.92 (worse on
+  this prefill-dominated workload).
+- VERDICT: **REJECTED** - prompt evaluation throughput is the primary objective;
+  the acceptance gain does not justify the -6% prefill cost. KV16/KV32/KV64
+  identical; KV12 flaky; KV8 57.3%.
+- Rejected levers as well: draft window expansion (2048..32768, some one-off
+  87-90%), host handoff, DEFER=0, full-context prefill - flaky or no gain.
 - Context/type dependence: L2 (30.6K) KV16 is WRONG (57.9%/42.0 vs 66.0%/49.2
-  auto-8) - keep 8 at 49K; Q4_K_M L3 KV16/KV32 stays flaky (54-78%) - open.
+  auto-8) - keep 8 at 49K; Q4_K_M L3 KV16/KV32 stays flaky (54-78%).
 - Artifacts: `build_logs/bench/mxfp4-ab/w30l3-*`, `w30l2-mxud-kv16-*`;
-  docs `W30_MTP_ACCEPTANCE_LONG_PROMPT.md`.
-- Decision: use `LLAMA_VK_MTP_KV_LAST_F16=16` (or 32/64) for MXFP4 L3 98K;
-  no default code change yet because Q4 L3 is unresolved.
+  docs `W30_MTP_ACCEPTANCE_LONG_PROMPT.md` (marked REJECTED).
 
 ## 2026-09-09 - Linux ROCm 10: W28 L3 (98K) format sweep - MXFP4 wins hold; MTP acceptance drops
 

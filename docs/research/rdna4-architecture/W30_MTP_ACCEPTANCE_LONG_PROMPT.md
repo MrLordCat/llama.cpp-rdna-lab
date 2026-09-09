@@ -2,6 +2,11 @@
 
 Date: 2026-09-09 (Linux ROCm 10, 2x RX 9070 XT gfx1201, commit c4be97f30)
 
+**VERDICT: REJECTED** (2026-09-09). The KV16 f16 tail raises MTP acceptance
+and decode but costs -6% prompt-evaluation throughput, which is the primary
+objective on this machine. No default code change was made (KV16 was
+env-only); auto hybrid policy stays 12 layers at 98K / 8 below.
+
 Goal: raise MTP draft acceptance for long prompts (especially L3 / 64.3K
 synthetic prompt). Focus on acceptance; all clean runs, no background game.
 
@@ -65,10 +70,11 @@ the reproducible lever; window size is not.
 
 ## Verdict
 
-- Accepted candidate (MXFP4/UD, L3 98K): `LLAMA_VK_MTP_KV_LAST_F16=16`
+- Rejected candidate (MXFP4/UD, L3 98K): `LLAMA_VK_MTP_KV_LAST_F16=16`
   (or 32/64 - identical). Acceptance 52.3% -> 67.9% (+15.6 pp), decode
-  33.8 -> 38.4 (+13.6%), prefill 1505 -> 1415 (-6%), aggregate 5.09 -> 4.92
-  at 256 outputs (still wins for longer generations).
+  33.8 -> 38.4 (+13.6%), but prefill 1505 -> 1415 (-6%) and aggregate
+  5.09 -> 4.92 at 256 outputs - **rejected because prompt-evaluation
+  throughput is the primary objective**. Keep auto 12 at 98K / 8 below.
 - Rejected as levers: draft window expansion (WINDOW/STRIDE/CHUNK), host
   handoff, DEFER=0, full-context prefill - all unstable or no gain.
 - L2 keeps auto 8 layers; only ctx >= 98K should consider 16 (MXFP4).
