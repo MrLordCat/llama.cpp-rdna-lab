@@ -1,5 +1,208 @@
 # Results Log
 
+## 2026-09-09 - Linux ROCm 10: W26 MXFP4 prefill MMQ routing ACCEPTED (+17-21% prefill, decode neutral)
+
+- Code: `ggml/src/ggml-cuda/mmq.cu` - `ggml_rdna4_mxfp4_mmq_max_ne11()` default 4096
+  (env `GGML_MMQ_RDNA4_MXFP4_MAX_NE11` override) + explicit MXFP4 case in the
+  RDNA4 `should_use_mmq` switch. NVFP4/Q4_K untouched.
+- 3-run A-B-A (same binary, MXFP4-requant, batch 8192/ubatch 1024, f8_e4m3):
+  - L1 prefill: A1 1868.58 / **B 2253.06** / A2 1860.53 = **+20.8%**; decode 29.38 vs 29.38 = 0.0%.
+  - L2 prefill: A1 1765.78 / **B 2073.57** / A2 1766.62 = **+17.4%**; decode 25.89 vs 25.89 = 0.0%.
+  - Aggregate: L1 +9.6%, L2 +10.8%.
+- Adoption confirmation (no env): w26mmq-final-l2 prefill 2076.46 / decode 25.92.
+- Q4_K control on `Qwen3.8-27B-UD-Q4_K_M.gguf` (plain Q4_K_M removed earlier):
+  L2 prefill 1765.82 / decode 23.53 vs W20 baseline 1813-1815/22.29-22.32 -
+  decode +5.5% (UD file 3.8% smaller, BW-limited), prefill -2.6% (NextN/unsloth
+  layout); routing code for Q4_K unchanged (default 256 -> hipBLAS) -> NO Q4_K
+  regression. UD-Q4_K_M is the Q4_K reference moving forward.
+- Combined W24+W26 MXFP4: L1 prefill 2253 vs 1894 = +18.9%, decode nw8;
+  L2 aggregate 9.76 vs 9.29 = +5.1%.
+- Docs: `W26_MXFP4_MMQ_ROUTING_ABA.md`; README row added; W25 "MMQ gap" superseded.
+
+## 2026-09-09 - Linux ROCm 10: W25 MXFP4/NVFP4 hybrid quality; acceptance profile; small_k rejected
+
+- Lever 1 (quality-for-bytes) - found the optimum:
+  - MXFP4-hybrid: `output.weight`+`token_embd.weight`+`blk.*.attn_qkv|q|k|v|output.weight` -> Q6_K, rest -> MXFP4.
+    PPL 6.9925±0.05375 (bit-identical over 2 runs), +3.13% vs Q4_K (vs 7.1391 pure MXFP4 = -2.16% for +14% weights);
+    4.85 bpw / 15.75 GiB; L2 decode 24.26, prefill 1770.
+  - NVFP4-native (4.50 bpw): PPL 6.9840±0.05201 = +3.01%; L2 decode 24.81 but prefill 489 t/s (-4x).
+  - Both far better than pure MXFP4 (+5.29%). imatrix still impossible for MXFP4/NVFP4.
+- Lever 2 (acceptance) - exact profile measured, no gain from controls:
+  - `#acc rate/pos = (0.800, 0.600, 0.432)`, mean accept 2.83 (n3).
+  - n4: decode 44.155 (acc 50.3%); n2: decode 41.574 (acc 66.2%); p_min .5: decode 44.246 (acc 68.1%).
+  - n3 is optimum; acceptance ~66% is a draft-state/target-calibration ceiling, not a tunable knob.
+- Lever 3 (decode geometry) - small_k NOT for MXFP4: adding MXFP4 to ggml_cuda_mmvq_is_qwen_hot_type -> L2 25.835 vs 26.252 = -1.6% REJECTED, reverted.
+  - Accepted 1-line remains: calc_nwarps RDNA4 ncols=1 MXFP4 -> nwarps=8.
+  - MMQ routing gap confirmed: MXFP4/NVFP4 -> ne11<=128 in RDNA4 should_use_mmq (Q4_K<=256); at ubatch 1024 hipBLAS used, WMMA-I8 unused (W23 open, +18-20% prefill possible).
+- Docs: `W25_MXFP4_QUALITY_ACCEPTANCE_DEEP.md`; README row added.
+
+## 2026-09-09 - Linux ROCm 10: W24b native BF16->MXFP4 quality gate (PPL 7.1391, gate NOT passed)
+
+- Native path completed: HF `Qwen/Qwen3.8-27B` (55.6 GB safetensors) ->
+  upstream converter `--outtype bf16` -> `Qwen3.8-27B-BF16.gguf` (54.6 GB) ->
+  `llama-quantize --tensor-type ".*=MXFP4"` -> `Qwen3.8-27B-MXFP4-native.gguf`
+  (13,850.58 MiB, 4.25 BPW).
+- **imatrix for MXFP4 not implemented** (quantize_mxfp4: `GGML_UNUSED(quant_weights)`
+  in this fork and upstream master), so imatrix could not be applied.
+- PPL (512 chunks, same contract as W21):
+  `Qwen3.8-27B-MXFP4-native.gguf` = **7.1391 +/- 0.05414**
+  vs Q4_K 6.7802 = **+5.29%**; vs MXFP4-requant 7.1937 = only -0.76%.
+- Verdict: quality gate NOT passed. MXFP4 is format-limited (+5.3% PPL even
+  native); keep Q4_K_M as production quality baseline; MXFP4 is a speed-only
+  choice. No code change for this lever; models/artifacts:
+  `Qwen3.8-27B-BF16.gguf`, `Qwen3.8-27B-MXFP4-native.gguf`, `w24_bf16/`.
+
+## 2026-09-09 - Linux ROCm 10: W24 MXFP4 decode nwarps=8 (+3-5%) accepted; MTP draft precision negative
+
+- Lever 3 (decode weight-stream geometry): RDNA4 `calc_nwarps` in
+  `ggml/src/ggml-cuda/mmvq.cu` omitted MXFP4 for ncols=1 (it used 1 warp;
+  simple-vec_dot types like Q4_K/Q6_K use 8). Added MXFP4 to the nwarps=8
+  whitelist.
+  - L1 (8450/128, spec none): decode 29.762 vs 28.342 avg control = **+5.0%**;
+    prefill 1872 vs 1891 = -1.0% (noise).
+  - L2 (33865/256): decode 26.252 (2 runs) vs 25.478 avg control = **+3.0%**;
+    prefill 1773.7 vs 1797.1 = -1.3% (noise).
+  - MTP n3 L2 (UD-MXFP4): decode 49.195 vs 48.3167 = **+1.8%**;
+    acceptance 169/256 (66.0%) vs 166/264 (62.9%).
+  - NVFP4 deliberately excluded (unmeasured). Change accepted in tree.
+- Lever 2 (MTP acceptance via draft up-quantization) NEGATIVE:
+  - `blk.64.nextn.eh_proj` Q6_K (head-only): L2+MTP decode 47.6868,
+    accept 167/263 (63.5%) vs baseline 48.3167 / 62.9% - no gain.
+  - `blk.64.*` Q6_K (final block + head): decode 46.7774 (-3.2%),
+    accept 166/267 (62.2%) - no gain; extra bytes hurt the BW-bound stack.
+  - Conclusion: acceptance gap is NOT draft-precision-limited (local path).
+- Lever 1 (native BF16->MXFP4 + imatrix) continued in this session: HF
+  `Qwen/Qwen3.8-27B` download, converter, imatrix, PPL gate.
+- Artifacts: `build_logs/bench/mxfp4-ab/{mxfp4-nw8-*,mxud-mtp-nw8-l2,mxud-mtp-draftq6-l2,mxud-mtp-lastblockq6-l2}-*`;
+  docs `W24_MXFP4_DECODE_NWARPS_MTP_DRAFT.md`.
+
+## 2026-09-09 - Linux ROCm 10: W23 WMMA-I8 prefill +18-20% for MXFP4 (MMQ forced)
+
+- Context: current L1/L2 (batch 8192 / ubatch 1024) run dequant+hipBLAS for
+  prefill because MMQ is cut at ne11<=128 for MXFP4 (Q4_K<=256); trace showed
+  ZERO mul_mat_q_case on L1 -> WMMA-I8 has NO effect in the default runs.
+- Forced-MMQ A/B (GGML_CUDA_FORCE_MMQ_RUNTIME=1, all on WMMA-I8):
+  - L1 MXFP4 prefill 2276.99 vs 1894.25 = **+20.2%** (decode 28.19 vs 28.49)
+  - L2 MXFP4 prefill 2122.14 vs 1797.15 (avg of 2 controls) = **+18.1%**
+    (decode 25.44 vs 25.48; aggregate 9.88 vs 9.29 = +6.4%)
+  - Q4_K L1 force = 1847.68 vs 1915.98 = **-3.5%** (G08 confirms hipBLAS is
+    the right path for Q4_K; the win is MXFP4-specific: single E8M0 scale +
+    int8 A fragment + no dequant pass).
+- Action: add MXFP4 MMQ routing at large ubatch (env-gated, default 128),
+  validate 3-run A-B-A on L1+L2; likely adoption as default for MXFP4.
+- Docs: `W23_MXFP4_MMQ_WMMA_I8_PREFILL.md`; README row added.
+
+## 2026-09-09 - Linux ROCm 10: W22 matrix correction - MMQ prefill already on WMMA-I8
+
+- Source audit + runtime trace (GGML_TRACE_MMQ_PATH=1): on RDNA4 the MMQ
+  kernel always launches `mul_mat_q<type,mmq_x,need_check>` with
+  `use_dp4a=false`, and `mmq_select_vec_dot` returns `vec_dot_mma`
+  (`vec_dot_q8_0_q8_1_mma`) -> the MMQ prefill path is **already running on
+  INT8 WMMA** (`mma.cuh:1200` wmma_i32_16x16x16_iu8_w32_gfx12; also
+  `load_tiles_mxfp4` writes the MMA layout). W21's "int types stay DP4A" is
+  **corrected**.
+- Consequence: there is no MMQ-i8 port to implement; matrix hardware is
+  already utilized for prefill. MMQ is only 7.8% of prefill time (W17), so
+  prefill is not MMQ-compute-bound. WMMA-I8 cannot help decode (MMVQ
+  ncols=1) - decode remains bandwidth-limited (W20).
+- Remaining real levers: native BF16->MXFP4 quality gate (+imatrix),
+  MTP acceptance/state, decode weight-stream geometry, GDN trace.
+- Docs: `W22_MATRIX_PREFILL_AUDIT.md`; W21 readme row + note corrected.
+
+## 2026-09-09 - Linux ROCm 10: W21 quality check + matrix audit (WMMA-I8 5.9x)
+
+- MXFP4 quality: perplexity (512 chunks, repo corpus) Q4_K_M **6.7802
+  +/-0.0505** vs MXFP4-requant **7.1937 +/-0.0547** -> **+0.4135 (+6.1%)**.
+  This is the requant+no-imatrix worst case; native BF16->MXFP4 expected
+  closer to Q4_K. Trade: +15% decode / +22% MTP at +0.41 PPL (speed runs OK,
+  quality claims need native + imatrix).
+- Matrix audit: gfx1201 supports `wmma_i32_16x16x16_iu8_w32_gfx12` (INT8 WMMA
+  m16n16k16, signed, 8B/lane A/B, i32 acc). NO native FP4 WMMA on RDNA4
+  (rocWMMA f8=MFMA/CDNA only; llama `mma_block_scaled_fp4` = Blackwell only).
+  llama.cpp already uses WMMA f16/bf16 for MMQ; int types (MXFP4/Q4_K) stay
+  DP4A. MMVQ decode cannot use WMMA (ncols=1) -> decode stays BW-bound.
+- Microbenchmark (`scripts/research/w21_bench_wmma_i8.hip`, 8 acc):
+  DP4A ~31.8 T MAC/s, WMMA-I8 ~186 T MAC/s -> **5.85-6.30x**.
+- Next candidate (W22): env-gated MMQ-i8-WMMA for MXFP4 prefill
+  (`load_tiles_mxfp4` already writes int8-layout A; needs i8 mma primitive +
+  raw int8 B load + mmq routing); expected prefill win 1.5-3x (not 6x).
+- Artifacts: `docs/research/rdna4-architecture/W21_MATRIX_WMMA_I8.md`,
+  `scripts/research/w21_bench_wmma_i8.hip`.
+
+## 2026-09-09 - Linux ROCm 10: W20 MXFP4 + for MTP +22.4% (stack 2.17x)
+
+- MXFP4 non-spec L2: +15.30% decode (A-B-A confirmed), prefill noise.
+- **MTP n3 L2 A-B-A: Q4 38.9836/39.9387 vs MXFP4 48.3167 -> +22.44% decode**,
+  prefill +0.8% (noise). Full stack MXFP4+MTP = **48.32 t/s = 2.17x** the
+  Q4 spec-none L2 decode (22.31) and 1.9x Q4+MTP.
+- NVFP4 single: decode 28.08 (similar to MXFP4) but **prefill 469 t/s (-4x
+  worse - non-Blackwell MMQ not optimized) -> not a dense default**.
+- Acceptance on L1 MTP requant dropped 78%->58% (draft also requantized);
+  L2 accept ~63% stable - native BF16->MXFP4 should raise both.
+- Bottom line (R9700 question): the raw non-spec ceiling on 2x 9070 XT is
+  ~25.7 t/s MXFP4 (vs 22.3 Q4); with in-tree MTP n3 it reaches **48.3 t/s
+  effective** - 2.17x current Q4 baseline. R9700's 200-280 t/s MUST include
+  speculative/custom stack (physical BW ~1.3 TB/s; 27B weights alone would
+  cap plain decode ~35 t/s).
+- Models: `models/Qwen3.8-27B-{MXFP4,NVFP4,UD-MXFP4}-requant.gguf`.
+- Docs: `rdna4-architecture/W20_MXFP4_DECODE_MEASURED.md`.
+
+## 2026-09-09 - Linux ROCm 10: W20 MXFP4 decode +15.3% (first R9700-path result)
+
+- In-tree MXFP4 requant of Qwen3.8-27B (5.01 -> 4.25 BPW, 16 304 -> 13 851 MiB)
+  via `llama-quantize --allow-requantize --tensor-type ".*=MXFP4" ... MXFP4_MOE`
+  (MXFP4 type/MMVQ/MMQ fully wired; `blackwell_mma_available` false on HIP so
+  DP4A path, no WMMA).
+- L2 A-B-A (30609 prompt / 256 decode, f8 KV, spec none, ROCm1,ROCm0, no warm):
+  decode A 22.3155 / B 25.7168 / A2 22.2934 -> **+15.30%**; prefill -0.76%
+  (noise); aggregate +5.17%. L1: 24.46 control / 28.49 = +16.47%.
+- Interpretation: decode gain == -15.2% weight bytes (4.25/5.01 BPW);
+  confirms W19 revised (bandwidth-limited, not ALU): W16 prefetch /
+  W18 instruction cuts all ~0; MXFP4 wins by streaming fewer bytes + simpler
+  E8M0 scaling. Prefill unchanged (same MMQ DP4A density).
+- Model artifact: `models/Qwen3.8-27B-MXFP4-requant.gguf` (13.85 GB;
+  requant quality caution - native BF16->MXFP4 needs full BF16 GGUF which is
+  not yet complete).
+- Next: NVFP4 A/B; native BF16->MXFP4; MTP n3 + MXFP4 combo (~45 tok/s
+  predicted); R9700 280 tok/s needs speculative (physical BW check in W20).
+
+## 2026-09-08 - Linux ROCm 10: W18 dot2-hoist REJECTED (no-gain), W19 interpretation updated
+
+- W18 micro: dot8 (`v_dot8_u32_u4`) = same IPC as DP4A but 2x MAC/instr
+  (745 vs 744 Gi/s; 5963 vs 2978 GMAC/s); exact 8-bit activation
+  decomposition needs same #instructions -> dot8 not viable.
+- W18 dot2-hoist prototype (precompute dmin activation sum once per block,
+  bit-identical, `GGML_MMVQ_Q4K_DOT2_HOIST` env): L1 A-B-A decode
+  24.1759 / 24.2095 / 24.2057 -> **+0.08% (noise)**; prefill neutral.
+  REJECTED; code reverted to HEAD. Artifacts:
+  `build_logs/bench/w18-dot2hoist/*`, `/tmp/w18-snap/`, host emulator
+  `/tmp/w18_emu/emu.cpp` (0 fails @200k).
+- **Updating W19**: removing ~50% of DP4A from the fused q4_K dot loop had no
+  effect -> kernel is memory-system/issue limited, not ALU-bound (SQ_BUSY
+  100% includes memory-issue cycles). Next experiment: GL2C_EA_RDREQ*
+  request-size / L2 hit profile per kernel.
+- Docs: `rdna4-architecture/W18_INT4_DOT8_EXACT_PLAN.md`,
+  `W19_DECODE_BOTTLENECK_DIAGNOSIS.md`, README, this log; no code changed
+  after revert.
+
+## 2026-09-08 - Linux ROCm 10: W19 decode bottleneck diagnosed + W18 exact INT4 plan
+
+- First SPM (hardware counter) decode profile with `rocprofv3 --pmc GPUBusy
+  SQ_BUSY_CYCLES ...` on Qwen3.8-27B Q4_K_M, 200 decode tokens, ROCm1,ROCm0:
+  MMVQ = **86.7% of kernel time** (fused q4_K 45.9%, 110 calls/token);
+  GDN 0.9%, FA 0.57%; kernel time 35.7 ms/token vs wall ~43.9 ms/token
+  -> **~19% outside kernels** (~700 launches/token).
+- **Compute/issue-bound decision**: fused q4_K `SQ_BUSY_CYCLES` ~470k at
+  0.148 ms avg -> ~93-100% of cycles at 3.2-3.4 GHz boost. The kernel is not
+  bandwidth-limited (59% peak, W16 prefetch -0.64%, C1b occupancy +1.10%
+  exhausted). The lever is instructions, not memory: W18 exact split of q8_1
+  byte into `lo + 16*hi` and two `v_dot8_u32_u4` (8 MAC/instr) - bit-identical.
+- Counter limitations: L2CacheHit/MemUnitBusy/OccupancyPercent=0 in this group;
+  WAVE_DEP_WAIT/VALUInsts group collected 0 PMC rows; 20+ counters -> error 38.
+  Artifacts: `/tmp/vkprof4/d4_results.db` (931 MB) + summary; W19 note.
+- Docs: `rdna4-architecture/W19_DECODE_BOTTLENECK_DIAGNOSIS.md`,
+  `W18_INT4_DOT8_EXACT_PLAN.md`; no code changed this day.
+
 ## 2026-09-07 - Linux ROCm 10: W17 profiler tooling adopted - first device profile
 
 - Adopted the only ROCm-10-specific useful item from W17: `rocprofv3`

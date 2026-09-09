@@ -47,9 +47,9 @@ decode gain does not impose an unacceptable prefill cost.
 | Serving | OpenAI-compatible `llama-server` plus the local web GUI (GUI 2.0) |
 
 The fork is currently substantially faster than the measured stock upstream
-checkout on the same long-prompt contract. See
-[Fork vs Stock Upstream](PERFORMANCE.md#fork-vs-stock-upstream) for the exact
-matched runs.
+checkout on the same long-prompt contract. See [PERFORMANCE.md](PERFORMANCE.md)
+for the current benchmark tables (Windows reference and Linux W20-W26 lanes);
+the archived fork-vs-stock A/B lives in the benchmark history below.
 
 ## Active Branches
 
@@ -119,15 +119,13 @@ NVIDIA hardware. See [Supported Backends](docs/SUPPORTED_BACKENDS.md).
 | Qwen3.5/3.6/3.8 vision projector | Yes | Yes | Yes | Use a matching `mmproj-*.gguf` |
 | DFlash | Research | Research | Research | Not a recommended production profile |
 
-D094 (2026-08-07, tested on `Qwen3.6-27B-Q4_K_M.gguf` and
+D094 (2026-08-07, `Qwen3.6-27B-Q4_K_M.gguf` and
 `Qwen3.6-27B-Q3_K_S_mtp.gguf`, 2x RX 9070 XT): the Vulkan q8_0 vec/mmq
 numerical divergence vs ROCm was root-caused and fixed (CUDA-style dp4a
 accumulation, round-half-away q8_1 quantize, mmq variant-B math). MTP
-acceptance recovered from 0.33 to 0.80+ (52k-token drafts; target 0.53) and
-the f16-KV 49K lane now beats ROCm
-(prompt 1719.92 vs 1679.20 tok/s, decode 43.10 vs 32.33, aggregate 6.1358 vs
-5.7655 TPS). See [BENCHMARKS.md](BENCHMARKS.md) and
-[Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md).
+acceptance recovered from 0.33 to 0.80+ on 52k-token drafts (target 0.53).
+Benchmark numbers are archived in [BENCHMARKS.md](BENCHMARKS.md) and
+[Q4_K_M_RESULTS.md](Q4_K_M_RESULTS.md); Windows re-runs are planned.
 
 Qwen3.8-27B-Q4_K_M is the primary practical Qwen model on this 2x16 GB
 machine (rebased 2026-08-14; it shares the qwen35 architecture family with
@@ -213,69 +211,53 @@ materially change the numbers below.
 ## Performance Summary
 
 Full tables, lane contracts, and evidence links live in
-[PERFORMANCE.md](PERFORMANCE.md). Headline snapshot (2026-08-14,
-Qwen3.8-27B-Q4_K_M rebaseline; FlashAttention, cold prompts, no reuse):
+[PERFORMANCE.md](PERFORMANCE.md). Headline (2026-09-09; FlashAttention, cold
+prompts, no reuse; **Windows** = last verified reference, **Linux** =
+W20-W26 ROCm 10 lanes):
+
+
+### Windows (Qwen3.8-27B-Q4_K_M)
 
 | Backend | Lane | Mode | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
 | Vulkan | 49,152 | q8_0 none | 1532.79 | 26.05 | 5.1016 | - |
-| Vulkan | 49,152 | q8_0 MTP n2 | 1637.44 | **48.56** | 5.9465 | 81.8% |
+| Vulkan | 49,152 | q8_0 MTP n2 | 1637.44 | **48.56** | 5.9465 | **81.8%** |
 | ROCm | 49,152 | **f8_e4m3 native** none | **1713.67** | 22.20 | **8.6528** | - |
 | ROCm | 49,152 | f8_e4m3 native MTP n2 | **1716.79** | 39.96 | 6.0332 | **78.2%** |
 
-On Qwen3.8 the Vulkan FP8 prompt advantage over q8 is roughly parity at
-12K/49K/98K; ROCm native FP8 still holds `+4.0%` prompt, `+3.1%` decode and
-`+3.7%` aggregate at 49K. The 98K Vulkan last-12-f16 MTP profile is
-context-research material (60.8% acceptance vs q8's 71.5%), not a default
-recommendation.
+Vulkan FP8 vs q8 on Qwen3.8 is roughly parity (prompt `+1.8/-0.5/+0.8%`,
+decode `-1.0/-4.9/-7.1%` at 12K/49K/98K); ROCm native FP8 keeps `+4.0%`
+prompt, `+3.1%` decode, `+3.7%` aggregate at 49K. 98K Vulkan last-12-f16 MTP
+(60.8% acceptance vs q8 71.5%) is context-research, not default.
 
-## Fork vs Stock Vulkan b10666 (bench2, 2026-08-29)
+### Linux (2026-09-09, ROCm 10, L1/L2)
 
-Same-day, same-session A/B (`bench2`, GPU-free precheck, warmup on, `seed 42`,
-`-c 98304 -b 8192 -ub 1024 -ngl 999 --flash-attn on --cache-type-k/v q8_0
--dev Vulkan1,Vulkan0 -sm layer -ts 1,1 -fit off`, synthetic prompt). Fork =
-`build-vulkan-gcc16` (GCC 16.2, `572cdc0f7` + MTP load gating), stock =
-`ggml-org/llama.cpp` b10666 (GCC 16.2).
+| Format | Lane | Spec | Prompt TPS | Decode TPS | Aggregate TPS | Notes |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| Q4_K_M (UD) | L2 | none | 1765.82 | 23.53 | 8.517 | Q4 reference |
+| MXFP4-requant | L1 | none | **2253.06** | 29.38 | **15.787** | W26 MMQ + W24 nw8 |
+| MXFP4-requant | L2 | none | **2076.46** | 25.92 | **9.777** | W26 MMQ + W24 nw8 |
+| MXFP4-requant | L2 | MTP n3 | 1666.09 | **49.195** | 10.028 | acceptance 66.0% |
+| MXFP4-hybrid-attnQ6 | L2 | none | 1769.91 | 24.26 | 8.623 | Q6 attn/output + MXFP4 |
+| NVFP4-native | L2 | none | 488.95 | 24.86 | 3.218 | prefill -4x; best FP4 quality |
 
-**Spec `none`, L0-L3 r1:**
+W24 `nwarps=8` for MXFP4 + W26 prefill MMQ routing give MXFP4 prefill
+`+17-21%` and decode `+3-5%`; MTP n3 stays the decode optimum (acceptance
+profile `0.800/0.600/0.432`, all knob attempts negative).
 
-| Lane | Fork prefill | Stock prefill | Δ% | Fork decode | Stock decode | Δ% |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| L0 (8K) | 1158.6 | 827.1 | +40.1% | 29.47 | 30.22 | −2.5% |
-| L1 (16K) | 1411.0 | 1141.1 | +23.7% | 29.04 | 29.66 | −2.1% |
-| L2 (49K) | 1353.5 | 1148.1 | +17.9% | 27.75 | 27.91 | −0.6% |
-| L3 (98K) | 1172.4 | 976.8 | +20.0% | 26.45 | 25.89 | +2.2% |
+### Model quality (PPL, 512 chunks; Linux ROCm 10)
 
-**Spec `draft-mtp` (n=2), L0-L3 r1:**
+| Format | bpw | PPL | Δ vs Q4_K_M |
+| --- | ---: | ---: | ---: |
+| Q4_K_M | 5.01 | **6.7802 ± 0.050** | — baseline |
+| MXFP4-native | 4.25 | 7.1391 ± 0.054 | +5.29% |
+| MXFP4-requant | 4.25 | 7.1937 ± 0.055 | +6.10% |
+| MXFP4-hybrid-attnQ6 | 4.85 | **6.9925 ± 0.054** | +3.13% |
+| NVFP4-native | 4.50 | **6.9840 ± 0.052** | +3.01% |
 
-| Lane | Fork prefill | Stock prefill | Δ% | Fork decode | Stock decode | Δ% |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| L0 (8K) | 1034.0 | 898.1 | +15.1% | 39.28 | 49.89 | −21.3% |
-| L1 (16K) | 1346.4 | 1097.2 | +22.7% | 52.72 | 51.33 | +2.7% |
-| L2 (49K) | 1412.4 | 1015.8 | +39.1% | 39.43 | 48.85 | −19.3% |
-| L3 (98K) | 1241.3 | 853.4 | +45.5% | 34.65 | 41.14 | −15.8% |
-
-Fork wins prompt eval everywhere; decode is at parity for `none`, but stock
-keeps the MTP-decode edge on L0/L2/L3 (L1 is fork `+2.7%`). Artifacts:
-`vk-l0123-20260829-{1133,1135,1414,1340}`.
-
-**How it was run (short commands):**
-
-```bash
-# fork (default build-vulkan/bin)
-python scripts/bench2.py run --level 0,1,2,3 --runs 1 --backend vk
-python scripts/bench2.py run --level 0,1,2,3 --runs 1 --backend vk \
-    --server-extra "--spec-type draft-mtp --spec-draft-n-max 2"
-# stock: point build-vulkan/bin at the stock binary first, then the same commands
-cp bench2-bins/stock_vk/llama-server.exe build-vulkan/bin/llama-server.exe
-```
-
-**Pipeline parallelism (PP) note (2026-08-29, deferred):** on Vulkan, enabling
-PP lowers prompt prefill (fork L0-MTP: `1034.0 -> 792.4` ptps) but restores
-decode (stock L0-MTP: `40.11 -> 49.98` tps with PP on; stock PP-off `-ngl 65`
-was `691.3 / 40.11`). The fork PP path is not yet equivalent to stock, so the
-PP-for-MTP reconciliation (keep prefill advantage, catch the stock decode) is
-left for further investigation.
+Q4_K_M stays the production quality baseline. MXFP4/NVFP4 trade quality for
+speed — compare speed only together with this table. imatrix for FP4 formats
+is not implemented (`quantize_mxfp4` ignores `quant_weights`).
 
 ## Fork Highlights
 

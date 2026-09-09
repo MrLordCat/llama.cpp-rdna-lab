@@ -33,6 +33,22 @@ static int ggml_rdna4_q4k_mmq_max_ne11() {
     return max_ne11;
 }
 
+// W26 (2026-09-09): W23 measured MXFP4 prefill +18-20% when MMQ is used
+// (single E8M0 scale + int8 A fragment + no dequant pass); a 3-run A-B-A on
+// L1+L2 confirmed +20.8% / +17.4% prefill with decode neutral, so MXFP4 is
+// now routed to MMQ at large ubatch by default (ne11 <= 4096 covers
+// ubatch 1024). Env override kept for diagnostics.
+static int ggml_rdna4_mxfp4_mmq_max_ne11() {
+    int max_ne11 = 4096;
+    if (const char * env = std::getenv("GGML_MMQ_RDNA4_MXFP4_MAX_NE11")) {
+        const int parsed = std::atoi(env);
+        if (parsed > 0) {
+            max_ne11 = parsed;
+        }
+    }
+    return max_ne11;
+}
+
 static size_t ggml_cuda_q3k_padded_storage_alloc_size_for_tensor(const ggml_tensor * tensor) {
     GGML_ASSERT(tensor->type == GGML_TYPE_Q3_K);
     GGML_ASSERT(tensor->ne[0] % QK_K == 0);
@@ -589,6 +605,8 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
                 case GGML_TYPE_Q4_K:
                 case GGML_TYPE_Q5_K:
                     return ne11 <= ggml_rdna4_q4k_mmq_max_ne11();
+                case GGML_TYPE_MXFP4:
+                    return ne11 <= ggml_rdna4_mxfp4_mmq_max_ne11();
                 case GGML_TYPE_Q2_K:
                 case GGML_TYPE_Q3_K:
                 case GGML_TYPE_Q6_K:
