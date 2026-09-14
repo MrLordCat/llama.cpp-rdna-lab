@@ -1,7 +1,8 @@
 # E349 - MTP device-handoff row contiguity aborts a long agent session
 
 **Date:** 2026-09-14 (Linux, ROCm 10, dual RX 9070 XT)
-**Status:** diagnosed, NOT fixed. Workaround available (`LLAMA_MTP_DEVICE_HANDOFF=0`).
+**Status:** **fixed and verified** (build `9504`); `LLAMA_MTP_DEVICE_HANDOFF=0` is
+no longer needed as a workaround.
 **Build:** `build-rocm-linux`, `a771fdbd0`-era libs first seen, same on the fresh
 `a6c9589f7` build.
 
@@ -95,24 +96,53 @@ Disabling handoff costs about **+15.8% on the long prompt** (66.8 -> 77.4 s
 against the no-MTP control), which is the metric this fork cares most about, so
 the workaround is for availability only.
 
-## Fix proposal (not applied)
+## Fix applied and measured (2026-09-14)
 
-Move the row decision in front of `common_batch_add()` and stop treating the
-pending row as fatal:
+Three changes in `common/speculative.cpp`, all inside the catch-up loop:
 
-1. **Prefer the staging row when it exists.** For `k > 0` where the input row
-   `k-1` is the same sequence and adjacent in position, the staging row already
-   holds the hidden state of exactly that token - the same token the pending row
-   refers to, because both branches require `pending_pos == batch_in.pos[k-1]`.
-   Choosing `device_row = k` therefore keeps the content and the contiguity.
-   Only when no staging row exists (`k == 0`, or the previous row was filtered
-   out) is row 0 the only option.
-2. **Skip, do not fail, when only the pending row is left** and the batch already
-   has rows: `continue` with a trace line, exactly like the other "row not
-   available" path. The draft then misses one position for that step - the same
-   trade the sparse window already makes - while the target still verifies.
-3. **Keep the hard error** for any other non-contiguity so a real invariant
-   violation is not masked.
+1. **The row decision moved in front of `common_batch_add()`**, so the batch is
+   never left half-built: the check now runs before anything mutates
+   `batch`/`first_added_pos`/`selected_end`.
+2. **The staging row wins whenever it exists** (`use_prev_row`). Staging row `k`
+   holds the target's NextN row for input row `k-1`, which is the same token the
+   pending row refers to (both branches require `pending_pos + 1 == cur_pos`), so
+   the content is preserved while contiguity holds. The host path keeps the
+   pending row first, exactly as before, because the host copies hidden states
+   into batch rows and can express any order.
+3. **A mid-batch pending row is skipped, not fatal** - staging row 0 can only
+   start a batch. `SPC_TRC` records it and the token is picked up again through
+   `pending_pos` on the next iteration. The hard error stays for any other
+   non-contiguity, so a real invariant violation is still loud.
+
+Build `libllama-common.so.0.0.9504`. Verification, lane `mtp` (handoff on, sparse
+on) with the corpus pinned to the pre-fix revision so the prompt bytes are
+identical (`--repo /tmp/e349_corpus_A`, corpus hash `d212c390fa1dcc5b`):
+
+| field | A (buggy, `9499`) | B2 (fixed, `9504`) |
+| --- | --- | --- |
+| prompt hash | `1400c457da7b88ff` | `1400c457da7b88ff` |
+| completion a / b | `3c425d2355e626c7` / same | `3c425d2355e626c7` / same |
+| tools hash / signature | `23efaf661f7bd1c1` / `list_dir(common/)` | identical |
+| draft acceptance | 211 / 296 = **71.28%** | 211 / 296 = **71.28%** |
+| turn-0 wall | 78.80 s | 78.79 s |
+| turn-1 wall | 2.05 s | 2.27 s |
+| `non-contiguous MTP device rows` | **1 per lane** | **0** |
+| aborts | none in the probe | none |
+
+The identity gate passes on every observable: byte-identical greedy output,
+identical tool call, identical acceptance to the token, and the timing is
+unchanged (`-0.01 s` on the 73.8K prompt). The skip path never fired
+(`skipping the pending MTP device row` = 0), because preference (2) already
+supplies the row the pending path would have used - the fix *replaces* the row,
+it does not drop a position, which is why acceptance cannot move.
+
+Profiles: three-lane runs 2 x 2 lanes plus the pinned single lane, each ~2.5 min;
+`/tmp/e349_{A,B,B2}.json`, logs beside them.
+
+## Original proposal (for reference)
+
+- Prefer the staging row when it exists, skip instead of failing when only the
+  pending row is left, keep the hard error otherwise. Implemented as above.
 
 Validation harness: `scripts/research/mtp_identity_probe.py`, lane
 `mtp` (handoff on, sparse on). Gate: zero `non-contiguous MTP device rows`

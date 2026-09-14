@@ -1732,16 +1732,22 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 const float * h_prev = nullptr;
                 int32_t device_row = -1;
 
-                if (pending_pos[seq_id] >= 0 && pending_pos[seq_id] + 1 == cur_pos) {
-                    if (device_handoff) {
-                        device_row = 0;
-                    } else {
-                        h_prev = pending_h[seq_id].data();
-                    }
-                } else if (k > 0 &&
+                const bool prev_row_ok =
+                        k > 0 &&
                         batch_in.n_seq_id[k - 1] == 1 &&
                         batch_in.seq_id[k - 1][0] == seq_id &&
-                        batch_in.pos[k - 1] + 1 == cur_pos) {
+                        batch_in.pos[k - 1] + 1 == cur_pos;
+                const bool pending_ok =
+                        pending_pos[seq_id] >= 0 && pending_pos[seq_id] + 1 == cur_pos;
+                // Device rows have to stay contiguous with the rows already added,
+                // so the in-batch predecessor wins whenever it exists: staging row
+                // k holds the target's NextN row for input row k-1, which is the
+                // very token the pending row would have supplied. The host path
+                // keeps the pending row first - it can express any row order,
+                // because the hidden state is copied into the batch row by row.
+                const bool use_prev_row = prev_row_ok && (device_handoff || !pending_ok);
+
+                if (use_prev_row) {
                     if (device_handoff) {
                         // Target rows start at staging row one, so h[k - 1]
                         // is staging row k.
@@ -1749,23 +1755,41 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     } else {
                         h_prev = h_tgt + (size_t) (k - 1) * n_embd;
                     }
+                } else if (pending_ok) {
+                    if (device_handoff) {
+                        device_row = 0;
+                    } else {
+                        h_prev = pending_h[seq_id].data();
+                    }
                 }
 
                 if ((!device_handoff && h_prev == nullptr) || (device_handoff && device_row < 0)) {
                     continue;
                 }
 
-                common_batch_add(batch, batch_in.token[k], cur_pos, { seq_id }, 0);
                 if (device_handoff) {
                     if (device_first_row < 0) {
                         device_first_row = device_row;
-                    }
-                    if (device_row != device_first_row + batch.n_tokens - 1) {
+                    } else if (device_row != device_first_row + batch.n_tokens) {
+                        if (device_row == 0) {
+                            // Staging row 0 is the pending continuation, so it can
+                            // only start a batch. A prompt-cache trim or a restored
+                            // checkpoint can hand it back mid-batch; skip this token
+                            // instead of failing the whole batch - the target still
+                            // verifies, and the next iteration picks the row up
+                            // through pending_pos again.
+                            SPC_TRC("skipping the pending MTP device row mid-batch: first=%d batch_row=%d\n",
+                                    device_first_row, batch.n_tokens);
+                            continue;
+                        }
                         SPC_ERR("non-contiguous MTP device rows: first=%d current=%d batch_row=%d\n",
-                                device_first_row, device_row, batch.n_tokens - 1);
+                                device_first_row, device_row, batch.n_tokens);
                         return false;
                     }
-                } else {
+                }
+
+                common_batch_add(batch, batch_in.token[k], cur_pos, { seq_id }, 0);
+                if (!device_handoff) {
                     std::memcpy(batch.embd + (size_t) (batch.n_tokens - 1) * n_embd, h_prev, row_bytes);
                 }
 

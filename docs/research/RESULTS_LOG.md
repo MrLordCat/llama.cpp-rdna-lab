@@ -1,5 +1,24 @@
 # Results Log
 
+## 2026-09-14 - Linux ROCm 10: E349 MTP row-contiguity abort FIXED, cost measured as zero
+
+- Fix in `common/speculative.cpp` (build `9504`): the device-row decision moves
+  in front of `common_batch_add()`, the in-batch staging row wins whenever it
+  exists (same token as the pending row, keeps contiguity), and a mid-batch
+  pending row is skipped with a trace instead of failing the batch. Hard error
+  kept for any other non-contiguity.
+- A/B on the pinned corpus (identical prompt bytes `1400c457da7b88ff`, lane `mtp`,
+  handoff on, sparse on, 73.8K prompt, 2 agent turns):
+  `non-contiguous MTP device rows` **1 per lane -> 0**; completion hashes
+  `3c425d2355e626c7` identical; tools hash identical; acceptance
+  **211/296 = 71.28% -> 211/296 = 71.28%**; turn-0 wall **78.80 -> 78.79 s**.
+- So the fix is bit-neutral in observable behaviour and costs **nothing** in
+  prefill or acceptance. The skip path never fired (preference supplies the row),
+  which is why acceptance cannot move.
+- `LLAMA_MTP_DEVICE_HANDOFF=0` (+15.8% prompt cost) is no longer needed.
+- Artifacts: `/tmp/e349_{A,B,B2}.json` + logs, pinned corpus `/tmp/e349_corpus_A`;
+  doc `docs/research/experiments/E349_mtp_device_handoff_row_contiguity_abort.md`.
+
 ## 2026-09-14 - Linux ROCm 10: E349 MTP device-handoff row contiguity aborts a long agent session
 
 - Symptom: a ~89K-token agent session (task 6387, f8_e4m3 KV, MTP n2, ctx 151552)
