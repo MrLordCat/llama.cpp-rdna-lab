@@ -1571,28 +1571,23 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;
 
-    // D096-K/P default: with quantized KV (f8_e4m3 or q8_0) and MTP speculative
-    // decoding, keep the last KV layers in f16 (LLAMA_VK_MTP_KV_LAST_F16).
-    // D097: raw E4M3 has much higher long-context attention-logit error than
-    // block-scaled q8_0, so ctx >= 98K needs 12 f16 tail layers to recover
-    // draft acceptance while retaining a measured FP8 prompt-eval advantage.
-    // Keep q8_0 and shorter FP8 contexts at 8. Disable with N=0 or override N.
-    const bool kv_q8 = params.cache_type_k == GGML_TYPE_Q8_0 && params.cache_type_v == GGML_TYPE_Q8_0;
-    const bool kv_f8 = params.cache_type_k == GGML_TYPE_F8_E4M3 && params.cache_type_v == GGML_TYPE_F8_E4M3;
-    if ((kv_q8 || kv_f8) &&
-        std::getenv("LLAMA_VK_MTP_KV_LAST_F16") == nullptr &&
-        std::find(params.speculative.types.begin(), params.speculative.types.end(),
-                  COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params.speculative.types.end()) {
-        const int hybrid_last_f16 = kv_f8 && params.n_ctx >= 98304 ? 12 : 8;
-        const std::string hybrid_last_f16_str = std::to_string(hybrid_last_f16);
-        LOG_INF("%s: MTP + quantized KV: enabling hybrid KV cache (last %d layers f16, LLAMA_VK_MTP_KV_LAST_F16=%d)\n",
-            __func__, hybrid_last_f16, hybrid_last_f16);
-#ifdef _WIN32
-        _putenv_s("LLAMA_VK_MTP_KV_LAST_F16", hybrid_last_f16_str.c_str());
-#else
-        setenv("LLAMA_VK_MTP_KV_LAST_F16", hybrid_last_f16_str.c_str(), 0);
-#endif
-    }
+    // D096-K/P made the f16 KV tail automatic whenever MTP met a quantized KV
+    // cache (8 layers, 12 at ctx >= 98K). E348 (2026-09-14, ROCm) measured what
+    // that tail costs and found that on this backend it is not read at all: the
+    // NextN hidden state arrives by device handoff and the draft keeps its own
+    // cache, so the target pays +3552 MiB and -13.5% prefill at ctx 151552 for
+    // nothing, while its attention numerics change mid-cache - which broke
+    // tool-using agent sessions on f8_e4m3 KV.
+    //
+    // The tail is therefore opt-in: with LLAMA_VK_MTP_KV_LAST_F16 unset the
+    // cache stays uniformly quantized, and the pre-E348 Vulkan lanes that
+    // measured the acceptance win (D096/D097/W30) set N explicitly. Setting
+    // N=0 is still a valid no-op rollback, and any other N keeps the previous
+    // hybrid behaviour. See src/llama-kv-cache.cpp, kv_last_layer_f16_n.
+    //
+    // Kept as code rather than as a default so the old behaviour is one
+    // environment variable away:
+    //   LLAMA_VK_MTP_KV_LAST_F16=12 (f8, ctx >= 98K) / =8 (f8 short, q8_0)
 
     return cparams;
 }

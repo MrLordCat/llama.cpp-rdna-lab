@@ -180,6 +180,10 @@ llama_kv_cache::llama_kv_cache(
     if (!is_mtp_context && getenv("LLAMA_VK_MTP_KV_LAST_F16") != nullptr) {
         if (kv_q8 || kv_f8) {
             kv_last_layer_f16_n = std::max(0, atoi(getenv("LLAMA_VK_MTP_KV_LAST_F16")));
+        } else {
+            LLAMA_LOG_WARN("%s: LLAMA_VK_MTP_KV_LAST_F16 is set but K/V are %s/%s - the f16 tail "
+                    "applies only to quantized KV (f8_e4m3 or q8_0) and is ignored\n",
+                    __func__, ggml_type_name(type_k), ggml_type_name(type_v));
         }
     }
     // D096 D5: V-only hybrid - keep the last N layers' V in f16 while K stays

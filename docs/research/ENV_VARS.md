@@ -112,7 +112,7 @@ These are diagnostic-only and have no effect on results.
 | `LLAMA_CACHE` | server cache directory |
 | `LLAMA_MTP_DEVICE_HANDOFF` | MTP draft/target device handoff |
 | `LLAMA_MTP_RS_SEQ_MAX` | MTP reject-sample sequence cap |
-| `LLAMA_VK_MTP_KV_LAST_F16` | keep the MTP KV (last) layer in f16 |
+| `LLAMA_VK_MTP_KV_LAST_F16` | keep the last N KV layers in f16 under MTP + f8/q8 KV; **opt-in** since E348 (unset = no f16 tail) |
 | `LLAMA_SPEC_PREFILL_SPARSE_CHUNK/STRIDE/WINDOW` | sparse spec-prefill tuning |
 | `LLAMA_SPEC_TOKEN_TRACE` / `LLAMA_SPEC_VERIFY_TIMING` | speculative decode traces |
 | `LLAMA_SPEC_RS_SEQ_MAX` | reject-sample sequence cap |

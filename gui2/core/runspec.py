@@ -18,6 +18,8 @@ from gui2.core.params import SCHEMA, Param, aliases_of, flags_in, parse_extra
 
 THINKING_OFF = '{"enable_thinking":false,"preserve_thinking":false}'
 RPC_ENDPOINT_RE = re.compile(r"^[A-Za-z0-9_.\-]+:\d{1,5}$")
+#: a variable name a shell would accept as an assignment
+ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 #: addresses that mean "every network card", and therefore "the whole network"
 OPEN_HOSTS = frozenset({"0.0.0.0", "::", "*"})
@@ -71,6 +73,11 @@ class RunSpec:
     # not a llama-server flag: selects which build supplies the binary
     build_dir: str = ""
     extra_args: str = ""
+    # not a llama-server flag either: extra environment for the child process.
+    # The fork gates a number of paths behind getenv() knobs that no command
+    # line can reach (LLAMA_VK_MTP_KV_LAST_F16, LLAMA_MTP_DEVICE_HANDOFF,
+    # GGML_SCHED_PIPELINE_COPIES, ...), so they need a place in the form.
+    env_vars: str = ""
 
     def with_values(self, values: dict[str, Any]) -> "RunSpec":
         """Copy with only known fields applied, coerced to the field type."""
@@ -102,6 +109,41 @@ def _coerce(value: Any, current: Any) -> Any:
         except (TypeError, ValueError):
             return current
     return str(value).strip()
+
+
+def parse_env_vars(text: str) -> dict[str, str]:
+    """Environment for the child process, from one ``KEY=VALUE`` per line.
+
+    The fork reads a number of switches with ``getenv`` only - the MTP/quantized
+    KV hybrid (``LLAMA_VK_MTP_KV_LAST_F16``), the MTP device handoff, the ROCm
+    pipeline copy count, the sparse prefill window - and none of them has a
+    command-line flag. Blank lines and ``#`` comments are ignored, and so is
+    anything that is not a valid assignment: a typo should not silently become a
+    variable named like the line the user meant to write.
+    """
+    env: dict[str, str] = {}
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, separator, value = stripped.partition("=")
+        if not separator or not ENV_KEY_RE.match(key.strip()):
+            continue
+        env[key.strip()] = value.strip()
+    return env
+
+
+def env_var_problems(text: str) -> list[str]:
+    """Lines that are neither blank, nor a comment, nor ``KEY=VALUE``."""
+    bad: list[str] = []
+    for number, line in enumerate((text or "").splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, separator, _ = stripped.partition("=")
+        if not separator or not ENV_KEY_RE.match(key.strip()):
+            bad.append(f"line {number}")
+    return bad
 
 
 def parse_rpc_endpoints(text: str) -> list[str]:
@@ -267,6 +309,7 @@ def validate(spec: RunSpec, backend: str = "", supports_rpc: bool | None = None,
     problems: list[Problem] = []
     extra = parse_extra(spec.extra_args)
     extra_flags = flags_in(extra)
+    env = parse_env_vars(spec.env_vars)
 
     facts = None
     if not spec.model:
@@ -327,16 +370,32 @@ def validate(spec: RunSpec, backend: str = "", supports_rpc: bool | None = None,
     if spec.spec_type == "mtp":
         if spec.parallel != 1:
             problems.append(Problem("error", "MTP requires --parallel 1"))
-        if kv_types & {"q8_0", "f8_e4m3"}:
-            hybrid_n = 12 if "f8_e4m3" in kv_types and spec.ctx_size >= 98304 else 8
+        if kv_types & {"q8_0", "f8_e4m3"} and "LLAMA_VK_MTP_KV_LAST_F16" not in env:
             problems.append(Problem(
                 "note",
-                f"MTP auto policy keeps the last {hybrid_n} KV layers in f16 "
-                "unless LLAMA_VK_MTP_KV_LAST_F16 overrides it",
+                "MTP on a quantized KV cache keeps the whole cache quantized: the f16 tail "
+                "is opt-in, set LLAMA_VK_MTP_KV_LAST_F16=N in Environment to try it (8 was "
+                "the old automatic value, 12 at 98K+)",
             ))
 
     if spec.mmproj and not Path(spec.mmproj).is_file():
         problems.append(Problem("error", f"mmproj file not found: {spec.mmproj}"))
+
+    bad_env_lines = env_var_problems(spec.env_vars)
+    if bad_env_lines:
+        problems.append(Problem(
+            "warn",
+            "Environment lines ignored, expected KEY=VALUE: "
+            + ", ".join(bad_env_lines),
+        ))
+    if spec.spec_type == "mtp" and "LLAMA_VK_MTP_KV_LAST_F16" in env:
+        tail = env["LLAMA_VK_MTP_KV_LAST_F16"]
+        if tail.strip() == "0":
+            note = ("MTP will run on the plain quantized KV cache: no f16 layer tail "
+                    "(LLAMA_VK_MTP_KV_LAST_F16=0)")
+        else:
+            note = f"MTP will keep the last {tail} KV layer(s) in f16 (LLAMA_VK_MTP_KV_LAST_F16)"
+        problems.append(Problem("note", note))
 
     endpoints = parse_rpc_endpoints(spec.rpc_endpoints)
     if spec.rpc_endpoints.strip() and not endpoints:

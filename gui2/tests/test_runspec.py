@@ -8,8 +8,10 @@ from gui2.core.params import SCHEMA
 from gui2.core.runspec import (
     DEFAULTS,
     RunSpec,
+    env_var_problems,
     errors,
     mask_api_key,
+    parse_env_vars,
     parse_rpc_endpoints,
     to_argv,
     validate,
@@ -24,7 +26,51 @@ def test_schema_and_runspec_stay_in_sync():
     spec_fields = {field.name for field in fields(RunSpec)}
     schema_names = {param.name for param in SCHEMA}
     assert schema_names <= spec_fields
-    assert spec_fields - schema_names == {"build_dir", "extra_args"}
+    # These three are not llama-server flags: they pick the binary, add
+    # arguments, and set the child's environment.
+    assert spec_fields - schema_names == {"build_dir", "extra_args", "env_vars"}
+
+
+def test_env_vars_parse_lines_comments_and_reject_typos():
+    env = parse_env_vars(
+        "LLAMA_VK_MTP_KV_LAST_F16=0\n"
+        "\n"
+        "# a comment\n"
+        "  LLAMA_MTP_DEVICE_HANDOFF = 0  \n"
+        "not an assignment\n"
+        "=missing-key\n"
+    )
+    assert env == {"LLAMA_VK_MTP_KV_LAST_F16": "0", "LLAMA_MTP_DEVICE_HANDOFF": "0"}
+    assert env_var_problems("A=1\nnope\n") == ["line 2"]
+    assert env_var_problems("# only a comment\n\n") == []
+
+
+def test_env_vars_are_reported_as_a_problem_and_do_not_touch_argv():
+    spec = RunSpec(model="m.gguf", spec_type="mtp",
+                   env_vars="LLAMA_VK_MTP_KV_LAST_F16=0")
+    argv = to_argv(spec)
+    assert "LLAMA_VK_MTP_KV_LAST_F16=0" not in argv
+    notes = [problem.message for problem in validate(spec)]
+    assert any("no f16 layer tail" in message for message in notes)
+    kept = [problem.message for problem in validate(
+        RunSpec(model="m.gguf", spec_type="mtp", env_vars="LLAMA_VK_MTP_KV_LAST_F16=12"))]
+    assert any("last 12 KV layer(s) in f16" in message for message in kept)
+    warned = [problem.message for problem in validate(RunSpec(model="m.gguf", env_vars="oops"))]
+    assert any("KEY=VALUE" in message for message in warned)
+
+
+def test_mtp_on_quantized_kv_says_the_tail_is_opt_in():
+    """The f16 tail is opt-in since E348: the note must not promise an automatic one."""
+    spec = RunSpec(model="m.gguf", spec_type="mtp",
+                   cache_type_k="f8_e4m3", cache_type_v="f8_e4m3", flash_attn="on")
+    notes = [problem.message for problem in validate(spec, backend="rocm")]
+    assert any("opt-in" in message and "LLAMA_VK_MTP_KV_LAST_F16" in message for message in notes)
+    assert not any("auto policy" in message for message in notes)
+    # an explicit choice replaces the note
+    chosen = [problem.message for problem in validate(
+        RunSpec(model="m.gguf", spec_type="mtp", cache_type_k="f8_e4m3", cache_type_v="f8_e4m3",
+                flash_attn="on", env_vars="LLAMA_VK_MTP_KV_LAST_F16=8"), backend="rocm")]
+    assert any("last 8 KV layer(s) in f16" in message for message in chosen)
 
 
 def test_minimal_command_only_emits_non_default_flags():
@@ -141,7 +187,9 @@ def test_validation_notes_do_not_block(tmp_path: Path):
                    cache_type_k="q8_0", cache_type_v="q8_0")
     problems = validate(spec, backend="vulkan")
     assert not errors(problems)
-    assert any("KV layers in f16" in problem.message for problem in problems)
+    # MTP on a quantized cache is a note, not a blocker, and since E348 it says
+    # the f16 tail is opt-in rather than automatic
+    assert any("opt-in" in problem.message for problem in problems)
 
 
 def test_bench_argv_reuses_the_server_command():

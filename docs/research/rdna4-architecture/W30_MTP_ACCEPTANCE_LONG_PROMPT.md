@@ -70,6 +70,14 @@ the reproducible lever; window size is not.
 
 ## Verdict
 
+> **Superseded on the default (2026-09-14, E348):** the automatic f16 tail this
+> note argues to keep at 12 layers was removed from `common.cpp`; the tail is
+> opt-in now. On ROCm it cost `+3552 MiB` and `-13.5%` prefill at `ctx 151552`
+> while never being read by the draft head (NextN arrives by device handoff),
+> and it broke tool-using agent sessions on `f8_e4m3` KV. The acceptance numbers
+> below remain valid as measurements of the *forced* configuration - reproduce
+> them with an explicit `LLAMA_VK_MTP_KV_LAST_F16=12`.
+
 - Rejected candidate (MXFP4/UD, L3 98K): `LLAMA_VK_MTP_KV_LAST_F16=16`
   (or 32/64 - identical). Acceptance 52.3% -> 67.9% (+15.6 pp), decode
   33.8 -> 38.4 (+13.6%), but prefill 1505 -> 1415 (-6%) and aggregate

@@ -212,6 +212,17 @@ the `-dev` preview and the matching tensor-split bars together. Its inline
 initializer has a private scope because HTMX executes it again after every
 device-field swap.
 
+A few switches in this fork have no command-line flag at all — the MTP hybrid
+KV tail, the MTP device handoff, the ROCm pipeline copy count are read with
+`getenv` and nothing else — so the form carries an Environment box beside
+Extra arguments: one `KEY=VALUE` per line, blank lines and `#` comments
+ignored, exported to llama-server and to bench2 alike. The preview prints them
+as `# env:` lines above the command, because a setting that changes the numbers
+without appearing in the command is exactly the setting that gets forgotten
+between two runs. A line that is not an assignment is reported and skipped
+rather than becoming a variable named after the sentence someone meant to
+write.
+
 The header links carry the page they come from: Server's "Autotune" opens the
 sweep of what is on screen, Autotune's "Server" opens the same run again.
 The pages are pieces of one question, not four separate forms, so moving

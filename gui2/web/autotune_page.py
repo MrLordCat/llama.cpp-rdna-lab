@@ -839,7 +839,7 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, bench: Bench
     try:
         supervisor.start_all("autotune", [(f"bench2 · {name}", argv) for name, argv in runs],
                              cwd=config.bench_script.parent.parent,
-                             env=config.runtime_env(build.backend if build else ""))
+                             env=server_page.child_env(config, spec, build.backend if build else ""))
     except Busy as busy:
         return server_page.run_panel(supervisor, f"{busy.current.label} is still running", "error")
     return (server_page.run_panel(supervisor),

@@ -65,6 +65,7 @@ from gui2.core.runspec import (
     Problem,
     RunSpec,
     mask_api_key,
+    parse_env_vars,
     parse_rpc_endpoints,
     slot_context,
     to_argv,
@@ -1012,6 +1013,17 @@ def form(config: AppConfig, spec: RunSpec, scan: Scan, backend: str, params=None
         cls="panel",
     ))
 
+    panels.append(Details(
+        Summary("Environment"),
+        Textarea(spec.env_vars, name="env_vars", rows=3,
+                 placeholder="LLAMA_VK_MTP_KV_LAST_F16=0"),
+        Span("One KEY=VALUE per line, exported to llama-server and to the benchmark. "
+             "Some fork switches have no command-line flag: MTP with a quantized KV "
+             "cache silently keeps the last layers in f16 unless "
+             "LLAMA_VK_MTP_KV_LAST_F16 says otherwise.", cls="hint"),
+        cls="panel",
+    ))
+
     panels.append(Div(
         # type=button: the form never submits natively, htmx owns every request
         Button("Start server", type="button", cls="primary",
@@ -1283,6 +1295,17 @@ def _port_problems(spec: RunSpec) -> list[Problem]:
                             f"{advice}. Two servers cannot share one port.")]
 
 
+def child_env(config: AppConfig, spec: RunSpec, backend: str) -> dict[str, str]:
+    """Environment for a child: the machine's own, plus the form's variables.
+
+    ``runtime_env`` carries what the machine needs to run at all (ROCm's lib
+    directory); the Environment box carries what the run needs, and is applied
+    last so a switch like ``LLAMA_VK_MTP_KV_LAST_F16=0`` cannot be lost behind
+    the platform defaults.
+    """
+    return {**config.runtime_env(backend), **parse_env_vars(spec.env_vars)}
+
+
 def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
             supervisor: Supervisor | None = None, store: MemoryStore | None = None) -> Div:
     build = build_of(config, spec)
@@ -1313,6 +1336,7 @@ def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
             *problem_lines(problems),
             Pre(f"# build: {build.name} ({build.backend})" if build else "# build: not selected"),
             Pre(f"# model: {facts.summary}") if facts and facts.summary else None,
+            *[Pre(f"# env: {key}={value}") for key, value in parse_env_vars(spec.env_vars).items()],
             Pre(command_lines(mask_api_key(argv))),
             cls="panel",
         ),
@@ -1488,7 +1512,7 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, scan: Scan):
     try:
         supervisor.start("server", label, to_argv(spec, build.server_bin),
                          cwd=build.path,
-                         env=config.runtime_env(build.backend))
+                         env=child_env(config, spec, build.backend))
     except Busy as busy:
         return run_panel(supervisor, f"{busy.current.label} is still running", "error")
     return run_panel(supervisor), log_panel(supervisor, oob=True)

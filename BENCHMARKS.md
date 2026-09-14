@@ -37,6 +37,14 @@ stay at last8; `LLAMA_VK_MTP_KV_LAST_F16` remains a rollback. Full sweep and
 the faster default-off M6 q8-bridge profile are documented in
 [D097](docs/research/major-topology/D097_Q4KM_VULKAN_FP8_LONG_ACCEPTANCE.md).
 
+> **Policy change (2026-09-14, E348):** `common.cpp` no longer sets the tail
+> automatically. The numbers above were measured with it forced, and they stay
+> reproducible by passing `LLAMA_VK_MTP_KV_LAST_F16=12` (or `8`) explicitly. On
+> ROCm the tail was measured to cost `+3552 MiB` and `-13.5%` prefill at
+> `ctx 151552` while never being read by the draft head, and to break
+> tool-using agent sessions on `f8_e4m3` KV - see
+> [E348](docs/research/experiments/E348_rocm_fp8_kv_greedy_nondeterminism.md).
+
 ## D095 Vulkan Q4_K_M q8/FP8 Refresh (2026-08-11)
 
 The D095 diagnostic matrix uses `Vulkan1,Vulkan0`, layer split `1,1`,

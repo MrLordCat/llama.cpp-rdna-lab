@@ -58,8 +58,13 @@ backends. See `FP8_ATTENTION.md` for the full description; the essentials:
   `GGML_ROCM_FATTN_F8_NATIVE_KQ=0` for full rollback or
   `GGML_ROCM_FATTN_F8_NATIVE_V=0` for the KQ-only bisect.
 - **Hybrid KV cache**: `LLAMA_VK_MTP_KV_LAST_F16=N` keeps the last N KV
-  layers in f16 under MTP + f8 KV. Default N=8 is set automatically by
-  `common.cpp` when MTP and f8 KV are requested without an explicit env.
+  layers in f16 under MTP + f8/q8 KV. It is **opt-in**: unset means the cache
+  stays uniformly quantized. Before 2026-09-14 `common.cpp` set N=8 (12 at
+  `n_ctx >= 98304`) automatically; E348 measured on ROCm that the tail is never
+  read by the draft head on that backend (NextN arrives by device handoff) while
+  costing `+3552 MiB` and `-13.5%` prefill at `ctx 151552`, and that it broke
+  tool-using agent sessions on f8_e4m3 KV. The automatic policy was removed; the
+  D096/D097/W30 Vulkan lanes that measured an acceptance win pass N explicitly.
 - P5/native ROCm/hybrid are local performance work; when importing upstream
   GPU changes, keep the `GGML_VK_FA_F8_*`, `GGML_ROCM_FATTN_F8_NATIVE_*` and
   `LLAMA_VK_MTP_KV_LAST_F16` rollback contracts plus both byte-compatible

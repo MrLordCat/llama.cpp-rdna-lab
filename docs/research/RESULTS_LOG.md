@@ -1,5 +1,63 @@
 # Results Log
 
+## 2026-09-14 - Linux ROCm 10: E348 CAUSE FOUND - MTP auto hybrid f16 KV tail breaks agent sessions
+
+- User test, MTP kept on: `LLAMA_VK_MTP_KV_LAST_F16=0` (pure f8_e4m3 target KV)
+  makes the agent session use tools and answer normally; the fork default
+  (auto tail, last 12 layers f16) loops. Three-arm attribution: `spec=none` fine,
+  MTP + auto tail broken, MTP + `LAST_F16=0` fine -> the **hybrid KV tail**, not
+  the speculative accept loop.
+- What the tail costs at `ctx=151552` (measured, same binary): target KV
+  8288 MiB (3552+4736) vs 4736 MiB (1776+2960) = **+3552 MiB**, KV bytes x1.75;
+  prefill 971.6 -> 1106.6 t/s (**-13.5%**); decode 28.38 vs 28.24 t/s (neutral).
+- Why the tail exists: `src/llama-kv-cache.cpp:166-172` - the MTP draft is
+  assumed to read the last transformer layer's KV, so f16 there was meant to
+  lift acceptance; auto-enabled in `common/common.cpp:1575-1595` whenever MTP
+  meets quantized KV (`12` at ctx >= 98304, else `8`). The evidence behind it is
+  Vulkan-lane work (D096/D097/W30, MXFP4/Q3). On ROCm the draft head is fed by
+  device-handoff of the NextN hidden state (D094-c8j: HIP default handoff, Vulkan
+  0 rows) and keeps its own 592 MiB draft cache, so the tail is charged to the
+  target and never read by the draft. It also creates a cache where only the f8
+  layers carry the D131 R9 `k_scale` satellites
+  (`src/llama-kv-cache.cpp:462-466`).
+- Decision pending (not applied, to keep the running A/B valid): stop
+  auto-enabling the tail on ROCm, keeping the env override and rollback contract.
+- Artifacts: `/tmp/mtp_fp8_ladder2-mtp*.log` (KV sizes + TPS),
+  `/tmp/mtp_copies.{json,out}`; docs
+  `docs/research/experiments/E348_rocm_fp8_kv_greedy_nondeterminism.md`.
+
+## 2026-09-14 - Linux ROCm 10: E348 fp8-KV MTP attribution - hybrid-KV numeric change, not a proven accept-loop bug
+
+- Trigger: agent session with `Qwen3.8-27B-UD-Q4_K_M` looped under MTP and did
+  not loop with `--spec-type none`. User constraint: production lane is always
+  fp8 KV (`f8_e4m3/f8_e4m3`).
+- New tool `scripts/research/mtp_identity_probe.py` (one server per lane,
+  sequential, greedy identity probes + scripted multi-turn tool loop; lane
+  repetition is the null test; refuses to run when its port is busy).
+- Reproducible result on a 74K-token prompt, fp8 KV, two processes per lane:
+  `spec=none` `6e1ecfb6`, MTP with the fork hybrid tail `2dabfc07`, MTP with
+  `LLAMA_VK_MTP_KV_LAST_F16=0` `9d558bcd` - all three stable across processes and
+  all three different. MTP with fp8 KV silently enables
+  `MTP + quantized KV: enabling hybrid KV cache (last 12 layers f16,
+  LLAMA_VK_MTP_KV_LAST_F16=12)`, so MTP-on vs MTP-off is not a clean A/B: it
+  also changes the target's own KV precision.
+- Refuted: fork scheduler default `n_copies = 1`
+  (`ggml/src/ggml-backend.cpp`, `GGML_SCHED_PIPELINE_COPIES`).
+  `GGML_SCHED_PIPELINE_COPIES=2` returns the same greedy texts as `copies=1`
+  (`6e1ecfb6`, `2dabfc07`) and reproduces across processes; it only shifts the
+  agent-loop numeric path (`f1ba1a65` vs `b1bf4b38`).
+- Rare one-off cross-process drift was seen in exploratory runs (`ffaa2a2e`,
+  `34af43f7`, `1556c78d` vs `0078727e` within one run) but did NOT reproduce in
+  the clean dedicated run; recorded as environment-sensitive, not a code defect.
+- Lane cost (74K prompt): MTP prefill 950-980 vs 1120-1147 tok/s (`-13.5%`),
+  decode 25.9-28.4 vs 19.8 tok/s (`+31..43%`).
+- Next: three-arm agent-session loop test (none / MTP default / MTP +
+  `LLAMA_VK_MTP_KV_LAST_F16=0`); `--flash-attn off` is unusable on quantized KV
+  (server will not load).
+- Artifacts: `/tmp/mtp_copies.{json,out}`, `/tmp/mtp_fp8_pair.*`,
+  `/tmp/mtp_nulltest.*`, `/tmp/mtp_handoff.*`; docs
+  `docs/research/experiments/E348_rocm_fp8_kv_greedy_nondeterminism.md`.
+
 ## 2026-09-09 - Linux ROCm 10: W30 MTP acceptance long prompts - KV16 REJECTED (prompt eval cost)
 
 - Goal: raise MTP acceptance at L3 (98K ctx, 64.3K synthetic prompt).
