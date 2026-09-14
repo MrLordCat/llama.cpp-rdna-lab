@@ -196,3 +196,7 @@ build_logs/agent-workload/Q4_REFRESH_WIP_2026-08-07.md
 /examples/vk_fp8_probe/*.spv
 /examples/vk_fp8_probe/results/
 /ggml/src/ggml-vulkan/vulkan-shaders/fp8_fa_cm1_tail*.spvasm
+
+# Profiler and driver-info dumps stay local
+/.rocprofv3/
+/VP_VULKANINFO_*.json

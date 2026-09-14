@@ -4,7 +4,8 @@ description: "Use when work involves subagents, parallel research, independent r
 # Delegated Agent Workflow
 
 Read `AGENTS.md` and `AGENT_WORKFLOW.md` before dispatching subagents.
-
+- **Search: never use `grep` in subagent shell commands - banned. Use `rg` or
+  `scripts/srcgrep.sh`. The `grep_search` VS Code tool is allowed.**
 - The coordinating agent owns the plan, shared files, integration, validation,
   and final answer.
 - Scouts are read-only unless explicit write ownership is assigned.

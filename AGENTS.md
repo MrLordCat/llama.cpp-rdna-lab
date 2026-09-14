@@ -78,6 +78,12 @@ validation without launching extra backend discovery paths.
   did not make.
 - Check `git status --short --branch` before editing.
 - Use `apply_patch` for manual edits.
+- **Search tool rule (mandatory): never run `grep` (or `find ... -exec grep`)
+  in terminal commands. On this NTFS/ROCm workspace `grep` walks build trees
+  and hangs; it is banned for all agents. Use `rg` (ripgrep, already
+  installed) or `scripts/srcgrep.sh` instead. The VS Code `grep_search` tool
+  is allowed - it is ripgrep-based and honors `.gitignore` (build*/*.o/*.so
+  are excluded).**
 - Never use `git reset --hard`, destructive checkout, or broad cleanup commands.
 - Keep local GUI, ROCm, Vulkan, benchmark and research changes during upstream
   sync.
