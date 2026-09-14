@@ -1,5 +1,36 @@
 # Results Log
 
+## 2026-09-14 - Linux ROCm 10: E349 MTP device-handoff row contiguity aborts a long agent session
+
+- Symptom: a ~89K-token agent session (task 6387, f8_e4m3 KV, MTP n2, ctx 151552)
+  died with `spec process: non-contiguous MTP device rows: first=1 current=0
+  batch_row=196` -> `failed to process speculative batch` -> 4x `no tokens to
+  decode` -> `GGML_ABORT` at `tools/server/server-context.cpp:3144`.
+- Root cause: the draft catch-up batch in device-handoff mode requires device
+  rows to increase by one per added row (`common/speculative.cpp:1760-1768`); the
+  check runs after `common_batch_add()` and `return false` leaves the batch
+  half-built. Staging row 0 (the pending continuation) can only ever be the
+  batch's first row, but a long session hands it back mid-batch. The abort itself
+  is upstream's empty-batch guard (`server-context.cpp:3140-3146`, PR #20277),
+  which is doing its job.
+- Pre-existing since `41a8ca785` (2026-07-14, device handoff), NOT from the E348
+  f16-tail change: the error is in probe logs from before that rebuild, and the
+  tail only picks KV tensor types.
+- Frequency: exactly 1 hit per MTP lane in every probe run with handoff on; also
+  1 with sparse prefill fully off (`LLAMA_SPEC_PREFILL_WINDOW=0` +
+  `LLAMA_MTP_DEFER_SPARSE_PREFILL=0`), 0 in every `LLAMA_MTP_DEVICE_HANDOFF=0`
+  lane. So it is the handoff row mapping, not the sparse policy.
+- Only working workaround: `LLAMA_MTP_DEVICE_HANDOFF=0`, measured at **+15.8%**
+  on a 73.8K prompt (66.8 -> 77.4 s vs the no-MTP control);
+  availability-only until the code is fixed.
+- Proposed fix (not applied): decide the row before `common_batch_add()`, prefer
+  the staging row when it exists (`device_row = k`, same token, keeps
+  contiguity), skip instead of failing when only the pending row remains.
+  Validate with `scripts/research/mtp_identity_probe.py` lane `mtp`: zero
+  occurrences plus byte-identical greedy outputs.
+- Artifacts: `docs/research/experiments/E349_mtp_device_handoff_row_contiguity_abort.md`,
+  `/tmp/mtp_*.log`, `/tmp/mtp_handoff.json`.
+
 ## 2026-09-14 - Linux ROCm 10: E348 CAUSE FOUND - MTP auto hybrid f16 KV tail breaks agent sessions
 
 - User test, MTP kept on: `LLAMA_VK_MTP_KV_LAST_F16=0` (pure f8_e4m3 target KV)

@@ -110,7 +110,7 @@ These are diagnostic-only and have no effect on results.
 | Var | Purpose |
 | --- | --- |
 | `LLAMA_CACHE` | server cache directory |
-| `LLAMA_MTP_DEVICE_HANDOFF` | MTP draft/target device handoff |
+| `LLAMA_MTP_DEVICE_HANDOFF` | MTP draft/target device handoff; `0` also avoids the E349 row-contiguity abort at ~+15.8% long-prompt cost |
 | `LLAMA_MTP_RS_SEQ_MAX` | MTP reject-sample sequence cap |
 | `LLAMA_VK_MTP_KV_LAST_F16` | keep the last N KV layers in f16 under MTP + f8/q8 KV; **opt-in** since E348 (unset = no f16 tail) |
 | `LLAMA_SPEC_PREFILL_SPARSE_CHUNK/STRIDE/WINDOW` | sparse spec-prefill tuning |
