@@ -35,6 +35,27 @@ capabilities, smaller and cleaner codebase. The old PyQt6 GUI (`gui/`, plus
 its `run.py`, `start-gui.bat` and PyInstaller scripts) is deleted: GUI 2.0 is
 the GUI, and `python -m gui2` is its entry point.
 
+### How it starts from the desktop
+
+The worktree lives on a second NTFS volume that this machine mounts **on
+demand**, not at boot. A shortcut pointing into the worktree therefore dies with
+"No such file or directory" in a terminal that closes before the message can be
+read when it is clicked in the first minutes after a reboot (measured
+2026-09-16: boot 12:05:46, four clicks 12:07:19-12:07:34, mount point created
+12:08:06). A second click while the GUI already runs looked the same, because
+uvicorn's bind error also vanished with the window.
+
+| Step | File | What it does |
+|---|---|---|
+| Shortcut | `~/Desktop/llama-gui2.desktop` | `Exec=bash ~/.local/bin/llama-gui2 --open`, `Terminal=true` so a failure can be read |
+| Home wrapper | `~/.local/bin/llama-gui2` | sits in `$HOME`, which is always mounted: waits for the volume, asks `udisksctl` to mount it, then hands over; `--mount-only` is what the login autostart runs |
+| Autostart | `~/.config/autostart/llama-gui2-mount.desktop` | mounts the volume at login, so the shortcut works immediately after a reboot |
+| Launcher | `start-gui.sh` (worktree) | venv + dependencies, then `python -m gui2`; a second copy joins the running one instead of fighting for the port |
+| Server | `gui2/__main__.py` | joins an instance that already holds the port and opens the browser only once the port answers |
+
+Knobs used by the tests and by unusual setups: `GUI2_REPO_DIR`, `GUI2_VENV`,
+`GUI2_HOST`, `GUI2_PORT`, `GUI2_MOUNT_WAIT`, `GUI2_OPEN_CMD`.
+
 **Stack: FastHTML + HTMX + Jinja partials, SSE for log/metric streams.**
 Server-rendered, no npm, no SPA build step, one language.
 
