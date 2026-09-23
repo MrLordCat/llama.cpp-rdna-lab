@@ -111,9 +111,13 @@ These are diagnostic-only and have no effect on results.
 | --- | --- |
 | `LLAMA_CACHE` | server cache directory |
 | `LLAMA_MTP_DEVICE_HANDOFF` | MTP draft/target device handoff; `0` also avoids the E349 row-contiguity abort at ~+15.8% long-prompt cost |
+| `LLAMA_MTP_CTX_UBATCH` | physical micro-batch for the MTP draft context; HIP defaults to at most `256` so sparse-history activation cannot allocate a second target-sized PP buffer late in a long prompt |
 | `LLAMA_MTP_RS_SEQ_MAX` | MTP reject-sample sequence cap |
-| `LLAMA_VK_MTP_KV_LAST_F16` | keep the last N KV layers in f16 under MTP + f8/q8 KV; **opt-in** since E348 (unset = no f16 tail) |
-| `LLAMA_SPEC_PREFILL_SPARSE_CHUNK/STRIDE/WINDOW` | sparse spec-prefill tuning |
+| `LLAMA_VK_MTP_KV_LAST_F16` | keep the last N target KV layers in f16 under MTP + f8/q8 KV; Vulkan defaults to `8` (`12` for f8 at ctx >= 98K), while HIP/ROCm keeps E348's opt-in policy (unset = no tail); explicit `0` disables it everywhere |
+| `LLAMA_SPEC_PREFILL_SPARSE_CHUNK/STRIDE/WINDOW` | sparse spec-prefill tuning; the `STRIDE=32768`/`CHUNK=4096` capture policy is a **HIP default only** (W30 rejected the Vulkan equivalents as unstable/no-gain) |
+| `LLAMA_MTP_KV_ONLY_PROCESS` | build only the draft KV store for MTP rows that request no logits, skipping attention body/FFN/norm/LM head; **default on only for HIP/ROCm**, where E315 validated it (other backends keep the full graph; `=1` is an unverified diagnostic override) |
+| `LLAMA_MTP_PREALLOC_DEVICE_STAGING` | preallocate the MTP staging buffer; HIP default `1`, other backends `0` |
+| `LLAMA_MTP_ASYNC_DEVICE_HANDOFF` | cross-context handoff without draining the target scheduler; HIP default `1`, other backends `0` |
 | `LLAMA_SPEC_TOKEN_TRACE` / `LLAMA_SPEC_VERIFY_TIMING` | speculative decode traces |
 | `LLAMA_SPEC_RS_SEQ_MAX` | reject-sample sequence cap |
 | `LLAMA_DFLASH_*` | DFlash chunk/ubatch controls |

@@ -2744,6 +2744,22 @@ common_speculative_init_result::common_speculative_init_result(
 
     if (spec_mtp) {
         cparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+
+        // The MTP context only consumes the recent process window during normal
+        // prefill; sparse history blocks are safe to split into micro-batches.
+        // Reusing a large target ubatch here makes the draft scheduler reserve a
+        // second, large PP buffer only when the first sparse block is reached,
+        // which can turn an otherwise valid long-context HIP run into a late OOM.
+        uint32_t mtp_ctx_ubatch = cparams.n_ubatch;
+    #if defined(GGML_USE_HIP)
+        mtp_ctx_ubatch = std::min<uint32_t>(mtp_ctx_ubatch, 256);
+    #endif
+        if (const char * env = std::getenv("LLAMA_MTP_CTX_UBATCH")) {
+            mtp_ctx_ubatch = std::max<uint32_t>(1, (uint32_t) std::max(1, std::atoi(env)));
+        }
+        cparams.n_ubatch = std::min<uint32_t>(cparams.n_batch, mtp_ctx_ubatch);
+        LOG_INF("%s: MTP draft context n_ubatch=%u (target n_ubatch=%d, override with LLAMA_MTP_CTX_UBATCH)\n",
+            __func__, cparams.n_ubatch, params.n_ubatch);
     }
     if (spec_dflash) {
         // The DFlash fusion path may use tiny injection chunks via LLAMA_DFLASH_UBATCH,
