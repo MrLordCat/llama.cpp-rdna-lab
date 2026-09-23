@@ -22,6 +22,7 @@ from gui2.core.memory import (
     estimate,
     kv_bytes,
     layer_split,
+    mtp_tail_bytes,
     state_bytes,
     weight_bytes,
 )
@@ -121,6 +122,50 @@ def test_without_a_model_the_estimate_says_so_instead_of_guessing():
     assert not report.complete
     assert report.total_mib == 0
     assert report.notes
+
+def test_the_opt_in_mtp_f16_tail_is_priced_once_it_is_set(tmp_path: Path):
+    facts = read_facts(qwen35(tmp_path))
+
+    # the reference run: 12 of the 16 attention layers in f16, the rest f8_e4m3
+    spec = DEFAULTS.with_values({
+        "ctx_size": REFERENCE_CTX,
+        "spec_type": "mtp",
+        "cache_type_k": "f8_e4m3",
+        "cache_type_v": "f8_e4m3",
+        "env_vars": "LLAMA_VK_MTP_KV_LAST_F16=12\nLLAMA_MTP_DEVICE_HANDOFF=1",
+    })
+
+    report = estimate(spec, facts, devices=2)
+    tail = next(term for term in report.terms if term.label == "MTP f16 KV tail")
+    # 8960 MiB logged with the tail, 5120 MiB without it
+    assert round(tail.mib) == 3840
+    assert round(report.total_mib) == round(
+        10240 - 5120 + 3840 + sum(term.mib for term in report.terms
+                                  if term.label not in {"KV cache", "MTP f16 KV tail"}))
+    assert any("f16 KV tail is priced" in note for note in report.notes)
+
+def test_the_vulkan_tail_is_automatic_but_rocm_stays_opt_in(tmp_path: Path):
+    facts = read_facts(qwen35(tmp_path))
+    spec = DEFAULTS.with_values({"ctx_size": REFERENCE_CTX, "spec_type": "mtp",
+                                 "cache_type_k": "f8_e4m3", "cache_type_v": "f8_e4m3",
+                                 "build_dir": "build-vulkan-linux"})
+
+    report = estimate(spec, facts, devices=2)
+
+    tail = next(term for term in report.terms if term.label == "MTP f16 KV tail")
+    assert round(tail.mib) == 3840
+    assert any("automatic Vulkan" in note for note in report.notes)
+    rocm = spec.with_values({"build_dir": "build-rocm-linux"})
+    assert all(term.label != "MTP f16 KV tail"
+               for term in estimate(rocm, facts, devices=2).terms)
+    disabled = spec.with_values({"env_vars": "LLAMA_VK_MTP_KV_LAST_F16=0"})
+    assert all(term.label != "MTP f16 KV tail"
+               for term in estimate(disabled, facts, devices=2).terms)
+    # an MTP run on an f16 cache has no delta to pay either
+    f16_spec = DEFAULTS.with_values({"spec_type": "mtp", "env_vars": "LLAMA_VK_MTP_KV_LAST_F16=12"})
+    assert mtp_tail_bytes(facts, REFERENCE_CTX, "f16", "f16", 12) == 0
+    assert all(term.label != "MTP f16 KV tail"
+               for term in estimate(f16_spec, facts, devices=2).terms)
 
 
 def test_capacity_spends_what_the_weights_leave_and_no_more(tmp_path: Path):

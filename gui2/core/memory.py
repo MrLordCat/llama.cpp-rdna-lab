@@ -105,6 +105,35 @@ def kv_bytes(facts: ModelFacts, ctx: int, type_k: str = "f16", type_v: str = "f1
     return attention * max(0, ctx) * per_token
 
 
+def mtp_tail_layers(env_text: str) -> int | None:
+    """Explicit ``LLAMA_VK_MTP_KV_LAST_F16``, or ``None`` when unset."""
+    for line in (env_text or "").splitlines():
+        name, separator, value = line.partition("=")
+        if separator and name.strip() == "LLAMA_VK_MTP_KV_LAST_F16":
+            try:
+                return max(0, int(value.strip()))
+            except ValueError:
+                return 0
+    return None
+
+def mtp_tail_bytes(facts: ModelFacts, ctx: int, type_k: str, type_v: str,
+                   layers: int) -> float:
+    """What keeping the last `layers` KV layers in f16 adds on a quantized cache.
+
+    The tail does not replace the quantized cache, it overrides it layer by
+    layer, so the cost is the f16-minus-quantized delta on those layers. At
+    ctx 163840 with 12 of 16 layers in f16 that is 3840 MiB - the difference
+    between the 8960 MiB the Qwen3.8-27B reference run logged and the 5120 MiB
+    a uniformly f8_e4m3 cache would have taken.
+    """
+    attention, _recurrent = layer_split(facts)
+    count = min(max(0, int(layers)), attention)
+    if not count or not facts.n_embd_k_gqa:
+        return 0.0
+    per_token = (facts.n_embd_k_gqa * max(0.0, 2.0 - element_bytes(type_k))
+                 + facts.n_embd_v_gqa * max(0.0, 2.0 - element_bytes(type_v)))
+    return count * max(0, ctx) * per_token
+
 def state_bytes(facts: ModelFacts, sequences: int = 1) -> float:
     """Bytes the linear-attention layers reserve, one set per sequence."""
     _attention, recurrent = layer_split(facts)
@@ -158,6 +187,24 @@ def estimate(spec, facts: ModelFacts | None, devices: int = 1,
     if state:
         terms.append(Term("Recurrent state", state,
                           f"{recurrent} linear-attention layers, fixed per sequence"))
+    tail = mtp_tail_layers(getattr(spec, "env_vars", ""))
+    auto_tail = False
+    if (tail is None):
+        build = str(getattr(spec, "build_dir", "")).lower()
+        quantized = spec.cache_type_k == spec.cache_type_v and spec.cache_type_k in {"f8_e4m3", "q8_0"}
+        if spec.spec_type == "mtp" and "vulkan" in build and quantized:
+            tail = 12 if spec.cache_type_k == "f8_e4m3" and spec.ctx_size >= 98304 else 8
+            auto_tail = True
+        else:
+            tail = 0
+    tail_mib = 0.0
+    if spec.spec_type == "mtp" and tail > 0:
+        tail_mib = mtp_tail_bytes(facts, spec.ctx_size, spec.cache_type_k,
+                                  spec.cache_type_v, tail) / MIB
+        if tail_mib:
+            terms.append(Term("MTP f16 KV tail", tail_mib,
+                              f"last {tail} of {attention} attention layers in f16 "
+                              f"(LLAMA_VK_MTP_KV_LAST_F16)"))
     if mmproj_bytes and spec.mmproj_offload:
         terms.append(Term("Vision projector", mmproj_bytes / MIB, "mmproj on the GPU"))
     terms.append(Term("Compute buffers",
@@ -177,7 +224,14 @@ def estimate(spec, facts: ModelFacts | None, devices: int = 1,
         notes.append(f"some layers of this model only keep a {facts.sliding_window}-token "
                      f"window, so the real KV cache will be smaller than shown")
     if spec.spec_type == "mtp":
-        notes.append("MTP adds a second, small context for the draft head, not counted here")
+        if tail_mib:
+            notes.append("the automatic Vulkan MTP f16 KV tail is priced above; set "
+                         "LLAMA_VK_MTP_KV_LAST_F16=0 to disable it"
+                         if auto_tail else
+                         "the MTP f16 KV tail is priced above: it buys acceptance and "
+                         "costs memory; set LLAMA_VK_MTP_KV_LAST_F16=0 to remove it")
+        else:
+            notes.append("MTP adds a second, small context for the draft head, not counted here")
     return Estimate(terms=tuple(terms), notes=tuple(notes), complete=complete)
 
 

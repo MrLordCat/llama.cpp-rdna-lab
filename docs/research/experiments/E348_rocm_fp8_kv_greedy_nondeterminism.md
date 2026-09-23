@@ -204,17 +204,41 @@ Fix options, cheapest first:
    are downstream of the target's logits, and the loop reproduces with
    `spec=none` too (as a different continuation, not a different mechanism).
 
+## 2026-09-18 Vulkan scope correction
+
+E348's default change was accidentally global even though its evidence and
+root cause were HIP/ROCm-specific. A same-process semantic smoke with
+Qwen3.8-27B Q4_K_M, seed 42 and the prompt `2+2` isolated the boundary:
+
+| Vulkan lane | Result |
+| --- | --- |
+| `spec=none`, f8/f8 | correct (`4`) |
+| MTP n2, f8/f8 or q8/q8, no tail | corrupted unrelated reasoning |
+| MTP n2, f16/f16 | correct (`4`) |
+| MTP n2, quantized KV, `LLAMA_VK_MTP_KV_LAST_F16=8` | correct (`4`) |
+
+Disabling device handoff, the KV-only process graph, and draft backend
+sampling did not change the corrupt output. The tail was the single effective
+control. The adjacent ROCm f8/MTP run remained correct without a target tail.
+
+Decision: keep E348's opt-in tail on HIP/ROCm, where the draft consumes its own
+cache after hidden-state handoff, but restore D096/D097's validated automatic
+Vulkan policy (8 layers; 12 for f8 at context >= 98K). Explicit
+`LLAMA_VK_MTP_KV_LAST_F16=0/N` remains the cross-backend override. The GUI
+memory estimate now charges the automatic Vulkan tail.
+
+Separately, a dual-ROCm L5 validation at ctx 200704 processed 189249 prompt
+tokens through every 32K sparse anchor with target ubatch 1088 and the new MTP
+draft-context ubatch 256. It completed at 283.38 prompt tok/s and 29.26 decode
+tok/s without the previous late compute-buffer OOM.
+
 ## Next
 
-1. Decide on (1) above and apply it with the env rollback kept, then re-run the
-   three arms to confirm the symptom does not return.
-2. Repeat `none,none` on `q8_0` KV: `kv_q8` is in the same auto-enable branch, so
-   the same tail is applied there; compare with/without the knob.
-3. Re-run the drift check whenever GPU state differs (another server running,
+1. Re-run the drift check whenever GPU state differs (another server running,
    display workload, background game) - the earlier outliers all came from runs
    whose environment was not controlled; a lane is only trustworthy when the
    probe port was verified free and no other model server exists.
-4. Keep the prefill cost in view: the fp8 lane's whole point is prompt
+2. Keep the prefill cost in view: the fp8 lane's whole point is prompt
    evaluation, and the tail costs `-13.5%` of it.
 
 ## Artifacts

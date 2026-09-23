@@ -683,17 +683,22 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     // MTP process() batches only populate the draft layer's KV cache. They do
     // not request logits or consume the layer output, so the attention body,
     // output projection, FFN, final norm and LM head are dead work.
+    //
+    // E315 (2026-07-15, ROCm) validated this shortcut for HIP. Keep the full
+    // graph on other backends: enabling it by default on Vulkan changed Qwen3.5
+    // MTP output quality even though the omitted tensors appeared dead.
+    // LLAMA_MTP_KV_ONLY_PROCESS remains an explicit diagnostic override.
     static const bool kv_only_process = [] {
         const char * value = std::getenv("LLAMA_MTP_KV_ONLY_PROCESS");
         if (value != nullptr && value[0] != '\0') {
             return std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0 &&
                    std::strcmp(value, "off") != 0 && std::strcmp(value, "no") != 0;
         }
-#if defined(GGML_USE_HIP)
+    #if defined(GGML_USE_HIP)
         return true;
-#else
+    #else
         return false;
-#endif
+    #endif
     }();
     if (kv_only_process && n_outputs == 0) {
         build_attn_kv_store(inp_attn, Kcur, Vcur, il);

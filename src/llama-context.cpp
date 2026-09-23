@@ -4868,7 +4868,16 @@ size_t llama_state_seq_load_file(llama_context * ctx, const char * filepath, lla
 int32_t llama_encode(
         llama_context * ctx,
           llama_batch   batch) {
-    const int ret = ctx->encode(batch);
+    int ret;
+    try {
+        ret = ctx->encode(batch);
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: exception while encoding: %s\n", __func__, err.what());
+        return -3;
+    } catch (...) {
+        LLAMA_LOG_ERROR("%s: unknown exception while encoding\n", __func__);
+        return -3;
+    }
     if (ret != 0) {
         LLAMA_LOG_ERROR("%s: failed to encode, ret = %d\n", __func__, ret);
     }
@@ -4879,7 +4888,16 @@ int32_t llama_encode(
 int32_t llama_decode(
         llama_context * ctx,
           llama_batch   batch) {
-    const int ret = ctx->decode(batch);
+    int ret;
+    try {
+        ret = ctx->decode(batch);
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: exception while decoding: %s\n", __func__, err.what());
+        return -3;
+    } catch (...) {
+        LLAMA_LOG_ERROR("%s: unknown exception while decoding\n", __func__);
+        return -3;
+    }
     if (ret != 0 && ret != 1) {
         LLAMA_LOG_ERROR("%s: failed to decode, ret = %d\n", __func__, ret);
     }
