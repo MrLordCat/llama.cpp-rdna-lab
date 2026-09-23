@@ -51,9 +51,11 @@ def create_app(config: AppConfig | None = None):
     suppress_error_dialogs()
 
     # Device discovery reads logs and the registry only, so it is safe to run
-    # at startup even while the GPUs are busy.
+    # at startup even while the GPUs are busy. The logs themselves sit beside
+    # each run under build_logs/, not in the agent-workload directory that only
+    # holds the canonical CSVs, so the whole tree is a root.
     devices = DeviceService(
-        [config.artifacts_dir, config.builds / "build_logs" / "agent-workload"],
+        [config.artifacts_dir, config.builds / "build_logs"],
         config.display_devices,
     )
     devices.start()

@@ -1451,8 +1451,21 @@ def log_panel(supervisor: Supervisor, oob: bool = False) -> Div:
             _poller(supervisor, cursor),
             id="log",
             cls="logbox",
-            # htmx's own event hook, not a JS dependency: keep the tail in view
-            **{"hx-on::after-settle": "this.scrollTop = this.scrollHeight"},
+            # Remember the reader's intent when they scroll, rather than trying
+            # to infer it just before each htmx swap. That makes the choice
+            # stable across the one-second tail-marker replacements: scrolling
+            # up pauses following immediately, and returning to the bottom
+            # resumes it.
+            **{
+                "data-follow-tail": "1",
+                "hx-on:scroll":
+                    "this.dataset.followTail ="
+                    " (this.scrollHeight - this.scrollTop - this.clientHeight <= 24)"
+                    " ? '1' : '0'",
+                "hx-on::after-settle":
+                    "if (this.dataset.followTail === '1')"
+                    " { this.scrollTop = this.scrollHeight }",
+            },
         ),
         id="logpanel",
         cls="panel",

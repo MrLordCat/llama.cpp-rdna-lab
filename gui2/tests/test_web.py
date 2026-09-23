@@ -163,6 +163,27 @@ def test_status_and_log_partials_follow_a_job(client):
 def test_stop_on_an_idle_slot_is_harmless(client):
     assert "Nothing to stop" in client.post("/server/stop").text
 
+def test_the_log_tail_is_followed_only_while_the_reader_is_at_the_bottom(client):
+    """A run prints a line a second; reading back through it must be possible.
+
+    The panel used to jump to the tail after every swap, so scrolling up
+    during a running server was undone once per poll. The reader's decision is
+    now stored when the scroll happens, and only returning to the bottom turns
+    following back on.
+    """
+    html = client.get("/server").text
+
+    initial = re.search(r'data-follow-tail="([^"]*)"', html)
+    scroll = re.search(r'hx-on:scroll="([^"]*)"', html)
+    after = re.search(r'hx-on::after-settle="([^"]*)"', html)
+    assert initial and initial.group(1) == "1"
+    assert scroll and after, "the log panel no longer records or applies follow-tail"
+    assert "dataset.followTail" in scroll.group(1)
+    assert "dataset.followTail === '1'" in after.group(1).replace("&#x27;", "'")
+    assert "before-swap" not in html
+    # the unguarded jump is what made the panel unusable; it must be gone
+    assert not re.search(r'after-settle="\s*this\.scrollTop = this\.scrollHeight\s*"', html)
+
 
 def announce(*lines: str) -> list[str]:
     """A child that says what llama-server says as it allocates, then exits."""

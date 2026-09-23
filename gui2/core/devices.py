@@ -34,6 +34,12 @@ if TYPE_CHECKING:  # only for the annotation: this module must not need a probe
 LOG_GLOB = "*.server.log"
 #: newest logs only: a topology from months ago is not worth the read
 LOG_LIMIT = 25
+#: How far a search may descend below a root, and how many directories it may
+#: visit. bench2 files its logs as ``build_logs/<program>/<run>.server.log``,
+#: so two levels is the real shape; the bounds keep the walk off the archive
+#: trees, which hold thousands of logs nobody needs to confirm a topology.
+LOG_MAX_DEPTH = 3
+LOG_DIR_BUDGET = 400
 
 # llama_prepare_model_devices: using device Vulkan1 (AMD Radeon RX 9070 XT) (unknown id) - 15416 MiB free
 _USING_DEVICE = re.compile(
@@ -141,11 +147,41 @@ def _backend_of(name: str) -> str:
     return "cpu"
 
 
+def _log_files(root: Path) -> list[Path]:
+    """Every ``*.server.log`` under one root, newest directories first.
+
+    The logs that name devices are written by bench2 next to the run they
+    belong to, one or two levels below ``build_logs``. A non-recursive glob of
+    the root therefore finds nothing on this machine and every device stays
+    "unconfirmed". Directories are visited newest-first and the walk is
+    bounded, so the newest logs are found even when the budget runs out in an
+    archive tree.
+    """
+    found: list[Path] = []
+    queue: list[tuple[Path, int]] = [(root, 0)]
+    visited = 0
+    while queue and visited < LOG_DIR_BUDGET:
+        directory, depth = queue.pop(0)
+        visited += 1
+        try:
+            children = sorted(directory.iterdir(),
+                              key=lambda path: path.stat().st_mtime if path.exists() else 0,
+                              reverse=True)
+        except OSError:
+            continue
+        for child in children:
+            if child.is_dir():
+                if depth < LOG_MAX_DEPTH:
+                    queue.append((child, depth + 1))
+            elif child.name.endswith(LOG_GLOB[1:]):
+                found.append(child)
+    return found
+
 def newest_logs(roots: Iterable[Path], limit: int = LOG_LIMIT) -> list[Path]:
     found: list[Path] = []
     for root in roots:
         if root and root.is_dir():
-            found.extend(root.glob(LOG_GLOB))
+            found.extend(_log_files(root))
     found.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True)
     return found[:limit]
 
@@ -371,8 +407,13 @@ def scan(log_roots: Iterable[Path], endpoints: Iterable[str] = (),
 
     adapters = display_adapters()
     local = [device for device in known.values() if device.backend in {"vulkan", "rocm"}]
+    # A log names the devices of the backend that wrote it. The other backend
+    # therefore has nothing confirmed yet even though `local` is not empty: an
+    # empty device list for the selected build reads as "this build cannot use
+    # a GPU", so fall back to the adapter list for that backend too.
+    hinted = [device for device in local if device.backend == backend_hint]
 
-    if not local and adapters and backend_hint in {"vulkan", "rocm"}:
+    if not hinted and adapters and backend_hint in {"vulkan", "rocm"}:
         # No run to learn from: assume llama.cpp enumerates the adapters in the
         # order the OS lists them. Flagged as unconfirmed, because it is.
         prefix = "Vulkan" if backend_hint == "vulkan" else "ROCm"

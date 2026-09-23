@@ -45,12 +45,20 @@ read when it is clicked in the first minutes after a reboot (measured
 12:08:06). A second click while the GUI already runs looked the same, because
 uvicorn's bind error also vanished with the window.
 
+**Linux, since 2026-09-18:** the launcher points at this checkout
+(`llama.cpp-with-GUI`, branch `master`), not at the retired
+`llama.cpp-gui2` worktree. Both were worktrees of the same repository, but only
+the mirror held the Linux `build-rocm-linux`/`build-vulkan-linux` builds; those
+now live here, with `RUNPATH` baked to this path. `gui2.config.json` keeps
+`data_root`/`builds_root` on this checkout, so history, state and the device
+logs the scan reads all sit next to the lab's own records.
+
 | Step | File | What it does |
 |---|---|---|
 | Shortcut | `~/Desktop/llama-gui2.desktop` | `Exec=bash ~/.local/bin/llama-gui2 --open`, `Terminal=true` so a failure can be read |
-| Home wrapper | `~/.local/bin/llama-gui2` | sits in `$HOME`, which is always mounted: waits for the volume, asks `udisksctl` to mount it, then hands over; `--mount-only` is what the login autostart runs |
+| Home wrapper | `~/.local/bin/llama-gui2` | sits in `$HOME`, which is always mounted: waits for the volume, asks `udisksctl` to mount it, then hands over; `--mount-only` is what the login autostart runs. The NTFS mount carries no exec bit, so it looks for `start-gui.sh` rather than for an executable file |
 | Autostart | `~/.config/autostart/llama-gui2-mount.desktop` | mounts the volume at login, so the shortcut works immediately after a reboot |
-| Launcher | `start-gui.sh` (worktree) | venv + dependencies, then `python -m gui2`; a second copy joins the running one instead of fighting for the port |
+| Launcher | `start-gui.sh` (this checkout) | venv + dependencies, then `python -m gui2`; a second copy joins the running one instead of fighting for the port |
 | Server | `gui2/__main__.py` | joins an instance that already holds the port and opens the browser only once the port answers |
 
 Knobs used by the tests and by unusual setups: `GUI2_REPO_DIR`, `GUI2_VENV`,
