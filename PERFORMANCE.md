@@ -1,16 +1,18 @@
 # Current Performance
 
-Snapshot: **2026-09-09**.
+Snapshot: **2026-09-23**.
 
 Reference machine: 2x AMD Radeon RX 9070 XT (16 GB, `gfx1201`), AMD Ryzen 7
 5800X3D, 64 GB RAM, dual-GPU layer split.
 
 Platform note:
-- **Windows** rows are production measurements on Windows 11 (ROCm/HIP 7.1,
-  AMD Vulkan) and are kept from the last verified reference runs; fresh
-  Windows re-runs are planned, until then these are the Windows reference.
-- **Linux** rows were measured on Linux with ROCm 10 (2026-09-09, W20-W26) and
-  are explicitly labeled with their L1/L2 lane; Windows repeats are pending.
+- **Windows** rows are production measurements on Windows 11 (ROCm/HIP 7.2 and
+  AMD Vulkan), re-run 2026-09-23 on `7c49e6212` (`build-rocm72`,
+  `build-vulkan-gcc16`); the L1-L3 Windows-vs-Linux bracket is in
+  [Windows vs Linux L1-L3](#windows-vs-linux-l1-l3-2026-09-23).
+- **Linux** rows were measured on Linux with ROCm 10 (2026-09-09, W20-W26);
+  they used GPU peer-to-peer (P2P), which ROCm on Windows does not provide, so
+  Windows ROCm numbers are a non-P2P baseline.
 
 Older benchmark tables (fork-vs-stock snapshots, Bonsai, extended/near-capacity,
 pre-Qwen3.8 rows) were removed from this file awaiting the Windows re-runs.
@@ -114,10 +116,80 @@ match two scheduler lifecycles for each of the two tasks; they are not model
 reloads initiated by the benchmark harness. Artifacts use
 `d098-vk35b-32k-{q8,f8}-{none,mtp2}-r1`.
 
+### Windows vs Linux L1-L3 (2026-09-23)
+
+Same lane contract as the Linux table below, re-run on Windows 11 with
+`7c49e6212`: `build-rocm72` (HIP 7.2) and `build-vulkan-gcc16`. KV
+`f8_e4m3 / f8_e4m3`, `b8192/ub1024`, FlashAttention, `-ngl 999`, one slot,
+cold prompt, `seed 42`, temp 0.2, top-p 0.9, `--no-warmup`, repo-snapshot
+L1/L2, synthetic L3. Actual prompt geometry: L1 8386, L2 32996, L3 64287
+tokens (Linux L2 33865 = +2.6%). Single run per cell (r1); artifacts
+`build_logs/bench/win-*`, index in `build_logs/bench/index.csv`.
+
+**Windows ROCm 7.2** (`ROCm1,ROCm0 -sm layer -ts 1,1`):
+
+| Model / format | Lane | Spec | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| MXFP4-requant (dense) | L1 | none | 1999.23 | 27.05 | 14.340 | - |
+| Q4_K_M (UD) | L1 | none | 2007.84 | 23.82 | 13.402 | - |
+| Q4_K_M (UD) | L1 | MTP n3 | 1810.81 | 38.22 | 16.040 | 76/149 (51.0%) |
+| MXFP4-requant (UD) | L1 | MTP n3 | 1825.71 | 44.77 | 17.175 | 74/155 (47.7%) |
+| Q4_K_M (UD) | L2 | none | 1819.46 | 24.00 | 8.888 | - |
+| MXFP4-requant (UD) | L2 | none | 1813.11 | 25.25 | 9.034 | - |
+| Q4_K_M (UD) | L2 | MTP n3 | 1744.44 | 36.10 | 9.844 | 153/306 (50.0%) |
+| MXFP4-requant (UD) | L2 | MTP n3 | 1751.81 | 41.49 | 10.238 | 149/315 (47.3%) |
+| MXFP4-hybrid-attnQ6 | L2 | none | 1756.82 | 24.44 | 8.750 | - |
+| NVFP4-native | L2 | none | 79.05 | 24.65 | 0.598 | - |
+| Q4_K_M (UD) | L3 | none | 1525.66 | 20.92 | 4.708 | - |
+| MXFP4-requant (UD) | L3 | none | 1528.46 | 22.01 | 4.768 | - |
+| Q4_K_M (UD) | L3 | MTP n3 | 1472.01 | 36.37 | 5.048 | 164/272 (60.3%) |
+| MXFP4-requant (UD) | L3 | MTP n3 | 1482.71 | 36.78 | 5.088 | 148/316 (46.8%) |
+| MXFP4-hybrid-attnQ6 | L3 | none | 1484.54 | 21.35 | 4.630 | - |
+| NVFP4-native | L3 | none | 79.71 | 22.35 | 0.313 | - |
+
+**Windows Vulkan** (`Vulkan1,Vulkan0 -sm layer -ts 1,1`):
+
+| Model / format | Lane | Spec | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| MXFP4-requant (dense) | L1 | none | 1746.42 | 28.06 | 13.670 | - |
+| Q4_K_M (UD) | L1 | none | 1569.17 | 25.42 | 12.332 | - |
+| Q4_K_M (UD) | L1 | MTP n3 | 1606.98 | 39.00 | 15.059 | 78/146 (53.4%) |
+| MXFP4-requant (UD) | L1 | MTP n3 | 1739.19 | 46.35 | 16.879 | 75/151 (49.7%) |
+| Q4_K_M (UD) | L2 | none | 1470.80 | 23.61 | 7.693 | - |
+| MXFP4-requant (UD) | L2 | none | 1577.90 | 25.95 | 8.318 | - |
+| Q4_K_M (UD) | L2 | MTP n3 | 1580.02 | 35.36 | 9.103 | 151/311 (48.6%) |
+| MXFP4-requant (UD) | L2 | MTP n3 | 1703.11 | 44.99 | 10.214 | 155/299 (51.8%) |
+| MXFP4-hybrid-attnQ6 | L2 | none | 1542.28 | 24.67 | 8.057 | - |
+| NVFP4-native | L2 | none | 1560.12 | 25.81 | 8.240 | - |
+| Q4_K_M (UD) | L3 | none | 1243.99 | 22.19 | 4.050 | - |
+| MXFP4-requant (UD) | L3 | none | 1322.88 | 23.48 | 4.303 | - |
+| Q4_K_M (UD) | L3 | MTP n3 | 1357.37 | 35.14 | 4.685 | 162/278 (58.3%) |
+| MXFP4-requant (UD) | L3 | MTP n3 | 1447.82 | 41.64 | 5.064 | 156/297 (52.5%) |
+| MXFP4-hybrid-attnQ6 | L3 | none | 1295.55 | 22.61 | 4.200 | - |
+| NVFP4-native | L3 | none | 1307.73 | 23.17 | 4.252 | - |
+
+Deltas against Linux ROCm 10 (prompt / decode):
+
+- NVFP4-native Windows ROCm `-84% / -1%` at L2 and `-83% / +3%` at L3 -
+  unusable for prompt-heavy lanes on Windows HIP; Windows Vulkan runs the
+  same file at `1560/1307` prompt tok/s.
+- MXFP4 prompt `-11%` (L1 dense), `-13%` (L2 UD), `-13%` (L3 UD); decode
+  within `-3%`.
+- Q4_K_M spec-none at parity (`+3%/+2%` L2, `-1%/+1%` L3); Q4_K_M MTP n3
+  decode `-24%` (L1), `-10%` (L2), `+9%` (L3) driven by lower Windows
+  acceptance (47-60% vs 52-78%).
+- Vulkan prompt is `-15..-20%` against Windows ROCm, decode at parity;
+  Vulkan MTP rows at L3 keep `+9%` decode over Linux.
+
+P2P caveat: Linux ROCm rows used GPU peer-to-peer transfers; ROCm on Windows
+does not expose P2P, so Windows ROCm rows are a non-P2P baseline and the
+delta mixes OS/driver and interconnect differences.
+
 ## Linux reference (2026-09-09) — L1 / L2 / L3, ROCm 10
 
-Measured on Linux with ROCm 10 on the same 2x RX 9070 XT hardware; Windows
-re-runs are planned. Contract (bench2 `rdna-lab`): `batch 8192 / ubatch 1024`,
+Measured on Linux with ROCm 10 on the same 2x RX 9070 XT hardware;
+Windows re-runs completed 2026-09-23 (see above). Contract (bench2
+`rdna-lab`): `batch 8192 / ubatch 1024`,
 KV `f8_e4m3 / f8_e4m3`, FlashAttention, `ROCm1,ROCm0 -sm layer -ts 1,1`,
 `-ngl 999`, one slot, cold prompt, `seed 42`, temp 0.2, top-p 0.9,
 `--no-warmup`, repo-snapshot prompts for L1/L2:
@@ -215,6 +287,13 @@ Reading the trade-off:
 
 ## Change log (recent, affecting the tables above)
 
+- 2026-09-23 (Windows re-run): all 15 Linux L1-L3 rows repeated on Windows 11
+  with ROCm/HIP 7.2 and Vulkan (`7c49e6212`, `build-rocm72` +
+  `build-vulkan-gcc16`), 32 runs, r1. Q4_K_M spec-none and hybrid at parity
+  with Linux (±3%); MXFP4 prompt 11-13% lower on Windows ROCm; NVFP4-native
+  collapses on Windows ROCm (79 vs 489 prompt tok/s) but runs normally on
+  Windows Vulkan; Windows MTP acceptance 47-60% vs 52-78% on Linux. Artifacts
+  `build_logs/bench/win-*`.
 - 2026-09-09 (W20-W26): MXFP4 decode geometry (`nwarps=8`), MXFP4 prefill MMQ
   routing (+17-21%), MTP acceptance profile (negative for p_min/n_max/Q6
   draft), native BF16->MXFP4/NVFP4 quality (PPL table above).

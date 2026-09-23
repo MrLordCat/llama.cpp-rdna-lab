@@ -252,10 +252,13 @@ between two runs. A line that is not an assignment is reported and skipped
 rather than becoming a variable named after the sentence someone meant to
 write.
 
-The header links carry the page they come from: Server's "Autotune" opens the
-sweep of what is on screen, Autotune's "Server" opens the same run again.
-The pages are pieces of one question, not four separate forms, so moving
-between them does not cost the configuration.
+The header links are plain links, and each page opens on what it remembers:
+Server and Autotune are pieces of one question, not four separate forms, so
+moving between them does not cost the configuration. The pages that describe a
+run keep it in the GUI's own state (`build_logs/gui2/`, so the same file is
+written on Windows and on Linux) rather than in the address bar; the launch
+settings are shared between the two forms because they describe the same run,
+while Autotune keeps its sweep axes to itself.
 
 The build list is dated and ordered by date rather than by name. Eight
 `build-*` directories accrete over a few months of trying backends, and the
@@ -299,11 +302,18 @@ is written as `auto`, not as an ambiguous missing value. bench2 declares an
 lookahead from the run name, which is named after the configuration — that
 is what makes a row legible as `mtp n2` rather than silently `none`.
 
-Every Autotune form submission also stores the same secret-free query string
-used by the address bar in `build_logs/gui2/autotune-state.json`. Opening a
-plain `/autotune` page restores the last levels, sweep axes, repeats and server
-settings. A link from Server replaces its model, build and devices while the
-remembered workload and sweep choices stay selected.
+Every form submission writes the run down, so the pages do not need a link to
+know what was being worked on. The launch settings of the run — everything the
+Server page launches — go to `build_logs/gui2/server-state.json`; they are
+written by whichever page edited them last, because both forms describe the
+same run. Autotune's own axes (levels, batch sizes, KV and the rest of the
+sweep) go to `build_logs/gui2/autotune-state.json`, keeping every ticked value
+rather than only the last. Opening `/server` or `/autotune` with no link at all
+brings back the run and the sweep as they were left, across a GUI restart; a
+link that names a few settings overwrites exactly those and leaves the rest as
+the form was. The API key is never written down, so nothing that was not typed
+into the address bar can come back through it. Autotune's workload and sweep
+survive a Server link that changes only the model, build and devices.
 
 bench2 spawns the server inside a Windows job with kill-on-close and stops
 it hard after a short grace period, so no interrupted or RPC-hung bench
@@ -322,12 +332,12 @@ Worker addresses box — so the recipe is: run the file there as Administrator,
 press Check here, tick `RPC0`. Nothing is executed remotely and no
 credentials are held, because the worker machine belongs to whoever is
 sitting in front of it, and reaching over would need a password the GUI has
-no business keeping. A Check also keeps the address in the URL, so the link
-to the Autotune page carries the worker along, and on that page pasting an
-address refreshes the device list in place instead of asking for the Server
-page first. The two tabs are one form: their header links re-read the
-address bar when clicked, so a worker typed after the page loaded survives
-Server → Autotune → Server and never has to be entered twice.
+no business keeping. A Check also remembers the worker in the Server form's
+own state, so the Autotune page opens with it in the box, and pasting an
+address there refreshes the device list in place instead of asking for the
+Server page first. The two tabs are plain links over that shared state, so a
+worker typed after the page loaded survives Server → Autotune → Server and
+never has to be entered twice.
 
 Nothing on it is typed that can be ticked or dragged instead. Each axis is a
 row of values to tick rather than a comma-separated line to spell: one ticked
