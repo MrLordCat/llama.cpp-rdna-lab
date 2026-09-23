@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Sequence
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode
 
 from fasthtml.common import (
     A,
@@ -46,6 +46,8 @@ from gui2.core.memory import (
     gib,
     kv_alternatives,
     kv_bytes,
+    mtp_tail_bytes,
+    mtp_tail_layers_for,
     MIB,
 )
 from gui2.core.measured import Measurement, notes as measured_notes
@@ -170,6 +172,30 @@ def state_query(params, refit: RunSpec | None = None,
             ordered[at[key]] = pair
     return urlencode(ordered)
 
+
+def launch_query(params, spec: RunSpec | None = None) -> str:
+    """The launch settings as the text the GUI remembers them by.
+
+    The page writes this after every edit and reads it back when it opens
+    without one, so the form shows the run that was last on screen instead of
+    the defaults, and nothing about it lives in the address bar.
+
+    Only what describes the run is kept -- the fields of `RunSpec` plus the
+    worker box. The Autotune page submits the same fields beside its sweep
+    axes, and a sweep (`levels`, `kv`, several values under one name) is not a
+    launch setting: it belongs to that page's own store, which keeps every
+    value, while this one keeps the last value of each launch field.
+
+    It is the same string a link between pages would carry -- secrets dropped,
+    `_form` present -- so a remembered form is read back by the very code that
+    reads a URL: an absent checkbox stays off, and a link that names one
+    setting still only overrides that setting.
+    """
+    pairs = parse_qsl(state_query(params, refit=spec), keep_blank_values=True)
+    kept = [(key, value) for key, value in pairs if key in LAUNCH_NAMES]
+    if FORM_MARKER not in {key for key, _value in kept}:
+        kept.append((FORM_MARKER, "1"))
+    return urlencode(kept)
 
 def spec_link(spec: RunSpec) -> str:
     """A whole spec as a query string, for a link between pages.
@@ -750,6 +776,12 @@ def devices_field(spec: RunSpec, scan: Scan, backend: str, oob: bool = False):
 #: they are not RunSpec fields and never reach a llama-server command line.
 WORKER_FIELDS = ("rpc_host", "rpc_port", "rpc_devices", "rpc_open", "rpc_cache")
 
+#: everything the Server page remembers as one run: the spec it launches and
+#: the worker box it sets up. Deliberately not "every field that was
+#: submitted": the Autotune page submits its sweep axes on the same form, and
+#: those are kept -- every tick of them -- by the Autotune store instead.
+LAUNCH_NAMES = frozenset(field.name for field in fields(RunSpec)) | frozenset(WORKER_FIELDS)
+
 
 def worker_plan(params) -> WorkerPlan:
     """The worker command's settings, from the form or from the defaults."""
@@ -1077,16 +1109,58 @@ def _file_size(path: str) -> int:
 def _kv_term(report: Estimate) -> float:
     return next((term.mib for term in report.terms if term.label == "KV cache"), 0.0)
 
+def _tail_term(report: Estimate, spec: RunSpec, facts: ModelFacts) -> tuple[float, int, bool]:
+    """The MTP f16 KV tail in this estimate: its cost, its layers, and who chose it.
+
+    The layer count comes from the same rule the build uses, so a tip can name
+    a number a run will actually take.
+    """
+    mib = next((term.mib for term in report.terms if term.label == "MTP f16 KV tail"), 0.0)
+    if mib <= 0:
+        return 0.0, 0, False
+    layers, auto = mtp_tail_layers_for(spec, facts)
+    return mib, layers, auto
+
 
 def _ways_out(spec: RunSpec, facts: ModelFacts, report: Estimate, budget: float) -> list[str]:
-    """Concrete ways to make it fit, priced. Two at most; more is noise."""
+    """Concrete ways to make it fit, priced. Two at most; more is noise.
+
+    The MTP f16 KV tail is priced like the KV cache it overrides, because it
+    grows with the context: a context that "fits as configured" has to pay for
+    the tail on every added token, and on Vulkan the build switches that tail
+    on by itself. Leaving it out of the arithmetic is how a config gets told it
+    fits and then refuses to start.
+    """
     tips: list[str] = []
     kv = _kv_term(report)
-    room = budget - (report.total_mib - kv)
-    fits = context_for_budget(facts, room, spec.cache_type_k, spec.cache_type_v)
+    tail_mib, tail_layers, auto_tail = _tail_term(report, spec, facts)
+    room = budget - (report.total_mib - kv - tail_mib)
+    per_token = ((kv_bytes(facts, 1, spec.cache_type_k, spec.cache_type_v)
+                  + mtp_tail_bytes(facts, 1, spec.cache_type_k, spec.cache_type_v, tail_layers)) / MIB)
+    fits = int(room / per_token) if per_token > 0 and room > 0 else 0
     _low, _high, step = bounds(BY_NAME["ctx_size"], None, facts.n_ctx_train)
     if fits >= step:
         tips.append(f"{context_text(int(fits // step * step))} of context would fit as configured")
+    if tail_layers and tail_mib > 0:
+        per_layer = tail_mib / tail_layers
+        headroom = budget - report.total_mib
+        if headroom < 0 and per_layer > 0:
+            # the tail is priced per token, so it is the one term that can be
+            # trimmed to any size without changing what the model can see
+            keep = max(0, int((tail_mib + headroom) / per_layer))
+            if keep:
+                tips.append(f"LLAMA_VK_MTP_KV_LAST_F16={keep} keeps the f16 tail to "
+                            f"{keep} layers and saves {gib((tail_layers - keep) * per_layer)}")
+            else:
+                tips.append("LLAMA_VK_MTP_KV_LAST_F16=0 removes the f16 tail "
+                            f"({gib(tail_mib)}); the draft then reads the quantized cache")
+        elif tail_mib >= 1024:
+            # It fits, but a tail this size is the first thing to give back when
+            # one card rather than the pair is what overflows, and this estimate
+            # adds the pair up.
+            who = "the build switches on" if auto_tail else "this run asks for"
+            tips.append(f"{who} an f16 KV tail of {gib(tail_mib)} over {tail_layers} layers; "
+                        f"LLAMA_VK_MTP_KV_LAST_F16 sets the count explicitly")
     for name, other in kv_alternatives(facts, spec.ctx_size, spec.cache_type_k):
         if kv - other > 0 and spec.cache_type_k == spec.cache_type_v:
             tips.append(f"a {name} KV cache saves {gib(kv - other)}")
@@ -1244,6 +1318,13 @@ def memory_panel(spec: RunSpec, facts: ModelFacts | None, scan: Scan, backend: s
         if headroom >= 0:
             verdict.append(Div(f"Fits: {gib(headroom)} to spare of {gib(budget)} {source} "
                                f"({summary})", cls="problem ok"))
+            if facts is not None:
+                # It fits as a pair, which is not the same as fitting a card: a
+                # large f16 tail is the first thing to give back when one device
+                # is what overflows, so it is named even here.
+                verdict += [Div(tip, cls="hint block")
+                            for tip in _ways_out(spec, facts, report, budget)
+                            if "LLAMA_VK_MTP_KV_LAST_F16" in tip]
         else:
             verdict.append(Div(f"⚠ {gib(-headroom)} over the {gib(budget)} {source} "
                                f"({summary})", cls="problem err"))
@@ -1295,15 +1376,18 @@ def _port_problems(spec: RunSpec) -> list[Problem]:
                             f"{advice}. Two servers cannot share one port.")]
 
 
-def child_env(config: AppConfig, spec: RunSpec, backend: str) -> dict[str, str]:
+def child_env(config: AppConfig, spec: RunSpec, backend: str,
+              build: Build | None = None) -> dict[str, str]:
     """Environment for a child: the machine's own, plus the form's variables.
 
-    ``runtime_env`` carries what the machine needs to run at all (ROCm's lib
-    directory); the Environment box carries what the run needs, and is applied
-    last so a switch like ``LLAMA_VK_MTP_KV_LAST_F16=0`` cannot be lost behind
-    the platform defaults.
+    ``runtime_env`` carries what the machine needs to run at all (ROCm's
+    runtime -- ``LD_LIBRARY_PATH`` on Linux, ``PATH`` on Windows); the
+    Environment box carries what the run needs, and is applied last so a switch
+    like ``LLAMA_VK_MTP_KV_LAST_F16=0`` cannot be lost behind the platform
+    defaults.
     """
-    return {**config.runtime_env(backend), **parse_env_vars(spec.env_vars)}
+    build_dir = Path(build.path) if build is not None and build.path is not None else None
+    return {**config.runtime_env(backend, build_dir), **parse_env_vars(spec.env_vars)}
 
 
 def preview(config: AppConfig, spec: RunSpec, scan: Scan, oob: bool = False,
@@ -1437,17 +1521,47 @@ def _poller(supervisor: Supervisor, cursor: int):
     )
 
 
+#: What is worth reading at a glance in a streaming log: the speeds a request
+#: reports, the durations beside them, and how many drafts were accepted. These
+#: sit on lines that otherwise look like every other line, so they are marked
+#: here rather than left to be found by eye in a wall of text.
+_LOG_NUMBERS = re.compile(
+    r"(?P<speed>[\d.]+\s+tokens per second|[\d.]+\s+ms per token)"
+    r"|(?P<time>[\d.]+\s+ms\b)"
+    r"|(?P<rate>acceptance rate = [\d.]+)"
+)
+
+def log_line(text: str) -> Div:
+    """One log line, with its speed numbers marked."""
+    parts: list = []
+    at = 0
+    for match in _LOG_NUMBERS.finditer(text):
+        if match.start() > at:
+            parts.append(text[at:match.start()])
+        parts.append(Span(match.group(0), cls=f"lg-{match.lastgroup}"))
+        at = match.end()
+    parts.append(text[at:])
+    return Div(*parts, cls="logline")
+
 def log_since(supervisor: Supervisor, cursor: int):
     cursor, lines = supervisor.log_since(cursor)
-    return (*[Div(line, cls="logline") for line in lines], _poller(supervisor, cursor))
+    return (*[log_line(line) for line in lines], _poller(supervisor, cursor))
 
+
+def log_stats(supervisor: Supervisor, oob: bool = False) -> Span:
+    """The heading's live numbers: the average speed of the last few requests.
+
+    Rendered inside the Log heading so it reads as one line with the log, and
+    re-sent out of band by each poll so it moves as the log moves."""
+    return Span(supervisor.turns_summary(), id="logstats", cls="logstats",
+                hx_swap_oob="true" if oob else None)
 
 def log_panel(supervisor: Supervisor, oob: bool = False) -> Div:
     cursor, lines = supervisor.log_since(0)
     return Div(
-        H3("Log"),
+        H3("Log", log_stats(supervisor)),
         Div(
-            *[Div(line, cls="logline") for line in lines],
+            *[log_line(line) for line in lines],
             _poller(supervisor, cursor),
             id="log",
             cls="logbox",
@@ -1525,7 +1639,7 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, scan: Scan):
     try:
         supervisor.start("server", label, to_argv(spec, build.server_bin),
                          cwd=build.path,
-                         env=child_env(config, spec, build.backend))
+                         env=child_env(config, spec, build.backend, build))
     except Busy as busy:
         return run_panel(supervisor, f"{busy.current.label} is still running", "error")
     return run_panel(supervisor), log_panel(supervisor, oob=True)
@@ -1541,5 +1655,4 @@ def page(config: AppConfig, spec: RunSpec, supervisor: Supervisor, scan: Scan, b
                 run_panel(supervisor), log_panel(supervisor), cls="stack"),
             cls="split",
         ),
-        nav={"/autotune": spec_link(spec)},
     )

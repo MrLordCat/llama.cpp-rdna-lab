@@ -23,6 +23,7 @@ from gui2.core.memory import (
     kv_bytes,
     layer_split,
     mtp_tail_bytes,
+    mtp_tail_layers_for,
     state_bytes,
     weight_bytes,
 )
@@ -143,6 +144,36 @@ def test_the_opt_in_mtp_f16_tail_is_priced_once_it_is_set(tmp_path: Path):
         10240 - 5120 + 3840 + sum(term.mib for term in report.terms
                                   if term.label not in {"KV cache", "MTP f16 KV tail"}))
     assert any("f16 KV tail is priced" in note for note in report.notes)
+
+def test_the_tail_count_and_who_chose_it(tmp_path: Path):
+    """The layer count the build picks, and whether it or the run is responsible."""
+    facts = read_facts(qwen35(tmp_path))
+    base = {"spec_type": "mtp", "cache_type_k": "f8_e4m3", "cache_type_v": "f8_e4m3"}
+
+    short = DEFAULTS.with_values({**base, "ctx_size": 49152, "build_dir": "build-vulkan-gcc16"})
+    assert mtp_tail_layers_for(short, facts) == (8, True)
+
+    long_ctx = short.with_values({"ctx_size": 98304})
+    assert mtp_tail_layers_for(long_ctx, facts) == (12, True), "long f8 contexts take twelve"
+
+    explicit = long_ctx.with_values({"env_vars": "LLAMA_VK_MTP_KV_LAST_F16=4"})
+    assert mtp_tail_layers_for(explicit, facts) == (4, False), "an explicit count is not the build's"
+
+    off = long_ctx.with_values({"env_vars": "LLAMA_VK_MTP_KV_LAST_F16=0"})
+    assert mtp_tail_layers_for(off, facts) == (0, False)
+
+    rocm = long_ctx.with_values({"build_dir": "build-rocm72"})
+    assert mtp_tail_layers_for(rocm, facts) == (0, False), "HIP never gets a tail"
+
+    # q8_0 is a quantized cache too, but never takes the long-context twelve
+    q8 = short.with_values({"ctx_size": 131072, "cache_type_k": "q8_0", "cache_type_v": "q8_0"})
+    assert mtp_tail_layers_for(q8, facts) == (8, True)
+
+    plain = long_ctx.with_values({"cache_type_k": "f16", "cache_type_v": "f16"})
+    assert mtp_tail_layers_for(plain, facts) == (0, False), "nothing to override on an f16 cache"
+
+    no_mtp = long_ctx.with_values({"spec_type": "none"})
+    assert mtp_tail_layers_for(no_mtp, facts) == (0, False)
 
 def test_the_vulkan_tail_is_automatic_but_rocm_stays_opt_in(tmp_path: Path):
     facts = read_facts(qwen35(tmp_path))

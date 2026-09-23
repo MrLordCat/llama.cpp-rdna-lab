@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal, Sequence
 
+from gui2.core.logstats import TurnTracker
 from gui2.core.measured import Measurement, Reader
 from gui2.proc import hidden
 
@@ -133,6 +134,8 @@ class Job:
         self.log = LogBuffer(capacity)
         #: the buffer above forgets; this remembers what the run said it took
         self._memory = Reader()
+        #: the buffer above forgets too; this keeps the last few requests' speeds
+        self._turns = TurnTracker()
         #: called once, when the child is gone and its output is fully read.
         #: The job stays ignorant of who is listening.
         self._on_finish = on_finish
@@ -187,6 +190,7 @@ class Job:
             for line in popen.stdout:
                 self.log.append(line)
                 self._memory.feed(line)
+                self._turns.feed(line)
         except Exception as exc:  # pragma: no cover - pipe teardown races
             self.log.append(f"[gui2] log stream ended: {exc}")
         finally:
@@ -271,6 +275,11 @@ class Job:
     def measurement(self) -> Measurement:
         """The memory this run reported, as far as it has got."""
         return self._memory.result()
+
+    def turns_summary(self) -> str:
+        """The average prompt/decode speed of the last few requests, as the log
+        says it; "" until a request has finished."""
+        return self._turns.summary()
 
 
 def job_spec(kind: str, label: str, argv: Sequence[str], cwd: Path | None = None,

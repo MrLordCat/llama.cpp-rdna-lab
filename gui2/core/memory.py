@@ -116,6 +116,25 @@ def mtp_tail_layers(env_text: str) -> int | None:
                 return 0
     return None
 
+def mtp_tail_layers_for(spec, facts: ModelFacts) -> tuple[int, bool]:
+    """Layers the MTP f16 KV tail covers for this run, and who chose it.
+
+    Vulkan picks the tail for you whenever the cache is quantized and the draft
+    is MTP: 8 layers, or 12 once the context reaches 98304. An explicit
+    ``LLAMA_VK_MTP_KV_LAST_F16`` - including ``0`` - always wins, and HIP never
+    gets one because E348 measured the tail as pure cost there. The second
+    value says whether the build, rather than the run, is what decided.
+    """
+    explicit = mtp_tail_layers(getattr(spec, "env_vars", ""))
+    if explicit is not None:
+        return explicit, False
+    build = str(getattr(spec, "build_dir", "")).lower()
+    quantized = (spec.cache_type_k == spec.cache_type_v
+                 and spec.cache_type_k in {"f8_e4m3", "q8_0"})
+    if spec.spec_type == "mtp" and "vulkan" in build and quantized:
+        return (12 if spec.cache_type_k == "f8_e4m3" and spec.ctx_size >= 98304 else 8), True
+    return 0, False
+
 def mtp_tail_bytes(facts: ModelFacts, ctx: int, type_k: str, type_v: str,
                    layers: int) -> float:
     """What keeping the last `layers` KV layers in f16 adds on a quantized cache.
@@ -187,16 +206,7 @@ def estimate(spec, facts: ModelFacts | None, devices: int = 1,
     if state:
         terms.append(Term("Recurrent state", state,
                           f"{recurrent} linear-attention layers, fixed per sequence"))
-    tail = mtp_tail_layers(getattr(spec, "env_vars", ""))
-    auto_tail = False
-    if (tail is None):
-        build = str(getattr(spec, "build_dir", "")).lower()
-        quantized = spec.cache_type_k == spec.cache_type_v and spec.cache_type_k in {"f8_e4m3", "q8_0"}
-        if spec.spec_type == "mtp" and "vulkan" in build and quantized:
-            tail = 12 if spec.cache_type_k == "f8_e4m3" and spec.ctx_size >= 98304 else 8
-            auto_tail = True
-        else:
-            tail = 0
+    tail, auto_tail = mtp_tail_layers_for(spec, facts)
     tail_mib = 0.0
     if spec.spec_type == "mtp" and tail > 0:
         tail_mib = mtp_tail_bytes(facts, spec.ctx_size, spec.cache_type_k,

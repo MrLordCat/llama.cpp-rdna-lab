@@ -309,5 +309,4 @@ def page(config: AppConfig, params) -> str:
     return shell(
         "Autotune history", "/autotune", config,
         table(config, params),
-        nav={"/autotune": ""},
     )

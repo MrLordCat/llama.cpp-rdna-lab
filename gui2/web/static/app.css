@@ -424,4 +424,21 @@ button.danger { border-color: var(--warn); color: var(--warn); }
 }
 .logline { white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* the numbers a run is judged by, picked out of the stream: the speeds, the
+   durations beside them, and how many drafts the model accepted */
+.logline .lg-speed { color: var(--good); font-weight: 600; }
+.logline .lg-time { color: var(--accent); }
+.logline .lg-rate { color: var(--warn); }
+
+/* the log's heading carries the live average of the last few requests in the
+   same line: title on the left, the numbers pushed to the right edge */
+#logpanel > h3 { display: flex; align-items: baseline; gap: 10px; }
+#logpanel .logstats {
+    margin-left: auto;
+    font: 11px/1.4 Consolas, "Cascadia Mono", monospace;
+    color: var(--muted);
+    white-space: nowrap;
+}
+#logpanel .logstats:empty { display: none; }
+
 .htmx-request .chart { opacity: 0.45; }

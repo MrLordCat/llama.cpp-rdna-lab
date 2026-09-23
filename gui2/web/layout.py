@@ -265,31 +265,24 @@ if (__devlist) deviceDrag(__devlist);
 """
 
 
-def _nav_link(href: str, label: str, active: str, nav: dict[str, str] | None):
-    """One tab. Server and Autotune share a form, so their links re-read the
-    address bar when clicked: a worker typed after the page loaded has already
-    updated the URL but not the baked href, and a click would silently drop it.
+def _nav_link(href: str, label: str, active: str):
+    """One tab: a plain link.
+
+    Server and Autotune used to carry the whole form in the link, and to re-read
+    the address bar when clicked. Both pages now open on the settings they
+    remember, so a tab is just a tab and the address bar stays clean.
     """
-    attrs: dict = {
-        "href": f"{href}?{nav[href]}" if nav and href in nav else href,
-        "cls": "active" if href == active else None,
-    }
-    if href in ("/server", "/autotune"):
-        attrs["data-path"] = href
-        attrs["onclick"] = "this.href=this.dataset.path+location.search"
-    return A(label, **attrs)
+    return A(label, href=href, cls="active" if href == active else None)
 
 
-def shell(title: str, active: str, config: AppConfig, *content,
-          nav: dict[str, str] | None = None):
-    """`nav` keeps the page the link comes from: Server's "Autotune" opens the
-    sweep of what is on screen, Autotune's "Server" opens the same run, rather
-    than two empty forms."""
+def shell(title: str, active: str, config: AppConfig, *content):
+    """The page frame. Tabs are plain links: each page opens on the settings it
+    remembers, so nothing about a run has to travel in the address bar."""
     return (
         Title(f"GUI 2.0 — {title}"),
         Header(
             H1("llama.cpp RDNA lab — GUI 2.0"),
-            Nav(*[_nav_link(href, label, active, nav) for href, label in NAV]),
+            Nav(*[_nav_link(href, label, active) for href, label in NAV]),
             Span(str(config.data_root), cls="path"),
             cls="top",
         ),

@@ -76,6 +76,12 @@ class Supervisor:
         job = self.job
         return job.measurement() if job else Measurement()
 
+    def turns_summary(self) -> str:
+        """The average prompt/decode speed of the last few requests of the job
+        on the slot, as the log says it; "" when there is no job yet."""
+        job = self.job
+        return job.turns_summary() if job else ""
+
     # -- control -----------------------------------------------------------
 
     def start(self, kind: str, label: str, argv: Sequence[str],

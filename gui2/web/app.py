@@ -5,14 +5,15 @@ from __future__ import annotations
 import secrets
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl
 
 from fasthtml.common import Div, HtmxResponseHeaders, Link, RedirectResponse, Script, fast_app
+from starlette.datastructures import QueryParams
 from starlette.responses import Response
 
 from gui2.config import AppConfig
 from gui2.core import rpc
-from gui2.core.autotune_state import AutotuneStateStore
+from gui2.core.form_state import FormStateStore
 from gui2.core.devices import DeviceService
 from gui2.core.history import HistoryStore, sync_autotune_runs
 from gui2.core.memstore import MemoryStore
@@ -28,7 +29,11 @@ def create_app(config: AppConfig | None = None):
     config = config or AppConfig.load()
     store = HistoryStore(config.history_csv)
     memory = MemoryStore(config.memory_json)
-    autotune_state = AutotuneStateStore(config.autotune_state_json)
+    # Two forms describe one run, so they share the launch settings: whichever
+    # page they were last edited on writes them. The sweep axes belong to
+    # Autotune's own store, because the Server page has no such fields.
+    server_state = FormStateStore(config.server_state_json)
+    autotune_state = FormStateStore(config.autotune_state_json)
 
     def learn(job) -> None:
         """Keep what a finished run left behind, in the store it belongs to.
@@ -107,30 +112,58 @@ def create_app(config: AppConfig | None = None):
         backend = build.backend if build else ""
         return server_page.rescan(devices, spec, backend), backend
 
-    def restored_autotune_query(params) -> str:
-        """Saved sweep choices merged onto an explicit run from Server.
+    def with_missing(params, pairs) -> QueryParams:
+        """Settings the URL does not mention, taken from a remembered form.
 
-        A full Autotune URL already says everything and is left alone. A
-        Server link owns the model, build and devices, while the remembered
-        form supplies only Autotune's workload and sweep fields.
+        The URL wins key by key rather than wholesale: a link from the Models
+        page names one model and says nothing about the rest, and the rest of
+        the form comes back as it was left instead of resetting to defaults.
+
+        A key the URL does mention is skipped whole -- and a key it does not is
+        taken whole, every value of it: the tick rows (`levels`, `kv`, the
+        device list) are several boxes under one name, and keeping only the
+        first would turn a saved sweep into a single measurement.
         """
-        saved = autotune_state.query()
-        if not saved or autotune_page.AUTOTUNE_MARKER in params:
-            return ""
-        if not params:
-            return saved
-        current = list(params.multi_items())
-        named = {key for key, _value in current}
-        bench_names = set(autotune_page.BENCH_BY_NAME)
-        remembered = [(key, value) for key, value in parse_qsl(
-            saved, keep_blank_values=True) if key in bench_names and key not in named]
-        return urlencode([*current, *remembered,
-                          (autotune_page.AUTOTUNE_MARKER, "1")])
+        merged = list(params.multi_items())
+        named = {key for key, _value in merged}
+        merged.extend((key, value) for key, value in pairs if key not in named)
+        return QueryParams(merged)
+
+    def remembered(params) -> QueryParams:
+        """A page's own form as it was last submitted, under the URL's settings."""
+        return with_missing(params, parse_qsl(server_state.query(),
+                                              keep_blank_values=True))
+
+    def restored_autotune(params) -> QueryParams:
+        """The run described on the Server page plus the sweep left on this one.
+
+        Launch settings come from whichever page edited them last, because
+        both forms write the same store; the workload and the sweep axes
+        belong to this page alone. Sweep values are only carried by an
+        Autotune page that is a search rather than a measurement of the run on
+        screen, so the marker travels with them.
+        """
+        merged = remembered(params)
+        bench = [(key, value) for key, value in parse_qsl(
+            autotune_state.query(), keep_blank_values=True)
+            if key in autotune_page.BENCH_BY_NAME]
+        merged = with_missing(merged, bench)
+        if bench and autotune_page.AUTOTUNE_MARKER not in merged:
+            merged = with_missing(merged, [(autotune_page.AUTOTUNE_MARKER, "1")])
+        return merged
 
     @rt("/server", methods=["GET"])
     def server(req):
-        spec = server_page.spec_from_params(req.query_params)
+        # The address bar carries a whole run when a link wrote one, and
+        # nothing at all when the tab was opened by hand: the rest of the form
+        # comes from where this page was last left.
+        params = remembered(req.query_params)
+        spec = server_page.spec_from_params(params)
         scan, backend = scanned(spec)
+        if req.query_params:
+            # a link that named a run was a choice: keep it, so the next visit
+            # -- from a tab, not from that link -- opens on the same run
+            server_state.remember(server_page.launch_query(params, spec))
         # the query string also carries the worker-setup boxes, which are not
         # llama-server flags and so are not part of the spec
         return server_page.page(config, spec, supervisor, scan, backend,
@@ -141,6 +174,7 @@ def create_app(config: AppConfig | None = None):
         params = await req.form()
         spec = server_page.spec_from_params(params)
         scan, backend = scanned(spec)
+        server_state.remember(server_page.launch_query(params))
         return (
             server_page.preview(config, spec, scan, supervisor=supervisor, store=memory),
             server_page.devices_field(spec, scan, backend, oob=True),
@@ -150,7 +184,6 @@ def create_app(config: AppConfig | None = None):
             # the split bars follow the device count, which this change may have
             # moved: a third card must draw a third bar without a reload
             server_page.balancer_field(spec, scan, backend, oob=True),
-            HtmxResponseHeaders(push_url="/server?" + server_page.state_query(params)),
         )
 
     @rt("/server/bounds", methods=["POST"])
@@ -160,11 +193,11 @@ def create_app(config: AppConfig | None = None):
         facts = server_page.model_facts(spec)
         spec = server_page.refit(spec, facts, server_page.read_ceilings(params))
         scan, _backend = scanned(spec)
+        server_state.remember(server_page.launch_query(params, spec))
         return (
             server_page.bounded_fields(spec, facts),
             server_page.preview(config, spec, scan, oob=True, supervisor=supervisor,
                                 store=memory),
-            HtmxResponseHeaders(push_url="/server?" + server_page.state_query(params, spec)),
         )
 
     @rt("/server/rpc/command", methods=["POST"])
@@ -203,15 +236,12 @@ def create_app(config: AppConfig | None = None):
         # RPC device after it — so the picker is redrawn from the same answer
         devices.remember(fleet)
         scan, backend = scanned(spec)
+        server_state.remember(server_page.launch_query(params, spec))
         return (
             server_page.rpc_status(spec, fleet),
             server_page.devices_field(spec, scan, backend, oob=True),
             # a worker's answer can add cards; the balancer must draw them too
             server_page.balancer_field(spec, scan, backend, oob=True),
-            # keep the address bar in step: the links to the Autotune page are
-            # built from the URL, and a worker typed but never submitted would
-            # otherwise silently not follow the user there
-            HtmxResponseHeaders(push_url="/server?" + server_page.state_query(params, spec)),
         )
 
     @rt("/server/devices", methods=["GET"])
@@ -255,6 +285,9 @@ def create_app(config: AppConfig | None = None):
     async def server_start(req):
         params = await req.form()
         spec = server_page.spec_from_params(params)
+        # the settings that were actually launched with are the ones to come
+        # back to, even if the launch itself is refused for a missing model
+        server_state.remember(server_page.launch_query(params))
         return server_page.start(config, supervisor, spec, devices.state())
 
     @rt("/server/status", methods=["GET"])
@@ -273,18 +306,28 @@ def create_app(config: AppConfig | None = None):
 
     @rt("/server/log", methods=["GET"])
     def server_log(cursor: int = 0):
-        return server_page.log_since(supervisor, cursor)
+        # the new lines plus the heading's numbers: the average of the last
+        # few requests moves on the same poll the log moves
+        return (*server_page.log_since(supervisor, cursor),
+                server_page.log_stats(supervisor, oob=True))
 
     @rt("/autotune", methods=["GET"])
     def autotune(req):
-        if restored := restored_autotune_query(req.query_params):
-            return RedirectResponse("/autotune?" + restored, status_code=303)
-        # the server under test arrives in the query string from the Server page;
-        # a link without bench values is read as a measurement of that one run
-        spec = server_page.spec_from_params(req.query_params)
+        # the server under test arrives in the query string from the Server
+        # page; a link without bench values is read as a measurement of that
+        # one run, and the sweep left on this page is added to it
+        params = restored_autotune(req.query_params)
+        spec = server_page.spec_from_params(params)
         scan, backend = scanned(spec)
+        if req.query_params:
+            # a link naming a run -- the measurements table, say -- was a
+            # choice: keep it, so the Server tab opens on it too, and a link
+            # that also described a search keeps that search here
+            server_state.remember(server_page.launch_query(params, spec))
+            if autotune_page.AUTOTUNE_MARKER in req.query_params:
+                autotune_state.remember(autotune_page.state_query(req.query_params))
         return autotune_page.page(config, spec,
-                                  autotune_page.autotune_from_params(req.query_params, spec),
+                                  autotune_page.autotune_from_params(params, spec),
                                   supervisor, scan, backend,
                                   autotune_page.measured(config, spec),
                                   app.state.live_board, app.state.live_started)
@@ -294,6 +337,10 @@ def create_app(config: AppConfig | None = None):
         params = await req.form()
         query = autotune_page.state_query(params)
         autotune_state.remember(query)
+        # the launch half of this form is the same run the Server page edits:
+        # remembering it here is what makes the Server tab open what is on
+        # screen rather than what that page was last submitted with
+        server_state.remember(server_page.launch_query(params))
         spec = server_page.spec_from_params(params)
         scan, backend = scanned(spec)
         bench = autotune_page.autotune_from_params(params, spec)
@@ -306,7 +353,6 @@ def create_app(config: AppConfig | None = None):
             # the device and split bars live on the form itself: a changed
             # card count must redraw them without a reload here too
             server_page.balancer_field(spec, scan, backend, oob=True),
-            HtmxResponseHeaders(push_url="/autotune?" + query),
         )
 
     @rt("/autotune/form", methods=["POST"])
@@ -319,6 +365,7 @@ def create_app(config: AppConfig | None = None):
         params = await req.form()
         query = autotune_page.state_query(params)
         autotune_state.remember(query)
+        server_state.remember(server_page.launch_query(params))
         spec = server_page.spec_from_params(params)
         bench = autotune_page.autotune_from_params(params, spec)
         scan, backend = scanned(spec)
@@ -327,13 +374,13 @@ def create_app(config: AppConfig | None = None):
             autotune_page.form(config, spec, bench, results, scan, backend),
             autotune_page.preview(config, spec, bench, scan, backend, oob=True),
             autotune_page.earlier_panel(results, spec, bench, oob=True),
-            HtmxResponseHeaders(push_url="/autotune?" + query),
         )
 
     @rt("/autotune/start", methods=["POST"])
     async def autotune_start(req):
         params = await req.form()
         autotune_state.remember(autotune_page.state_query(params))
+        server_state.remember(server_page.launch_query(params))
         spec = server_page.spec_from_params(params)
         bench = autotune_page.autotune_from_params(params, spec)
         # the queue the Results panel will follow; replaced by the next start
@@ -387,6 +434,7 @@ def create_app(config: AppConfig | None = None):
     app.state.devices = devices
     app.state.memory = memory
     app.state.autotune_state = autotune_state
+    app.state.server_state = server_state
     app.state.live_board = []
     app.state.live_started = ""
     app.state.live_series_id = ""

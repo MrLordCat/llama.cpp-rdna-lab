@@ -17,6 +17,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from gui2.core import runtime
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_FILE = REPO_ROOT / "gui2.config.json"
 
@@ -68,16 +70,23 @@ class AppConfig:
     port: int = 8770
     display_devices: tuple[str, ...] = ()
 
-    def runtime_env(self, backend: str = "") -> dict[str, str]:
+    def runtime_env(self, backend: str = "", build_dir: Path | None = None) -> dict[str, str]:
         """Extra environment a child needs on this machine.
 
-        A ROCm build on Linux links against the HIP SDK runtime, which is
-        usually not on the loader path -- bench2 and llama-server both need
-        LD_LIBRARY_PATH pointed at it or every launch dies with
-        ``libamdhip64.so: cannot open shared object file``. Windows resolves
-        the same libraries through PATH, so this returns nothing there.
+        A ROCm build links against the HIP SDK runtime, which is usually not on
+        the loader path: on Linux that is ``LD_LIBRARY_PATH``, filled from
+        ``library_paths`` in the config file, and on Windows it is ``PATH``,
+        filled from the build's own CMakeCache so adjacent SDKs stay apart.
+        Without either, every launch dies before printing anything -- with
+        ``libamdhip64.so: cannot open shared object file`` on Linux, or with
+        ``exited with 3221225781`` (DLL not found) on Windows.
         """
-        if sys.platform == "win32" or not self.library_paths or backend not in {"rocm", "hip"}:
+        if sys.platform == "win32":
+            directories = runtime.path_prepend(build_dir, backend)
+            if not directories:
+                return {}
+            return {"PATH": runtime.merged_path(directories, os.environ.get("PATH", ""))}
+        if not self.library_paths or backend not in {"rocm", "hip"}:
             return {}
         joined = ":".join(self.library_paths)
         existing = os.environ.get("LD_LIBRARY_PATH", "")
@@ -125,7 +134,13 @@ class AppConfig:
         return self.state_dir / "memory.json"
 
     @property
+    def server_state_json(self) -> Path:
+        """The Server page as it was last left, so it opens on that run."""
+        return self.state_dir / "server-state.json"
+
+    @property
     def autotune_state_json(self) -> Path:
+        """The sweep axes of the Autotune page, which the Server page has not."""
         return self.state_dir / "autotune-state.json"
 
     @classmethod

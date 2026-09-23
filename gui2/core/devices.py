@@ -411,23 +411,40 @@ def scan(log_roots: Iterable[Path], endpoints: Iterable[str] = (),
     # therefore has nothing confirmed yet even though `local` is not empty: an
     # empty device list for the selected build reads as "this build cannot use
     # a GPU", so fall back to the adapter list for that backend too.
-    hinted = [device for device in local if device.backend == backend_hint]
+    #
+    # Before a build is picked there is no backend to aim at, and a list that
+    # only carried the backend of the last run makes the other one refuse to
+    # start ("ROCm1 is not among the devices found: none"). Stand in for every
+    # accelerator backend the adapter list can describe; a CPU build gets
+    # nothing, because adapters are not its devices.
+    if backend_hint in {"vulkan", "rocm"}:
+        wanted = (backend_hint,)
+    elif backend_hint:
+        wanted = ()
+    else:
+        wanted = ("rocm", "vulkan")
 
-    if not hinted and adapters and backend_hint in {"vulkan", "rocm"}:
+    assumed: list[str] = []
+    for hint in wanted:
+        if not adapters or any(device.backend == hint for device in local):
+            continue
         # No run to learn from: assume llama.cpp enumerates the adapters in the
         # order the OS lists them. Flagged as unconfirmed, because it is.
-        prefix = "Vulkan" if backend_hint == "vulkan" else "ROCm"
+        prefix = "Vulkan" if hint == "vulkan" else "ROCm"
         for index, (description, memory) in enumerate(adapters):
-            name = f"{prefix}{index}"
-            known[name] = Device(
-                name=name,
+            known.setdefault(f"{prefix}{index}", Device(
+                name=f"{prefix}{index}",
                 description=description,
-                backend=backend_hint,
+                backend=hint,
                 total_mib=int(memory / 1024 / 1024) if memory else None,
                 source="display adapter list",
-            )
-        notes.append("no earlier run to learn from: device order assumed from the adapter list")
-    elif not local and not adapters:
+            ))
+        assumed.append(prefix)
+
+    if assumed:
+        notes.append("no earlier run to learn from: device order assumed from the adapter list "
+                     f"for {', '.join(sorted(assumed))}")
+    if not local and not adapters:
         notes.append("no local GPU found in earlier runs or in the adapter list")
 
     ordered = sorted(known.values(), key=lambda device: (device.backend != "rpc", device.name))

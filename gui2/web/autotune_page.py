@@ -664,8 +664,9 @@ def server_panel(config: AppConfig, spec: RunSpec, scan: Scan, backend: str) -> 
         Div(server_page._field(BY_NAME["gpu_layers_all"], spec, options, facts),
             cls="switches"),
         Div(facts.summary, cls="hint block muted") if facts and facts.summary else None,
-        A("Everything else on the Server page →",
-          href=f"/server?{server_page.spec_link(spec)}", cls="button"),
+        # a plain link: the Server page opens on the run this form describes,
+        # which is the one it just wrote to the shared store
+        A("Everything else on the Server page →", href="/server", cls="button"),
         cls="panel",
         open=True,
     )
@@ -839,7 +840,8 @@ def start(config: AppConfig, supervisor: Supervisor, spec: RunSpec, bench: Bench
     try:
         supervisor.start_all("autotune", [(f"bench2 · {name}", argv) for name, argv in runs],
                              cwd=config.bench_script.parent.parent,
-                             env=server_page.child_env(config, spec, build.backend if build else ""))
+                             env=server_page.child_env(config, spec,
+                                                      build.backend if build else "", build))
     except Busy as busy:
         return server_page.run_panel(supervisor, f"{busy.current.label} is still running", "error")
     return (server_page.run_panel(supervisor),
@@ -861,7 +863,6 @@ def page(config: AppConfig, spec: RunSpec, bench: BenchSpec, supervisor: Supervi
                 server_page.log_panel(supervisor), cls="stack"),
             cls="split",
         ),
-        nav={"/server": server_page.spec_link(spec)},
     )
 
 

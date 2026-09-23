@@ -13,7 +13,7 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
-from urllib.parse import unquote, urlencode
+from urllib.parse import urlencode
 
 import pytest
 from fasthtml.common import to_xml
@@ -21,8 +21,10 @@ from starlette.testclient import TestClient
 
 from gui2.config import AppConfig
 from gui2.core.results import Result, placement_of
+from gui2.core.runspec import DEFAULTS
 from gui2.tests.fixtures import QWEN35_27B, write_gguf
 from gui2.web.app import create_app
+from gui2.web import server_page
 
 GREETER = [sys.executable, "-c", "print('hello from the child')"]
 
@@ -106,7 +108,10 @@ def test_choosing_a_model_refreshes_the_command_in_one_request(client, models):
 
     assert 'hx-swap-oob="true"' in response.text, "the preview has to come back with the bounds"
     assert "-c 40960" in response.text
-    assert "ctx_size=40960" in response.headers.get("HX-Push-Url", "")
+    # the refit is part of the run, so it is what the page comes back to -- and
+    # the address bar stays out of it
+    assert "hx-push-url" not in response.headers
+    assert 'name="ctx_size" value="40960"' in client.get("/server").text.replace("'", '"')
 
 
 def test_the_memory_panel_prices_a_run_before_it_starts(client, models):
@@ -130,6 +135,50 @@ def test_a_context_change_repriced_the_cache(client, models):
     # no model, nothing to say: the line stays empty rather than guessing
     empty = client.post("/server/preview", data={"ctx_size": "32768"}).text
     assert re.search(r'id="kvline"[^>]*>\s*<', empty)
+
+
+def test_the_server_page_reopens_on_the_run_it_was_left_with(client, models):
+    """The settings live in the GUI's own state, so opening the page without a
+    link shows the run that was last edited here, and the address bar stays
+    empty. A ticked device list is part of it too."""
+    response = client.post("/server/preview", data={
+        "_form": "1", "model": models["long"], "ctx_size": "32768",
+        "devices": ["ROCm1", "ROCm0"], "spec_type": "mtp", "spec_draft_n_max": "2"})
+    assert "hx-push-url" not in response.headers
+
+    html = client.get("/server").text.replace("'", '"')
+    assert "long.gguf" in html
+    assert 'name="ctx_size" value="32768"' in html
+    assert 'name="devices" value="ROCm1,ROCm0"' in html
+    assert 'value="mtp" selected' in html
+    assert 'name="spec_draft_n_max" value="2"' in html
+
+
+def test_a_refused_launch_still_remembers_what_was_asked_for(client, models):
+    """The start button is how a run is chosen; a run that cannot start yet --
+    no model here -- still leaves the form on what was filled in."""
+    client.post("/server/start", data={
+        "_form": "1", "host": "127.0.0.1", "port": "8080",
+        "ctx_size": "16384", "devices": ["ROCm0"]})
+
+    html = client.get("/server").text.replace("'", '"')
+    assert 'name="ctx_size" value="16384"' in html
+    assert 'name="devices" value="ROCm0"' in html
+    assert client.app.state.supervisor.snapshot() is None
+
+
+def test_the_environment_box_and_extra_arguments_come_back_exactly(client, models):
+    """Two free-text boxes with newlines in them: the run they describe is the
+    run the page has to reopen on, blank lines and comments included."""
+    env = "# vulkan hybrid tail\nLLAMA_VK_MTP_KV_LAST_F16=8\n\nROCBLAS_LAYER=2"
+    extra = "--no-mmap\n--cache-ram 0"
+    client.post("/server/preview", data={
+        "_form": "1", "model": models["long"], "env_vars": env, "extra_args": extra})
+
+    html = client.get("/server").text
+    assert env in html
+    assert extra in html
+    assert "exported to llama-server and to the benchmark" in html, "the box says where it goes"
 
 
 def test_start_refuses_an_incomplete_spec_without_spawning(client):
@@ -158,6 +207,125 @@ def test_status_and_log_partials_follow_a_job(client):
     assert "hello from the child" not in tail
     # caught up on a dead job: the poller stops asking
     assert "hx-trigger" not in tail
+
+TIMING_CHILD = [sys.executable, "-c",
+                "print('prompt eval time = 1000.00 ms / 100 tokens')\n"
+                "print('   eval time = 1000.00 ms / 50 tokens')\n"
+                "import time; time.sleep(2)"]
+
+def test_the_log_heading_shows_the_average_of_recent_requests(client):
+    """The average speed of the last few requests sits in the Log heading and
+    moves out of band on the same poll the new lines land in."""
+    supervisor = client.app.state.supervisor
+    supervisor.start("test", "timing child", TIMING_CHILD)
+    try:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if supervisor.turns_summary() == "last 1: prompt 100.0 t/s · decode 50.0 t/s":
+                break
+            time.sleep(0.05)
+
+        # the heading carries it on the page itself
+        page = client.get("/server").text
+        assert 'id="logstats"' in page
+
+        # and each poll re-sends it out of band, so the heading updates live
+        tail = client.get("/server/log?cursor=0").text
+        assert "hx-swap-oob" in tail
+        assert "last 1: prompt 100.0 t/s · decode 50.0 t/s" in tail
+    finally:
+        supervisor.force_stop()
+        supervisor.wait(timeout=30)
+
+
+def test_the_speeds_inside_the_log_are_marked():
+    """The numbers a run is judged by are picked out of the stream: the speeds
+    and durations of a finished request, and the acceptance rate."""
+    timing = server_page.log_line(
+        "prompt eval time =  3217.81 ms /  55 tokens (  58.51 ms per token,  17.09 tokens per second)")
+    xml = to_xml(timing)
+    assert '<span class="lg-speed">17.09 tokens per second</span>' in xml
+    assert '<span class="lg-speed">58.51 ms per token</span>' in xml
+    assert '<span class="lg-time">3217.81 ms</span>' in xml
+    # the token count is not mistaken for a speed, and the duration is not
+    # swallowed by the pattern that follows it
+    assert xml.count("lg-time") == 1
+    assert "55 tokens<" not in xml and "lg-speed\">55" not in xml
+
+    rate = to_xml(server_page.log_line("draft acceptance rate = 0.81250 ( 26 accepted / 32 generated)"))
+    assert '<span class="lg-rate">acceptance rate = 0.81250</span>' in rate
+
+    idle = to_xml(server_page.log_line("srv  update_slots: all slots are idle"))
+    assert "lg-" not in idle, "a line without numbers is not rewritten"
+
+
+def test_a_timing_line_reaches_the_panel_with_its_marking(client):
+    """The panel and the poller render the same line the same way."""
+    supervisor = client.app.state.supervisor
+    supervisor.start("test", "greeter", GREETER)
+    assert supervisor.wait(timeout=30) == 0
+
+    html = client.get("/server/log?cursor=0").text
+    assert "hello from the child" in html, "a plain line still arrives"
+
+
+def test_the_ways_out_name_the_tail_that_the_build_switched_on(models):
+    """A Vulkan MTP run pays for an f16 KV tail the run never asked for, and the
+    advice has to name it: on a full card it is the first thing to give back."""
+    from gui2.core.gguf import read_facts
+    from gui2.core.memory import Estimate, Term
+    from gui2.web.server_page import _ways_out
+
+    facts = read_facts(Path(models["long"]))
+    spec = DEFAULTS.with_values({
+        "model": str(models["long"]), "ctx_size": "225280", "build_dir": "build-vulkan-gcc16",
+        "cache_type_k": "f8_e4m3", "cache_type_v": "f8_e4m3", "batch_size": "8192",
+        "ubatch_size": "1024", "parallel": "1", "spec_type": "mtp", "spec_draft_n_max": "2",
+        "devices": "Vulkan0 Vulkan1",
+    })
+    # the shape of the real ledger: 5.2 GiB of tail the run never asked for
+    report = Estimate(terms=(Term("Weights", 15702), Term("KV cache", 7040),
+                             Term("MTP f16 KV tail", 5280)), complete=True)
+    budget = sum(term.mib for term in report.terms) + 4096
+
+    tips = _ways_out(spec, facts, report, budget=budget)
+
+    assert any("f16 KV tail" in tip and "12 layers" in tip for tip in tips), tips
+    assert any("LLAMA_VK_MTP_KV_LAST_F16" in tip for tip in tips)
+    assert all("q4_0" not in tip for tip in tips), "the tail tip is the useful one here"
+
+    # an explicit count is the run's own choice, and the advice says so
+    explicit = spec.with_values({"env_vars": "LLAMA_VK_MTP_KV_LAST_F16=4"})
+    named = _ways_out(explicit, facts, report, budget=budget)
+    assert any("this run asks for" in tip and "4 layers" in tip for tip in named), named
+
+    # when the pair runs out, the advice names the count that would fit
+    total = sum(term.mib for term in report.terms)
+    tight = _ways_out(spec, facts, report, budget=total - 2000)
+    assert any("LLAMA_VK_MTP_KV_LAST_F16=" in tip and "saves" in tip for tip in tight), tight
+    assert not any("=0" in tip for tip in tight), "2000 MiB short still leaves layers to keep"
+
+    # badly short: there is no tail left to give, and the advice says to drop it
+    broke = _ways_out(spec, facts, report, budget=total - 6000)
+    assert any("LLAMA_VK_MTP_KV_LAST_F16=0" in tip for tip in broke), broke
+
+
+def test_a_small_tail_is_not_worth_a_tip(models):
+    from gui2.core.gguf import read_facts
+    from gui2.core.memory import Estimate, Term
+    from gui2.web.server_page import _ways_out
+
+    facts = read_facts(Path(models["long"]))
+    spec = DEFAULTS.with_values({
+        "model": str(models["long"]), "ctx_size": "16384", "build_dir": "build-vulkan-gcc16",
+        "cache_type_k": "f8_e4m3", "cache_type_v": "f8_e4m3", "parallel": "1",
+        "spec_type": "mtp", "devices": "Vulkan0 Vulkan1",
+    })
+    report = Estimate(terms=(Term("Weights", 15702), Term("KV cache", 512),
+                             Term("MTP f16 KV tail", 768)), complete=True)
+    tips = _ways_out(spec, facts, report, budget=sum(term.mib for term in report.terms) + 4096)
+
+    assert not any("f16 KV tail" in tip for tip in tips), tips
 
 
 def test_stop_on_an_idle_slot_is_harmless(client):
@@ -288,25 +456,24 @@ def test_an_unchecked_box_makes_the_worker_private_again(client):
     html = client.post("/server/rpc/command", data={"rpc_port": "50052"}).text
     assert "-H 127.0.0.1" in html
 
-def test_the_top_tabs_carry_the_current_state_between_server_and_autotune(client):
-    """A worker typed after the page loaded has updated the URL but not the
-    baked href of the tab links; the links re-read the address bar instead,
-    so the round trip Server → Autotune → Server keeps the worker."""
+def test_the_top_tabs_leave_the_state_to_the_pages(client):
+    """Tabs are plain links: each page opens on what it remembers, so the round
+    trip Server → Autotune → Server keeps the settings without the address bar
+    carrying them."""
     html = client.get("/server").text
-    tab = re.search(r'<a[^>]*data-path="/autotune"[^>]*>', html)
-    assert tab, "the Autotune tab is on the Server page"
-    assert "location.search" in tab.group(0)
+    tab = re.search(r'<a[^>]*href="/autotune"[^>]*>', html)
+    assert tab and "location.search" not in tab.group(0)
 
     back = client.get("/autotune").text
-    tab = re.search(r'<a[^>]*data-path="/server"[^>]*>', back)
-    assert tab, "the Server tab is on the Autotune page"
+    tab = re.search(r'<a[^>]*href="/server"[^>]*>', back)
+    assert tab and "location.search" not in tab.group(0)
 
     # and the History/Models tabs are still plain links
     assert 'data-path' not in re.search(r'<a[^>]*href="/history"[^>]*>', html).group(0)
 
-def test_worker_check_keeps_the_address_in_the_url(client):
-    """The links to the Autotune page come from the address bar; a worker that
-    was typed and checked must survive that trip."""
+def test_worker_check_keeps_the_worker_for_the_next_page(client):
+    """A worker typed and checked survives the trip to Autotune, because the
+    form is remembered in the GUI's own state rather than in the address bar."""
     from gui2.tests.test_rpc import FakeWorker
 
     fake = FakeWorker()
@@ -316,9 +483,10 @@ def test_worker_check_keeps_the_address_in_the_url(client):
             "rpc_endpoints": fake.endpoint, "_form": "1"})
     finally:
         fake.close()
-    pushed = response.headers.get("hx-push-url", "")
-    assert pushed.startswith("/server?")
-    assert fake.endpoint in unquote(pushed)
+
+    assert response.status_code == 200
+    assert fake.endpoint in client.get("/server").text
+    assert fake.endpoint in client.get("/autotune").text
 
 def test_the_autotune_address_box_refreshes_the_device_list(client, models):
     """A worker pasted into Autotune appears as an RPC card without a trip
@@ -534,7 +702,7 @@ def test_arriving_from_the_server_page_measures_that_one_configuration(client, m
     assert "long.gguf" in html
     # the run under test travels with the page but is edited in one place only
     assert 'name="ctx_size" value="32768"' in html.replace("'", '"')
-    assert 'href="/server?model=' in html
+    assert 'href="/server"' in html, "the way back is the Server page itself"
     # 32768 reaches level 1's 16K of context but not level 2's 48K
     assert "--level 1" in bench_command(html)
     assert "One configuration" in html, "one value per row is a measurement"
@@ -705,24 +873,22 @@ def test_a_scenario_already_chosen_stays_on_the_row_whatever_the_model_says(clie
     assert re.search(r'name="levels" value="5"[^>]*checked', html)
 
 
-def test_the_address_bar_keeps_every_ticked_value_not_just_the_last(client, models):
-    """Several buttons share a row's name; keeping one would narrow it on reload."""
+def test_every_ticked_value_is_remembered_not_just_the_last(client, models):
+    """Several buttons share a row's name; keeping one would narrow the search."""
     data = autotune_form(models["long"])
     del data["kv"]
-    response = client.post("/autotune/preview", content=urlencode(
+    client.post("/autotune/preview", content=urlencode(
         list(data.items()) + [("kv", "q8_0"), ("kv", "q4_0")]),
         headers={"content-type": "application/x-www-form-urlencoded"})
 
-    pushed = response.headers["hx-push-url"]
-    assert "kv=q8_0&kv=q4_0" in pushed
-    # and reloading it measures both again rather than only the second
-    reloaded = bench_commands_shown(client.get(pushed).text)
+    # reopening the page measures both again rather than only the second
+    reloaded = bench_commands_shown(client.get("/autotune").text)
     assert len(reloaded) == 2
     assert "--kv-k q8_0" in reloaded[0] and "--kv-k q4_0" in reloaded[1]
 
 
 def test_a_new_autotune_page_restores_the_last_form(tmp_path, models):
-    """The safe URL state survives both a new tab and a GUI restart."""
+    """The last form survives both a new tab and a GUI restart."""
     config = AppConfig(data_root=tmp_path)
     data = autotune_form(models["long"], levels=["2", "3"],
                          batch=["4096", "8192"], ubatch="256", runs="3")
@@ -730,20 +896,21 @@ def test_a_new_autotune_page_restores_the_last_form(tmp_path, models):
         owner.post("/autotune/preview", data=data)
 
     with TestClient(create_app(config)) as reopened:
-        restored = reopened.get("/autotune", follow_redirects=False)
-        assert restored.status_code == 303
-        location = unquote(restored.headers["location"])
-        for value in ("levels=2", "levels=3", "batch=4096", "batch=8192",
-                      "ubatch=256", "runs=3"):
-            assert value in location
+        html = reopened.get("/autotune").text
+        assert "long.gguf" in html
+        # every ticked value comes back: both levels ride in one command, and
+        # the two batch sizes are two commands rather than the last one only
+        commands = bench_commands_shown(html)
+        assert len(commands) == 2
+        assert "--level 2,3" in commands[0]
+        assert "--batch-size 4096" in commands[0] and "--ubatch-size 256" in commands[0]
+        assert "--batch-size 8192" in commands[1] and "--runs 3" in commands[1]
 
         # An explicit link from Server owns the new model but keeps the sweep.
-        explicit = reopened.get("/autotune", params={
-            "model": models["short"], "_form": "1"}, follow_redirects=False)
-        assert explicit.status_code == 303
-        merged = unquote(explicit.headers["location"])
-        assert f"model={models['short']}" in merged
-        assert "levels=2" in merged and "batch=4096" in merged and "runs=3" in merged
+        merged = reopened.get("/autotune", params={
+            "model": models["short"], "_form": "1"}).text
+        assert "short.gguf" in merged
+        assert "--level 2,3" in merged and "--batch-size 4096" in merged
 
 
 def test_unticking_every_value_on_a_row_is_reported_rather_than_ignored(client, models):
@@ -819,7 +986,8 @@ def test_changing_the_model_rerenders_the_whole_form(client, models):
     # the preview and the measured list refresh in the same answer, out of band
     assert 'id="autotunepreview"' in response.text
     assert 'id="earlier"' in response.text and 'hx-swap-oob="true"' in response.text
-    assert response.headers["hx-push-url"].startswith("/autotune?")
+    # and the form is remembered, so the next visit opens on this model
+    assert "short.gguf" in client.get("/autotune").text
 
 
 def test_draft_tokens_are_an_axis_of_their_own(client, models):
@@ -1340,28 +1508,38 @@ def test_measuring_the_same_thing_twice_is_a_warning_not_a_surprise(models, tmp_
     assert "Measured before" not in changed
 
 
-def test_the_header_links_carry_what_each_page_comes_from(client, models):
-    """Server → Autotune in the header must not open an empty sweep."""
-    html = client.get("/server", params={"model": models["long"], "ctx_size": "32768"}).text
-    link = re.search(r'href="/autotune\?([^"]*)"', html)
-    assert link, "the header link to Autotune has to carry the run"
-    assert "model=" in link.group(1) and "ctx_size=32768" in link.group(1)
-    assert "_form=1" in link.group(1)
-
-    html = client.get("/autotune", params={"model": models["long"], "ctx_size": "32768",
-                                            "_form": "1"}).text
-    link = re.search(r'href="/server\?([^"]*)"', html)
-    assert link and "model=" in link.group(1) and "ctx_size=32768" in link.group(1)
+def _chosen(html: str, name: str) -> str:
+    """The selected option of a dropdown, by field name."""
+    block = re.search(rf'<select[^>]*name="{name}"[\s\S]*?</select>', html)
+    assert block, f"the {name} dropdown is missing from the response"
+    option = re.search(r'<option value="([^"]*)" selected', block.group(0))
+    return option.group(1) if option else ""
 
 
-def test_the_autotune_page_keeps_the_whole_run_in_the_address_bar(client, models):
-    response = client.post("/autotune/preview", data={
+def test_a_link_between_the_pages_is_kept_as_the_run_of_both(client, models):
+    """A link from one page names a run; that run is what both pages open on
+    afterwards, so following it and coming back does not lose the model."""
+    client.get("/server", params={"model": models["long"], "ctx_size": "32768",
+                                  "_form": "1"})
+
+    html = client.get("/autotune").text
+    assert _chosen(html, "model") == models["long"]
+    assert 'name="ctx_size" value="32768"' in html.replace("'", '"')
+
+    # and the other way round: a run chosen on Autotune is the Server page's too
+    client.get("/autotune", params={"model": models["short"], "_form": "1"})
+    assert _chosen(client.get("/server").text, "model") == models["short"]
+
+
+def test_the_autotune_page_remembers_the_whole_run_without_the_key(client, models):
+    client.post("/autotune/preview", data={
         "_form": "1", "_autotune": "1", "model": models["long"],
-        "api_key": "secret", "tasks": "v2-review"})
+        "api_key": "secret", "run_name": "v2-review"})
 
-    pushed = response.headers["hx-push-url"]
-    assert pushed.startswith("/autotune?")
-    assert "tasks=v2-review" in pushed
-    assert "secret" not in pushed, "the key must not reach the address bar"
-    # and reloading that URL renders the same page rather than the defaults
-    assert "v2-review" in client.get(pushed).text
+    # reopening the page renders the same run rather than the defaults
+    assert "v2-review" in client.get("/autotune").text
+    # and the key is nowhere in what was written down, so it cannot leak back
+    written = (client.app.state.server_state.path.read_text(encoding="utf-8")
+               + client.app.state.autotune_state.path.read_text(encoding="utf-8"))
+    assert "secret" not in written
+    assert "v2-review" in written
