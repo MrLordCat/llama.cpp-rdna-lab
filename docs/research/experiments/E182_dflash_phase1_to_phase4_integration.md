@@ -1,5 +1,10 @@
 # E182 - DFlash Phase 1-4 Integration Pass
 
+**Status: closed 2026-09-24** — DFlash was rejected (its draft path cost
+more VRAM than MTP at long context) and removed from the tree; this note is kept
+as the historical record of the decision. See `docs/local/CLEANUP_2026-09-24.md`
+for the removal.
+
 ## Metadata
 
 - Experiment ID: E182

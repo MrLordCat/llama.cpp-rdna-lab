@@ -9,7 +9,7 @@ Keep these local systems intact:
 
 - GUI 2.0 (local web UI) and build registry;
 - benchmark/autotune tooling and generated history format;
-- MTP/DFlash integration;
+- MTP integration;
 - dual-RX 9070 XT Vulkan and ROCm optimizations;
 - local documentation, CI and agent rules;
 - the CPU, Vulkan and ROCm/HIP-only backend allowlist.

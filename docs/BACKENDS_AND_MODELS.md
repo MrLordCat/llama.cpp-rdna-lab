@@ -22,7 +22,6 @@ NVIDIA hardware. See [Supported Backends](SUPPORTED_BACKENDS.md).
 | Qwen3.8 NextN MTP | Yes | Yes | Yes | Requires an MTP-enabled GGUF |
 | Ternary Bonsai 27B `PQ2_0` | Yes | Yes | Not yet | Native loader, CPU kernels, and HIP MMQ/MMVQ path |
 | Qwen3.5/3.6/3.8 vision projector | Yes | Yes | Yes | Use a matching `mmproj-*.gguf` |
-| DFlash | Research | Research | Research | Not a recommended production profile |
 
 D094 (2026-08-07, `Qwen3.6-27B-Q4_K_M.gguf` and
 `Qwen3.6-27B-Q3_K_S_mtp.gguf`, 2x RX 9070 XT): the Vulkan q8_0 vec/mmq

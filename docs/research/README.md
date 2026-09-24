@@ -59,20 +59,8 @@ Primary lane (project policy):
 - BENCH_HISTORY_POLICY.md: canonical benchmark history file contract
 - EXPERIMENT_TEMPLATE.md: standard template for each experiment
 - RESULTS_LOG.md: compact ledger of executed experiments
-- DFLASH_IMPLEMENTATION_PREP.md: staged DFlash integration plan for this fork
 - experiments/: legacy/per-note archive (E001, E002, ...) and narrow historical references
-- dflash/: source vendor manifest and DFlash-specific planning artifacts
 - archive/: historical plans and audits no longer used as active entry points
-
-DFlash planning directory currently includes:
-
-- `dflash/VENDOR_MANIFEST.md`
-- `dflash/PHASE_PLAYBOOK.md`
-- `dflash/BRANCH_AND_COMMIT_PLAN.md`
-- `dflash/COMPATIBILITY_MATRIX.md`
-- `dflash/IMPLEMENTATION_RUNBOOK.md`
-- `dflash/FUTURE_WORKFLOW.md`
-- `dflash/KICKOFF_PACKET.md`
 
 ## Related Tooling
 

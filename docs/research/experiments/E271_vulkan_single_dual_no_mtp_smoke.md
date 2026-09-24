@@ -11,7 +11,9 @@
 ## Setup
 
 Vulkan `llama-server` was rebuilt on the current branch after fixing a MinGW
-link issue in the DFlash loader path. The Vulkan DLL staging script was also
+link issue in the DFlash loader path (DFlash was rejected and removed from the
+tree on 2026-09-24; see docs/local/CLEANUP_2026-09-24.md). The Vulkan DLL
+staging script was also
 made compatible with both Git Bash `/c/...` and WSL-style `/mnt/c/...`
 Strawberry paths.
 

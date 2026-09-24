@@ -70,8 +70,7 @@ common_time_meas::~common_time_meas() {
 uint32_t common_params_speculative::need_n_rs_seq() const {
     const bool needs_rs_seq = std::any_of(types.begin(), types.end(), [](auto t) {
         return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP
-            || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3
-            || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH;
+            || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3;
     });
 
     uint32_t n_rs_seq = needs_rs_seq ? (uint32_t) std::max(0, draft.n_max) : 0u;

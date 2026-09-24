@@ -617,9 +617,6 @@ llama_context::llama_context(
             LLAMA_LOG_INFO("%s: pipeline parallelism enabled\n", __func__);
         }
 
-        if (model.arch == LLM_ARCH_DFLASH || model.arch == LLM_ARCH_DFLASH_DRAFT) {
-            sched_reserve_pp_outputs = uint32_t(-1);
-        }
         sched_reserve();
 
         if (!cparams.flash_attn) {
@@ -944,17 +941,7 @@ void llama_context::sched_reserve() {
     // During decode and speculative verification, we switch to this scheduler so the GPU
     // compute buffer does not occupy cache bandwidth with unused PP-sized scratch memory.
     //
-    // DFlash alternates tiny encoder and KV-injection graphs inside the draft context. On ROCm this
-    // constant PP/TG scheduler swapping can leave graph inputs in a bad state; the draft context is
-    // already physically tiny, so keep it on the PP scheduler.
-    const bool disable_tg_sched =
-        model.arch == LLM_ARCH_DFLASH || model.arch == LLM_ARCH_DFLASH_DRAFT;
-    if (disable_tg_sched) {
-        LLAMA_LOG_DEBUG("%s: TG scheduler disabled for DFlash context\n", __func__);
-        gf_res_prev_tg.reset();
-        sched_tg.reset();
-        sched_is_tg = false;
-    } else if (sched_tg_nextn_cache &&
+    if (sched_tg_nextn_cache &&
             cparams.embeddings_nextn &&
             sched_tg_nextn_cache_masked == cparams.embeddings_nextn_masked) {
         sched_tg = std::move(sched_tg_nextn_cache);
@@ -1941,8 +1928,6 @@ bool llama_context::set_adapter_cvec(
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     const bool trace_timing = getenv("LLAMA_UBATCH_TIMING") != nullptr;
     const bool trace_timing_sync = trace_timing && getenv("LLAMA_UBATCH_TIMING_SYNC") != nullptr;
-    const bool trace_dflash = getenv("LLAMA_DFLASH_TRACE") != nullptr &&
-            (model.arch == LLM_ARCH_DFLASH || model.arch == LLM_ARCH_DFLASH_DRAFT);
     const int64_t t_total_start_us = trace_timing ? ggml_time_us() : 0;
     int64_t t_apply_us   = 0;
     int64_t t_switch_us  = 0;
@@ -1953,10 +1938,6 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     int64_t t_sync_us    = 0;
     bool reused_graph = false;
 
-    if (trace_dflash) {
-        LLAMA_LOG_INFO("%s: DFlash ubatch enter: gtype=%d n_tokens=%u n_seq_tokens=%u n_seqs=%u n_outputs=%u mctx=%p\n",
-                __func__, (int) gtype, ubatch.n_tokens, ubatch.n_seq_tokens, ubatch.n_seqs, n_outputs, (void *) mctx);
-    }
 
     if (mctx && !mctx->apply()) {
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
@@ -1975,16 +1956,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         const bool want_tg = ubatch.n_seq_tokens <= sched_tg_max_seq_tokens;
 
         if (!want_tg && sched_is_tg && !sched_tg) {
-            if (trace_dflash) {
-                LLAMA_LOG_INFO("%s: DFlash rebuilding PP scheduler from released TG mode\n", __func__);
-            }
             sched_need_reserve = true;
             sched_reserve();
         } else if (want_tg != sched_is_tg) {
-            if (trace_dflash) {
-                LLAMA_LOG_INFO("%s: DFlash switching scheduler: want_tg=%d sched_is_tg=%d\n",
-                        __func__, want_tg ? 1 : 0, sched_is_tg ? 1 : 0);
-            }
             // Flush any pending async work on both schedulers before switching
             if (sched_tg) { ggml_backend_sched_synchronize(sched_tg.get()); }
             ggml_backend_sched_synchronize(sched.get());
@@ -1995,9 +1969,6 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
         sched_release_inactive_pp();
 
-        if (trace_dflash) {
-            LLAMA_LOG_INFO("%s: DFlash scheduler ready: sched_is_tg=%d\n", __func__, sched_is_tg ? 1 : 0);
-        }
         if (trace_timing) {
             t_switch_us = ggml_time_us() - t_start_us;
         }
@@ -2019,10 +1990,6 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // barrier that capped the RPC lane at local+server wall sum).
     const bool run_ahead_prefill = getenv("LLAMA_RPC_RUN_AHEAD") != nullptr && ubatch.n_tokens > 1;
     const bool can_reuse_graph = !run_ahead_prefill && !graph_reuse_disable && res->can_reuse(gparams);
-    if (trace_dflash) {
-        LLAMA_LOG_INFO("%s: DFlash graph reuse check: disable=%d can_reuse=%d gf=%p\n",
-                __func__, graph_reuse_disable ? 1 : 0, can_reuse_graph ? 1 : 0, (void *) gf);
-    }
 
     if (can_reuse_graph) {
         reused_graph = true;
@@ -2037,9 +2004,6 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
         n_reused++;
     } else {
-        if (trace_dflash) {
-            LLAMA_LOG_INFO("%s: DFlash graph rebuild: reset sched+result\n", __func__);
-        }
         res->reset();
 
         ggml_backend_sched_reset(sched.get());
@@ -2047,14 +2011,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
         const int64_t t_build_start_us = trace_timing ? ggml_time_us() : 0;
 
-        if (trace_dflash) {
-            LLAMA_LOG_INFO("%s: DFlash graph rebuild: before build_graph\n", __func__);
-        }
         gf = model.build_graph(gparams);
-        if (trace_dflash) {
-            LLAMA_LOG_INFO("%s: DFlash graph rebuild: after build_graph gf=%p nodes=%d\n",
-                    __func__, (void *) gf, gf ? ggml_graph_n_nodes(gf) : -1);
-        }
 
         if (trace_timing) {
             t_build_us = ggml_time_us() - t_build_start_us;
@@ -2069,16 +2026,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         pin_causal_mask_to_local_backend(sched.get(), gf, &model);
 
         const int64_t t_alloc_start_us = trace_timing ? ggml_time_us() : 0;
-        if (trace_dflash) {
-            LLAMA_LOG_INFO("%s: DFlash graph rebuild: before alloc_graph\n", __func__);
-        }
         if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
             LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
-        }
-        if (trace_dflash) {
-            LLAMA_LOG_INFO("%s: DFlash graph rebuild: after alloc_graph\n", __func__);
         }
         if (trace_timing) {
             t_alloc_us = ggml_time_us() - t_alloc_start_us;
@@ -2090,13 +2041,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         const int64_t t_inputs_start_us = trace_timing ? ggml_time_us() : 0;
 
         // FIXME this call causes a crash if any model inputs were not used in the graph and were therefore not allocated
-        if (trace_dflash) {
-            LLAMA_LOG_INFO("%s: DFlash before set_inputs\n", __func__);
-        }
         res->set_inputs(&ubatch);
-        if (trace_dflash) {
-            LLAMA_LOG_INFO("%s: DFlash after set_inputs\n", __func__);
-        }
 
         if (trace_timing) {
             t_inputs_us = ggml_time_us() - t_inputs_start_us;
@@ -2104,13 +2049,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
 
     const int64_t t_compute_start_us = trace_timing ? ggml_time_us() : 0;
-    if (trace_dflash) {
-        LLAMA_LOG_INFO("%s: DFlash before graph_compute\n", __func__);
-    }
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
-    if (trace_dflash) {
-        LLAMA_LOG_INFO("%s: DFlash after graph_compute status=%d\n", __func__, (int) status);
-    }
     if (trace_timing) {
         t_compute_us = ggml_time_us() - t_compute_start_us;
         if (trace_timing_sync) {
@@ -2162,14 +2101,7 @@ int llama_context::encode(const llama_batch & batch_inp) {
     }
 
     const uint32_t n_tokens = balloc->get_n_tokens();
-    const bool trace_dflash_encode = std::getenv("LLAMA_DFLASH_TRACE") != nullptr &&
-            (model.arch == LLM_ARCH_DFLASH || model.arch == LLM_ARCH_DFLASH_DRAFT);
 
-    if (trace_dflash_encode) {
-        LLAMA_LOG_INFO("%s: DFlash encode enter: n_tokens=%u, n_ubatch=%u, embeddings_nextn=%d/%d\n",
-                __func__, n_tokens, cparams.n_ubatch,
-                (int) cparams.embeddings_nextn, (int) cparams.embeddings_nextn_masked);
-    }
 
     // [TAG_NO_CACHE_PAD]
     // TODO: add new split mode where we pad the input sequences so that ubatch.equal_seqs == true
@@ -2185,12 +2117,7 @@ int llama_context::encode(const llama_batch & batch_inp) {
     // TODO: this clear of the buffer can easily be forgotten - need something better
     embd_seq.clear();
 
-    // DFlash alternates encoder, KV-injection and draft graphs in one tiny context.
-    // Keep the reserve shape stable on ROCm instead of flipping between 1-row
-    // and all-row output buffers on every speculative micro-step.
-    sched_reserve_pp_outputs =
-        (model.arch == LLM_ARCH_DFLASH || model.arch == LLM_ARCH_DFLASH_DRAFT) ?
-            uint32_t(-1) : (n_tokens == 1 ? 1 : uint32_t(-1));
+    sched_reserve_pp_outputs = (n_tokens == 1 ? 1 : uint32_t(-1));
     if (n_tokens > sched_tg_max_seq_tokens && sched_is_tg && !sched_tg) {
         sched_need_reserve = true;
     }
@@ -2199,9 +2126,6 @@ int llama_context::encode(const llama_batch & batch_inp) {
     }
 
     sched_reserve();
-    if (trace_dflash_encode) {
-        LLAMA_LOG_INFO("%s: DFlash encode after sched_reserve\n", __func__);
-    }
 
     n_queued_tokens += n_tokens;
 
@@ -2225,14 +2149,7 @@ int llama_context::encode(const llama_batch & batch_inp) {
     cparams.causal_attn = false;
 
     ggml_status status;
-    if (trace_dflash_encode) {
-        LLAMA_LOG_INFO("%s: DFlash encode before process_ubatch\n", __func__);
-    }
     const auto * res = process_ubatch(ubatch, LLM_GRAPH_TYPE_ENCODER, nullptr, status);
-    if (trace_dflash_encode) {
-        LLAMA_LOG_INFO("%s: DFlash encode after process_ubatch: res=%p, status=%d\n",
-                __func__, (const void *) res, (int) status);
-    }
 
     cparams.causal_attn = causal_attn_org;
 
@@ -2258,21 +2175,14 @@ int llama_context::encode(const llama_batch & batch_inp) {
         ggml_backend_tensor_get_async(backend_res, t_logits, logits.data, 0, n_tokens*n_vocab*sizeof(float));
     }
 
-    // extract NextN embeddings from encoder graphs (used by DFlash feature fusion)
+    // extract NextN embeddings from encoder graphs
     if (embd_nextn.data && t_h_nextn && n_tokens > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
         ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
         GGML_ASSERT(backend_h != nullptr);
 
         const uint32_t n_embd_out = hparams.n_embd_out();
         GGML_ASSERT((int64_t) n_tokens*n_embd_out <= (int64_t) embd_nextn.size);
-        if (trace_dflash_encode) {
-            LLAMA_LOG_INFO("%s: DFlash encode before h_nextn async copy: backend=%s, rows=%u, n_embd=%u\n",
-                    __func__, ggml_backend_name(backend_h), n_tokens, n_embd_out);
-        }
         ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn.data, 0, n_tokens*n_embd_out*sizeof(float));
-        if (trace_dflash_encode) {
-            LLAMA_LOG_INFO("%s: DFlash encode after h_nextn async copy\n", __func__);
-        }
     }
 
     // extract embeddings
@@ -2356,9 +2266,6 @@ int llama_context::encode(const llama_batch & batch_inp) {
         }
     }
 
-    if (trace_dflash_encode) {
-        LLAMA_LOG_INFO("%s: DFlash encode return 0\n", __func__);
-    }
 
     return 0;
 }
@@ -2498,11 +2405,6 @@ int llama_context::decode(const llama_batch & batch_inp) {
         return -1;
     }
 
-    // DFlash: the hidden-capture buffers ACCUMULATE the committed context across
-    // decode() calls (the drafter cross-attends to a sliding window of recent
-    // target hiddens). The DFlash speculative state resets them at generation
-    // start and truncates after each accept, so we must NOT clear per-decode.
-
     const auto & vocab   = model.vocab;
     const auto & hparams = model.hparams;
 
@@ -2576,9 +2478,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
         if (n_tokens_all > 1 && n_outputs_all == n_tokens_all) {
             sched_pp_outputs = uint32_t(-1);
         }
-        sched_reserve_pp_outputs =
-            (model.arch == LLM_ARCH_DFLASH || model.arch == LLM_ARCH_DFLASH_DRAFT) ?
-                uint32_t(-1) : sched_pp_outputs;
+        sched_reserve_pp_outputs = sched_pp_outputs;
         if (n_tokens_all > sched_tg_max_seq_tokens && sched_is_tg && !sched_tg) {
             sched_need_reserve = true;
         }

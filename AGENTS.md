@@ -9,7 +9,7 @@
 
 This is `llama.cpp-rdna-lab`, a local fork for Windows and two AMD Radeon RX
 9070 XT GPUs. It combines a local web GUI (GUI 2.0 in `gui2/`), long-context
-benchmark/autotune tooling, MTP/DFlash and local ggml performance work. Do not
+benchmark/autotune tooling, MTP and local ggml performance work. Do not
 treat it as a clean upstream checkout.
 
 The canonical repository root on this machine is:

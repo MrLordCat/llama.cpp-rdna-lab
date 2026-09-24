@@ -532,8 +532,6 @@ struct server_slot {
             //       perform the speculative drafting for all sequences at the same time in a single batch
             const llama_tokens & tokens = prompt.tokens.get_text_tokens();
 
-            const auto & params_spec = task->params.speculative;
-
             if (!spec_draft.empty()) {
                 // we have a previous (partial) draft to reuse from the FULL
                 if (ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL) {
@@ -589,13 +587,7 @@ struct server_slot {
                     llama_context_seq_rm(ctx_dft, id, spec_ckpt.pos_max + 1, -1);
                 }
 
-                const bool dflash_skip_spec_ckpt =
-                    ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL &&
-                    server_spec_has_type(params_spec, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) &&
-                    params_spec.draft.n_max <= 1 &&
-                    server_env_enabled("LLAMA_DFLASH_SKIP_SPEC_CKPT");
-
-                if (!spec_draft.empty() && ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL && !dflash_skip_spec_ckpt) {
+                if (!spec_draft.empty() && ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL) {
                     const auto n_tokens = prompt.tokens.size();
 
                     //const int64_t t_start = ggml_time_us();
@@ -609,8 +601,6 @@ struct server_slot {
                             spec_ckpt.pos_min, spec_ckpt.pos_max, n_tokens,
                             (float) spec_ckpt.size() / 1024 / 1024,
                             (float) spec_ckpt.data_dft.size() / 1024 / 1024);
-                } else if (!spec_draft.empty() && dflash_skip_spec_ckpt) {
-                    SLT_WRN(*this, "%s", "DFlash diagnostic: skipping speculative checkpoint; aborting on first rejected draft\n");
                 }
 
                 if (!spec_draft.empty() &&
@@ -3391,12 +3381,7 @@ private:
 
                 // verify and try to accept the draft
                 {
-                    const bool dflash_skip_spec_ckpt =
-                        slot.ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL &&
-                        server_spec_has_type(slot.task->params.speculative, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) &&
-                        slot.task->params.speculative.draft.n_max <= 1 &&
-                        server_env_enabled("LLAMA_DFLASH_SKIP_SPEC_CKPT");
-                    const bool use_ckpt = slot.ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL && !dflash_skip_spec_ckpt;
+                    const bool use_ckpt = slot.ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
 
                     // only save the sampler sampler state if we use checkpoints
                     common_sampler_ptr smpl_save;
@@ -3415,11 +3400,6 @@ private:
 
                     // check for partial draft acceptance
                     if (accepted.size() < slot.spec_draft.size() + 1) {
-                        if (dflash_skip_spec_ckpt) {
-                            GGML_ABORT("%s: DFlash diagnostic no-checkpoint mode rejected %zu/%zu draft tokens; "
-                                       "cannot recover Qwen hybrid recurrent state without a checkpoint\n",
-                                       __func__, accepted.size() - 1, slot.spec_draft.size());
-                        }
                         if (use_ckpt) {
                             if (trace > 0) {
                                 SLT_INF(slot, "accepted %2zu/%2zu draft tokens (restore checkpoint)\n", accepted.size() - 1, slot.spec_draft.size());

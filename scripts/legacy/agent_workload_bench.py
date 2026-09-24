@@ -1172,7 +1172,6 @@ def parse_server_log_diagnostics(server_log: Path) -> dict[str, Any]:
         mtp_gen_tokens > 0
         or bool(draft_accept_matches)
         or "statistics mtp" in text
-        or "statistics dflash" in text
         or "speculative decoding context initialized" in text
     )
     mtp_acceptance = (mtp_acc_tokens / mtp_gen_tokens) if mtp_gen_tokens > 0 else 0.0

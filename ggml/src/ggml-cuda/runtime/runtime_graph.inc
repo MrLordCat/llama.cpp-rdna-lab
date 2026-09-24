@@ -9,26 +9,6 @@ static bool ggml_cuda_graph_trace_diff_enabled() {
     return enabled;
 }
 
-#if defined(GGML_USE_HIP)
-static bool ggml_cuda_graph_is_dflash_graph(ggml_cgraph * cgraph) {
-    for (int i = 0; i < cgraph->n_nodes; i++) {
-        ggml_tensor * node = cgraph->nodes[i];
-        if (node == nullptr) {
-            continue;
-        }
-
-        if (strstr(node->name, "enc_norm_out")    != nullptr ||
-            strstr(node->name, "Kcur_injected")   != nullptr ||
-            strstr(node->name, "Vcur_injected")   != nullptr ||
-            strstr(node->name, "inp_noise_embd")  != nullptr) {
-            return true;
-        }
-    }
-
-    return false;
-}
-#endif
-
 static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
 
     bool use_cuda_graph = true;
@@ -40,22 +20,6 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
         if (ggml_is_empty(node) || node->op == GGML_OP_RESHAPE || node->op == GGML_OP_TRANSPOSE || node->op == GGML_OP_VIEW || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_NONE) {
             continue;
         }
-
-#if defined(GGML_USE_HIP)
-        // ROCm 7.1 / RDNA4 on Windows can crash during HIP graph replay for the
-        // tiny DFlash encoder/injection graphs. Keep graphs available for the
-        // target model and MTP, but force normal async execution for DFlash.
-        if (strstr(node->name, "enc_norm_out")    != nullptr ||
-            strstr(node->name, "Kcur_injected")   != nullptr ||
-            strstr(node->name, "Vcur_injected")   != nullptr ||
-            strstr(node->name, "inp_noise_embd")  != nullptr) {
-            use_cuda_graph = false;
-            if (ggml_cuda_graph_trace_state_enabled()) {
-                GGML_LOG_INFO("%s: incompatible reason=rocm-dflash node=%d op=%s name=%s\n",
-                        __func__, i, ggml_op_name(node->op), node->name);
-            }
-        }
-#endif
 
         if (node->src[0] && node->src[0]->buffer && ggml_backend_buft_is_cuda_split(node->src[0]->buffer->buft)) {
             use_cuda_graph = false; // Split buffers are not supported by CUDA graph capture
@@ -1554,18 +1518,6 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     if (trace_graph_host_timing) {
         t_key_us = ggml_time_us();
     }
-
-#if defined(GGML_USE_HIP)
-    if (ggml_cuda_graph_is_dflash_graph(cgraph)) {
-        if (!cuda_ctx->cuda_graphs_runtime_disabled) {
-            if (ggml_cuda_graph_trace_state_enabled()) {
-                GGML_LOG_INFO("%s: disabling HIP graphs for backend context due to DFlash graph\n", __func__);
-            }
-            cuda_ctx->cuda_graphs.clear();
-            cuda_ctx->cuda_graphs_runtime_disabled = true;
-        }
-    }
-#endif
 
     ggml_cuda_graph_set_enabled(cuda_ctx, graph_key);
     if (trace_graph_host_timing) {

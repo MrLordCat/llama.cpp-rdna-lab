@@ -18,8 +18,6 @@ runtime profiles. This file collects the larger README sections so the main
   kernels for Ternary Bonsai.
 - Vision support through a compatible `mmproj-*.gguf` projector.
 - Prompt checkpoints, cache controls, benchmark history, and diagnostic traces.
-- DFlash integration for research; it is not currently the recommended runtime
-  profile.
 
 ## Fork-Only Backend Fixes
 

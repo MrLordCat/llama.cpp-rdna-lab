@@ -556,10 +556,10 @@ struct llama_model {
     struct ggml_tensor * output_s        = nullptr;
     struct ggml_tensor * output_norm_enc = nullptr;
 
-    // feature-fusion layer used by drafter models such as EAGLE3 and DFlash
+    // feature-fusion layer used by drafter models such as EAGLE3
     struct ggml_tensor * fc = nullptr;
 
-    // target-model layer ids extracted by drafter models such as EAGLE3 and DFlash
+    // target-model layer ids extracted by drafter models such as EAGLE3
     std::vector<int32_t> target_layer_ids;
 
     // classifier

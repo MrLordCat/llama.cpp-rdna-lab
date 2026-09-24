@@ -3,6 +3,11 @@
 Status doc for the two custom speculative-decoding paths in this fork, targeting
 Qwen3.6-27B on 2× RX 9070 XT (ROCm/HIP, Windows). Last updated 2026-07-07.
 
+**DFlash status: closed 2026-09-24** — DFlash was rejected (its draft path cost
+more VRAM than MTP at long context) and removed from the tree. The DFlash
+sections below are kept as the historical record of the decision. See
+docs/local/CLEANUP_2026-09-24.md for the removal.
+
 Rig: 2× RX 9070 XT (gfx1201, 16 GB each = 32 GB), ROCm 7.1, Windows 11.
 Target model: `models/Qwen3.6-27B-Q3_K_S.gguf` (dense qwen35 arch, 64 layers).
 Baseline decode (spec=none): ~28–40 tok/s single-GPU; prompt-eval ~800–1100 tok/s.
@@ -14,7 +19,7 @@ Baseline decode (spec=none): ~28–40 tok/s single-GPU; prompt-eval ~800–1100 
 | Path   | State | Acceptance | Decode | Verdict |
 |--------|-------|-----------:|-------:|---------|
 | **MTP**    | works after multi-GPU fix | draft head runs; acceptance modest | ~faster than none but **not the expected big win** | needs tuning to reach ~2× |
-| **DFlash** | Phase 1 functional end-to-end | ~7.5% (≈1 token/block) | ~5 tok/s (**slower** than baseline) | not yet a speedup; Phase 2 needed |
+| **DFlash** | Phase 1 functional end-to-end | ~7.5% (≈1 token/block) | ~5 tok/s (**slower** than baseline) | closed 2026-09-24: rejected and removed from the tree (draft path cost more VRAM than MTP at long context); history kept in §3 |
 
 Both compile+link+run on dual-GPU. Neither yet delivers the target ~2× speedup.
 
@@ -79,7 +84,7 @@ NOTE: agent-workload tasks emit near-empty output with thinking ON — use
 
 ---
 
-## 3. DFlash (block-diffusion speculative decoding)
+## 3. DFlash (block-diffusion speculative decoding) — closed 2026-09-24, removed from the tree
 
 ### What it is
 Ported from `../beellama.cpp` (`Anbeeld/beellama.cpp` @ `c6dfa39e3`). A separate
@@ -135,7 +140,12 @@ accepted, no crash. 22 commits (`b04f5465c..21bf6247e`), tree clean.
 3. Minor: `--spec-draft-n-max 4` errors "Invalid input batch" (default 16 works) —
    a batch-sizing edge case in `draft()`.
 
-### Next DFlash steps (Phase 2)
+### Former next steps (Phase 2) — superseded 2026-09-24
+
+Status: closed 2026-09-24 — DFlash was rejected (its draft path cost more VRAM
+than MTP at long context) and removed from the tree; the Phase 2 plan below is
+kept only as history. See docs/local/CLEANUP_2026-09-24.md for the removal.
+
 - Graph-embedded hidden capture (restore CUDA graphs; kill the ~6× verify penalty).
 - Iterative block-diffusion denoise to raise block acceptance beyond 1.
 - Diagnostic first: dump a few draft token pieces vs the target's actual next tokens
@@ -173,8 +183,9 @@ per-round draft overhead (esp. the 1 MB logits transfer × n_max) makes each rou
 ### How others avoid this (EAGLE/EAGLE-2/-3, Medusa, MTP/NextN, lookahead)
 1. **Never transfer full-vocab logits to draft.** Draft sampling (usually greedy /
    top-k=1 for the draft) is done **on the GPU** — compute argmax/top-k in the graph and
-   copy back only the token id(s) (4 bytes), not 1 MB. This is exactly what our DFlash
-   drafter already does via `ggml_argmax` → `llama_get_logits_argmax`.
+   copy back only the token id(s) (4 bytes), not 1 MB. This is exactly what the removed
+   DFlash drafter did via `ggml_argmax` → `llama_get_logits_argmax` (DFlash removed
+   from the tree 2026-09-24).
 2. **Keep draft + verify on the GPU with graphs/fusion intact** — no per-token host sync.
 3. **Tree / branched drafting** (EAGLE-2/-3, Medusa heads) to raise accepted length per
    verify beyond a single linear chain.
@@ -185,8 +196,9 @@ per-round draft overhead (esp. the 1 MB logits transfer × n_max) makes each rou
 1. **GPU argmax for the MTP draft (biggest lever).** Add `ggml_argmax` to the qwen35_mtp
    head graph and read the token id via a tiny transfer, replacing the full-logits
    `common_sampler_sample` in `common_speculative_state_mtp::draft()` for the top-k=1
-   path. Kills the ~642 ms `sample` term. (Reuse the DFlash `t_logits_argmax` /
-   `llama_get_logits_argmax` plumbing already in the tree.)
+   path. Kills the ~642 ms `sample` term. (Superseded note: that DFlash plumbing was
+   removed with DFlash on 2026-09-24; the MTP GPU argmax was implemented separately —
+   see the update below.)
 2. **Confirm the target verify keeps CUDA/HIP graphs** (the MTP hidden-capture hook runs
    post-decode, not via cb_eval, so graphs *should* survive — verify with a graph trace).
 3. **Sweep `n_max` (2..5)** at the measured 55% acceptance to find the throughput peak.

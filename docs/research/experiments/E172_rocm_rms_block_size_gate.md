@@ -1,8 +1,8 @@
 # E172 ROCm RMS Norm Block Size Gate
 
-## AGENT SWITCH INSTRUCTION (LIVE HANDOFF)
+## AGENT SWITCH INSTRUCTION (SUPERSEDED)
 
-Instruction for another agent: switch now to DFlash implementation track and execute Phase 0 from `docs/research/dflash/PHASE_PLAYBOOK.md`. Do not continue ROCm micro-optimization work in this handoff window.
+Superseded 2026-09-24: DFlash was rejected (its draft path cost more VRAM than MTP at long context) and removed from the tree; the referenced `docs/research/dflash/PHASE_PLAYBOOK.md` was deleted with the removal. See docs/local/CLEANUP_2026-09-24.md.
 
 ## Metadata
 

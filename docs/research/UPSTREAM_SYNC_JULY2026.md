@@ -26,6 +26,10 @@ exactly the bottleneck we measured (the per-verify sync hook).
 
 ## 2. DFlash — official upstream since `d1b34251b` (#22105)
 
+Status: closed 2026-09-24 — DFlash was rejected (its draft path cost more VRAM
+than MTP at long context) and removed from the tree; this section is kept as
+history, see docs/local/CLEANUP_2026-09-24.md for the removal.
+
 - **Much leaner than the beellama implementation we ported**: `src/models/dflash.cpp`
   is ~276 lines (bee's dflash_draft.cpp is 1064), +303 in speculative.cpp,
   llama-graph.cpp only +7 — integrated through the same staged-extraction machinery
@@ -57,15 +61,17 @@ The fork has been re-implementing (via beellama) what upstream landed in cleaner
 maintained form. Recommended direction, in order:
 
 1. **Cherry-pick the upstream spec stack** (llama-ext nextn staging +
-   llm_graph_input_mtp + #24025 post-norm pair + dflash.cpp + conversion) to replace
-   our hook-based MTP and bee-ported DFlash. This removes both measured bottlenecks
-   (hook sync; and DFlash gets the staged pipeline instead of our checkpoint-heavy
-   round loop). Large but high-value; our branch is literally named
-   `research/cherry-pick-upstream`.
+   llm_graph_input_mtp + #24025 post-norm pair) to replace our hook-based MTP. This
+   removes the measured hook-sync bottleneck. Large but high-value; our branch is
+   literally named `research/cherry-pick-upstream`. (The DFlash part of this plan is
+   closed: DFlash was rejected and removed from the tree on 2026-09-24 — see
+   docs/local/CLEANUP_2026-09-24.md.)
 2. Cheap standalone cherry-picks meanwhile: `3fc4e1052` (sched syncs, dual-GPU),
    `5a460dea9` (GDN copies), `e95dae18d` (MTP D2D).
 3. Re-generate / convert a DFlash drafter in the upstream format (conversion/qwen.py)
-   or add a compat shim for the bee-format GGUF.
+   or add a compat shim for the bee-format GGUF. — Closed 2026-09-24: DFlash was
+   rejected and removed from the tree; this step is moot (see
+   docs/local/CLEANUP_2026-09-24.md).
 4. Try `-sm tensor` on ROCm for the dual-GPU decode lane.
 
 Keep in mind our local fixes that upstream may not have: the Windows/RDNA4 HIP

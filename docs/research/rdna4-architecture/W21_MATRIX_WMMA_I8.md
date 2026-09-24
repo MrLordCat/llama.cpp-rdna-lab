@@ -68,7 +68,7 @@ Findings:
   uses WMMA-I8 (see W22). There is no new MMQ-i8 port to build.
 - **Actual next levers** (bandwidth/geometry or speculative):
   - native BF16->MXFP4 (+imatrix) quality gate;
-  - DFlash/MTP state and acceptance tuning;
+  - MTP state and acceptance tuning;
   - decode weight-stream geometry (W-follow-up) - or GDN trace if time.
 - Microbench result (186 T MAC/s) is now a confirmation that WMMA-I8 is
   already loaded, not a roadmap item.

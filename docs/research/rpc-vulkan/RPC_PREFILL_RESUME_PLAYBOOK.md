@@ -42,7 +42,8 @@ split3 l_out-19) + staged-копия l_out-19 20 МБ ~20 мс + VK0 GPU ~240 м
 
 - `GGML_RPC_ENABLE_MASK_NULL` СЛОМАН (ppl-регрессия): NULL-маска = full
   attention в локальном FA. Не включать.
-- Правки gui/*.py и docs/research/dflash/*.md — чужие, не трогать.
+- Правки gui/*.py — чужие, не трогать. `docs/research/dflash/` удалён
+  2026-09-24 вместе с DFlash (см. docs/local/CLEANUP_2026-09-24.md).
 - rpc-server на 3080 = сборка битпак-маски (клиентские изменения libllama
   серверу не нужны; transport/alloc-cache — клиентские). Деплой на 3080 нужен
   только при изменении ggml-rpc.cpp/server: stop task WinRM, scp rpc-server.exe

@@ -85,19 +85,6 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-#if defined(GGML_USE_HIP)
-    const bool spec_dflash =
-        std::find(params.speculative.types.begin(), params.speculative.types.end(), COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) != params.speculative.types.end();
-    if (spec_dflash && std::getenv("GGML_HIP_DISABLE_GRAPHS") == nullptr) {
-#if defined(_WIN32)
-        _putenv_s("GGML_HIP_DISABLE_GRAPHS", "1");
-#else
-        setenv("GGML_HIP_DISABLE_GRAPHS", "1", 0);
-#endif
-        LOG_WRN("%s: disabling HIP graphs for DFlash speculative decoding on ROCm (GGML_HIP_DISABLE_GRAPHS=1)\n", __func__);
-    }
-#endif
-
     // validate batch size for embeddings
     // embeddings require all tokens to be processed in a single ubatch
     // see https://github.com/ggml-org/llama.cpp/issues/12836

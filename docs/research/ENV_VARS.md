@@ -120,7 +120,6 @@ These are diagnostic-only and have no effect on results.
 | `LLAMA_MTP_ASYNC_DEVICE_HANDOFF` | cross-context handoff without draining the target scheduler; HIP default `1`, other backends `0` |
 | `LLAMA_SPEC_TOKEN_TRACE` / `LLAMA_SPEC_VERIFY_TIMING` | speculative decode traces |
 | `LLAMA_SPEC_RS_SEQ_MAX` | reject-sample sequence cap |
-| `LLAMA_DFLASH_*` | DFlash chunk/ubatch controls |
 | `LLAMA_DELTA_NET_*` | Delta-Net chunk policy |
 | `LLAMA_CHECKPOINT_TIMING` | checkpoint timing trace |
 | `LLAMA_KEEP_MMAPPED_WEIGHTS` | keep whole model file mappings after load (disables the default release of ranges copied to device buffers) |
@@ -161,6 +160,17 @@ ON, escape hatch), `GGML_CUDA_Q3K_PADDED_*` (HIP default =1), `GGML_HIP_DISABLE_
 `GGML_VK_FA_F8_NATIVE`/`GGML_VK_FA_F8_DUMP`/`GGML_VK_FA_F8_DIRECT` (live prefill
 route probes), `GGML_VK_FA_SCALAR_*` (scalar decode tuning), `GGML_VK_MM_TRACE_SPLIT`
 and the Q3K quad-dequant/split-K Vulkan knobs (live route switches).
+
+## Removed with the DFlash removal (2026-09-24)
+
+- `LLAMA_DFLASH_UBATCH` / `LLAMA_DFLASH_CTX_UBATCH` - DFlash chunk/ubatch controls
+- `LLAMA_DFLASH_TRACE` - DFlash trace switch
+- `LLAMA_DFLASH_SKIP_SPEC_CKPT` - server checkpoint skip under DFlash
+- `GGML_DFLASH_PROFILE` - DFlash profile trace
+
+DFlash was rejected (its draft path cost more VRAM than MTP at long context)
+and removed from the tree on 2026-09-24; history kept, see
+docs/local/CLEANUP_2026-09-24.md for the removal.
 
 ## Notes
 
