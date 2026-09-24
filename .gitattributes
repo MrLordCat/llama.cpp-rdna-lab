@@ -26,4 +26,3 @@ gui/QUICKSTART.md merge=ours
 .github/** merge=ours
 docs/** merge=ours
 .gemini/** merge=ours
-.devops/** merge=ours

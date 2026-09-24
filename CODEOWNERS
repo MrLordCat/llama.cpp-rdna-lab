@@ -17,7 +17,6 @@
 # ggml-org/llama-server     : ggerganov, ngxson, allozaur, angt, ServeurpersoCom
 # ggml-org/llama-webui      : allozaur
 
-/.devops/*.Dockerfile                   @ngxson
 /.github/actions/                       @ggml-org/ci
 /.github/workflows/                     @ggml-org/ci
 /ci/                                    @ggerganov
