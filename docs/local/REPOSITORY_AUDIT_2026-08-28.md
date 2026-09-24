@@ -31,7 +31,7 @@ clutter, local generated state, documentation ownership, and safe cleanup.
 | `scripts/` | 1.37 MiB | Keep: 162 tracked docs/tasks reference scripts, including the protected benchmark harness. Remove only generated executables and Python caches. |
 | `cmake/` | 0.01 MiB | Keep intact: common modules and toolchain files are referenced by presets/workflows. Removing ARM/RISC files would save almost nothing and increase upstream-sync conflicts. |
 | `media/` | 0.25 MiB | Remove as requested; update the two documentation references and CODEOWNERS. |
-| `subProject_q4/` | 0 tracked | Keep local: the 52 GiB directory is covered by `subProject_q4/` in `.gitignore`. |
+| `subProject_q4/` | 0 tracked | Keep local: the 52 GiB directory is covered by `subProject_q4/` in `.gitignore`. Superseded 2026-09-24: backed up to `C:\GitHub-backups\subProject_q4-2026-09-24` and removed — see `CLEANUP_2026-09-24.md`. |
 | `dist/` | 0 tracked | Remove the empty directory; PyInstaller recreates it on demand. |
 
 ## Cleanup performed
