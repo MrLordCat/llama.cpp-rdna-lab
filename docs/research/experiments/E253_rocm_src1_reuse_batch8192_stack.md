@@ -1,5 +1,8 @@
 # E253 ROCm Src1 Reuse + Batch8192 Stack Gate
 
+**Status: closed 2026-09-25.** The rejected src1-F16 reuse implementation and
+its environment switches have been removed from runtime code.
+
 ## Metadata
 
 - Experiment ID: E253

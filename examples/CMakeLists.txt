@@ -10,32 +10,17 @@ find_package(Threads REQUIRED)
 
 llama_add_compile_flags()
 
-# examples
+# Project example whitelist. These are the small diagnostics used by the
+# Qwen/BitNet, long-context and speculative-decoding workflows.
+set(LLAMA_EXAMPLES_WHITELIST
+    "attn-sparsity-scout;kv-precision-scout;parallel;passkey;simple;simple-chat;dump_nextn;speculative;speculative-simple"
+    CACHE STRING "Semicolon-separated example directories built by this fork")
 
-if (EMSCRIPTEN)
-else()
-    add_subdirectory(attn-sparsity-scout)
-    add_subdirectory(kv-precision-scout)
-    add_subdirectory(batched)
-    add_subdirectory(debug)
-    add_subdirectory(embedding)
-    add_subdirectory(eval-callback)
-
-    add_subdirectory(gguf-hash)
-    add_subdirectory(gguf)
-    add_subdirectory(idle)
-    add_subdirectory(lookahead)
-    add_subdirectory(lookup)
-    add_subdirectory(parallel)
-    add_subdirectory(passkey)
-    add_subdirectory(retrieval)
-    add_subdirectory(save-load-state)
-    add_subdirectory(simple)
-    add_subdirectory(simple-chat)
-    add_subdirectory(dump_nextn)
-    add_subdirectory(speculative)
-    add_subdirectory(speculative-simple)
-    add_subdirectory(gen-docs)
-    add_subdirectory(training)
-    add_subdirectory(diffusion)
+if (NOT EMSCRIPTEN)
+    foreach(example IN LISTS LLAMA_EXAMPLES_WHITELIST)
+        if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${example}/CMakeLists.txt")
+            message(FATAL_ERROR "Unknown entry in LLAMA_EXAMPLES_WHITELIST: ${example}")
+        endif()
+        add_subdirectory(${example})
+    endforeach()
 endif()

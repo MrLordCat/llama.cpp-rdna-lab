@@ -6,7 +6,25 @@ llama_add_compile_flags()
 
 # llama
 
-file(GLOB LLAMA_MODELS_SOURCES "models/*.cpp")
+# This fork intentionally carries a narrow model surface. Keep this list
+# explicit: adding a new architecture is a reviewed project decision, not an
+# automatic side effect of dropping another upstream file into models/.
+set(LLAMA_MODELS_SOURCES
+    models/bitnet.cpp
+    models/delta-net-base.cpp
+    models/qwen.cpp
+    models/qwen2.cpp
+    models/qwen2moe.cpp
+    models/qwen2vl.cpp
+    models/qwen3.cpp
+    models/qwen3moe.cpp
+    models/qwen3next.cpp
+    models/qwen3vl.cpp
+    models/qwen3vlmoe.cpp
+    models/qwen35.cpp
+    models/qwen35moe.cpp
+    models/qwen4exp.cpp
+)
 
 add_library(llama
             ../include/llama.h

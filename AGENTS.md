@@ -1,9 +1,9 @@
 # Agent Instructions
 
-> **Branch `gui-2.0` / worktree `D:\GitHub\llama.cpp-gui2`:** read `GUI2.md`
-> first. The canonical-root statement below applies to the performance lab in
-> `D:\GitHub\llama.cpp-with-GUI`, where another agent is working on branch
-> `rpc-vulkan`. Driver-safety, backend and worktree rules below still apply.
+This file describes the active `master` checkout at
+`D:\GitHub\llama.cpp-with-GUI`. `GUI2.md` remains the operational reference
+for the local GUI and its Windows/Linux launchers; its old `gui-2.0` worktree
+handoff text is historical.
 
 ## Project identity
 
@@ -24,22 +24,40 @@ path. Models, builds, logs, scripts and GUI launches are all resolved from the
 
 ## Supported backends
 
-Only these backends are supported:
+Only these local compute backends are supported:
 
-- CPU, including optional BLAS and CPU SIMD paths;
+- CPU, including the retained optional BLAS path (BLAS is disabled in the
+  current build profiles and is pending a separate review);
 - Vulkan;
 - ROCm/HIP.
 
-Do not restore CUDA, Metal, SYCL, OpenCL, CANN, MUSA, WebGPU, RPC or other
-removed backends during upstream work. `ggml/src/ggml-cuda` is retained only as
-the CUDA-compatible source layer compiled by `ggml-hip`; its native CUDA CMake
-entry point is intentionally removed. Read `docs/SUPPORTED_BACKENDS.md`.
+RPC is an active transport, not a fourth local compute backend. It is compiled
+only in the Vulkan profile and is used by GUI 2.0 to expose remote devices as
+`RPC0`, `RPC1`, and so on. ROCm builds keep `GGML_RPC=OFF`.
+
+Do not restore native CUDA, Metal, SYCL, OpenCL, CANN, MUSA, WebGPU or other
+removed backends. `ggml/src/ggml-cuda` is retained only as the CUDA-compatible
+source layer compiled by `ggml-hip`; its native CUDA CMake entry point is
+intentionally removed. Read `docs/SUPPORTED_BACKENDS.md`.
+
+NaN+
+- Runtime model implementations are deliberately limited to the entire Qwen
+  family (`qwen`, Qwen2/3/3.5/4-exp, MoE, Next and VL variants) and BitNet,
+  which is the loader used by `Ternary-Bonsai-27B-PQ2_0.gguf`.
+- `src/CMakeLists.txt` is the authoritative model whitelist. The architecture
+  metadata can still recognize older GGUF names so an unsupported file fails
+  with a clear error; recognizing a name does not make its runtime available.
+- Keep `tools/server/public/` and `LLAMA_BUILD_WEBUI=ON`. The built-in
+  llama-server WebUI is the fast manual test surface; GUI 2.0 is the lab UI.
+- `LLAMA_TOOLS_WHITELIST` and `LLAMA_EXAMPLES_WHITELIST` are the authoritative
+  build lists. Add a target there only when a current Qwen/BitNet, MTP,
+  long-context, model-preparation or RPC workflow needs it.
 
 ## Local hardware
 
 - Windows 11, AMD Ryzen 7 5800X3D, 64 GB RAM.
 - Two AMD Radeon RX 9070 XT 16 GB, target `gfx1201`.
-- ROCm/HIP SDK 7.1.
+- ROCm/HIP SDK 7.2 in the active Windows `build-rocm72` profile.
 - Vulkan normally uses `Vulkan1,Vulkan0`, with GPU1 first because GPU0 handles
   display/system load.
 - ROCm production and long-context benchmarks use both GPUs as
@@ -85,8 +103,8 @@ validation without launching extra backend discovery paths.
   is allowed - it is ripgrep-based and honors `.gitignore` (build*/*.o/*.so
   are excluded).**
 - Never use `git reset --hard`, destructive checkout, or broad cleanup commands.
-- Keep local GUI, ROCm, Vulkan, benchmark and research changes during upstream
-  sync.
+- There is no broad upstream sync. Import individual upstream changes only
+  when they serve the supported Qwen/BitNet, CPU, Vulkan or ROCm surface.
 - Avoid `cmd.exe` wrappers for long builds and benchmarks; use PowerShell or
   direct executables.
 
@@ -176,20 +194,21 @@ CPU/build-system changes:
 
 ```powershell
 cmake -S . -B build-cpu -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build-cpu -j 4 --target llama-server
+cmake --build build-cpu -j 4 --target llama-server llama-cli llama-bench
 ```
 
 Vulkan changes:
 
 ```powershell
-cmake -S . -B build-vulkan -G Ninja -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build-vulkan -j 4 --target llama-server
+cmake -S . -B build-vulkan-gcc16 -G Ninja -DGGML_VULKAN=ON -DGGML_RPC=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-vulkan-gcc16 -j 4 --target llama-server llama-bench rpc-server
 ```
 
-ROCm configure:
+ROCm changes:
 
 ```powershell
-cmake -S . -B build-rocm -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DGGML_HIP_NO_VMM=ON -DGGML_OPENMP=OFF -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build-rocm72 -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 -DGGML_HIP_NO_VMM=ON -DGGML_OPENMP=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build build-rocm72 -j 4 --target llama-server llama-bench
 ```
 
 Always finish with `git diff --check`. Do not run GPU server probes merely to
@@ -197,8 +216,9 @@ print version/help output.
 
 ## Upstream sync
 
-Follow `UPSTREAM_SYNC.md`. Inspect upstream commits, then manually port the
-smallest useful core/runtime portion. Reject backend reintroduction. Shared
+`UPSTREAM_SYNC.md` is a selective-import guide, not authorization for a broad
+merge. Inspect upstream commits, then manually port the smallest useful
+core/runtime portion. Reject backend or model-family reintroduction. Shared
 `ggml-cuda` kernel changes may be imported only when needed by HIP and verified
 with a ROCm build.
 

@@ -509,16 +509,6 @@ static vk_context ggml_vk_create_temporary_context(vk_command_pool& p) {
     return result;
 }
 
-static vk_semaphore * ggml_vk_create_binary_semaphore(ggml_backend_vk_context * ctx) {
-    VK_LOG_DEBUG("ggml_vk_create_timeline_semaphore()");
-    vk::SemaphoreTypeCreateInfo tci{ vk::SemaphoreType::eBinary, 0 };
-    vk::SemaphoreCreateInfo ci{};
-    ci.setPNext(&tci);
-    vk::Semaphore semaphore = ctx->device->device.createSemaphore(ci);
-    ctx->gc.semaphores.push_back({ semaphore, 0 });
-    return &ctx->gc.semaphores[ctx->gc.semaphores.size() - 1];
-}
-
 static vk_semaphore * ggml_vk_create_timeline_semaphore(ggml_backend_vk_context * ctx) {
     VK_LOG_DEBUG("ggml_vk_create_timeline_semaphore()");
     if (ctx->semaphore_idx >= ctx->gc.tl_semaphores.size()) {
@@ -529,13 +519,6 @@ static vk_semaphore * ggml_vk_create_timeline_semaphore(ggml_backend_vk_context 
         ctx->gc.tl_semaphores.push_back({ semaphore, 0 });
     }
     return &ctx->gc.tl_semaphores[ctx->semaphore_idx++];
-}
-
-static vk::Event ggml_vk_create_event(ggml_backend_vk_context * ctx) {
-    if (ctx->event_idx >= ctx->gc.events.size()) {
-        ctx->gc.events.push_back(ctx->device->device.createEvent({}));
-    }
-    return ctx->gc.events[ctx->event_idx++];
 }
 
 static void ggml_vk_command_pool_cleanup(vk_device& device, vk_command_pool& p) {
@@ -840,15 +823,6 @@ static void ggml_vk_sync_buffers(ggml_backend_vk_context* ctx, vk_context& subct
         } },
         {},
         {}
-    );
-}
-
-static void ggml_vk_reset_event(vk_context& ctx, vk::Event& event) {
-    VK_LOG_DEBUG("ggml_vk_set_event()");
-
-    ctx->s->buffer->buf.resetEvent(
-        event,
-        ctx->p->q->stage_flags
     );
 }
 

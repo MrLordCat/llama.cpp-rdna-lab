@@ -55,21 +55,6 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
         if (cublas_handles[i] != nullptr) {
             CUBLAS_CHECK(cublasDestroy(cublas_handles[i]));
         }
-        for (int j = 0; j < 2; ++j) {
-            if (q3k_pipeline_cublas_handles[i][j] != nullptr) {
-                CUBLAS_CHECK(cublasDestroy(q3k_pipeline_cublas_handles[i][j]));
-            }
-        }
-        if (cublas_src1_f16_reuse_buffers[i] != nullptr) {
-            ggml_cuda_set_device(i);
-            CUDA_CHECK(cudaFree(cublas_src1_f16_reuse_buffers[i]));
-        }
-        if (!cublas_src1_f16_reuse_retired_buffers[i].empty()) {
-            ggml_cuda_set_device(i);
-            for (half * ptr : cublas_src1_f16_reuse_retired_buffers[i]) {
-                CUDA_CHECK(cudaFree(ptr));
-            }
-        }
     }
 }
 

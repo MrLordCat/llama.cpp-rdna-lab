@@ -1,5 +1,9 @@
 # Q3FlashMatmul Implementation Plan
 
+**Status: closed 2026-09-25.** The direct route, chunked cuBLAS pipeline and
+persistent src1-F16 reuse were rejected by their wall/VRAM gates and removed
+from runtime code. This document is historical evidence, not an active plan.
+
 ## Goal
 
 Build a ROCm/RDNA4 Q3_K route that works like a FlashAttention-style compressed
@@ -108,8 +112,9 @@ an opt-in adjacent-only fp16 cache for `src1`:
 - final 3-run active-lane A/B: `7.8981 -> 7.9608` aggregate TPS (`+0.79%`),
   median `8.02 -> 8.17`, prompt mean `5988.23 -> 5948.21 ms`.
 
-Decision: keep E248 as opt-in positive micro-route, not default. It is small but
-runtime-positive, and it avoids broad fp16 weight residency.
+Final decision (E253 revalidation): reject and remove the route. Its earlier
+small positive result did not reproduce; the current stack collapsed prompt
+performance and retained activation memory with unsafe lifetime assumptions.
 
 ## Risks
 

@@ -28,22 +28,6 @@ enum server_model_status {
     SERVER_MODEL_STATUS_SLEEPING
 };
 
-static server_model_status server_model_status_from_string(const std::string & status_str) {
-    if (status_str == "unloaded") {
-        return SERVER_MODEL_STATUS_UNLOADED;
-    }
-    if (status_str == "loading") {
-        return SERVER_MODEL_STATUS_LOADING;
-    }
-    if (status_str == "loaded") {
-        return SERVER_MODEL_STATUS_LOADED;
-    }
-    if (status_str == "sleeping") {
-        return SERVER_MODEL_STATUS_SLEEPING;
-    }
-    throw std::runtime_error("invalid server model status");
-}
-
 static std::string server_model_status_to_string(server_model_status status) {
     switch (status) {
         case SERVER_MODEL_STATUS_UNLOADED: return "unloaded";

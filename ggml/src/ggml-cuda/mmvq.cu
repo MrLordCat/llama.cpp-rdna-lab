@@ -1190,21 +1190,6 @@ static void mul_mat_vec_q_switch_ncols_dst(
             // RDNA4 Qwen-hot decode policy.
             // Q6_K's heavier vec_dot and fused FFN path are faster with one row per block.
             use = type != GGML_TYPE_Q6_K;
-
-            // W13 C1 A/B gate (temporary, 2026-08-15): override the consolidated
-            // auto policy for the small_k A-B-A on Qwen3.8. 0 = one row per CTA
-            // (generic geometry), 1 = rows_per_block == nwarps (auto default).
-            // Removed after the C1 verdict.
-            static const int64_t qwen_small_k_override = [] {
-                const char * env = std::getenv("GGML_MMVQ_RDNA4_QWEN_SMALL_K");
-                if (env == nullptr || env[0] == '\0') {
-                    return int64_t{-1};
-                }
-                return std::clamp<int64_t>(std::atoll(env), 0, 1);
-            }();
-            if (qwen_small_k_override >= 0) {
-                use = qwen_small_k_override != 0;
-            }
         }
 
         if (is_qwen_hot_rdna4 && ggml_cuda_trace_mmvq_small_k_enabled()) {

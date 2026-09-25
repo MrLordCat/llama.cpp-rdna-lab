@@ -39,18 +39,6 @@ static std::string format_time(const std::chrono::system_clock::time_point & now
     return res;
 }
 
-static json safe_args_parse(const std::string & to_parse) {
-    std::string stripped = to_parse;
-    if (to_parse.at(0) == '"' && to_parse.at(to_parse.length() - 1) == '"') {
-        stripped = to_parse.substr(1, to_parse.length() - 1);
-    }
-    try {
-        return json::parse(stripped);
-    } catch (json::exception & e) {
-        return stripped;
-    }
-}
-
 static std::string string_diff(const std::string & last, const std::string & current) {
     if (last.empty()) {
         return current;
@@ -64,10 +52,6 @@ static std::string string_diff(const std::string & last, const std::string & cur
         throw std::runtime_error("Invalid diff: '" + last + "' not found at start of '" + current + "'");
     }
     return current.substr(last.size());
-}
-
-static bool has_content_or_tool_calls(const common_chat_msg & msg) {
-    return !msg.content.empty() || !msg.tool_calls.empty();
 }
 
 json common_chat_msg::to_json_oaicompat(bool concat_typed_text) const {

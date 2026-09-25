@@ -1,5 +1,8 @@
 # E290: ROCm Q3_K cuBLAS Pipeline Gate
 
+**Status: closed 2026-09-25.** The pipeline was about 44% slower when active,
+added about 364 MiB per GPU, and has been removed from runtime code.
+
 Date: 2026-07-14
 
 ## Scope

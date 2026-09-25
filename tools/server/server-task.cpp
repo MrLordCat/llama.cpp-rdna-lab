@@ -306,20 +306,6 @@ task_params server_task::params_from_json_cmpl(
     params.speculative.draft.n_min = std::max(params.speculative.draft.n_min, 0);
     params.speculative.draft.n_max = std::max(params.speculative.draft.n_max, 0);
 
-#if 0
-    // for debugging and research purposes
-    params.speculative.types = common_speculative_types_from_names(
-            string_split<std::string>(json_value(data, "speculative.type", common_speculative_type_name_str(defaults.speculative.types)), ','));
-
-    params.speculative.ngram_size_n     = json_value(data, "speculative.ngram_size_n", defaults.speculative.ngram_size_n);
-    params.speculative.ngram_size_m     = json_value(data, "speculative.ngram_size_m", defaults.speculative.ngram_size_m);
-    params.speculative.ngram_min_hits   = json_value(data, "speculative.ngram_m_hits", defaults.speculative.ngram_min_hits);
-
-    params.speculative.ngram_size_n     = std::max(std::min(1, (int) params.speculative.ngram_size_n),     1024);
-    params.speculative.ngram_size_m     = std::max(std::min(1, (int) params.speculative.ngram_size_m),     1024);
-    params.speculative.ngram_min_hits   = std::max(std::min(1, (int) params.speculative.ngram_min_hits),   1024);
-#endif
-
     // Use OpenAI API logprobs only if n_probs wasn't provided
     if (data.contains("logprobs") && params.sampling.n_probs == defaults.sampling.n_probs){
         params.sampling.n_probs = json_value(data, "logprobs", defaults.sampling.n_probs);

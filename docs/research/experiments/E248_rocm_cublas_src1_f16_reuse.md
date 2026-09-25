@@ -1,5 +1,8 @@
 # E248 ROCm cuBLAS Adjacent src1 F16 Reuse
 
+**Status: closed 2026-09-25.** E253 did not reproduce the small gain and found
+a severe prompt regression; the persistent reuse path has been removed.
+
 ## Metadata
 
 - Experiment ID: E248

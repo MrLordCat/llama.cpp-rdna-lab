@@ -9,6 +9,7 @@ Detailed reference moved out of the README.
 | ROCm/HIP | Primary prompt-eval, long-context MTP, and RDNA4 runtime | Supported and preferred for prompt-heavy MTP work |
 | Vulkan | General AMD runtime and backend comparison | Supported; competitive for decode-heavy work; q8/MTP path fixed (D094) |
 | CPU | Fallback, conversion, sanity checks, and tests | Supported |
+| RPC transport | Remote devices exposed to the Vulkan client | Supported in the Vulkan profile; not compiled into ROCm builds |
 
 ROCm still builds HIP-compatible kernels from `ggml/src/ggml-cuda`. That is an
 internal HIP implementation detail and does not mean that this fork supports
@@ -39,6 +40,11 @@ Q3_K_S (Qwen3.6) remains the secondary choice for maximum
 context/VRAM headroom, vision, and Q3-specific kernel research. `PQ2_0` is an
 experimental Prism format and should not be confused with conventional `Q2_0`
 quantization.
+
+The runtime source whitelist is intentionally limited to BitNet/Ternary Bonsai
+and the full Qwen family. Other architecture names may still be recognized by
+the GGUF metadata layer so that loading fails with a precise unsupported-build
+error, but their model implementations are not compiled or shipped.
 
 ## Vision
 

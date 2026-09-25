@@ -611,14 +611,6 @@ static void gather_string_parts_recursive(const value & val, value_string & part
     }
 }
 
-static std::string render_string_parts(const value_string & parts) {
-    std::ostringstream oss;
-    for (const auto & part : parts->val_str.parts) {
-        oss << part.val;
-    }
-    return oss.str();
-}
-
 struct runtime {
     context & ctx;
     explicit runtime(context & ctx) : ctx(ctx) {}

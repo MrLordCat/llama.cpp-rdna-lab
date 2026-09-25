@@ -1,6 +1,7 @@
 # Supported Backends
 
-This fork intentionally supports only CPU, Vulkan and ROCm/HIP.
+This fork intentionally supports only CPU, Vulkan and ROCm/HIP as local
+compute backends. RPC remains supported as a Vulkan-profile transport.
 
 ## Build targets
 
@@ -10,9 +11,12 @@ This fork intentionally supports only CPU, Vulkan and ROCm/HIP.
 | `GGML_BLAS=ON` | `ggml-blas` | Optional CPU acceleration |
 | `GGML_VULKAN=ON` | `ggml-vulkan` | Primary AMD prompt-eval path |
 | `GGML_HIP=ON` | `ggml-hip` | ROCm runtime and AMD kernel path |
+| `GGML_RPC=ON` | `ggml-rpc` / `rpc-server` | Remote-device transport used by the Vulkan profile; disabled in ROCm builds |
 
 Unsupported backend options and source directories are removed instead of left
-as dormant build choices. This keeps CMake, GUI and CI aligned.
+as dormant build choices. RPC is not a local compute backend: it exposes
+remote workers to the Vulkan client as `RPC0`, `RPC1`, and so on. This keeps
+CMake, GUI and CI aligned.
 
 ## Why `ggml-cuda` remains
 

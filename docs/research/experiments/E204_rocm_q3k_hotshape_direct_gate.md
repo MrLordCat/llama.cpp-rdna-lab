@@ -1,5 +1,8 @@
 # E204 ROCm Q3_K hot-shape direct gate
 
+**Status: closed 2026-09-25.** The default-off shape override was a negative
+control and has been removed; the measurements below remain historical.
+
 ## Metadata
 
 - Experiment ID: E204

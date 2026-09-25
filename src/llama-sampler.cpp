@@ -246,22 +246,6 @@ static int llama_sample_dist(llama_token_data_array * cur_p, std::mt19937 & rng)
     return dist(rng);
 }
 
-/*
-static void llama_log_softmax(float * array, size_t size) {
-    float max_l = *std::max_element(array, array + size);
-    float sum = 0.f;
-    for (size_t i = 0; i < size; ++i) {
-        float p = expf(array[i] - max_l);
-        sum += p;
-        array[i] = p;
-    }
-
-    for (size_t i = 0; i < size; ++i) {
-        array[i] = logf(array[i] / sum);
-    }
-}
-*/
-
 static void llama_sampler_temp_impl(llama_token_data_array * cur_p, float temp) {
     if (temp <= 0.0f) {
         // find the token with the highest logit and set the rest to -inf
@@ -2655,15 +2639,6 @@ static void llama_sampler_penalties_accept(struct llama_sampler * smpl, llama_to
 
     ctx->prev.push_back(token);
 
-#if 0
-    // sanity check
-    std::unordered_map<llama_token, int> tmp;
-    for (int i = 0; i < std::min<int>(ctx->penalty_last_n, ctx->prev.size()); ++i) {
-        tmp[ctx->prev.rat(i)]++;
-    }
-
-    assert(ctx->token_count == tmp);
-#endif
 }
 
 static void llama_sampler_penalties_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {

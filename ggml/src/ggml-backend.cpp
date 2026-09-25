@@ -912,15 +912,8 @@ static int ggml_backend_sched_backend_from_buffer(ggml_backend_sched_t sched, co
     return -1;
 }
 
-#if 0
-#define GGML_SCHED_MAX_SPLITS_DEBUG 4096
-static char causes[GGML_DEFAULT_GRAPH_SIZE*16 + GGML_SCHED_MAX_SPLITS_DEBUG*GGML_SCHED_MAX_SPLIT_INPUTS][128]; // debug only
-#define SET_CAUSE(node, ...) sprintf(causes[hash_id(node)], __VA_ARGS__)
-#define GET_CAUSE(node) causes[hash_id(node)]
-#else
 #define SET_CAUSE(node, ...)
 #define GET_CAUSE(node) ""
-#endif
 
 // returns the backend that should be used for the node based on the current locations
 static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched, struct ggml_tensor * tensor) {
@@ -1097,23 +1090,6 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
         if (*node_backend_id == -1) {
             *node_backend_id = ggml_backend_sched_backend_id_from_cur(sched, node);
 
-#if 0
-            // src
-            if (node->op == GGML_OP_NONE) {
-                continue;
-            }
-
-            for (int j = 0; j < GGML_MAX_SRC; j++) {
-                struct ggml_tensor * src = node->src[j];
-                if (src == NULL) {
-                    continue;
-                }
-                int * src_backend_id = &tensor_backend_id(src);
-                if (*src_backend_id == -1) {
-                    *src_backend_id = ggml_backend_sched_backend_id_from_cur(sched, src);
-                }
-            }
-#endif
         }
     }
 
