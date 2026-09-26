@@ -1794,7 +1794,70 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         nb1, nb2, nb3, stream);
 }
 
+// D138 ablation probe, default off. Skip executing every node whose op name
+// equals one of the comma-separated patterns in GGML_CUDA_ABLATE, or whose
+// tensor name contains one of them (matched as-is, case sensitive). The graph
+// keeps its shape and the skipped node simply keeps its previous contents, so
+// only timing is meaningful; results are stale by construction. Used together
+// with GGML_TRACE_CUDA_GRAPH_DEVICE_TIMING to price a node class inside the
+// real graph-mode decode. Op matching is exact on purpose: a substring match
+// would make "MUL" silently swallow every "MUL_MAT" node.
+static bool ggml_cuda_ablate_match(const ggml_tensor * node) {
+    static const char * env = std::getenv("GGML_CUDA_ABLATE");
+    if (env == nullptr || env[0] == '\0') {
+        return false;
+    }
+    static const std::vector<std::string> patterns = [] {
+        std::vector<std::string> v;
+        const std::string all = std::getenv("GGML_CUDA_ABLATE");
+        size_t start = 0;
+        while (start <= all.size()) {
+            const size_t pos = all.find(',', start);
+            const std::string part = all.substr(start, pos == std::string::npos ? std::string::npos : pos - start);
+            if (!part.empty()) {
+                v.push_back(part);
+            }
+            if (pos == std::string::npos) {
+                break;
+            }
+            start = pos + 1;
+        }
+        return v;
+    }();
+    if (patterns.empty()) {
+        return false;
+    }
+    const char * op_name = ggml_op_name(node->op);
+    for (const std::string & p : patterns) {
+        if (op_name != nullptr && p == op_name) {
+            return true;
+        }
+        if (p.find('_') != std::string::npos) {
+            // compound patterns are only ever meant as tensor-name substrings
+            if (node->name != nullptr && std::strstr(node->name, p.c_str()) != nullptr) {
+                return true;
+            }
+        } else if (node->name != nullptr) {
+            // single-word patterns (Kcur, Vcur, z, ...) match a tensor name that
+            // is the pattern itself or the pattern plus a "-<suffix>" block tag.
+            const char * name = node->name;
+            const size_t n = p.size();
+            if (std::strncmp(name, p.c_str(), n) == 0 && (name[n] == '\0' || name[n] == '-')) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
+    if (ggml_cuda_ablate_match(dst)) {
+        static std::atomic<int> ablate_logged{0};
+        if (ablate_logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+            GGML_LOG_INFO("GGML_CUDA_ABLATE: skip op=%s name=%s\n", ggml_op_name(dst->op), dst->name);
+        }
+        return true;
+    }
     switch (dst->op) {
         case GGML_OP_ARGMAX:
             ggml_cuda_argmax(ctx, dst);

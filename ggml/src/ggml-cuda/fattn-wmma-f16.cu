@@ -38,10 +38,22 @@ static int ggml_cuda_wmma_fattn_forced_cols_per_block() {
     return cached;
 }
 
+#if defined(GGML_USE_HIP) && defined(GGML_D138_PHASE)
+// D138 probe (compile-time only, GGML_D138_PHASE): phase accounting for the
+// WMMA FA kernel. Each block accumulates its own cycle counts and flushes the
+// counters with atomics at the end of the kernel, so a run reports the phase
+// split for the whole lane:
+//   [0] KQ tile MMA, [1] softmax + P re-quantisation, [2] P fragment load,
+//   [3] V fragment load + PV MMA, [4] VKQ LDS store, [5] output accumulation.
+// Keep it behind the flag: the clock64 calls and the per-block counters cost
+// real time (they were measured to slow the prefill shape by ~30%).
+__device__ unsigned long long g_d138_fa_phase[6];
+#endif
+
 // D == head size, VKQ_stride == num VKQ rows calculated in parallel:
 template<int D, int ncols, int nwarps, int VKQ_stride, typename KQ_acc_t,
     bool use_logit_softcap, bool q8_v_direct = false, bool write_meta_single = false,
-    bool native_f8_kq = false, bool native_f8_v = false>
+    bool native_f8_kq = false, bool native_f8_v = false, bool gqa_cols = false>
 __launch_bounds__(nwarps*ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void flash_attn_ext_f16(
         const char * __restrict__ Q,
@@ -128,10 +140,19 @@ static __global__ void flash_attn_ext_f16(
     constexpr int kqs_padded = FATTN_KQ_STRIDE + 8;
     constexpr int kqar = sizeof(KQ_acc_t)/sizeof(half);
 
-    const int sequence = blockIdx.z / ne02;
-    const int head = blockIdx.z - sequence*ne02;
     const int gqa_ratio = ne02 / ne12; // With grouped query attention there are > 1 Q matrices per K, V matrix.
-    const float * Q_f    = (const float *) (Q    + nb03* sequence         + nb02* head              + nb01*ic0);
+
+    // D138: with gqa_cols the tile columns are the Q heads of one K/V head
+    // instead of consecutive tokens, so one K/V fragment serves gqa_ratio Q
+    // heads. This is only used for the decode shape (one token per sequence),
+    // therefore column j maps to head `head + j` of the same K/V head:
+    //   sequence = blockIdx.z / ne12, head = (blockIdx.z % ne12)*gqa_ratio
+    // Columns beyond gqa_ratio hold a zero Q row and are dropped on store.
+    static_assert(!gqa_cols || ncols % nwarps == 0, "gqa_cols needs full column coverage");
+    const int sequence = gqa_cols ? blockIdx.z / ne12 : blockIdx.z / ne02;
+    const int head     = gqa_cols ? (blockIdx.z - sequence*ne12)*gqa_ratio : blockIdx.z - sequence*ne02;
+    const int ncols_live = gqa_cols ? (gqa_ratio < ncols ? gqa_ratio : ncols) : ncols;
+    const float * Q_f    = (const float *) (Q    + nb03* sequence         + nb02* head              + nb01*(gqa_cols ? 0 : ic0));
     const char  * K_data =                    K    + nb13* sequence         + nb12*(head / gqa_ratio);
     const char  * V_data =                    V    + nb23* sequence         + nb22*(head / gqa_ratio);
     const half  * V_h    = (const half  *) V_data;
@@ -140,7 +161,7 @@ static __global__ void flash_attn_ext_f16(
     const half2 * mask2  = (const half2 *)  maskh;
     const float * sinksf = (const float *) sinks;
 
-    const int stride_Q  = nb01 / sizeof(float);
+    const int stride_Q  = (gqa_cols ? nb02 : nb01) / sizeof(float);
     const int stride_K  = nb11 / sizeof(kq_input_t);
     const int stride_V  = nb21 / sizeof(v_input_t);
     const int stride_V_q8 = nb21 / sizeof(block_q8_0);
@@ -233,7 +254,7 @@ static __global__ void flash_attn_ext_f16(
             if (i0 + warp_size > D && i >= D) {
                 break;
             }
-            const float q = ic0 + j < int(ne01.z) ? Q_f[j*stride_Q + i] : 0.0f;
+            const float q = (gqa_cols ? j < ncols_live : ic0 + j < int(ne01.z)) ? Q_f[j*stride_Q + i] : 0.0f;
             if constexpr (native_f8_kq) {
                 reinterpret_cast<uint8_t *>(Q_kq)[j*D_padded + i] = ggml_cuda_fp32_to_f8_e4m3(q);
             } else {
@@ -257,6 +278,22 @@ static __global__ void flash_attn_ext_f16(
 
     // Iterate over ne11 == previous tokens:
     const int k_VKQ_max = KV_max ? KV_max[sequence*gridDim.x + blockIdx.x] : ne11;
+    // D138 probe state (compile-time, GGML_D138_PHASE): one representative
+    // thread per block records the phase boundaries and the counters are
+    // flushed once after the KV loop.
+#if defined(GGML_USE_HIP) && defined(GGML_D138_PHASE)
+    const bool         d138_timing = threadIdx.x == 0 && threadIdx.y == 0;
+    unsigned long long d138_t = d138_timing ? clock64() : 0;
+    unsigned long long d138_c[6] = {0, 0, 0, 0, 0, 0};
+#define D138_MARK(slot)                                    \
+    if (d138_timing) {                                     \
+        const unsigned long long d138_now = clock64();     \
+        d138_c[slot] += d138_now - d138_t;                 \
+        d138_t = d138_now;                                 \
+    }
+#else
+#define D138_MARK(slot) ((void) 0)
+#endif
     for (int k_VKQ_0 = blockIdx.y*FATTN_KQ_STRIDE; k_VKQ_0 < k_VKQ_max; k_VKQ_0 += gridDim.y*FATTN_KQ_STRIDE) {
         // Calculate tile of KQ:
 #pragma unroll
@@ -288,6 +325,8 @@ static __global__ void flash_attn_ext_f16(
 
         __syncthreads();
 
+        D138_MARK(0); // KQ tile done (K load + KQ MMA + LDS store)
+
         // Calculate softmax for each KQ column using the current max. value.
         // The divisor is stored in KQ_rowsum and will be applied at the end.
 #pragma unroll
@@ -312,12 +351,14 @@ static __global__ void flash_attn_ext_f16(
                 }
 
                 float KQ_max_new = KQ_max_f[j0/nwarps];
+                const half slopeh_j = (gqa_cols && max_bias != 0.0f) ?
+                    __float2half(get_alibi_slope(max_bias, head + j, n_head_log2, m0, m1)) : slopeh;
 #pragma unroll
                 for (int k0 = 0; k0 < FATTN_KQ_STRIDE; k0 += warp_size) {
                     const int k = k0 + threadIdx.x;
 
-                    KQ_f_tmp[k0/warp_size] += mask && ic0 + j < int(ne01.z) ?
-                        __half2float(slopeh*maskh[j*(nb31/sizeof(half)) + k_VKQ_0 + k]) : 0.0f;
+                    KQ_f_tmp[k0/warp_size] += (gqa_cols ? (mask != nullptr && j < ncols_live) : (mask && ic0 + j < int(ne01.z))) ?
+                        __half2float(slopeh_j*(gqa_cols ? maskh[k_VKQ_0 + k] : maskh[j*(nb31/sizeof(half)) + k_VKQ_0 + k])) : 0.0f;
                     KQ_max_new = max(KQ_max_new, KQ_f_tmp[k0/warp_size] + FATTN_KQ_MAX_OFFSET);
                 }
                 KQ_max_new = warp_reduce_max<warp_size>(KQ_max_new);
@@ -387,12 +428,14 @@ static __global__ void flash_attn_ext_f16(
                 }
 
                 half2 KQ_max_new = KQ_max_h2[j0/nwarps];
+                const half2 slope2_j = (gqa_cols && max_bias != 0.0f) ?
+                    __half2half2(__float2half(get_alibi_slope(max_bias, head + j, n_head_log2, m0, m1))) : slope2;
 #pragma unroll
                 for (int k0 = 0; k0 < FATTN_KQ_STRIDE/2; k0 += warp_size) {
                     const int k = k0 + threadIdx.x;
 
-                    KQ2_tmp[k0/warp_size] += mask && ic0 + j < int(ne01.z) ?
-                        slope2*mask2[(j*(nb31/sizeof(half)) + k_VKQ_0)/2 + k] :
+                    KQ2_tmp[k0/warp_size] += (gqa_cols ? (mask != nullptr && j < ncols_live) : (mask && ic0 + j < int(ne01.z))) ?
+                        slope2_j*(gqa_cols ? mask2[(k_VKQ_0)/2 + k] : mask2[(j*(nb31/sizeof(half)) + k_VKQ_0)/2 + k]) :
                         make_half2(0.0f, 0.0f);
                     KQ_max_new = ggml_cuda_hmax2(KQ_max_new, KQ2_tmp[k0/warp_size]);
                 }
@@ -425,6 +468,7 @@ static __global__ void flash_attn_ext_f16(
         __syncthreads();
 
 
+        D138_MARK(1); // softmax + P re-quantisation done
         frag_b_v KQ_b[FATTN_KQ_STRIDE/(VKQ_ratio*16)][ncols/frag_n];
 #pragma unroll
         for (int j0 = 0; j0 < ncols; j0 += frag_n) {
@@ -453,6 +497,8 @@ static __global__ void flash_attn_ext_f16(
                 wmma::fill_fragment(VKQ_c[i_VKQ_0/VKQ_stride][j], static_cast<vkq_acc_t>(0.0f));
             }
         }
+
+        D138_MARK(2); // P fragments loaded from the f8/half shared tile
 
         if constexpr (q8_v_direct) {
             static_assert(VKQ_ratio == 1, "direct Q8 V WMMA expects one V accumulator group");
@@ -517,6 +563,8 @@ static __global__ void flash_attn_ext_f16(
             }
         }
 
+        D138_MARK(3); // V fragments loaded and PV MMAs issued
+
         __syncthreads();
 
         const int offset_k = (threadIdx.y % VKQ_ratio) * (ncols*D_padded);
@@ -541,6 +589,7 @@ static __global__ void flash_attn_ext_f16(
         __syncthreads();
 
 
+        D138_MARK(4); // VKQ parts written to shared memory
         if constexpr (native_f8_v) {
             static_assert(VKQ_ratio == 1, "native FP8 V merge expects one accumulator group");
 #pragma unroll 1
@@ -583,7 +632,20 @@ static __global__ void flash_attn_ext_f16(
 
         __syncthreads();
 
+        D138_MARK(5); // output accumulation done for this KV tile
+
     }
+
+    // D138 probe flush (compile-time only, see the definition above).
+#if defined(GGML_USE_HIP) && defined(GGML_D138_PHASE)
+    if (d138_timing) {
+#pragma unroll
+        for (int i = 0; i < 6; ++i) {
+            atomicAdd(&g_d138_fa_phase[i], d138_c[i]);
+        }
+    }
+#endif
+#undef D138_MARK
 
     // Apply attention sinks
     if (sinksf && blockIdx.y == 0) {
@@ -635,7 +697,7 @@ static __global__ void flash_attn_ext_f16(
 #pragma unroll
     for (int j0 = 0; j0 < ncols; j0 += nwarps) {
         const int j_VKQ = j0 + threadIdx.y;
-        if (ic0 + j_VKQ >= int(ne01.z)) {
+        if (gqa_cols ? (j_VKQ >= ncols_live) : (ic0 + j_VKQ >= int(ne01.z))) {
             return;
         }
 
@@ -646,7 +708,8 @@ static __global__ void flash_attn_ext_f16(
             KQ_rowsum_j = __low2float(KQ_rowsum_h2[j0/nwarps]) + __high2float(KQ_rowsum_h2[j0/nwarps]);
         }
 
-        const int j_dst_unrolled = ((sequence*int(ne01.z) + ic0 + j_VKQ)*ne02 + head)*gridDim.y + blockIdx.y;
+        const int j_dst_unrolled = ((sequence*int(ne01.z) + ic0 + (gqa_cols ? 0 : j_VKQ))*ne02
+                                    + (gqa_cols ? head + j_VKQ : head))*gridDim.y + blockIdx.y;
 
 #pragma unroll
         for (int i0 = 0; i0 < D; i0 += warp_size) {
@@ -901,6 +964,45 @@ void ggml_cuda_flash_attn_ext_wmma_f16_case(ggml_backend_cuda_context & ctx, ggm
             "the native-only body owns the D=256/cols16/warps8 shape");
         GGML_ASSERT(f8_native_v);
         fattn_kernel_t f8_kernel;
+        // Decode leaves 15 of 16 tile columns idle (one token per sequence), so
+        // pack the Q heads of one K/V head into the columns instead: the same
+        // K/V fragments then serve gqa_ratio heads, which cuts the K/V read
+        // footprint of this kernel by that factor. Enabled by default for the
+        // matching shape; GGML_ROCM_FATTN_F8_GQA_COLS=0 force-disables it (A/B
+        // switch, and the escape hatch if a future shape misbehaves).
+        static const bool gqa_cols_enabled = [] {
+            const char * env = std::getenv("GGML_ROCM_FATTN_F8_GQA_COLS");
+            return env == nullptr || env[0] == '\0' || env[0] != '0';
+        }();
+        const ggml_tensor * Q = dst->src[0];
+        const ggml_tensor * K = dst->src[1];
+        const bool gqa_shape = Q->ne[1] == 1 && K->ne[2] > 0 && Q->ne[2] % K->ne[2] == 0 &&
+            Q->ne[2] / K->ne[2] > 1 && Q->ne[2] / K->ne[2] <= cols_per_block &&
+            KQV->type == GGML_TYPE_F32;
+        if (gqa_cols_enabled && gqa_shape) {
+            const bool gqa_cols = true;
+            GGML_ASSERT(f8_native_kq);
+            if (logit_softcap == 0.0f) {
+                f8_kernel = flash_attn_ext_f16<
+                    D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                    float, false, false, false, true, true, gqa_cols>;
+            } else {
+                f8_kernel = flash_attn_ext_f16<
+                    D, cols_per_block, nwarps, get_VKQ_stride(D, nwarps, frag_m),
+                    float, true, false, false, true, true, gqa_cols>;
+            }
+            launch_fattn<D, 1, cols_per_block>(
+                ctx, dst, f8_kernel, nwarps, 0, FATTN_KQ_STRIDE,
+                false, false, false, warp_size);
+            static int gqa_cols_logs = 0;
+            if (std::getenv("GGML_TRACE_FATTN_WMMA_CONFIG") != nullptr && gqa_cols_logs < 4) {
+                ++gqa_cols_logs;
+                GGML_LOG_INFO("WMMA FA GQA columns: dev=%d Q1=%lld heads=%lld kv_heads=%lld ratio=%lld cols=%d\n",
+                    ctx.device, (long long) Q->ne[1], (long long) Q->ne[2], (long long) K->ne[2],
+                    (long long) (Q->ne[2] / K->ne[2]), cols_per_block);
+            }
+            return;
+        }
         if (logit_softcap == 0.0f) {
             if (f8_native_kq) {
                 f8_kernel = flash_attn_ext_f16<
@@ -1044,6 +1146,39 @@ void ggml_cuda_flash_attn_ext_wmma_f16_case(ggml_backend_cuda_context & ctx, ggm
 }
 
 void ggml_cuda_flash_attn_ext_wmma_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+#if defined(GGML_USE_HIP) && defined(GGML_D138_PHASE)
+    // D138 probe: report (and reset) the phase counters collected by the
+    // previous launch. Reading the device symbol synchronises the device, so
+    // this stays behind an env gate and outside graph capture.
+    {
+        static int d138_reports = 0;
+        if (std::getenv("GGML_TRACE_FATTN_PHASE") != nullptr && d138_reports < 24) {
+            unsigned long long d138_host[6] = {0, 0, 0, 0, 0, 0};
+            if (hipMemcpyFromSymbol(d138_host, g_d138_fa_phase, sizeof(d138_host)) == hipSuccess) {
+                const unsigned long long d138_zero[6] = {0, 0, 0, 0, 0, 0};
+                hipMemcpyToSymbol(g_d138_fa_phase, d138_zero, sizeof(d138_zero));
+                unsigned long long d138_total = 0;
+                for (int i = 0; i < 6; ++i) {
+                    d138_total += d138_host[i];
+                }
+                if (d138_total >= 100000ULL) {
+                    ++d138_reports;
+                    GGML_LOG_INFO("D138 FA phases dev=%d: KQ %.1f%%  softmax %.1f%%  P-load %.1f%%  V+PV-mma %.1f%%"
+                                  "  LDS-store %.1f%%  merge %.1f%%  (cycles %llu/%llu/%llu/%llu/%llu/%llu)\n",
+                                  ctx.device,
+                                  100.0 * double(d138_host[0]) / double(d138_total),
+                                  100.0 * double(d138_host[1]) / double(d138_total),
+                                  100.0 * double(d138_host[2]) / double(d138_total),
+                                  100.0 * double(d138_host[3]) / double(d138_total),
+                                  100.0 * double(d138_host[4]) / double(d138_total),
+                                  100.0 * double(d138_host[5]) / double(d138_total),
+                                  d138_host[0], d138_host[1], d138_host[2],
+                                  d138_host[3], d138_host[4], d138_host[5]);
+                }
+            }
+        }
+    }
+#endif
     const ggml_tensor * KQV = dst;
     const ggml_tensor * Q   = dst->src[0];
 

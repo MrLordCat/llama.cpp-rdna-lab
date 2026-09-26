@@ -116,36 +116,47 @@ match two scheduler lifecycles for each of the two tasks; they are not model
 reloads initiated by the benchmark harness. Artifacts use
 `d098-vk35b-32k-{q8,f8}-{none,mtp2}-r1`.
 
-### Windows vs Linux L1-L3 (2026-09-23)
+### Windows vs Linux L1-L3 (2026-09-23 Vulkan, 2026-09-26 ROCm)
 
-Same lane contract as the Linux table below, re-run on Windows 11 with
-`7c49e6212`: `build-rocm72` (HIP 7.2) and `build-vulkan-gcc16`. KV
+Same lane contract as the Linux table below, re-run on Windows 11: the
+Vulkan rows with `7c49e6212` (`build-vulkan-gcc16`), the `Q4_K_M (UD)` ROCm
+rows re-measured 2026-09-26 on `fea1c3180` plus the working-tree
+flash-attention change (`build-rocm72`, HIP 7.2). KV
 `f8_e4m3 / f8_e4m3`, `b8192/ub1024`, FlashAttention, `-ngl 999`, one slot,
 cold prompt, `seed 42`, temp 0.2, top-p 0.9, `--no-warmup`, repo-snapshot
 L1/L2, synthetic L3. Actual prompt geometry: L1 8386, L2 32996, L3 64287
 tokens (Linux L2 33865 = +2.6%). Single run per cell (r1); artifacts
-`build_logs/bench/win-*`, index in `build_logs/bench/index.csv`.
+`build_logs/bench/win-*` (2026-09-23) and `build_logs/bench/post-d138-rocm-*`
+(2026-09-26), index in `build_logs/bench/index.csv`.
 
 **Windows ROCm 7.2** (`ROCm1,ROCm0 -sm layer -ts 1,1`):
 
 | Model / format | Lane | Spec | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
 | MXFP4-requant (dense) | L1 | none | 1999.23 | 27.05 | 14.340 | - |
-| Q4_K_M (UD) | L1 | none | 2007.84 | 23.82 | 13.402 | - |
-| Q4_K_M (UD) | L1 | MTP n3 | 1810.81 | 38.22 | 16.040 | 76/149 (51.0%) |
+| Q4_K_M (UD) | L1 | none | 2061.11 | 24.70 | 14.198 | - |
+| Q4_K_M (UD) | L1 | MTP n3 | 1817.81 | 36.73 | 16.344 | 74/158 (46.8%) |
 | MXFP4-requant (UD) | L1 | MTP n3 | 1825.71 | 44.77 | 17.175 | 74/155 (47.7%) |
-| Q4_K_M (UD) | L2 | none | 1819.46 | 24.00 | 8.888 | - |
+| Q4_K_M (UD) | L2 | none | 1879.06 | 25.74 | 9.758 | - |
 | MXFP4-requant (UD) | L2 | none | 1813.11 | 25.25 | 9.034 | - |
-| Q4_K_M (UD) | L2 | MTP n3 | 1744.44 | 36.10 | 9.844 | 153/306 (50.0%) |
+| Q4_K_M (UD) | L2 | MTP n3 | 1799.29 | 43.75 | 11.197 | 171/251 (68.1%) |
 | MXFP4-requant (UD) | L2 | MTP n3 | 1751.81 | 41.49 | 10.238 | 149/315 (47.3%) |
 | MXFP4-hybrid-attnQ6 | L2 | none | 1756.82 | 24.44 | 8.750 | - |
 | NVFP4-native | L2 | none | 79.05 | 24.65 | 0.598 | - |
-| Q4_K_M (UD) | L3 | none | 1525.66 | 20.92 | 4.708 | - |
+| Q4_K_M (UD) | L3 | none | 1555.55 | 24.85 | 4.959 | - |
 | MXFP4-requant (UD) | L3 | none | 1528.46 | 22.01 | 4.768 | - |
-| Q4_K_M (UD) | L3 | MTP n3 | 1472.01 | 36.37 | 5.048 | 164/272 (60.3%) |
+| Q4_K_M (UD) | L3 | MTP n3 | 1495.92 | 39.09 | 5.169 | 170/252 (67.5%) |
 | MXFP4-requant (UD) | L3 | MTP n3 | 1482.71 | 36.78 | 5.088 | 148/316 (46.8%) |
 | MXFP4-hybrid-attnQ6 | L3 | none | 1484.54 | 21.35 | 4.630 | - |
 | NVFP4-native | L3 | none | 79.71 | 22.35 | 0.313 | - |
+
+`Q4_K_M (UD)` ROCm decode improved against the 2026-09-23 rows on five of
+six lanes: L1 none `23.82 -> 24.70`, L2 none `24.00 -> 25.74`, L3 none
+`20.92 -> 24.85`, L2 MTP `36.10 -> 43.75`, L3 MTP `36.37 -> 39.09`; L1 MTP
+moved `38.22 -> 36.73` with acceptance `51.0% -> 46.8%` (the L2/L3 MTP rows
+also gained acceptance: `50.0% -> 68.1%`, `60.3% -> 67.5%`, and MTP decode
+tracks acceptance). The other formats and all Vulkan rows are from the
+2026-09-23 pass.
 
 **Windows Vulkan** (`Vulkan1,Vulkan0 -sm layer -ts 1,1`):
 

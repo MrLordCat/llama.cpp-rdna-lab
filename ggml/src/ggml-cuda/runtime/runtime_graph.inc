@@ -709,6 +709,16 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
     ggml_tensor * node = cgraph->nodes[i];
 
+    // D138 ablation hook: when the ablation pattern names the head node of a
+    // candidate fusion, refuse the fusion so the node reaches
+    // ggml_cuda_compute_forward and is ablated there. Fused launches (the
+    // up+gate+GLU MMVQ site in particular) call the kernels directly from this
+    // file, so without this hook an op-name ablation silently misses them and
+    // the fused cost stays hidden in the "everything else" bucket.
+    if (ggml_cuda_ablate_match(node)) {
+        return 0;
+    }
+
     // G10: paired GDN narrow f32 matvecs (ssm_alpha + ssm_beta share the
     // same input vector and shape, n=1). Opt-in for now: one two-output
     // launch replaces two separate MMVF calls and is bit-exact, but wall

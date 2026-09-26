@@ -119,6 +119,31 @@ static int32_t server_spec_prefill_window() {
     return value;
 }
 
+// Upper row bound for the spec-phase timing trace. The trace was historically
+// limited to decode-sized batches (<= 16 rows); raise it to see the prompt
+// batches, where the MTP tail is extracted.
+static int32_t server_spec_phase_timing_max_rows() {
+    static const int32_t value = [] {
+        const char * env = std::getenv("LLAMA_SPEC_SERVER_PHASE_TIMING_MAX_ROWS");
+        return env ? std::max(0, std::atoi(env)) : 16;
+    }();
+
+    return value;
+}
+
+// NOTE (measured 2026-09-26, do not re-add without a fix): moving the MTP/NextN
+// split point down to the physical-batch boundary (`tail_start = n_tokens -
+// window`, rounded down to n_ubatch) was tried and rejected.
+//   * L0 prefill: 1487/1503 tok/s -> 1375 (A-B-A, -8.5%), because the tail grows
+//     by the remainder and every extra extracted row costs ~0.4-0.5 ms;
+//   * L2 (49k lane): a 913-row tail aborts the server with
+//     "spec process: failed to select the pending MTP device row" - the device
+//     handoff buffer is bounded, so tails much larger than the window are not
+//     merely slower, they are fatal.
+// A larger window is a different trade (see LLAMA_SPEC_PREFILL_WINDOW results in
+// docs D138): 320 raised L0 acceptance 46.2% -> 52.8% and decode +8.5%, while
+// 512 gave nothing back and only cost prefill.
+
 static int32_t server_spec_prefill_sparse_stride() {
     static const int32_t value = [] {
         const char * env = std::getenv("LLAMA_SPEC_PREFILL_SPARSE_STRIDE");
@@ -2944,7 +2969,7 @@ private:
                         if (spec && common_speculative_need_embd_nextn(spec.get())) {
                             const int32_t pos = slot.prompt.n_tokens();
                             const bool slot_has_tokens_in_batch = batch.n_tokens > n_tokens_prev;
-                            const int32_t tail_start = std::max(
+                            int32_t tail_start = std::max(
                                     0, slot.task->n_tokens() - server_spec_prefill_window());
 
                             // Sparse history is filtered inside the already-formed logical
@@ -3184,7 +3209,7 @@ private:
             }
 
             const bool trace_spec_phase = server_env_enabled("LLAMA_SPEC_SERVER_PHASE_TIMING") &&
-                spec && n_tokens <= 16;
+                spec && n_tokens <= server_spec_phase_timing_max_rows();
             const int64_t t_decode_start = trace_spec_phase ? ggml_time_us() : 0;
             const int ret = llama_decode(ctx, batch_view);
             const int64_t t_decode_return = trace_spec_phase ? ggml_time_us() : 0;
@@ -3243,8 +3268,10 @@ private:
             const int64_t t_process_start = trace_spec_phase ? ggml_time_us() : 0;
             const bool process_ok = !spec || common_speculative_process(spec.get(), batch_view);
             if (trace_spec_phase) {
-                SRV_INF("spec phase=target rows=%d decode_return=%.3f process=%.3f total=%.3f ms\n",
+                SRV_INF("spec phase=target rows=%d pos=%d..%d decode_return=%.3f process=%.3f total=%.3f ms\n",
                         n_tokens,
+                        (int) batch_view.pos[0],
+                        (int) batch_view.pos[n_tokens - 1],
                         (t_decode_return - t_decode_start) / 1000.0,
                         (ggml_time_us() - t_process_start) / 1000.0,
                         (ggml_time_us() - t_decode_start) / 1000.0);

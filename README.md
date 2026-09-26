@@ -97,11 +97,13 @@ context (repo-snapshot is capped at ~53K tokens).
 | L3 | 98,304 | ~64.3K | 256 | synthetic |
 
 
-### Windows results (2026-09-23, ROCm/HIP 7.2 and Vulkan)
+### Windows results (2026-09-23 Vulkan, 2026-09-26 ROCm)
 
-Fresh Windows re-runs on the current binary family (`7c49e6212`:
-`build-rocm72` HIP 7.2 and `build-vulkan-gcc16`), same lane contract as the
-Linux table below: `batch 8192 / ubatch 1024`, KV `f8_e4m3 / f8_e4m3`,
+Fresh Windows re-runs on the current binary family: the ROCm rows on
+`fea1c3180` plus the working-tree flash-attention change (`build-rocm72`,
+HIP 7.2), the Vulkan rows on `7c49e6212` (`build-vulkan-gcc16`, not re-run
+in the 2026-09-26 pass). Same lane contract as the Linux table below:
+`batch 8192 / ubatch 1024`, KV `f8_e4m3 / f8_e4m3`,
 FlashAttention, `-ngl 999`, one slot, cold prompt, `seed 42`, temp 0.2,
 top-p 0.9, `--no-warmup`, repo-snapshot L1/L2, synthetic L3. Model
 `Qwen3.8-27B-UD-Q4_K_M.gguf` (UD), single run per cell; actual prompt
@@ -110,12 +112,12 @@ geometry L1 8386 tok, L2 32996 tok, L3 64287 tok (Linux L1/L2 differ by
 
 | Backend | Lane | Spec | Prompt TPS | Decode TPS | Aggregate TPS | Acceptance |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| ROCm 7.2 | L1 | none | **2007.84** | 23.82 | 13.402 | - |
-| ROCm 7.2 | L1 | MTP n3 | 1810.81 | 38.22 | 16.040 | 51.0% |
-| ROCm 7.2 | L2 | none | **1819.46** | 24.00 | **8.888** | - |
-| ROCm 7.2 | L2 | MTP n3 | 1744.44 | 36.10 | 9.844 | 50.0% |
-| ROCm 7.2 | L3 | none | **1525.66** | 20.92 | 4.708 | - |
-| ROCm 7.2 | L3 | MTP n3 | 1472.01 | **36.37** | **5.048** | 60.3% |
+| ROCm 7.2 | L1 | none | **2061.11** | 24.70 | **14.198** | - |
+| ROCm 7.2 | L1 | MTP n3 | 1817.81 | 36.73 | **16.344** | 46.8% |
+| ROCm 7.2 | L2 | none | **1879.06** | **25.74** | **9.758** | - |
+| ROCm 7.2 | L2 | MTP n3 | 1799.29 | **43.75** | **11.197** | 68.1% |
+| ROCm 7.2 | L3 | none | **1555.55** | **24.85** | **4.959** | - |
+| ROCm 7.2 | L3 | MTP n3 | 1495.92 | **39.09** | **5.169** | 67.5% |
 | Vulkan | L1 | none | 1569.17 | **25.42** | 12.332 | - |
 | Vulkan | L1 | MTP n3 | 1606.98 | **39.00** | 15.059 | 53.4% |
 | Vulkan | L2 | none | 1470.80 | 23.61 | 7.693 | - |
@@ -123,12 +125,22 @@ geometry L1 8386 tok, L2 32996 tok, L3 64287 tok (Linux L1/L2 differ by
 | Vulkan | L3 | none | 1243.99 | **22.19** | 4.050 | - |
 | Vulkan | L3 | MTP n3 | 1357.37 | 35.14 | 4.685 | 58.3% |
 
-ROCm stays ahead on prompt processing (L1 +28%, L2 +24%, L3 +23% over
-Vulkan). Vulkan leads decode on the L1 rows (25.42 vs 23.82, 39.00 vs 38.22)
-and on L3 spec-none (22.19 vs 20.92), while ROCm leads the L2 and L3 MTP rows
-(36.10 vs 35.36, 36.37 vs 35.14). The `f8_e4m3`
+ROCm stays ahead on prompt processing (L1 +31%, L2 +28%, L3 +25% over
+Vulkan) and now leads decode on five of six rows. Vulkan still leads the L1
+rows (25.42 vs 24.70, 39.00 vs 36.73); ROCm leads L2/L3 on both spec modes
+(none 25.74 vs 23.61 and 24.85 vs 22.19, MTP 43.75 vs 35.36 and 39.09 vs
+35.14). The `f8_e4m3`
 KV policy is used on both backends; MTP rows carry the automatic Vulkan
 last-8-f16 tail and the HIP `n_ubatch=256` draft cap from the same commit.
+
+**ROCm decode re-measure (2026-09-26).** The ROCm rows were re-run with the
+identical lane contract and decode improved on five of six rows: L1 none
+`23.82 -> 24.70` (+3.7%), L2 none `24.00 -> 25.74` (+7.2%), L3 none
+`20.92 -> 24.85` (+18.8%), L2 MTP `36.10 -> 43.75` (+21.2%), L3 MTP
+`36.37 -> 39.09` (+7.5%). L1 MTP moved `38.22 -> 36.73` on a lower acceptance
+(`51.0% -> 46.8%`), while the L2/L3 MTP rows gained acceptance
+(`50.0% -> 68.1%`, `60.3% -> 67.5%`); MTP decode tracks acceptance, so the
+`none` rows are the clean signal. Vulkan was not re-run in this pass.
 
 ### Linux results (2026-09-09, ROCm 10, current binary)
 
